@@ -1,0 +1,101 @@
+name: "CI-CD Pipeline"
+
+concurrency:
+  group: selfheal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY_DECLAN: ${{ secrets.OPENAI_API_KEY_DECLAN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      SKYVERN_API_KEY: ${{ secrets.SKYVERN_API_KEY }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_SECRET: ${{ secrets.AZURE_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: "List initial files"
+        run: ls -la
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: "Install dependencies"
+        run: |
+          pip install --upgrade pip
+          pip install requests pytest
+          pip install "openai==0.28.*"   # pinned for orchestrator
+
+      - name: "Verify test file & final listing"
+        run: |
+          echo "Final listing before tests:"
+          ls -la
+          if [ ! -f tests/test_basic.py ]; then
+            echo "[WARNING] tests/test_basic.py is missing!"
+          else
+            echo "tests/test_basic.py is present."
+          fi
+
+      - name: "Run tests & capture logs"
+        run: |
+          pytest --maxfail=1 --disable-warnings -q 2>&1 | tee test_output.log
+          exit_code=${PIPESTATUS[0]}
+          if [ $exit_code -ne 0 ]; then
+            echo "[pytest logs]" > fail_logs.txt
+            cat test_output.log >> fail_logs.txt
+            exit $exit_code
+          fi
+
+      - name: "Self-Healing"
+        if: failure()
+        run: |
+          echo "Self-Heal attempt: gather code + logs -> fail_logs.txt, run orchestrator."
+          git config user.name "SelfHealBot"
+          git config user.email "selfheal@bot.com"
+
+          # We also cat app.py + tests/*.py into fail_logs so GPT sees them
+          if [ -f app.py ]; then
+            echo "\n[APP.PY CODE BELOW]:" >> fail_logs.txt
+            cat app.py >> fail_logs.txt
+          fi
+          if [ -d tests ]; then
+            for f in tests/*.py; do
+              echo "\n[TEST FILE: $f]:" >> fail_logs.txt
+              cat "$f" >> fail_logs.txt
+            done
+          fi
+
+          git add fail_logs.txt
+          git commit -m "Add fail_logs with code & logs [skip ci]" || echo "No changes to commit"
+          git push --force origin main
+
+          echo "Running orchestrator..."
+          python ./orchestrator.py
+
+          echo "Committing orchestrator changes..."
+          git add .
+          git commit -m "Selfheal attempt [skip ci]" || echo "No changes to commit"
+          git push --force origin main
+
+          # re-run tests once
+          pytest --maxfail=1 --disable-warnings -q || echo "Still failing..."
