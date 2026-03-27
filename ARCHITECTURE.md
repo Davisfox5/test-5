@@ -368,7 +368,7 @@ Return valid JSON only."""
 
 ## 5. Implementation Phases
 
-### Phase 1 — Foundation (Weeks 1–3)
+### Phase 1 — Foundation
 | # | Task | Details |
 |---|------|---------|
 | 1.1 | Project scaffolding | FastAPI backend, React+Vite frontend, Docker Compose |
@@ -377,7 +377,7 @@ Return valid JSON only."""
 | 1.4 | Call upload API | `POST /api/v1/calls/upload` — multipart audio, S3 storage |
 | 1.5 | Basic frontend | Login, dashboard shell, call list, upload UI |
 
-### Phase 2 — Transcription Engine (Weeks 4–6)
+### Phase 2 — Transcription Engine
 | # | Task | Details |
 |---|------|---------|
 | 2.1 | Audio processing pipeline | ffmpeg normalization, format conversion, chunking |
@@ -386,7 +386,7 @@ Return valid JSON only."""
 | 2.4 | Transcript storage | Segments in PG, full text in Elasticsearch |
 | 2.5 | Transcript UI | Timeline view, speaker colors, audio sync playback |
 
-### Phase 3 — AI Analysis (Weeks 7–9)
+### Phase 3 — AI Analysis
 | # | Task | Details |
 |---|------|---------|
 | 3.1 | Claude API integration | Structured prompt, JSON parsing, retry logic |
@@ -395,7 +395,7 @@ Return valid JSON only."""
 | 3.4 | Insight dashboard | Summary cards, action items panel, sentiment chart |
 | 3.5 | Follow-up email drafts | AI-generated email drafts from call context |
 
-### Phase 4 — White-Label & Multi-Tenancy (Weeks 10–12)
+### Phase 4 — White-Label & Multi-Tenancy
 | # | Task | Details |
 |---|------|---------|
 | 4.1 | Tenant provisioning | Self-serve signup, plan tiers, usage metering |
@@ -404,7 +404,7 @@ Return valid JSON only."""
 | 4.4 | API key management | Scoped API keys for programmatic access |
 | 4.5 | Embeddable widget SDK | iframe-based + postMessage API for embedding |
 
-### Phase 5 — Integrations & Real-Time (Weeks 13–16)
+### Phase 5 — Integrations & Real-Time
 | # | Task | Details |
 |---|------|---------|
 | 5.1 | Telephony connectors | Twilio, Vonage, Zoom webhook ingestion |
@@ -413,7 +413,7 @@ Return valid JSON only."""
 | 5.4 | Notification system | Email digests, Slack/Teams alerts on call analysis |
 | 5.5 | Zapier/webhook outbound | Event-driven outbound webhooks for custom integrations |
 
-### Phase 6 — Analytics & Polish (Weeks 17–20)
+### Phase 6 — Analytics & Hardening
 | # | Task | Details |
 |---|------|---------|
 | 6.1 | Team analytics | Rep performance, call volume trends, sentiment over time |
