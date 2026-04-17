@@ -46,6 +46,16 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
+        # Orchestrator daily consolidation: 04:00 UTC every day.
+        "orchestrator-daily": {
+            "task": "orchestrator_daily_all_tenants",
+            "schedule": crontab(minute=0, hour=4),
+        },
+        # Orchestrator weekly reflection: 05:00 UTC every Monday.
+        "orchestrator-weekly": {
+            "task": "orchestrator_weekly_all_tenants",
+            "schedule": crontab(minute=0, hour=5, day_of_week=1),
+        },
     },
 )
 
@@ -440,14 +450,98 @@ def _run_pipeline(
         )
         session.add(snippet_row)
 
-    # ── Step 17: Fire outbound webhooks (placeholder) ────────────────
-    logger.info(
-        "TODO: Fire outbound webhooks for interaction %s (tenant %s)",
-        interaction_id, tenant_id,
+    # ── Step 17: Write InteractionFeatures (canonical feature store) ─
+    from backend.app.models import InteractionFeatures
+    from backend.app.services.feature_extractors import FeatureExtractor
+
+    deterministic_features = FeatureExtractor().extract(segment_objects)
+    features_row = (
+        session.query(InteractionFeatures)
+        .filter(InteractionFeatures.interaction_id == interaction.id)
+        .first()
     )
+    if features_row is None:
+        features_row = InteractionFeatures(
+            interaction_id=interaction.id,
+            tenant_id=tenant.id,
+        )
+        session.add(features_row)
+    features_row.deterministic = deterministic_features
+    features_row.llm_structured = insights
+    features_row.scorer_versions = {
+        "analysis_tier": recommended_tier,
+        "complexity_score": complexity_score,
+    }
+
+    # ── Step 18: Enqueue delta report → orchestrator ─────────────────
+    try:
+        _enqueue_delta_report(
+            session=session,
+            tenant=tenant,
+            interaction=interaction,
+            features={
+                "deterministic": deterministic_features,
+                "llm_structured": insights,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Delta report generation failed for %s (non-fatal)",
+            interaction_id,
+        )
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)
+
+
+def _enqueue_delta_report(
+    *,
+    session: Session,
+    tenant: Any,
+    interaction: Any,
+    features: Dict[str, Any],
+) -> None:
+    """Build and persist a ``DeltaReport`` scoped to every touched entity.
+
+    The LLM call here is a small Sonnet invocation producing ≤1k tokens of
+    structured JSON.  Failure is logged but never fatal — the orchestrator
+    can still run without a delta, it just has less evidence.
+    """
+    from backend.app.services.orchestrator import (
+        DeltaReportWriter,
+        EntityScope,
+        ENTITY_AGENT,
+        ENTITY_BUSINESS,
+        ENTITY_CLIENT,
+        ENTITY_MANAGER,
+        get_orchestrator,
+    )
+    from backend.app.models import User
+
+    scopes: List[EntityScope] = [
+        EntityScope(entity_type=ENTITY_BUSINESS, entity_id=str(tenant.id)),
+    ]
+    if interaction.contact_id:
+        scopes.append(EntityScope(entity_type=ENTITY_CLIENT, entity_id=str(interaction.contact_id)))
+    if interaction.agent_id:
+        scopes.append(EntityScope(entity_type=ENTITY_AGENT, entity_id=str(interaction.agent_id)))
+        agent = session.query(User).filter(User.id == interaction.agent_id).first()
+        manager_id = getattr(agent, "manager_id", None) if agent else None
+        if manager_id:
+            scopes.append(EntityScope(entity_type=ENTITY_MANAGER, entity_id=str(manager_id)))
+
+    writer = DeltaReportWriter()
+    delta = asyncio.run(
+        writer.write(tenant=tenant, interaction=interaction, features=features, scopes=scopes)
+    )
+    if delta:
+        get_orchestrator().record_delta(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            scopes=scopes,
+            delta=delta,
+        )
 
 
 # ── Celery Tasks ─────────────────────────────────────────────────────────
@@ -676,3 +770,58 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+# ── Orchestrator Celery tasks ────────────────────────────────────────────
+
+
+@celery_app.task(name="orchestrator_daily_all_tenants")
+def orchestrator_daily_all_tenants() -> Dict[str, Any]:
+    """Daily consolidation of delta reports into profile versions.
+
+    Iterates every tenant and runs :meth:`Orchestrator.run_daily`.  One
+    tenant failing does not block the others.
+    """
+    from backend.app.models import Tenant
+    from backend.app.services.orchestrator import get_orchestrator
+
+    session = _get_sync_session()
+    orch = get_orchestrator()
+    totals: Dict[str, int] = {}
+    processed = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                counts = orch.run_daily(session, tenant.id)
+                for k, v in counts.items():
+                    totals[k] = totals.get(k, 0) + v
+                processed += 1
+            except Exception:  # noqa: BLE001 — per-tenant isolation
+                logger.exception(
+                    "Daily orchestrator failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": processed, "profile_updates": totals}
+
+
+@celery_app.task(name="orchestrator_weekly_all_tenants")
+def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
+    """Weekly self-improvement reflection across all tenants."""
+    from backend.app.models import Tenant
+    from backend.app.services.orchestrator import get_orchestrator
+
+    session = _get_sync_session()
+    orch = get_orchestrator()
+    results: Dict[str, Any] = {}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results[str(tenant.id)] = orch.run_weekly(session, tenant.id)
+            except Exception:
+                logger.exception(
+                    "Weekly orchestrator failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": len(results)}
