@@ -13,6 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from celery import Celery
+from celery.schedules import crontab
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -39,6 +40,13 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
+        "tenant-insights-weekly": {
+            "task": "tenant_insights_weekly",
+            "schedule": crontab(minute=15, hour=0, day_of_week=1),
+        },
+    },
 )
 
 # ── Synchronous SQLAlchemy session for Celery tasks ──────────────────────
@@ -62,6 +70,32 @@ _SyncSessionFactory = sessionmaker(bind=_sync_engine, expire_on_commit=False)
 def _get_sync_session() -> Session:
     """Return a new synchronous SQLAlchemy session."""
     return _SyncSessionFactory()
+
+
+# Keep Contact.sentiment_trend bounded so the JSONB column doesn't grow
+# without limit for long-running customer relationships.
+CONTACT_SENTIMENT_TREND_CAP = 50
+
+
+def update_contact_rollup(contact, insights: Dict[str, Any], created_at) -> None:
+    """Append the latest sentiment_score to a contact's trend and bump counts.
+
+    Used both in the live pipeline and in the backfill script so behavior
+    stays consistent.  Silently skips non-numeric sentiment_score values.
+    """
+    sentiment_score = insights.get("sentiment_score") if insights else None
+    if sentiment_score is not None:
+        try:
+            trend = list(contact.sentiment_trend or [])
+            trend.append(float(sentiment_score))
+            contact.sentiment_trend = trend[-CONTACT_SENTIMENT_TREND_CAP:]
+        except (TypeError, ValueError):
+            logger.warning(
+                "Non-numeric sentiment_score on contact %s: %r",
+                getattr(contact, "id", "?"), sentiment_score,
+            )
+    contact.interaction_count = (contact.interaction_count or 0) + 1
+    contact.last_seen_at = created_at
 
 
 # ── Helper: convert Segment dataclass list → list of dicts ───────────────
@@ -215,6 +249,7 @@ def _run_pipeline(
     """
     from backend.app.models import (
         ActionItem,
+        Contact,
         InteractionScore,
         InteractionSnippet,
         ScorecardTemplate,
@@ -356,6 +391,12 @@ def _run_pipeline(
     interaction.complexity_score = complexity_score
     interaction.analysis_tier = recommended_tier
     interaction.pii_redacted = pii_redacted
+
+    # ── Step 13b: Update contact trend rollup ────────────────────────
+    if interaction.contact_id is not None:
+        contact = session.query(Contact).filter(Contact.id == interaction.contact_id).first()
+        if contact is not None:
+            update_contact_rollup(contact, insights, interaction.created_at)
 
     # ── Step 14: Insert action items ─────────────────────────────────
     for ai_item in insights.get("action_items", []):
@@ -613,5 +654,25 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
         except Exception:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
+    finally:
+        session.close()
+
+
+# ── Scheduled periodic tasks ─────────────────────────────────────────────
+
+
+@celery_app.task(name="tenant_insights_weekly")
+def tenant_insights_weekly() -> Dict[str, Any]:
+    """Weekly rollup of tenant-level insights.
+
+    Writes/updates a ``TenantInsight`` row per tenant for the last 7 days.
+    Triggered by Celery Beat (see ``beat_schedule`` above).
+    """
+    from backend.app.services.tenant_insights_service import rollup_all_tenants_weekly
+
+    session = _get_sync_session()
+    try:
+        processed = rollup_all_tenants_weekly(session)
+        return {"tenants_processed": processed}
     finally:
         session.close()

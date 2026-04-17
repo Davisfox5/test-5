@@ -443,27 +443,199 @@ async function loadContacts() {
 }
 
 /**
- * Load analytics from API.
+ * Load analytics from API.  Fans out across six endpoints and populates
+ * each analytics subsection.  Each section is guarded with a
+ * ``[data-analytics=...]`` attribute; if the container is absent or the
+ * endpoint returns nothing, the existing mock HTML stays untouched.
  */
 async function loadAnalytics() {
-    var data = await apiFetch('/analytics/business');
-    if (!data) return;
-
-    // Update health score gauge
-    if (data.health_score !== undefined) {
+    var business = await apiFetch('/analytics/business');
+    if (business) {
         var gaugeValue = document.querySelector('#analytics .gauge-value');
-        if (gaugeValue) gaugeValue.textContent = Math.round(data.health_score);
+        if (gaugeValue && business.health_score !== undefined) {
+            gaugeValue.textContent = Math.round(business.health_score);
+        }
     }
 
-    // Update stat cards in analytics if they exist
-    if (data.total_interactions !== undefined) {
-        var statValues = document.querySelectorAll('#analytics .stat-value');
-        // The analytics view may have stat cards too
-    }
+    var dashboard = await apiFetch('/analytics/dashboard');
+    if (dashboard) updateDashboardCards(dashboard);
 
-    if (data.avg_sentiment !== undefined) {
-        // Update sentiment display if available
-    }
+    var trendData = await apiFetch('/analytics/trends?period=7d');
+    if (trendData) renderVolumeSentimentChart(trendData);
+
+    var topics = await apiFetch('/analytics/topics?period=30d');
+    if (topics) renderTopicsList(topics);
+
+    var competitive = await apiFetch('/analytics/competitive?period=30d');
+    if (competitive) renderCompetitorTable(competitive);
+
+    var feedback = await apiFetch('/analytics/product-feedback?period=30d');
+    if (feedback) renderFeedbackThemes(feedback);
+
+    var team = await apiFetch('/analytics/team');
+    if (team) renderAgentLeaderboard(team);
+}
+
+/**
+ * Top-of-dashboard stat cards — total interactions, sentiment, action items,
+ * QA score — with trend arrows from ``prev_period_deltas``.
+ */
+function updateDashboardCards(data) {
+    var container = document.querySelector('[data-analytics="stat-cards"]');
+    if (!container) return;
+
+    var deltas = data.prev_period_deltas || {};
+    var cards = [
+        {
+            label: 'Total Interactions',
+            value: (data.total_interactions || 0).toLocaleString(),
+            delta: deltas.total_interactions_pct,
+            suffix: '%'
+        },
+        {
+            label: 'Avg Sentiment',
+            value: data.avg_sentiment_score != null ? data.avg_sentiment_score.toFixed(1) + '/10' : '—',
+            delta: deltas.avg_sentiment_pct,
+            suffix: '%'
+        },
+        {
+            label: 'Open Action Items',
+            value: (data.action_items_open || 0).toLocaleString(),
+            delta: null,
+            suffix: ''
+        },
+        {
+            label: 'Avg QA Score',
+            value: data.avg_qa_score != null ? Math.round(data.avg_qa_score) + '%' : '—',
+            delta: deltas.avg_qa_pct,
+            suffix: '%'
+        }
+    ];
+
+    container.innerHTML = cards.map(function(c) {
+        var arrow = '';
+        if (c.delta != null) {
+            var up = c.delta >= 0;
+            arrow = '<span class="stat-trend ' + (up ? 'up' : 'down') + '">' +
+                (up ? '↑ ' : '↓ ') + Math.abs(c.delta).toFixed(1) + c.suffix + '</span>';
+        }
+        return '<div class="stat-card">' +
+            '<div class="stat-label">' + escapeHtml(c.label) + '</div>' +
+            '<div class="stat-value">' + escapeHtml(c.value) + '</div>' +
+            arrow +
+        '</div>';
+    }).join('');
+}
+
+/**
+ * Dual-axis volume + sentiment chart from /analytics/trends?period=7d.
+ * Collapses per-channel rows into per-date totals.
+ */
+function renderVolumeSentimentChart(points) {
+    var container = document.querySelector('[data-analytics="trend-chart"]');
+    if (!container || !Array.isArray(points) || !points.length) return;
+
+    // Aggregate over channels → one entry per date.
+    var byDate = {};
+    points.forEach(function(p) {
+        var d = byDate[p.date] || { date: p.date, count: 0, sentSum: 0, sentN: 0 };
+        d.count += p.interaction_count || 0;
+        if (p.avg_sentiment != null) {
+            d.sentSum += p.avg_sentiment * (p.interaction_count || 1);
+            d.sentN += (p.interaction_count || 1);
+        }
+        byDate[p.date] = d;
+    });
+    var dates = Object.keys(byDate).sort();
+    var maxCount = Math.max.apply(null, dates.map(function(d) { return byDate[d].count; })) || 1;
+
+    container.innerHTML = dates.map(function(d) {
+        var entry = byDate[d];
+        var barPct = Math.round((entry.count / maxCount) * 100);
+        var sentiment = entry.sentN ? (entry.sentSum / entry.sentN) : null;
+        var dotPct = sentiment != null ? Math.round((sentiment / 10) * 100) : 0;
+        var label = new Date(d).toLocaleDateString('en-US', { weekday: 'short' });
+        return '<div class="trend-col">' +
+            '<div class="trend-bar" style="height:' + barPct + '%"></div>' +
+            (sentiment != null
+                ? '<div class="trend-dot" style="bottom:' + dotPct + '%"></div>'
+                : '') +
+            '<div class="trend-label">' + escapeHtml(label) + '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function renderTopicsList(topics) {
+    var container = document.querySelector('[data-analytics="topics"]');
+    if (!container || !Array.isArray(topics) || !topics.length) return;
+    var max = Math.max.apply(null, topics.map(function(t) { return t.mentions || 0; })) || 1;
+    container.innerHTML = topics.map(function(t) {
+        var pct = Math.round(((t.mentions || 0) / max) * 100);
+        var change = '';
+        if (t.pct_change != null) {
+            var cls = t.pct_change >= 0 ? 'up' : 'down';
+            change = '<span class="topic-change ' + cls + '">' +
+                (t.pct_change >= 0 ? '+' : '') + t.pct_change.toFixed(1) + '%</span>';
+        }
+        return '<div class="topic-row">' +
+            '<div class="topic-name">' + escapeHtml(t.name) + '</div>' +
+            '<div class="topic-bar"><div class="topic-bar-fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="topic-count">' + (t.mentions || 0) + '</div>' +
+            change +
+        '</div>';
+    }).join('');
+}
+
+function renderCompetitorTable(rows) {
+    var container = document.querySelector('[data-analytics="competitors"]');
+    if (!container || !Array.isArray(rows) || !rows.length) return;
+    container.innerHTML = '<table class="competitor-table"><thead><tr>' +
+        '<th>Competitor</th><th>Mentions</th><th>Handled Well</th></tr></thead><tbody>' +
+        rows.map(function(r) {
+            return '<tr>' +
+                '<td>' + escapeHtml(r.competitor) + '</td>' +
+                '<td>' + (r.mentions || 0) + '</td>' +
+                '<td>' + (r.handled_well_pct != null ? r.handled_well_pct.toFixed(0) + '%' : '—') + '</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+}
+
+function renderFeedbackThemes(themes) {
+    var container = document.querySelector('[data-analytics="feedback"]');
+    if (!container || !Array.isArray(themes) || !themes.length) return;
+    container.innerHTML = themes.map(function(t) {
+        var net = (t.positive_count || 0) - (t.negative_count || 0);
+        var sign = net >= 0 ? '+' : '−';
+        var signCls = net >= 0 ? 'positive' : 'negative';
+        var total = (t.positive_count || 0) + (t.negative_count || 0) + (t.neutral_count || 0);
+        return '<div class="feedback-row ' + signCls + '">' +
+            '<span class="feedback-sign">' + sign + '</span>' +
+            '<div class="feedback-theme">' + escapeHtml(t.theme) +
+                (t.sample_quote ? '<div class="feedback-quote">' + escapeHtml(t.sample_quote) + '</div>' : '') +
+            '</div>' +
+            '<span class="feedback-count">' + total + ' mentions</span>' +
+        '</div>';
+    }).join('');
+}
+
+function renderAgentLeaderboard(agents) {
+    var container = document.querySelector('[data-analytics="leaderboard"]');
+    if (!container || !Array.isArray(agents) || !agents.length) return;
+    container.innerHTML = '<table class="leaderboard-table"><thead><tr>' +
+        '<th>#</th><th>Agent</th><th>Calls</th><th>Avg Sentiment</th><th>QA Score</th><th>Churn Flags</th>' +
+        '</tr></thead><tbody>' +
+        agents.map(function(a, i) {
+            return '<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(a.name || '—') + '</td>' +
+                '<td>' + (a.interaction_count || 0) + '</td>' +
+                '<td>' + (a.avg_sentiment != null ? a.avg_sentiment.toFixed(1) : '—') + '</td>' +
+                '<td>' + (a.avg_scorecard_score != null ? Math.round(a.avg_scorecard_score) + '%' : '—') + '</td>' +
+                '<td>' + (a.churn_flags || 0) + '</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
 }
 
 /**
@@ -564,6 +736,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 // Load initial view data
                 loadInteractions();
+                // Populate dashboard stat cards (shared across interactions view)
+                apiFetch('/analytics/dashboard').then(function(d) {
+                    if (d) updateDashboardCards(d);
+                });
             }
         } catch (e) {
             // Not connected — static mode, mock HTML stays

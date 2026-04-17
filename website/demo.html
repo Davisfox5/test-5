@@ -189,7 +189,7 @@
                         <div class="date-picker">Last 30 Days ▾</div>
                     </div>
 
-                    <div class="stats-grid">
+                    <div class="stats-grid" data-analytics="stat-cards">
                         <div class="stat-card">
                             <span class="stat-label">Total Interactions</span>
                             <div class="stat-value-row">
@@ -1018,7 +1018,7 @@
                         <div class="analytics-chart-card">
                             <h3>Call Volume & Sentiment Trends</h3>
                             <div class="trend-chart">
-                                <div class="trend-chart-bars">
+                                <div class="trend-chart-bars" data-analytics="trend-chart">
                                     <div class="trend-bar-group">
                                         <div class="trend-bar" style="--h:55%"></div>
                                         <div class="trend-line-dot" style="--top:35%"></div>
@@ -1067,7 +1067,7 @@
                         <!-- Top Topics -->
                         <div class="insight-card">
                             <h3>Top Topics</h3>
-                            <div class="topics-list">
+                            <div class="topics-list" data-analytics="topics">
                                 <div class="topic-row"><span class="topic-name">Pricing</span><div class="topic-bar"><div class="topic-fill" style="width:85%"></div></div><span class="topic-count">142</span></div>
                                 <div class="topic-row"><span class="topic-name">Integrations</span><div class="topic-bar"><div class="topic-fill" style="width:68%"></div></div><span class="topic-count">114</span></div>
                                 <div class="topic-row"><span class="topic-name">Onboarding</span><div class="topic-bar"><div class="topic-fill" style="width:55%"></div></div><span class="topic-count">92</span></div>
@@ -1080,18 +1080,20 @@
                         <!-- Competitive Mentions -->
                         <div class="insight-card">
                             <h3>Competitive Mentions</h3>
-                            <table class="data-table compact">
-                                <thead>
-                                    <tr>
-                                        <th>Competitor</th>
-                                        <th>Mentions</th>
-                                        <th>Handled Well</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                            <!-- Populated by API -->
-                            </tbody>
-                            </table>
+                            <div data-analytics="competitors">
+                                <table class="data-table compact">
+                                    <thead>
+                                        <tr>
+                                            <th>Competitor</th>
+                                            <th>Mentions</th>
+                                            <th>Handled Well</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Populated by /analytics/competitive -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
@@ -1099,7 +1101,7 @@
                         <!-- Product Feedback Themes -->
                         <div class="insight-card">
                             <h3>Product Feedback Themes</h3>
-                            <div class="feedback-themes">
+                            <div class="feedback-themes" data-analytics="feedback">
                                 <div class="feedback-theme">
                                     <span class="theme-sentiment positive">+</span>
                                     <span class="theme-text">Real-time transcription accuracy praised</span>
@@ -1131,24 +1133,26 @@
                         <!-- Agent Leaderboard -->
                         <div class="insight-card">
                             <h3>Agent Leaderboard</h3>
-                            <table class="data-table compact">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Agent</th>
-                                        <th>Calls</th>
-                                        <th>Avg Sentiment</th>
-                                        <th>QA Score</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr><td>1</td><td class="fw-500">Sarah M.</td><td>148</td><td><span class="sentiment-badge positive">8.9</span></td><td>96%</td></tr>
-                                    <tr><td>2</td><td class="fw-500">Rachel K.</td><td>132</td><td><span class="sentiment-badge positive">8.4</span></td><td>93%</td></tr>
-                                    <tr><td>3</td><td class="fw-500">James T.</td><td>119</td><td><span class="sentiment-badge neutral">7.1</span></td><td>87%</td></tr>
-                                    <tr><td>4</td><td class="fw-500">Emily R.</td><td>104</td><td><span class="sentiment-badge positive">8.0</span></td><td>91%</td></tr>
-                                    <tr><td>5</td><td class="fw-500">Carlos V.</td><td>98</td><td><span class="sentiment-badge positive">7.8</span></td><td>89%</td></tr>
-                                </tbody>
-                            </table>
+                            <div data-analytics="leaderboard">
+                                <table class="data-table compact">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Agent</th>
+                                            <th>Calls</th>
+                                            <th>Avg Sentiment</th>
+                                            <th>QA Score</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr><td>1</td><td class="fw-500">Sarah M.</td><td>148</td><td><span class="sentiment-badge positive">8.9</span></td><td>96%</td></tr>
+                                        <tr><td>2</td><td class="fw-500">Rachel K.</td><td>132</td><td><span class="sentiment-badge positive">8.4</span></td><td>93%</td></tr>
+                                        <tr><td>3</td><td class="fw-500">James T.</td><td>119</td><td><span class="sentiment-badge neutral">7.1</span></td><td>87%</td></tr>
+                                        <tr><td>4</td><td class="fw-500">Emily R.</td><td>104</td><td><span class="sentiment-badge positive">8.0</span></td><td>91%</td></tr>
+                                        <tr><td>5</td><td class="fw-500">Carlos V.</td><td>98</td><td><span class="sentiment-badge positive">7.8</span></td><td>89%</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </section>
