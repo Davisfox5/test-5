@@ -1551,16 +1551,23 @@
                 <h2>Upload Call Recording</h2>
                 <button class="close-modal">&times;</button>
             </div>
-            <div class="upload-area">
+            <div class="upload-area" id="uploadDropZone">
                 <span class="upload-icon">📁</span>
                 <p>Drag and drop your audio file here</p>
                 <span>or</span>
-                <button class="btn btn-outline btn-sm">Browse Files</button>
+                <button class="btn btn-outline btn-sm" id="browseFilesBtn" type="button">Browse Files</button>
                 <p class="upload-hint">Supports MP3, WAV, OGG, WebM (Max 500MB)</p>
+            </div>
+            <input type="file" id="uploadFileInput" accept="audio/*,.mp3,.wav,.ogg,.webm,.m4a" multiple style="display:none">
+            <div class="upload-queue" id="uploadQueue"></div>
+            <div class="upload-actions" id="uploadActions" style="display:none">
+                <button class="btn btn-outline btn-sm" type="button" id="cancelUploadBtn">Cancel</button>
+                <button class="btn btn-primary btn-sm" type="button" id="processUploadBtn">Process Files</button>
             </div>
         </div>
     </div>
 
     <script src="js/demo.js"></script>
+    <script src="js/demo-interactions.js"></script>
 </body>
 </html>

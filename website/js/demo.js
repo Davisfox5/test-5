@@ -1,6 +1,6 @@
 // ======== API CONFIGURATION ========
 let API_CONNECTED = false;
-let API_KEY = localStorage.getItem('callsight-api-key') || 'csk_RZBACFHd64i0dof_k8dp86mzGw58zWeZCRa8_nrMTuw';
+let API_KEY = localStorage.getItem('callsight-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
 
 // Channel icon SVG templates for dynamic row building
 const CHANNEL_ICONS = {
