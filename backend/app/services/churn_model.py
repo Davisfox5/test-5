@@ -33,7 +33,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-MIN_TRAIN_EVENTS = 300  # minimum *observed* cancellations before we activate
+# Below MIN_TRAIN_EVENTS we don't train at all.  Between MIN_TRAIN_EVENTS
+# and RELIABLE_TRAIN_EVENTS we train and serve predictions but tag them
+# as ``status="learning"`` so the UI can render a "still calibrating"
+# caveat.  At or above RELIABLE_TRAIN_EVENTS the status becomes "ok" and
+# the caveat disappears.
+MIN_TRAIN_EVENTS = 150
+RELIABLE_TRAIN_EVENTS = 300
 FEATURES: Tuple[str, ...] = (
     "sentiment_score",
     "churn_risk_llm",
@@ -219,7 +225,7 @@ def fit_cox(data: List[CoxDatum], n_iter: int = 25, lr: float = 0.05) -> CoxMode
 
 @dataclass
 class TrainResult:
-    status: str        # 'ok' | 'insufficient_data'
+    status: str        # 'ok' | 'learning' | 'insufficient_data'
     tenant_id: uuid.UUID
     n_events: int
     n_censored: int
@@ -238,9 +244,13 @@ def train_for_tenant(session: Session, tenant_id: uuid.UUID) -> TrainResult:
         )
     model = fit_cox(data)
     version_label = f"cox-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-    _persist_cox_model(session, tenant_id, version_label, model)
+    # Tag the persisted model with its confidence tier so predict_hazard
+    # can downstream the "still learning" caveat without re-querying
+    # event counts on every scoring call.
+    learning_mode = n_events < RELIABLE_TRAIN_EVENTS
+    _persist_cox_model(session, tenant_id, version_label, model, learning_mode=learning_mode)
     return TrainResult(
-        status="ok",
+        status="learning" if learning_mode else "ok",
         tenant_id=tenant_id,
         n_events=n_events,
         n_censored=model.n_censored,
@@ -253,6 +263,8 @@ def _persist_cox_model(
     tenant_id: uuid.UUID,
     version_label: str,
     model: CoxModel,
+    *,
+    learning_mode: bool = False,
 ) -> None:
     from backend.app.models import ScorerVersion
     from sqlalchemy import and_, update
@@ -272,8 +284,11 @@ def _persist_cox_model(
         tenant_id=tenant_id,
         scorer_name="churn_cox",
         version=version_label,
-        parameters=model.as_dict(),
-        calibration={"fit_type": "cox_partial_likelihood"},
+        parameters={**model.as_dict(), "learning_mode": learning_mode},
+        calibration={
+            "fit_type": "cox_partial_likelihood",
+            "learning_mode": learning_mode,
+        },
         is_active=True,
     )
     session.add(row)
@@ -285,10 +300,11 @@ def _persist_cox_model(
 
 @dataclass
 class HazardPrediction:
-    status: str         # 'ok' | 'insufficient_data'
+    status: str         # 'ok' | 'learning' | 'insufficient_data'
     hazard_ratio: Optional[float]
     probability_90d: Optional[float]
     feature_contributions: Dict[str, float]
+    caveat: Optional[str] = None
 
 
 def load_active_model(session: Session, tenant_id: uuid.UUID) -> Optional[CoxModel]:
@@ -356,9 +372,39 @@ def predict_hazard(
         name: round(beta * val, 4)
         for name, beta, val in zip(model.feature_names, model.coefficients, x_f)
     }
+    learning_mode = bool(_active_model_is_learning(session, tenant_id))
     return HazardPrediction(
-        status="ok",
+        status="learning" if learning_mode else "ok",
         hazard_ratio=round(hazard, 4),
         probability_90d=round(min(0.99, max(0.0, prob_90d)), 4),
         feature_contributions=contributions,
+        caveat=(
+            "Churn model is still calibrating; treat this as directional "
+            "until more data accumulates."
+            if learning_mode else None
+        ),
     )
+
+
+def _active_model_is_learning(session: Session, tenant_id: uuid.UUID) -> bool:
+    """Helper: True when the active Cox model was trained below the reliable
+    threshold.  Reads the ``learning_mode`` flag we stored in
+    ``ScorerVersion.calibration`` at fit time.
+    """
+    from backend.app.models import ScorerVersion
+    from sqlalchemy import desc
+
+    stmt = (
+        select(ScorerVersion)
+        .where(
+            ScorerVersion.tenant_id == tenant_id,
+            ScorerVersion.scorer_name == "churn_cox",
+            ScorerVersion.is_active.is_(True),
+        )
+        .order_by(desc(ScorerVersion.created_at))
+        .limit(1)
+    )
+    row = session.execute(stmt).scalar_one_or_none()
+    if row is None:
+        return False
+    return bool((row.calibration or {}).get("learning_mode"))

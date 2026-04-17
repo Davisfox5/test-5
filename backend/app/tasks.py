@@ -487,8 +487,37 @@ def _run_pipeline(
             tenant_id=tenant.id,
         )
         session.add(features_row)
+    # ── Step 17b: Weak-supervision labels (orthogonal to the LLM guess) ─
+    # Cheap regex LFs produce {cancel_intent, commitment, objection_resolved}
+    # labels stored alongside the LLM structured blob.  The orchestrator
+    # and calibrator treat these as an independent signal, improving
+    # calibration quality without replacing any existing field.
+    from backend.app.services.weak_supervision import label_interaction
+
+    enriched_insights: Dict[str, Any] = dict(insights or {})
+    try:
+        ws_labels = label_interaction(
+            transcript=compressed_text,
+            turns=segments_dicts,
+            llm_churn_signal=enriched_insights.get("churn_risk_signal"),
+        )
+        enriched_insights["weak_supervision"] = {
+            key: {
+                "label": agg.label,
+                "probability": agg.probability,
+                "support": agg.support,
+                "lf_votes": agg.lf_votes,
+            }
+            for key, agg in ws_labels.items()
+        }
+    except Exception:  # noqa: BLE001 — WS must never fail the pipeline
+        logger.exception(
+            "Weak-supervision labeling failed for interaction %s (non-fatal)",
+            interaction_id,
+        )
+
     features_row.deterministic = deterministic_features
-    features_row.llm_structured = insights
+    features_row.llm_structured = enriched_insights
     features_row.scorer_versions = {
         "analysis_tier": recommended_tier,
         "complexity_score": complexity_score,

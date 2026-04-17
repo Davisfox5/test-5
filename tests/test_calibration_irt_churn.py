@@ -17,6 +17,8 @@ from backend.app.services.churn_model import (
     CoxDatum,
     CoxModel,
     FEATURES,
+    MIN_TRAIN_EVENTS,
+    RELIABLE_TRAIN_EVENTS,
     _event_from_outcomes,
     _feature_vector,
     fit_cox,
@@ -152,6 +154,14 @@ def test_fit_cox_returns_finite_coefficients():
     assert model.n_events > 0
     # Positive feature should lean toward positive coefficient (hazard ↑ with x).
     assert model.coefficients[0] > 0 or model.coefficients[0] == 0.0
+
+
+def test_churn_thresholds_order_so_learning_window_exists():
+    # MIN_TRAIN_EVENTS gates training; RELIABLE_TRAIN_EVENTS flips the
+    # caveat off.  A learning window must exist between the two.
+    assert MIN_TRAIN_EVENTS < RELIABLE_TRAIN_EVENTS
+    assert MIN_TRAIN_EVENTS == 150
+    assert RELIABLE_TRAIN_EVENTS == 300
 
 
 def test_cox_model_hazard_is_nonnegative():
