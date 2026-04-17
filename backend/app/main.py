@@ -59,6 +59,9 @@ from backend.app.api.knowledge_base import router as kb_router  # noqa: E402
 from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.profiles import router as profiles_router  # noqa: E402
+from backend.app.api.outcomes import router as outcomes_router  # noqa: E402
+from backend.app.api.corrections import router as corrections_router  # noqa: E402
+from backend.app.api.quality import router as quality_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -72,6 +75,9 @@ app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analy
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(profiles_router, prefix=settings.API_V1_PREFIX, tags=["profiles"])
+app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcomes"])
+app.include_router(corrections_router, prefix=settings.API_V1_PREFIX, tags=["corrections"])
+app.include_router(quality_router, prefix=settings.API_V1_PREFIX, tags=["quality"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 

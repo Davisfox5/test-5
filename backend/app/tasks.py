@@ -56,6 +56,27 @@ celery_app.conf.update(
             "task": "orchestrator_weekly_all_tenants",
             "schedule": crontab(minute=0, hour=5, day_of_week=1),
         },
+        # Proxy-outcome backfill from local signals: 03:30 UTC every day.
+        "outcomes-backfill-daily": {
+            "task": "outcomes_backfill_all_tenants",
+            "schedule": crontab(minute=30, hour=3),
+        },
+        # Calibration refit: 06:00 UTC every Monday (after weekly reflection).
+        "calibration-weekly": {
+            "task": "calibration_fit_all_tenants",
+            "schedule": crontab(minute=0, hour=6, day_of_week=1),
+        },
+        # IRT rubric calibration: 06:30 UTC every Monday.
+        "irt-calibration-weekly": {
+            "task": "irt_fit_all_tenants",
+            "schedule": crontab(minute=30, hour=6, day_of_week=1),
+        },
+        # Churn model training: 07:00 UTC every Monday.  Gates on data
+        # volume internally, so safe to schedule unconditionally.
+        "churn-model-weekly": {
+            "task": "churn_train_all_tenants",
+            "schedule": crontab(minute=0, hour=7, day_of_week=1),
+        },
     },
 )
 
@@ -825,3 +846,104 @@ def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
     finally:
         session.close()
     return {"tenants_processed": len(results)}
+
+
+# ── Outcomes backfill & calibration ──────────────────────────────────────
+
+
+@celery_app.task(name="outcomes_backfill_all_tenants")
+def outcomes_backfill_all_tenants() -> Dict[str, Any]:
+    """Backfill proxy outcomes from internal signals across all tenants."""
+    from backend.app.models import Tenant
+    from backend.app.services.outcomes_backfill import run_all
+
+    session = _get_sync_session()
+    totals: Dict[str, int] = {}
+    tenants_done = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                counts = run_all(session, tenant.id)
+                for k, v in counts.items():
+                    totals[k] = totals.get(k, 0) + v
+                tenants_done += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Outcome backfill failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": tenants_done, "writes": totals}
+
+
+@celery_app.task(name="calibration_fit_all_tenants")
+def calibration_fit_all_tenants() -> Dict[str, Any]:
+    """Refit Platt scaling for every configured scorer, per tenant."""
+    from backend.app.models import Tenant
+    from backend.app.services.calibration import fit_all_scorers
+
+    session = _get_sync_session()
+    activated = 0
+    skipped = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results = fit_all_scorers(session, tenant.id)
+                for r in results:
+                    if r.activated:
+                        activated += 1
+                    else:
+                        skipped += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Calibration failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"activated": activated, "skipped": skipped}
+
+
+@celery_app.task(name="irt_fit_all_tenants")
+def irt_fit_all_tenants() -> Dict[str, Any]:
+    """Weekly IRT fit across every tenant's scorecard templates."""
+    from backend.app.models import Tenant
+    from backend.app.services.irt import fit_all_templates_for_tenant
+
+    session = _get_sync_session()
+    summary: Dict[str, int] = {"templates_fit": 0, "items_fit": 0, "items_retired": 0}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results = fit_all_templates_for_tenant(session, tenant.id)
+                summary["templates_fit"] += len(results)
+                for r in results:
+                    summary["items_fit"] += r.n_items_fitted
+                    summary["items_retired"] += len(r.retired_items)
+            except Exception:  # noqa: BLE001
+                logger.exception("IRT fit failed for tenant %s", tenant.id)
+    finally:
+        session.close()
+    return summary
+
+
+@celery_app.task(name="churn_train_all_tenants")
+def churn_train_all_tenants() -> Dict[str, Any]:
+    """Weekly Cox churn-model training; silently no-ops when data is thin."""
+    from backend.app.models import Tenant
+    from backend.app.services.churn_model import train_for_tenant
+
+    session = _get_sync_session()
+    summary = {"trained": 0, "insufficient_data": 0}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                result = train_for_tenant(session, tenant.id)
+                if result.status == "ok":
+                    summary["trained"] += 1
+                else:
+                    summary["insufficient_data"] += 1
+            except Exception:  # noqa: BLE001
+                logger.exception("Churn training failed for tenant %s", tenant.id)
+    finally:
+        session.close()
+    return summary
