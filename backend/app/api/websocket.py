@@ -1,0 +1,415 @@
+"""WebSocket handlers for live transcription and manager monitoring."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from deepgram import DeepgramClient
+import redis.asyncio as aioredis
+
+from backend.app.config import get_settings
+from backend.app.services.live_coaching import LiveCoachingService
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_redis() -> aioredis.Redis:
+    settings = get_settings()
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+# ---------------------------------------------------------------------------
+# /ws/live/{session_id}  —  Agent live call connection
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/live/{session_id}")
+async def live_transcription(websocket: WebSocket, session_id: str):
+    """Agent connects here to stream audio and receive transcripts + coaching."""
+
+    await websocket.accept()
+    logger.info("Agent WebSocket connected for session %s", session_id)
+
+    settings = get_settings()
+    redis: Optional[aioredis.Redis] = None
+    dg_connection = None
+    coaching_service = LiveCoachingService()
+
+    # Tracking state for coaching triggers.
+    last_coaching_time: float = time.time()
+    words_since_coaching: int = 0
+
+    try:
+        redis = _get_redis()
+
+        # ── Deepgram live transcription setup ────────────────────
+        dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
+
+        dg_options = {
+            "model": "nova-3",
+            "diarize": True,
+            "interim_results": True,
+            "utterance_end_ms": "1000",
+        }
+
+        # TODO: pull keyterms from tenant config when available
+        # if tenant_keyterms:
+        #     dg_options["keywords"] = tenant_keyterms
+
+        dg_connection = dg_client.listen.live.v("1")
+
+        # ── Deepgram event handlers ─────────────────────────────
+
+        async def on_transcript(
+            _self: Any, result: Any, **kwargs: Any
+        ) -> None:
+            """Handle incoming Deepgram transcript events."""
+            nonlocal last_coaching_time, words_since_coaching
+
+            alt = result.channel.alternatives[0] if result.channel.alternatives else None
+            if alt is None or not alt.transcript:
+                return
+
+            text = alt.transcript
+            speaker = None
+            if alt.words:
+                speaker = alt.words[0].speaker
+
+            ts = time.time()
+
+            if result.is_final:
+                payload = {
+                    "type": "final",
+                    "text": text,
+                    "speaker": speaker,
+                    "timestamp": ts,
+                }
+                await _safe_send(websocket, payload)
+
+                # Publish to monitor channel so managers can follow along.
+                if redis is not None:
+                    await redis.publish(
+                        f"live:{session_id}:events",
+                        json.dumps(payload),
+                    )
+
+                # Append to session buffer in Redis.
+                segment = json.dumps({
+                    "text": text,
+                    "speaker": speaker,
+                    "timestamp": ts,
+                })
+                if redis is not None:
+                    await redis.rpush(f"live:{session_id}:buffer", segment)
+
+                words_since_coaching += _word_count(text)
+
+                # ── Coaching trigger ─────────────────────────────
+                elapsed = ts - last_coaching_time
+                if elapsed >= 30 or words_since_coaching >= 200:
+                    await _run_coaching(
+                        websocket,
+                        redis,
+                        session_id,
+                        coaching_service,
+                    )
+                    last_coaching_time = time.time()
+                    words_since_coaching = 0
+            else:
+                # Interim / partial result.
+                payload = {
+                    "type": "partial",
+                    "text": text,
+                    "speaker": speaker,
+                    "timestamp": ts,
+                }
+                await _safe_send(websocket, payload)
+
+        async def on_utterance_end(
+            _self: Any, result: Any, **kwargs: Any
+        ) -> None:
+            """Handle Deepgram utterance-end marker."""
+            nonlocal last_coaching_time, words_since_coaching
+
+            # Utterance end can also trigger coaching if thresholds met.
+            ts = time.time()
+            elapsed = ts - last_coaching_time
+            if elapsed >= 30 or words_since_coaching >= 200:
+                await _run_coaching(
+                    websocket,
+                    redis,
+                    session_id,
+                    coaching_service,
+                )
+                last_coaching_time = time.time()
+                words_since_coaching = 0
+
+        async def on_error(
+            _self: Any, error: Any, **kwargs: Any
+        ) -> None:
+            logger.error("Deepgram error for session %s: %s", session_id, error)
+
+        dg_connection.on("Results", on_transcript)
+        dg_connection.on("UtteranceEnd", on_utterance_end)
+        dg_connection.on("Error", on_error)
+
+        # Start the Deepgram connection.
+        await dg_connection.start(dg_options)
+
+        # ── Main receive loop ────────────────────────────────────
+        while True:
+            data = await websocket.receive()
+
+            if "bytes" in data:
+                # Binary audio chunk — forward to Deepgram.
+                await dg_connection.send(data["bytes"])
+            elif "text" in data:
+                # Text message from agent (e.g., control commands).
+                try:
+                    msg = json.loads(data["text"])
+                    msg_type = msg.get("type")
+                    if msg_type == "ping":
+                        await _safe_send(websocket, {"type": "pong"})
+                except json.JSONDecodeError:
+                    pass
+
+    except WebSocketDisconnect:
+        logger.info("Agent WebSocket disconnected for session %s", session_id)
+    except Exception:
+        logger.exception("Error in live transcription for session %s", session_id)
+    finally:
+        # ── Cleanup ──────────────────────────────────────────────
+        if dg_connection is not None:
+            try:
+                await dg_connection.finish()
+            except Exception:
+                logger.exception("Error closing Deepgram connection for %s", session_id)
+
+        # Dispatch batch analysis from the accumulated buffer.
+        if redis is not None:
+            try:
+                await _dispatch_batch_analysis(redis, session_id)
+            except Exception:
+                logger.exception("Error dispatching batch analysis for %s", session_id)
+            await redis.aclose()
+
+        logger.info("Cleanup complete for session %s", session_id)
+
+
+# ---------------------------------------------------------------------------
+# /ws/monitor/{session_id}  —  Manager monitoring connection
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/monitor/{session_id}")
+async def monitor_session(websocket: WebSocket, session_id: str):
+    """Manager connects here to observe a live session and send whispers."""
+
+    await websocket.accept()
+    logger.info("Monitor WebSocket connected for session %s", session_id)
+
+    redis: Optional[aioredis.Redis] = None
+    pubsub: Optional[aioredis.client.PubSub] = None
+
+    try:
+        redis = _get_redis()
+        pubsub = redis.pubsub()
+        channel = f"live:{session_id}:events"
+        await pubsub.subscribe(channel)
+
+        async def _relay_events() -> None:
+            """Read events from Redis pub/sub and forward to manager WebSocket."""
+            assert pubsub is not None
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    # Forward raw JSON event to the manager.
+                    await _safe_send_raw(websocket, message["data"])
+
+        async def _receive_whispers() -> None:
+            """Receive whisper messages from manager and publish to Redis."""
+            assert redis is not None
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if msg.get("type") == "whisper":
+                        whisper_event = json.dumps({
+                            "type": "whisper",
+                            "from_user_id": msg.get("from_user_id", "manager"),
+                            "message": msg.get("message", ""),
+                        })
+                        # Publish so the agent's live connection can pick it up.
+                        await redis.publish(channel, whisper_event)
+                except json.JSONDecodeError:
+                    pass
+
+        # Run both tasks concurrently; if either ends we tear down.
+        relay_task = asyncio.create_task(_relay_events())
+        whisper_task = asyncio.create_task(_receive_whispers())
+
+        done, pending = await asyncio.wait(
+            [relay_task, whisper_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    except WebSocketDisconnect:
+        logger.info("Monitor WebSocket disconnected for session %s", session_id)
+    except Exception:
+        logger.exception("Error in monitor WebSocket for session %s", session_id)
+    finally:
+        if pubsub is not None:
+            try:
+                await pubsub.unsubscribe()
+                await pubsub.aclose()
+            except Exception:
+                pass
+        if redis is not None:
+            await redis.aclose()
+
+        logger.info("Monitor cleanup complete for session %s", session_id)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+async def _safe_send(ws: WebSocket, payload: dict) -> None:
+    """Send JSON to a WebSocket, swallowing errors if the connection closed."""
+    try:
+        await ws.send_json(payload)
+    except Exception:
+        logger.debug("Failed to send to WebSocket (likely closed)")
+
+
+async def _safe_send_raw(ws: WebSocket, raw: str) -> None:
+    """Send a raw string to a WebSocket, swallowing errors."""
+    try:
+        await ws.send_text(raw)
+    except Exception:
+        logger.debug("Failed to send raw text to WebSocket (likely closed)")
+
+
+async def _run_coaching(
+    websocket: WebSocket,
+    redis: Optional[aioredis.Redis],
+    session_id: str,
+    coaching_service: LiveCoachingService,
+) -> None:
+    """Fetch recent buffer, load coaching state, run incremental coaching."""
+    if redis is None:
+        return
+
+    try:
+        # Load the recent transcript segments from the buffer.
+        raw_segments = await redis.lrange(f"live:{session_id}:buffer", 0, -1)
+        segments: List[dict] = []
+        for raw in raw_segments:
+            try:
+                segments.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+
+        if not segments:
+            return
+
+        # Load previous coaching state.
+        state_raw = await redis.get(f"live:{session_id}:coaching_state")
+        previous_state: dict = {}
+        if state_raw:
+            try:
+                previous_state = json.loads(state_raw)
+            except json.JSONDecodeError:
+                previous_state = {}
+
+        # Use only the most recent segments as "new" (last 20 segments or so).
+        new_segments = segments[-20:]
+
+        result = await coaching_service.hint_incremental(
+            new_segments=new_segments,
+            previous_state=previous_state,
+        )
+
+        # Send each hint to the agent.
+        for hint_obj in result.get("hints", []):
+            coaching_payload = {
+                "type": "coaching",
+                "hint": hint_obj.get("hint", ""),
+                "source_doc_title": hint_obj.get("source_doc_title"),
+                "confidence": hint_obj.get("confidence", 0.0),
+            }
+            await _safe_send(websocket, coaching_payload)
+
+            # Also publish to monitor channel.
+            await redis.publish(
+                f"live:{session_id}:events",
+                json.dumps(coaching_payload),
+            )
+
+        # Persist updated coaching state.
+        updated_state = result.get("updated_state", previous_state)
+        await redis.set(
+            f"live:{session_id}:coaching_state",
+            json.dumps(updated_state, default=str),
+        )
+
+    except Exception:
+        logger.exception("Coaching failed for session %s", session_id)
+
+
+async def _dispatch_batch_analysis(
+    redis: aioredis.Redis,
+    session_id: str,
+) -> None:
+    """Create an interaction record from the buffer and queue batch analysis.
+
+    This is a placeholder — the actual implementation would persist to the DB
+    and enqueue a background task (e.g., Celery / ARQ).
+    """
+    raw_segments = await redis.lrange(f"live:{session_id}:buffer", 0, -1)
+    if not raw_segments:
+        logger.info("No buffer data for session %s, skipping batch analysis", session_id)
+        return
+
+    segments: List[dict] = []
+    for raw in raw_segments:
+        try:
+            segments.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+
+    full_text = " ".join(seg.get("text", "") for seg in segments)
+    logger.info(
+        "Session %s ended with %d segments (%d words). "
+        "Batch analysis dispatch placeholder.",
+        session_id,
+        len(segments),
+        _word_count(full_text),
+    )
+
+    # TODO: create Interaction record in DB, upload audio to S3,
+    #       enqueue ai_analysis task.
+
+    # Clean up Redis keys for this session.
+    await redis.delete(
+        f"live:{session_id}:buffer",
+        f"live:{session_id}:coaching_state",
+    )

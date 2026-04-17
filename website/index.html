@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CallSight AI — Call Transcription & AI Insights Platform</title>
+    <meta name="description" content="Transform every customer call into actionable insights with AI-powered transcription, sentiment analysis, coaching, and automated follow-ups. Built for sales and support teams.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📞</text></svg>">
+</head>
+<body>
+    <!-- ======== NAVIGATION ======== -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-container">
+            <a href="#" class="nav-logo">
+                <div class="logo-icon">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect width="32" height="32" rx="8" fill="url(#logo-grad)"/>
+                        <path d="M10 22V16C10 12.6863 12.6863 10 16 10V10C19.3137 10 22 12.6863 22 16V22" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                        <circle cx="16" cy="16" r="2" fill="white"/>
+                        <path d="M16 18V22" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                        <defs><linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6366F1"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs>
+                    </svg>
+                </div>
+                <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+            </a>
+            <div class="nav-links" id="navLinks">
+                <a href="#features" class="nav-link">Features</a>
+                <a href="#how-it-works" class="nav-link">How It Works</a>
+                <a href="#preview-program" class="nav-link">The Preview</a>
+                <a href="#integrations" class="nav-link">Integrations</a>
+                <a href="demo.html" class="nav-link nav-link-demo">Live Demo</a>
+            </div>
+            <div class="nav-actions">
+                <a href="demo.html" class="btn btn-ghost">Try Demo</a>
+                <a href="#contact" class="btn btn-primary btn-sm">Start Your Preview</a>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- ======== HERO SECTION ======== -->
+    <section class="hero" id="hero">
+        <div class="hero-bg-effects">
+            <div class="hero-orb hero-orb-1"></div>
+            <div class="hero-orb hero-orb-2"></div>
+            <div class="hero-orb hero-orb-3"></div>
+            <div class="hero-grid-overlay"></div>
+        </div>
+        <div class="container hero-container">
+            <div class="hero-content">
+                <div class="hero-badge">
+                    <span class="badge-dot"></span>
+                    <span>Built for white-label partners</span>
+                </div>
+                <h1 class="hero-title">
+                    Turn Every Call Into
+                    <span class="hero-gradient-text">Actionable Intelligence</span>
+                </h1>
+                <p class="hero-subtitle">
+                    AI-powered call transcription, sentiment analysis, and automated coaching for sales and support teams. Never miss an insight again.
+                </p>
+                <div class="hero-ctas">
+                    <a href="#contact" class="btn btn-primary btn-lg">
+                        <span>Start Your 45-Day Preview</span>
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M16 10L11 5M16 10L11 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </a>
+                    <a href="demo.html" class="btn btn-outline btn-lg">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><polygon points="8,5 16,10 8,15" fill="currentColor"/></svg>
+                        <span>Explore Live Demo</span>
+                    </a>
+                </div>
+                <div class="hero-stats">
+                    <div class="hero-stat">
+                        <span class="stat-number" data-target="98.5">0</span><span class="stat-suffix">%</span>
+                        <span class="stat-label">Transcription Accuracy</span>
+                    </div>
+                    <div class="hero-stat-divider"></div>
+                    <div class="hero-stat">
+                        <span class="stat-number" data-target="60">0</span><span class="stat-suffix">s</span>
+                        <span class="stat-label">To First Insight</span>
+                    </div>
+                    <div class="hero-stat-divider"></div>
+                    <div class="hero-stat">
+                        <span class="stat-number" data-target="100">0</span><span class="stat-suffix">%</span>
+                        <span class="stat-label">Call Coverage</span>
+                    </div>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="hero-dashboard-preview">
+                    <div class="preview-header">
+                        <div class="preview-dots"><span></span><span></span><span></span></div>
+                        <span class="preview-title">CallSight AI Dashboard</span>
+                    </div>
+                    <div class="preview-content">
+                        <div class="preview-sidebar">
+                            <div class="preview-nav-item active"><span class="pni-icon">📊</span> Overview</div>
+                            <div class="preview-nav-item"><span class="pni-icon">📞</span> Calls</div>
+                            <div class="preview-nav-item"><span class="pni-icon">📝</span> Transcripts</div>
+                            <div class="preview-nav-item"><span class="pni-icon">💡</span> Insights</div>
+                            <div class="preview-nav-item"><span class="pni-icon">👥</span> Team</div>
+                        </div>
+                        <div class="preview-main">
+                            <div class="preview-kpi-row">
+                                <div class="preview-kpi">
+                                    <span class="kpi-value">247</span>
+                                    <span class="kpi-label">Calls This Week</span>
+                                    <span class="kpi-change positive">+12%</span>
+                                </div>
+                                <div class="preview-kpi">
+                                    <span class="kpi-value">8.4/10</span>
+                                    <span class="kpi-label">Avg Sentiment</span>
+                                    <span class="kpi-change positive">+0.6</span>
+                                </div>
+                                <div class="preview-kpi">
+                                    <span class="kpi-value">38</span>
+                                    <span class="kpi-label">Action Items</span>
+                                    <span class="kpi-change neutral">—</span>
+                                </div>
+                            </div>
+                            <div class="preview-chart">
+                                <div class="chart-title">Call Volume & Sentiment Trend</div>
+                                <div class="chart-bars">
+                                    <div class="chart-bar" style="--h: 60%"><span class="bar-label">Mon</span></div>
+                                    <div class="chart-bar" style="--h: 80%"><span class="bar-label">Tue</span></div>
+                                    <div class="chart-bar" style="--h: 45%"><span class="bar-label">Wed</span></div>
+                                    <div class="chart-bar" style="--h: 90%"><span class="bar-label">Thu</span></div>
+                                    <div class="chart-bar" style="--h: 70%"><span class="bar-label">Fri</span></div>
+                                </div>
+                            </div>
+                            <div class="preview-transcript-snippet">
+                                <div class="snippet-header">
+                                    <span class="snippet-badge live">● Live</span>
+                                    <span>Sales Call — Acme Corp</span>
+                                </div>
+                                <div class="snippet-line">
+                                    <span class="speaker speaker-a">Sarah:</span>
+                                    <span class="snippet-text typing-animation">I'd love to walk you through our enterprise plan...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== TRUSTED BY / LOGOS ======== -->
+    <section class="trust-bar">
+        <div class="container">
+            <p class="trust-label">Integrates with your existing tools</p>
+            <div class="trust-logos">
+                <div class="trust-logo">Twilio</div>
+                <div class="trust-logo">Zoom</div>
+                <div class="trust-logo">Salesforce</div>
+                <div class="trust-logo">HubSpot</div>
+                <div class="trust-logo">Slack</div>
+                <div class="trust-logo">Microsoft Teams</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== FEATURES SECTION ======== -->
+    <section class="features" id="features">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Features</span>
+                <h2 class="section-title">Everything You Need to<br><span class="gradient-text">Master Every Conversation</span></h2>
+                <p class="section-subtitle">From real-time transcription to AI-driven coaching — a complete platform that turns raw calls into revenue.</p>
+            </div>
+            <div class="features-grid">
+                <!-- 1. Omnichannel Intelligence (large) -->
+                <div class="feature-card feature-card-large" id="feature-omnichannel">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Omnichannel Intelligence</h3>
+                    <p class="feature-desc">Analyze every customer touchpoint — calls, SMS, email, chat, WhatsApp — in one unified pipeline. No channel left behind.</p>
+                    <div class="feature-visual">
+                        <div style="display:flex;gap:1.5rem;padding:1.5rem;align-items:center;flex-wrap:wrap;justify-content:center;">
+                            <span style="font-size:2rem;">📞</span>
+                            <span style="font-size:2rem;">💬</span>
+                            <span style="font-size:2rem;">📧</span>
+                            <span style="font-size:2rem;">💻</span>
+                            <span style="font-size:2rem;">📱</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- 2. Real-Time Transcription -->
+                <div class="feature-card" id="feature-transcription">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Real-Time Transcription</h3>
+                    <p class="feature-desc">Powered by Deepgram Nova-3 with Whisper large-v3 fallback. Get 98.5% accurate transcriptions with speaker diarization as the call happens.</p>
+                </div>
+                <!-- 3. AI-Powered Insights -->
+                <div class="feature-card" id="feature-ai-insights">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-purple">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">AI-Powered Insights</h3>
+                    <p class="feature-desc">Claude AI generates summaries, next steps, follow-up emails, and coaching tips from every call.</p>
+                </div>
+                <!-- 4. Sentiment Analysis -->
+                <div class="feature-card" id="feature-sentiment">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-emerald">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" x2="9.01" y1="9" y2="9"/><line x1="15" x2="15.01" y1="9" y2="9"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Sentiment Analysis</h3>
+                    <p class="feature-desc">Track customer mood in real-time. Get per-segment and overall sentiment scores to identify key moments.</p>
+                </div>
+                <!-- 5. Auto Action Items -->
+                <div class="feature-card" id="feature-action-items">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-amber">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Auto Action Items</h3>
+                    <p class="feature-desc">AI extracts follow-ups, commitments, and next steps. Assigns them to reps with priorities and due dates.</p>
+                </div>
+                <!-- 6. Live Agent Coaching (NEW) -->
+                <div class="feature-card" id="feature-live-coaching">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-rose">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Live Agent Coaching</h3>
+                    <p class="feature-desc">Real-time coaching hints during active calls. Knowledge base search, compliance tracking, and manager whisper — all streamed live to the agent.</p>
+                </div>
+                <!-- 7. Call Scorecards & QA (NEW) -->
+                <div class="feature-card" id="feature-scorecards">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-cyan">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><line x1="9" x2="15" y1="12" y2="12"/><line x1="9" x2="13" y1="16" y2="16"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Call Scorecards & QA</h3>
+                    <p class="feature-desc">Define custom scoring rubrics. AI evaluates 100% of interactions against your criteria with per-criterion scores and reasoning.</p>
+                </div>
+                <!-- 8. Call Library (NEW) -->
+                <div class="feature-card" id="feature-call-library">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-purple">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Call Library</h3>
+                    <p class="feature-desc">AI auto-curates a library of exemplary and improvement moments. Best practices surface automatically from your top performers.</p>
+                </div>
+                <!-- 9. Call Metrics (NEW) -->
+                <div class="feature-card" id="feature-call-metrics">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-emerald">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Call Metrics</h3>
+                    <p class="feature-desc">Talk/listen ratio, filler word tracking, speech rate, interruptions, and monologue detection. Zero AI cost — computed from transcripts.</p>
+                </div>
+                <!-- 10. Full-Text Search (NEW) -->
+                <div class="feature-card" id="feature-search">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-amber">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Full-Text Search</h3>
+                    <p class="feature-desc">Search across every transcript, every channel, every agent. Find that one conversation where a customer mentioned a competitor.</p>
+                </div>
+                <!-- 11. Predictive Analytics (NEW) -->
+                <div class="feature-card" id="feature-predictive">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-rose">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Predictive Analytics</h3>
+                    <p class="feature-desc">Churn risk, upsell signals, escalation prediction, and agent burnout detection. AI flags what's coming before it happens.</p>
+                </div>
+                <!-- 12. Contact Intelligence (NEW) -->
+                <div class="feature-card" id="feature-contact-intel">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-cyan">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">Contact Intelligence</h3>
+                    <p class="feature-desc">Phone number matching, mid-call name recognition, CRM sync, and optional enrichment via People Data Labs and Apollo.</p>
+                </div>
+                <!-- 13. White-Label Ready (large) -->
+                <div class="feature-card feature-card-large" id="feature-whitelabel">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-cyan">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">White-Label Ready</h3>
+                    <p class="feature-desc">Deploy under your own brand. Custom logos, colors, domains, and embeddable widgets. Your clients will never know it's us.</p>
+                    <div class="feature-visual whitelabel-preview">
+                        <div class="wl-brand wl-brand-1"><span class="wl-dot" style="background:#6366F1"></span> Vertex CX Intelligence</div>
+                        <div class="wl-brand wl-brand-2"><span class="wl-dot" style="background:#EC4899"></span> PulseVoice Pro</div>
+                        <div class="wl-brand wl-brand-3"><span class="wl-dot" style="background:#10B981"></span> Meridian Analytics</div>
+                    </div>
+                </div>
+                <!-- 14. API-First Architecture (large, NEW) -->
+                <div class="feature-card feature-card-large" id="feature-api">
+                    <div class="feature-icon-wrap">
+                        <div class="feature-icon icon-amber">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        </div>
+                    </div>
+                    <h3 class="feature-title">API-First Architecture</h3>
+                    <p class="feature-desc">Full read/write REST API for every data object. Webhooks for every event. Built for MSPs who integrate, not just dashboards.</p>
+                    <div class="feature-visual">
+                        <div style="padding:1.5rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--accent-emerald);line-height:1.8;text-align:left;width:100%;">
+                            <span style="color:var(--text-muted);">GET</span> /api/v1/calls<br>
+                            <span style="color:var(--text-muted);">POST</span> /api/v1/webhooks<br>
+                            <span style="color:var(--text-muted);">GET</span> /api/v1/transcripts/:id<br>
+                            <span style="color:var(--text-muted);">GET</span> /api/v1/insights/sentiment
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== HOW IT WORKS ======== -->
+    <section class="how-it-works" id="how-it-works">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">How It Works</span>
+                <h2 class="section-title">From Call to Insight in<br><span class="gradient-text">Under 60 Seconds</span></h2>
+                <p class="section-subtitle">A seamless pipeline that captures, transcribes, analyzes, and delivers — automatically.</p>
+            </div>
+            <div class="steps-timeline">
+                <div class="step" id="step-1">
+                    <div class="step-number">01</div>
+                    <div class="step-content">
+                        <h3>Capture</h3>
+                        <p>Connect your phone system, upload recordings, or use our webhooks for Twilio, Zoom, and more. We handle any audio format.</p>
+                    </div>
+                    <div class="step-visual">
+                        <div class="step-icon-large">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="step-connector"><div class="connector-line"></div></div>
+                <div class="step" id="step-2">
+                    <div class="step-number">02</div>
+                    <div class="step-content">
+                        <h3>Transcribe</h3>
+                        <p>Our AI engine transcribes with 98.5% accuracy. Speaker diarization labels who said what. Supports 50+ languages.</p>
+                    </div>
+                    <div class="step-visual">
+                        <div class="step-icon-large">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="step-connector"><div class="connector-line"></div></div>
+                <div class="step" id="step-3">
+                    <div class="step-number">03</div>
+                    <div class="step-content">
+                        <h3>Analyze</h3>
+                        <p>Claude AI extracts summaries, sentiment, action items, coaching insights, and drafts follow-up emails automatically.</p>
+                    </div>
+                    <div class="step-visual">
+                        <div class="step-icon-large">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/></svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="step-connector"><div class="connector-line"></div></div>
+                <div class="step" id="step-4">
+                    <div class="step-number">04</div>
+                    <div class="step-content">
+                        <h3>Deliver</h3>
+                        <p>Push insights to Salesforce, HubSpot, Slack, or email. Your team gets what they need, where they already work.</p>
+                    </div>
+                    <div class="step-visual">
+                        <div class="step-icon-large">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 16 12 14 15 10 9 8 12 2 12"/></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== INTEGRATIONS ======== -->
+    <section class="integrations" id="integrations">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Integrations</span>
+                <h2 class="section-title">Plugs Into Your<br><span class="gradient-text">Existing Workflow</span></h2>
+                <p class="section-subtitle">Connect with the tools your team already uses. No workflow disruption.</p>
+            </div>
+            <div class="integrations-grouped">
+                <!-- Telephony -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Telephony</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">📡</div>
+                            <span>Telnyx</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📱</div>
+                            <span>Twilio</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📶</div>
+                            <span>SignalWire</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Meetings -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Meetings</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">📹</div>
+                            <span>Zoom</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">🎥</div>
+                            <span>Google Meet</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">👥</div>
+                            <span>Microsoft Teams</span>
+                            <small class="integration-note">via Recall.ai</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CRM -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">CRM</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">☁️</div>
+                            <span>Salesforce</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">🔶</div>
+                            <span>HubSpot</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">🔵</div>
+                            <span>Pipedrive</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Communication -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Communication</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">📧</div>
+                            <span>Gmail</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📨</div>
+                            <span>Outlook</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">💬</div>
+                            <span>Slack</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">👥</div>
+                            <span>Microsoft Teams</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📲</div>
+                            <span>WhatsApp</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Knowledge Base -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Knowledge Base</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">📘</div>
+                            <span>Confluence</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📝</div>
+                            <span>Notion</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📂</div>
+                            <span>Google Drive</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scheduling -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Scheduling</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">📅</div>
+                            <span>Google Calendar</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">🗓️</div>
+                            <span>Outlook Calendar</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">⏰</div>
+                            <span>Cal.com</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VoIP/PBX -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">VoIP / PBX</h4>
+                    <div class="integrations-grid">
+                        <div class="integration-card">
+                            <div class="integration-icon">🌐</div>
+                            <span>NetSapiens</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">📞</div>
+                            <span>SimpleVoIP</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon">🔧</div>
+                            <span>FreeSWITCH</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== PREVIEW PROGRAM ======== -->
+    <section class="preview-program" id="preview-program">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">The Preview Program</span>
+                <h2 class="section-title">We Prove It Works<br><span class="gradient-text">Before You Pay Anything</span></h2>
+                <p class="section-subtitle">No generic demos. No black-box promises. We build a custom service tuned to your operation, test it against your real data, and integrate it into your systems — then you decide.</p>
+            </div>
+            <div class="preview-timeline">
+                <div class="preview-phase">
+                    <div class="phase-marker">
+                        <div class="phase-number">01</div>
+                        <div class="phase-line"></div>
+                    </div>
+                    <div class="phase-content">
+                        <h3 class="phase-title">Discovery</h3>
+                        <p class="phase-desc">We conduct structured interviews with your team and audit your existing call systems, CRM workflows, and data formats. We define success metrics together before a single line of code is written.</p>
+                        <div class="phase-tags">
+                            <span class="phase-tag">Stakeholder interviews</span>
+                            <span class="phase-tag">Systems audit</span>
+                            <span class="phase-tag">Success metrics</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="preview-phase">
+                    <div class="phase-marker">
+                        <div class="phase-number">02</div>
+                        <div class="phase-line"></div>
+                    </div>
+                    <div class="phase-content">
+                        <h3 class="phase-title">Custom Build</h3>
+                        <p class="phase-desc">We build a call intelligence service tuned specifically to your industry, terminology, and team structure. Transcription models, AI prompts, action item logic, and dashboards are all configured around your findings — not a generic template.</p>
+                        <div class="phase-tags">
+                            <span class="phase-tag">Custom AI tuning</span>
+                            <span class="phase-tag">Branded dashboard</span>
+                            <span class="phase-tag">Workflow-specific logic</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="preview-phase">
+                    <div class="phase-marker">
+                        <div class="phase-number">03</div>
+                        <div class="phase-line"></div>
+                    </div>
+                    <div class="phase-content">
+                        <h3 class="phase-title">Proof of Concept</h3>
+                        <p class="phase-desc">We run your real call data through the system. You see actual transcripts, actual sentiment scores, actual action items — extracted from your own conversations. Structured feedback sessions follow immediately.</p>
+                        <div class="phase-tags">
+                            <span class="phase-tag">Real call data</span>
+                            <span class="phase-tag">Live dashboard access</span>
+                            <span class="phase-tag">Structured feedback</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="preview-phase">
+                    <div class="phase-marker">
+                        <div class="phase-number">04</div>
+                        <div class="phase-line"></div>
+                    </div>
+                    <div class="phase-content">
+                        <h3 class="phase-title">Integration & Live Trial</h3>
+                        <p class="phase-desc">We build the API integration layer into your existing systems so the platform operates natively within your stack. You run a full two-week live trial — we monitor system data and gather ongoing feedback to keep refining the service in real time.</p>
+                        <div class="phase-tags">
+                            <span class="phase-tag">API integration layer</span>
+                            <span class="phase-tag">2-week live trial</span>
+                            <span class="phase-tag">Continuous refinement</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="preview-phase preview-phase-final">
+                    <div class="phase-marker">
+                        <div class="phase-number">05</div>
+                    </div>
+                    <div class="phase-content">
+                        <h3 class="phase-title">You Decide</h3>
+                        <p class="phase-desc">We present the full software and a custom pricing proposal based on your actual usage and integration scope. At that point, you have 45 days of real results in hand. You accept the deal, or you don't — no pressure, no lock-in.</p>
+                        <div class="phase-tags">
+                            <span class="phase-tag">Full software presentation</span>
+                            <span class="phase-tag">Custom pricing proposal</span>
+                            <span class="phase-tag">No obligation</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="preview-cta-bar">
+                <div class="preview-cta-text">
+                    <strong>Ready to see what your calls are actually telling you?</strong>
+                    <span>Applications are reviewed individually. We take a limited number of preview partners at a time.</span>
+                </div>
+                <a href="#contact" class="btn btn-primary btn-lg">Apply for a Preview</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== SECURITY SECTION ======== -->
+    <section class="security" id="security">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Security & Compliance</span>
+                <h2 class="section-title">Built for<br><span class="gradient-text">Enterprise Security</span></h2>
+            </div>
+            <div class="security-grid">
+                <div class="security-item">
+                    <div class="security-icon">🔒</div>
+                    <h4>SOC 2 Ready</h4>
+                    <p>Designed to meet SOC 2 Type II controls for security, availability & confidentiality.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon">🛡️</div>
+                    <h4>AES-256 Encryption</h4>
+                    <p>All data encrypted at rest and in transit with TLS 1.3.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon">🇪🇺</div>
+                    <h4>GDPR-Ready Architecture</h4>
+                    <p>Full data export, right-to-deletion, and data processing agreements available.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon">🔑</div>
+                    <h4>SSO & MFA</h4>
+                    <p>OAuth2/OIDC, scoped API keys, and multi-factor authentication.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== CTA / CONTACT ======== -->
+    <section class="cta-section" id="contact">
+        <div class="container">
+            <div class="cta-card">
+                <div class="cta-content">
+                    <h2>Apply for the 45-Day Preview</h2>
+                    <p>Tell us about your operation. We'll review your application and reach out within 2 business days.</p>
+                    <form class="cta-form" id="contactForm">
+                        <div class="form-row">
+                            <input type="text" placeholder="Your name" class="form-input" id="contactName" required>
+                            <input type="email" placeholder="Work email" class="form-input" id="contactEmail" required>
+                        </div>
+                        <div class="form-row">
+                            <input type="text" placeholder="Company name" class="form-input" id="contactCompany">
+                            <select class="form-input" id="contactTeamSize">
+                                <option value="">Call volume (per month)</option>
+                                <option>Under 500 calls</option>
+                                <option>500–2,000 calls</option>
+                                <option>2,000–10,000 calls</option>
+                                <option>10,000+ calls</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-lg btn-block">
+                            Apply for a Preview
+                        </button>
+                    </form>
+                    <p class="cta-fine-print">No commitment • No upfront cost • Limited spots available</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ======== FOOTER ======== -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <a href="#" class="nav-logo">
+                        <div class="logo-icon">
+                            <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+                                <rect width="32" height="32" rx="8" fill="url(#logo-grad2)"/>
+                                <path d="M10 22V16C10 12.6863 12.6863 10 16 10V10C19.3137 10 22 12.6863 22 16V22" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                                <circle cx="16" cy="16" r="2" fill="white"/>
+                                <path d="M16 18V22" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                                <defs><linearGradient id="logo-grad2" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6366F1"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs>
+                            </svg>
+                        </div>
+                        <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+                    </a>
+                    <p class="footer-desc">AI-powered call intelligence for modern sales and support teams.</p>
+                </div>
+                <div class="footer-links">
+                    <h4>Product</h4>
+                    <a href="#features">Features</a>
+                    <a href="#preview-program">The Preview</a>
+                    <a href="demo.html">Live Demo</a>
+                    <a href="#integrations">Integrations</a>
+                </div>
+                <div class="footer-links">
+                    <h4>Company</h4>
+                    <a href="#">About</a>
+                    <a href="#">Blog</a>
+                    <a href="#">Careers</a>
+                    <a href="#contact">Contact</a>
+                </div>
+                <div class="footer-links">
+                    <h4>Legal</h4>
+                    <a href="#">Privacy Policy</a>
+                    <a href="#">Terms of Service</a>
+                    <a href="#">Security</a>
+                    <a href="#">GDPR</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 CallSight AI. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>
