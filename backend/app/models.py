@@ -68,6 +68,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, default="agent")
+    manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -388,3 +391,187 @@ class TenantInsight(Base):
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# SCORING & ORCHESTRATOR (see docs/SCORING_ARCHITECTURE.md)
+# ──────────────────────────────────────────────────────────
+
+
+class InteractionFeatures(Base):
+    """Canonical per-interaction feature store.
+
+    Everything computed from the transcript — deterministic metrics,
+    parsed LLM output, proxy-outcome events — lives here.  Scoring and
+    orchestrator code reads only from this row, never from the raw
+    ``interactions.insights`` blob.
+    """
+
+    __tablename__ = "interaction_features"
+
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interactions.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    deterministic: Mapped[dict] = mapped_column(JSONB, default=dict)
+    llm_structured: Mapped[dict] = mapped_column(JSONB, default=dict)
+    embeddings_ref: Mapped[Optional[str]] = mapped_column(Text)
+    proxy_outcomes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    scorer_versions: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaReport(Base):
+    """Per-interaction structured delta consumed by the orchestrator."""
+
+    __tablename__ = "delta_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    scopes: Mapped[list] = mapped_column(JSONB, default=list)
+    delta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class _ProfileBase:
+    """Shared columns for all four profile tables.
+
+    Each profile version is append-only; latest version per entity is
+    the working truth.  ``source_event`` links back to the delta or
+    reflection that produced this version for audit.
+    """
+
+    version: Mapped[int]
+    profile: Mapped[dict]
+    top_factors: Mapped[list]
+    source_event: Mapped[dict]
+    confidence: Mapped[Optional[float]]
+    created_at: Mapped[datetime]
+
+
+class ClientProfile(Base):
+    __tablename__ = "client_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("contacts.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ManagerProfile(Base):
+    __tablename__ = "manager_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    manager_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class BusinessProfile(Base):
+    """Tenant-level rollup profile (the 'business' is the tenant firm)."""
+
+    __tablename__ = "business_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    business_tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScorerVersion(Base):
+    """A named calibration/weight snapshot for one scorer.
+
+    ``tenant_id`` NULL denotes the global default; per-tenant overrides
+    appear with that tenant's id.  Only one ``is_active`` row is
+    permitted per ``(tenant_id, scorer_name)``.
+    """
+
+    __tablename__ = "scorer_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    scorer_name: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    parameters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    calibration: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ece: Mapped[Optional[float]] = mapped_column(Float)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CorrectionEvent(Base):
+    """Active-learning correction submitted by a user.
+
+    Each row represents one human correction of a scorer's output.  The
+    events grow the golden evaluation set organically and feed back into
+    the weekly recalibration pass.
+    """
+
+    __tablename__ = "correction_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[Optional[str]] = mapped_column(String)
+    original: Mapped[dict] = mapped_column(JSONB, default=dict)
+    correction: Mapped[dict] = mapped_column(JSONB, default=dict)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
