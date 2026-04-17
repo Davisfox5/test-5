@@ -1,0 +1,429 @@
+[pytest logs]
+
+==================================== ERRORS ====================================
+____________ ERROR collecting tests/test_pipeline_contact_update.py ____________
+ImportError while importing test module '/home/runner/work/test-5/test-5/tests/test_pipeline_contact_update.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/hostedtoolcache/Python/3.9.25/x64/lib/python3.9/importlib/__init__.py:127: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+tests/test_pipeline_contact_update.py:10: in <module>
+    from backend.app.tasks import (
+backend/app/tasks.py:15: in <module>
+    from celery import Celery
+E   ModuleNotFoundError: No module named 'celery'
+=========================== short test summary info ============================
+ERROR tests/test_pipeline_contact_update.py
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 error in 0.09s
+\n[APP.PY CODE BELOW]:
+Your request is quite broad and requires a lot of work. However, I can provide you with a basic setup for a React app that you can build upon. 
+
+```jsx
+import React from 'react';
+import ReactDOM from 'react-dom';
+import './index.css';
+
+class App extends React.Component {
+    render() {
+        return (
+            <div>
+                <h1>Hello, world!</h1>
+            </div>
+        );
+    }
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+```
+
+This is a very basic setup for a React app. You can add more components and functionalities as per your requirements.
+
+As for the cost estimate for hosting on AWS or Azure, it's hard to provide an accurate estimate without knowing the specifics of your app such as the expected traffic, the region where you want to host your app, the services you want to use, etc. 
+
+However, for a basic setup, you can use AWS's free tier which offers certain services for free for 12 months. After that, the cost can range from $5 to $100 per month depending on your usage. 
+
+For Azure, the cost can range from $13 per month for a basic B1S instance to $280 per month for a standard D2V3 instance. Again, this is a rough estimate and the actual cost can vary based on your usage and the services you choose.
+
+I would recommend using the AWS or Azure pricing calculator to get a more accurate estimate based on your specific requirements.\n[TEST FILE: tests/conftest.py]:
+"""Shared pytest fixtures and path setup for the test suite."""
+
+import os
+import sys
+
+# Add project root so ``backend.*`` imports work when pytest is invoked
+# from anywhere (e.g. ``pytest tests/``).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# Stub the envvars that ``backend.app.config`` requires at import time so
+# tests don't need a real .env file.  These values are never used by the
+# pure-logic tests; endpoint tests mock the DB / Claude clients directly.
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/test")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-stub")
+os.environ.setdefault("JWT_SECRET", "test-secret")
+\n[TEST FILE: tests/test_analytics_schemas.py]:
+"""Smoke tests for Pydantic response models in analytics.py.
+
+These don't hit the DB — they ensure the response contract (field names,
+types, required vs optional) stays stable so the frontend code in
+``website/js/demo.js`` keeps working.
+"""
+
+import uuid
+
+import pytest
+
+
+def test_business_health_accepts_full_payload():
+    from backend.app.api.analytics import BusinessHealth
+
+    payload = BusinessHealth(
+        health_score=75.0,
+        total_interactions=42,
+        avg_sentiment=7.5,
+        channels_breakdown=[
+            {"channel": "voice", "count": 30, "avg_sentiment": 7.8},
+            {"channel": "email", "count": 12, "avg_sentiment": 6.9},
+        ],
+        top_topics=[
+            {"name": "pricing", "mentions": 30, "avg_relevance": 0.8},
+            {"name": "onboarding", "mentions": 12},
+        ],
+    )
+    assert payload.health_score == 75.0
+    assert payload.top_topics[0].name == "pricing"
+    assert payload.channels_breakdown[0].avg_sentiment == 7.8
+
+
+def test_dashboard_summary_deltas_can_be_null():
+    from backend.app.api.analytics import DashboardSummary
+
+    payload = DashboardSummary(
+        total_interactions=100,
+        avg_sentiment_score=7.0,
+        action_items_open=15,
+        avg_qa_score=None,
+        prev_period_deltas={
+            "total_interactions_pct": 12.5,
+            "avg_sentiment_pct": None,
+            "avg_qa_pct": None,
+        },
+    )
+    assert payload.avg_qa_score is None
+    assert payload.prev_period_deltas["avg_sentiment_pct"] is None
+
+
+def test_competitor_row_pct_is_float():
+    from backend.app.api.analytics import CompetitorRow
+
+    payload = CompetitorRow(
+        competitor="BasicCall",
+        mentions=5,
+        handled_well=3,
+        handled_well_pct=60.0,
+    )
+    assert payload.handled_well_pct == 60.0
+
+
+def test_client_trends_exposes_both_numeric_and_categorical_churn():
+    from backend.app.api.analytics import ClientTrends
+
+    payload = ClientTrends(
+        contact_id=uuid.uuid4(),
+        sentiment_over_time=[{"date": "2026-04-17", "avg_sentiment": 7.5}],
+        interaction_history=[],
+        churn_risk=0.42,
+        churn_risk_signal="medium",
+    )
+    assert payload.churn_risk == 0.42
+    assert payload.churn_risk_signal == "medium"
+
+
+def test_signal_buckets_defaults_all_keys_present():
+    from backend.app.api.analytics import SignalBuckets
+
+    payload = SignalBuckets(
+        churn={"high": 1, "medium": 2, "low": 3, "none": 4},
+        upsell={"high": 0, "medium": 0, "low": 0, "none": 10},
+        avg_churn_risk=0.3,
+        avg_upsell_score=None,
+        by_channel=[{"channel": "voice", "churn_flags": 1, "upsell_flags": 0, "total": 5}],
+    )
+    assert sum(payload.churn.values()) == 10
+    assert payload.avg_upsell_score is None
+\n[TEST FILE: tests/test_backfill_ai_trends.py]:
+"""Tests for helpers in ``backend.backfill_ai_trends``."""
+
+import pytest
+
+
+def test_bucket_to_float_maps_signals_to_midpoints():
+    from backend.backfill_ai_trends import _bucket_to_float
+
+    assert _bucket_to_float("high") == 0.85
+    assert _bucket_to_float("medium") == 0.55
+    assert _bucket_to_float("low") == 0.25
+    assert _bucket_to_float("none") == 0.05
+
+
+def test_bucket_to_float_is_case_insensitive():
+    from backend.backfill_ai_trends import _bucket_to_float
+
+    assert _bucket_to_float("HIGH") == 0.85
+    assert _bucket_to_float("High") == 0.85
+
+
+def test_bucket_to_float_returns_none_for_missing_or_unknown():
+    from backend.backfill_ai_trends import _bucket_to_float
+
+    assert _bucket_to_float(None) is None
+    assert _bucket_to_float("") is None
+    assert _bucket_to_float("unknown") is None
+
+
+def test_numeric_signals_pass_skips_insights_already_populated():
+    """If both numeric fields are present we don't overwrite them."""
+    from backend.backfill_ai_trends import _bucket_to_float
+
+    # Representative example — the pass only infers when a numeric value
+    # is missing; this helper confirms the precondition holds.
+    insights = {"churn_risk_signal": "high", "churn_risk": 0.91}
+    # Real pass: `if "churn_risk" not in insights or insights["churn_risk"] is None`
+    assert "churn_risk" in insights and insights["churn_risk"] is not None
+    # Inferred value from the signal is different, confirming we would clobber:
+    assert _bucket_to_float(insights["churn_risk_signal"]) == 0.85
+\n[TEST FILE: tests/test_basic.py]:
+def test_always_passes():
+    """Guaranteed test so Pytest won't complain 'no tests ran'."""
+    assert True
+\n[TEST FILE: tests/test_pipeline_contact_update.py]:
+"""Unit tests for ``update_contact_rollup`` — the Step 13b helper that
+wires per-interaction AI insights into contact-level trend fields.
+"""
+
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from backend.app.tasks import (
+    CONTACT_SENTIMENT_TREND_CAP,
+    update_contact_rollup,
+)
+
+
+def _contact(trend=None, count=0, last_seen=None):
+    return SimpleNamespace(
+        id="c-1",
+        sentiment_trend=trend or [],
+        interaction_count=count,
+        last_seen_at=last_seen,
+    )
+
+
+def test_appends_sentiment_score_and_bumps_count():
+    contact = _contact(trend=[6.0], count=2)
+    when = datetime(2026, 4, 17, 10, 0)
+    update_contact_rollup(contact, {"sentiment_score": 7.5}, when)
+
+    assert contact.sentiment_trend == [6.0, 7.5]
+    assert contact.interaction_count == 3
+    assert contact.last_seen_at == when
+
+
+def test_handles_missing_sentiment_score():
+    contact = _contact(trend=[5.0], count=1)
+    when = datetime(2026, 4, 17, 10, 0)
+    update_contact_rollup(contact, {}, when)
+
+    assert contact.sentiment_trend == [5.0]  # unchanged
+    assert contact.interaction_count == 2
+    assert contact.last_seen_at == when
+
+
+def test_caps_trend_at_50_entries():
+    contact = _contact(trend=list(range(60)), count=60)
+    when = datetime(2026, 4, 17, 10, 0)
+    update_contact_rollup(contact, {"sentiment_score": 9.0}, when)
+
+    assert len(contact.sentiment_trend) == CONTACT_SENTIMENT_TREND_CAP
+    # FIFO: oldest entries dropped, newest kept at tail.
+    assert contact.sentiment_trend[-1] == 9.0
+    assert contact.sentiment_trend[0] > 0  # oldest zero-entries were dropped
+
+
+def test_tolerates_non_numeric_sentiment_score():
+    contact = _contact(trend=[3.0], count=1)
+    when = datetime(2026, 4, 17, 10, 0)
+    update_contact_rollup(contact, {"sentiment_score": "not-a-number"}, when)
+
+    assert contact.sentiment_trend == [3.0]  # unchanged — bad value skipped
+    assert contact.interaction_count == 2  # but count still bumps
+    assert contact.last_seen_at == when
+
+
+def test_handles_null_existing_trend():
+    contact = _contact(trend=None, count=0)
+    when = datetime(2026, 4, 17, 10, 0)
+    update_contact_rollup(contact, {"sentiment_score": 8.0}, when)
+
+    assert contact.sentiment_trend == [8.0]
+    assert contact.interaction_count == 1
+
+
+def test_last_seen_advances_on_each_call():
+    contact = _contact()
+    t1 = datetime(2026, 4, 17, 10, 0)
+    t2 = t1 + timedelta(hours=3)
+
+    update_contact_rollup(contact, {"sentiment_score": 6.0}, t1)
+    update_contact_rollup(contact, {"sentiment_score": 7.0}, t2)
+
+    assert contact.last_seen_at == t2
+    assert contact.sentiment_trend == [6.0, 7.0]
+    assert contact.interaction_count == 2
+\n[TEST FILE: tests/test_tenant_insights_service.py]:
+"""Tests for ``backend.app.services.tenant_insights_service``.
+
+These tests mock ``Session.execute`` and return canned row lists for each
+SQL query so we can assert the aggregation function builds the expected
+JSON document shape without needing a real Postgres instance.
+"""
+
+from datetime import date
+from types import SimpleNamespace
+
+import pytest
+
+
+def _row(*values):
+    """Build a tuple-like row that supports both index and iteration."""
+    return tuple(values)
+
+
+def _result(rows):
+    """Mimic SQLAlchemy Result.fetchone / fetchall on a list of tuples."""
+    return SimpleNamespace(
+        fetchone=lambda: rows[0] if rows else None,
+        fetchall=lambda: list(rows),
+    )
+
+
+class _ScriptedSession:
+    """Hands back canned results in the order aggregate_tenant_period queries."""
+
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self._calls = 0
+
+    def execute(self, stmt, params=None):
+        assert self._calls < len(self._scripted), (
+            f"Unexpected {self._calls + 1}th query — only "
+            f"{len(self._scripted)} scripted."
+        )
+        rows = self._scripted[self._calls]
+        self._calls += 1
+        return _result(rows)
+
+
+def test_aggregate_tenant_period_builds_expected_shape():
+    from backend.app.services.tenant_insights_service import aggregate_tenant_period
+
+    # Script results in the exact order aggregate_tenant_period issues them:
+    # 1. sentiment summary  2. topics  3. competitors  4. product_feedback
+    # 5. coaching adherence  6. compliance_gaps  7. improvements  8. strengths
+    # 9. signal buckets  10. avg_risk  11. channel_mix
+    scripted = [
+        [_row(42, 7.5)],  # sentiment
+        [_row("pricing", 30, 0.8), _row("onboarding", 12, 0.4)],  # topics
+        [_row("BasicCall", 5, 3), _row("RivalCo", 2, 0)],  # competitors
+        [_row("mobile-app", 2, 8, 1, "We need dark mode")],  # product_feedback
+        [_row(88.0)],  # script_adherence avg
+        [_row("missed disclosure", 4), _row("skipped recap", 2)],  # gaps
+        [_row("ask for the close", 3)],  # improvements
+        [_row("clear agenda", 6)],  # strengths
+        [_row("high", "medium", 3), _row("none", "low", 20)],  # buckets
+        [_row(0.42, 0.31)],  # avg risk
+        [_row("voice", 30, 7.8), _row("email", 12, 6.9)],  # channel_mix
+    ]
+
+    session = _ScriptedSession(scripted)
+    doc = aggregate_tenant_period(
+        session, tenant_id="t-1",
+        period_start=date(2026, 4, 10), period_end=date(2026, 4, 17),
+    )
+
+    # Sentiment
+    assert doc["sentiment"] == {"total_interactions": 42, "avg_sentiment_score": 7.5}
+
+    # Topics — two entries, sorted by mentions (query already ORDERs).
+    assert doc["topics"][0] == {"name": "pricing", "mentions": 30, "avg_relevance": 0.8}
+    assert doc["topics"][1]["name"] == "onboarding"
+
+    # Competitors — handled_well_pct is rounded.
+    assert doc["competitors"][0] == {
+        "competitor": "BasicCall",
+        "mentions": 5,
+        "handled_well": 3,
+        "handled_well_pct": 60.0,
+    }
+    assert doc["competitors"][1]["handled_well_pct"] == 0.0
+
+    # Product feedback
+    assert doc["product_feedback"][0] == {
+        "theme": "mobile-app",
+        "positive_count": 2,
+        "negative_count": 8,
+        "neutral_count": 1,
+        "sample_quote": "We need dark mode",
+    }
+
+    # Coaching
+    assert doc["coaching"]["avg_script_adherence"] == 88.0
+    assert doc["coaching"]["top_compliance_gaps"][0] == {"text": "missed disclosure", "count": 4}
+    assert doc["coaching"]["top_improvements"][0]["text"] == "ask for the close"
+    assert doc["coaching"]["top_strengths"][0]["text"] == "clear agenda"
+
+    # Signals — only (high, medium, 3) contributes to both buckets; (none, low, 20)
+    # contributes to churn.none and upsell.low.
+    assert doc["signals"]["churn"] == {"high": 3, "medium": 0, "low": 0, "none": 20}
+    assert doc["signals"]["upsell"] == {"high": 0, "medium": 3, "low": 20, "none": 0}
+    assert doc["signals"]["avg_churn_risk"] == 0.42
+    assert doc["signals"]["avg_upsell_score"] == 0.31
+
+    # Channel mix
+    assert doc["channel_mix"][0] == {"channel": "voice", "count": 30, "avg_sentiment": 7.8}
+
+
+def test_aggregate_handles_empty_tenant():
+    from backend.app.services.tenant_insights_service import aggregate_tenant_period
+
+    # All queries return empty rowsets.
+    scripted = [
+        [_row(0, None)],  # sentiment
+        [],               # topics
+        [],               # competitors
+        [],               # product_feedback
+        [_row(None)],     # adherence
+        [], [], [],       # gaps, improvements, strengths
+        [],               # buckets
+        [_row(None, None)],  # avg risk
+        [],               # channel_mix
+    ]
+    session = _ScriptedSession(scripted)
+    doc = aggregate_tenant_period(
+        session, tenant_id="t-1",
+        period_start=date(2026, 4, 10), period_end=date(2026, 4, 17),
+    )
+
+    assert doc["sentiment"]["total_interactions"] == 0
+    assert doc["sentiment"]["avg_sentiment_score"] is None
+    assert doc["topics"] == []
+    assert doc["competitors"] == []
+    assert doc["product_feedback"] == []
+    assert doc["coaching"]["avg_script_adherence"] is None
+    assert doc["signals"]["churn"] == {"high": 0, "medium": 0, "low": 0, "none": 0}
+    assert doc["channel_mix"] == []

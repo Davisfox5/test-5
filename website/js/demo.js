@@ -1,3 +1,13 @@
+// ======== THEME (runs before DOMContentLoaded to avoid flash) ========
+(function initTheme() {
+    try {
+        var stored = localStorage.getItem('callsight-theme');
+        var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        var theme = stored || (prefersLight ? 'light' : 'dark');
+        if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    } catch (e) { /* ignore */ }
+})();
+
 // ======== API CONFIGURATION ========
 let API_CONNECTED = false;
 let API_KEY = localStorage.getItem('callsight-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
@@ -103,19 +113,56 @@ function priorityBadgeHtml(priority) {
 // ======== API DATA LOADING FUNCTIONS ========
 
 /**
+ * Toggle between loading / empty / error / data states for the interactions panel.
+ */
+function setInteractionsState(state, errorMessage) {
+    var wrap = document.querySelector('#interactions [data-sticky-first]');
+    if (!wrap) return;
+    var table = wrap.querySelector('table');
+    ['loading', 'empty', 'error'].forEach(function(s) {
+        var el = wrap.querySelector('[data-state="' + s + '"]');
+        if (!el) return;
+        if (s === state) {
+            el.hidden = false;
+            if (s === 'error' && errorMessage) {
+                var msg = el.querySelector('.state-error-msg');
+                if (msg) msg.textContent = errorMessage;
+            }
+        } else {
+            el.hidden = true;
+        }
+    });
+    if (table) table.style.display = (state === 'data' ? '' : 'none');
+}
+
+/**
  * Load interactions from API and rebuild the table tbody.
  */
 async function loadInteractions(channel) {
+    setInteractionsState('loading');
     var path = '/interactions?limit=50';
     if (channel && channel !== 'all') {
         path += '&channel=' + encodeURIComponent(channel);
     }
-    var data = await apiFetch(path);
-    if (!data) return; // stay with mock HTML
+    var data;
+    try {
+        data = await apiFetch(path);
+    } catch (e) {
+        setInteractionsState('error', 'The server didn\u2019t respond. Check your connection and try again.');
+        return;
+    }
+    if (!data) {
+        // Static mode — fall back to existing HTML (mock data)
+        setInteractionsState('data');
+        return;
+    }
+    if (!data.length) {
+        setInteractionsState('empty');
+        return;
+    }
 
     var tbody = document.querySelector('#interactions .interactions-table tbody');
     if (!tbody) return;
-
     tbody.innerHTML = '';
 
     data.forEach(function(item) {
@@ -125,24 +172,35 @@ async function loadInteractions(channel) {
         var summary = '';
         var actionsDone = 0;
         var actionsTotal = 0;
+        var risks = [];
 
         if (item.insights) {
             sentiment = item.insights.sentiment_score || item.insights.sentiment || 0;
             qaScore = item.insights.qa_score || 0;
             topics = item.insights.topics || [];
             summary = item.insights.summary || '';
-        }
-        if (item.call_metrics) {
-            // call_metrics may have action item counts
+            if (item.insights.risk_flags) risks = item.insights.risk_flags;
         }
         if (item.action_items) {
             actionsTotal = item.action_items.length;
             actionsDone = item.action_items.filter(function(a) { return a.status === 'done'; }).length;
         }
 
-        var topicsPills = topics.map(function(t) {
-            return '<span class="topic-pill">' + escapeHtml(t) + '</span>';
-        }).join('');
+        // Unified "Signals" cell: up to 2 topics + up to 1 risk, then +N
+        var signals = [];
+        topics.slice(0, 2).forEach(function(t) {
+            signals.push('<span class="topic-pill">' + escapeHtml(t) + '</span>');
+        });
+        if (risks.length) {
+            var r = risks[0];
+            signals.push('<span class="risk-flag ' + escapeHtml(r.type || r) + '" title="' + escapeHtml(r.label || r.type || r) + '">!</span>');
+        }
+        var hidden = Math.max(0, (topics.length - 2) + Math.max(0, risks.length - 1));
+        if (hidden > 0) {
+            var tooltip = (topics.slice(2).concat(risks.slice(1).map(function(x) { return x.label || x.type || x; }))).join(', ');
+            signals.push('<span class="signals-more" data-tip="' + escapeHtml(tooltip) + '">+' + hidden + '</span>');
+        }
+        var signalsHtml = '<span class="signals-cell">' + signals.join('') + '</span>';
 
         var sentVal = (typeof sentiment === 'number') ? sentiment.toFixed(1) : sentiment;
         var sentCls = sentimentClass(parseFloat(sentVal) || 0);
@@ -165,15 +223,14 @@ async function loadInteractions(channel) {
         tr.setAttribute('data-channel', item.channel || 'voice');
         tr.setAttribute('data-id', item.id);
         tr.innerHTML =
-            '<td><svg class="expand-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></td>' +
-            '<td><span class="channel-icon-svg ' + escapeHtml(item.channel || 'voice') + '">' + (CHANNEL_ICONS[item.channel] || CHANNEL_ICONS.voice) + '</span></td>' +
-            '<td class="fw-500 interaction-title" data-target="interaction-detail" data-interaction-id="' + item.id + '">' + escapeHtml(item.title || 'Untitled') + '</td>' +
+            '<td><svg class="expand-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg></td>' +
+            '<td><span class="channel-icon-svg ' + escapeHtml(item.channel || 'voice') + '" aria-label="' + escapeHtml(item.channel || 'voice') + '">' + (CHANNEL_ICONS[item.channel] || CHANNEL_ICONS.voice) + '</span></td>' +
+            '<td class="fw-500 interaction-title col-sticky" data-target="interaction-detail" data-interaction-id="' + item.id + '">' + escapeHtml(item.title || 'Untitled') + '</td>' +
             '<td>' + escapeHtml(contactName) + '</td>' +
-            '<td>' + topicsPills + '</td>' +
+            '<td>' + signalsHtml + '</td>' +
             '<td><span class="sentiment-badge ' + sentCls + '">' + sentVal + '</span></td>' +
             '<td><div class="qa-score-bar"><span>' + qaScore + '</span><div class="qa-bar-track"><div class="qa-bar-fill ' + qaCls + '" style="width:' + qaScore + '%"></div></div></div></td>' +
             '<td><span class="action-completion ' + actionCls + '">' + actionLabel + '</span></td>' +
-            '<td><span class="risk-flags"></span></td>' +
             '<td>' + duration + '</td>' +
             '<td><span class="date-relative" title="' + escapeHtml(item.created_at || '') + '">' + formatRelativeDate(item.created_at) + '</span></td>' +
             '<td>' + statusBadgeHtml(item.status || 'processing') + '</td>';
@@ -184,7 +241,7 @@ async function loadInteractions(channel) {
         expandTr.className = 'row-expand';
         expandTr.setAttribute('data-channel', item.channel || 'voice');
         expandTr.innerHTML =
-            '<td colspan="12"><div class="row-expand-content">' +
+            '<td colspan="11"><div class="row-expand-content">' +
             '<p class="row-expand-summary">' + escapeHtml(summary) + '</p>' +
             '<div class="row-expand-footer">' +
             '<span style="font-size:13px;color:var(--text-muted)">QA: <strong>' + qaScore + '/100</strong></span>' +
@@ -193,6 +250,7 @@ async function loadInteractions(channel) {
         tbody.appendChild(expandTr);
     });
 
+    setInteractionsState('data');
     // Re-bind row expand/collapse for new rows
     bindRowExpand();
 }
@@ -385,27 +443,199 @@ async function loadContacts() {
 }
 
 /**
- * Load analytics from API.
+ * Load analytics from API.  Fans out across six endpoints and populates
+ * each analytics subsection.  Each section is guarded with a
+ * ``[data-analytics=...]`` attribute; if the container is absent or the
+ * endpoint returns nothing, the existing mock HTML stays untouched.
  */
 async function loadAnalytics() {
-    var data = await apiFetch('/analytics/business');
-    if (!data) return;
-
-    // Update health score gauge
-    if (data.health_score !== undefined) {
+    var business = await apiFetch('/analytics/business');
+    if (business) {
         var gaugeValue = document.querySelector('#analytics .gauge-value');
-        if (gaugeValue) gaugeValue.textContent = Math.round(data.health_score);
+        if (gaugeValue && business.health_score !== undefined) {
+            gaugeValue.textContent = Math.round(business.health_score);
+        }
     }
 
-    // Update stat cards in analytics if they exist
-    if (data.total_interactions !== undefined) {
-        var statValues = document.querySelectorAll('#analytics .stat-value');
-        // The analytics view may have stat cards too
-    }
+    var dashboard = await apiFetch('/analytics/dashboard');
+    if (dashboard) updateDashboardCards(dashboard);
 
-    if (data.avg_sentiment !== undefined) {
-        // Update sentiment display if available
-    }
+    var trendData = await apiFetch('/analytics/trends?period=7d');
+    if (trendData) renderVolumeSentimentChart(trendData);
+
+    var topics = await apiFetch('/analytics/topics?period=30d');
+    if (topics) renderTopicsList(topics);
+
+    var competitive = await apiFetch('/analytics/competitive?period=30d');
+    if (competitive) renderCompetitorTable(competitive);
+
+    var feedback = await apiFetch('/analytics/product-feedback?period=30d');
+    if (feedback) renderFeedbackThemes(feedback);
+
+    var team = await apiFetch('/analytics/team');
+    if (team) renderAgentLeaderboard(team);
+}
+
+/**
+ * Top-of-dashboard stat cards — total interactions, sentiment, action items,
+ * QA score — with trend arrows from ``prev_period_deltas``.
+ */
+function updateDashboardCards(data) {
+    var container = document.querySelector('[data-analytics="stat-cards"]');
+    if (!container) return;
+
+    var deltas = data.prev_period_deltas || {};
+    var cards = [
+        {
+            label: 'Total Interactions',
+            value: (data.total_interactions || 0).toLocaleString(),
+            delta: deltas.total_interactions_pct,
+            suffix: '%'
+        },
+        {
+            label: 'Avg Sentiment',
+            value: data.avg_sentiment_score != null ? data.avg_sentiment_score.toFixed(1) + '/10' : '—',
+            delta: deltas.avg_sentiment_pct,
+            suffix: '%'
+        },
+        {
+            label: 'Open Action Items',
+            value: (data.action_items_open || 0).toLocaleString(),
+            delta: null,
+            suffix: ''
+        },
+        {
+            label: 'Avg QA Score',
+            value: data.avg_qa_score != null ? Math.round(data.avg_qa_score) + '%' : '—',
+            delta: deltas.avg_qa_pct,
+            suffix: '%'
+        }
+    ];
+
+    container.innerHTML = cards.map(function(c) {
+        var arrow = '';
+        if (c.delta != null) {
+            var up = c.delta >= 0;
+            arrow = '<span class="stat-trend ' + (up ? 'up' : 'down') + '">' +
+                (up ? '↑ ' : '↓ ') + Math.abs(c.delta).toFixed(1) + c.suffix + '</span>';
+        }
+        return '<div class="stat-card">' +
+            '<div class="stat-label">' + escapeHtml(c.label) + '</div>' +
+            '<div class="stat-value">' + escapeHtml(c.value) + '</div>' +
+            arrow +
+        '</div>';
+    }).join('');
+}
+
+/**
+ * Dual-axis volume + sentiment chart from /analytics/trends?period=7d.
+ * Collapses per-channel rows into per-date totals.
+ */
+function renderVolumeSentimentChart(points) {
+    var container = document.querySelector('[data-analytics="trend-chart"]');
+    if (!container || !Array.isArray(points) || !points.length) return;
+
+    // Aggregate over channels → one entry per date.
+    var byDate = {};
+    points.forEach(function(p) {
+        var d = byDate[p.date] || { date: p.date, count: 0, sentSum: 0, sentN: 0 };
+        d.count += p.interaction_count || 0;
+        if (p.avg_sentiment != null) {
+            d.sentSum += p.avg_sentiment * (p.interaction_count || 1);
+            d.sentN += (p.interaction_count || 1);
+        }
+        byDate[p.date] = d;
+    });
+    var dates = Object.keys(byDate).sort();
+    var maxCount = Math.max.apply(null, dates.map(function(d) { return byDate[d].count; })) || 1;
+
+    container.innerHTML = dates.map(function(d) {
+        var entry = byDate[d];
+        var barPct = Math.round((entry.count / maxCount) * 100);
+        var sentiment = entry.sentN ? (entry.sentSum / entry.sentN) : null;
+        var dotPct = sentiment != null ? Math.round((sentiment / 10) * 100) : 0;
+        var label = new Date(d).toLocaleDateString('en-US', { weekday: 'short' });
+        return '<div class="trend-col">' +
+            '<div class="trend-bar" style="height:' + barPct + '%"></div>' +
+            (sentiment != null
+                ? '<div class="trend-dot" style="bottom:' + dotPct + '%"></div>'
+                : '') +
+            '<div class="trend-label">' + escapeHtml(label) + '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function renderTopicsList(topics) {
+    var container = document.querySelector('[data-analytics="topics"]');
+    if (!container || !Array.isArray(topics) || !topics.length) return;
+    var max = Math.max.apply(null, topics.map(function(t) { return t.mentions || 0; })) || 1;
+    container.innerHTML = topics.map(function(t) {
+        var pct = Math.round(((t.mentions || 0) / max) * 100);
+        var change = '';
+        if (t.pct_change != null) {
+            var cls = t.pct_change >= 0 ? 'up' : 'down';
+            change = '<span class="topic-change ' + cls + '">' +
+                (t.pct_change >= 0 ? '+' : '') + t.pct_change.toFixed(1) + '%</span>';
+        }
+        return '<div class="topic-row">' +
+            '<div class="topic-name">' + escapeHtml(t.name) + '</div>' +
+            '<div class="topic-bar"><div class="topic-bar-fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="topic-count">' + (t.mentions || 0) + '</div>' +
+            change +
+        '</div>';
+    }).join('');
+}
+
+function renderCompetitorTable(rows) {
+    var container = document.querySelector('[data-analytics="competitors"]');
+    if (!container || !Array.isArray(rows) || !rows.length) return;
+    container.innerHTML = '<table class="competitor-table"><thead><tr>' +
+        '<th>Competitor</th><th>Mentions</th><th>Handled Well</th></tr></thead><tbody>' +
+        rows.map(function(r) {
+            return '<tr>' +
+                '<td>' + escapeHtml(r.competitor) + '</td>' +
+                '<td>' + (r.mentions || 0) + '</td>' +
+                '<td>' + (r.handled_well_pct != null ? r.handled_well_pct.toFixed(0) + '%' : '—') + '</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+}
+
+function renderFeedbackThemes(themes) {
+    var container = document.querySelector('[data-analytics="feedback"]');
+    if (!container || !Array.isArray(themes) || !themes.length) return;
+    container.innerHTML = themes.map(function(t) {
+        var net = (t.positive_count || 0) - (t.negative_count || 0);
+        var sign = net >= 0 ? '+' : '−';
+        var signCls = net >= 0 ? 'positive' : 'negative';
+        var total = (t.positive_count || 0) + (t.negative_count || 0) + (t.neutral_count || 0);
+        return '<div class="feedback-row ' + signCls + '">' +
+            '<span class="feedback-sign">' + sign + '</span>' +
+            '<div class="feedback-theme">' + escapeHtml(t.theme) +
+                (t.sample_quote ? '<div class="feedback-quote">' + escapeHtml(t.sample_quote) + '</div>' : '') +
+            '</div>' +
+            '<span class="feedback-count">' + total + ' mentions</span>' +
+        '</div>';
+    }).join('');
+}
+
+function renderAgentLeaderboard(agents) {
+    var container = document.querySelector('[data-analytics="leaderboard"]');
+    if (!container || !Array.isArray(agents) || !agents.length) return;
+    container.innerHTML = '<table class="leaderboard-table"><thead><tr>' +
+        '<th>#</th><th>Agent</th><th>Calls</th><th>Avg Sentiment</th><th>QA Score</th><th>Churn Flags</th>' +
+        '</tr></thead><tbody>' +
+        agents.map(function(a, i) {
+            return '<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(a.name || '—') + '</td>' +
+                '<td>' + (a.interaction_count || 0) + '</td>' +
+                '<td>' + (a.avg_sentiment != null ? a.avg_sentiment.toFixed(1) : '—') + '</td>' +
+                '<td>' + (a.avg_scorecard_score != null ? Math.round(a.avg_scorecard_score) + '%' : '—') + '</td>' +
+                '<td>' + (a.churn_flags || 0) + '</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
 }
 
 /**
@@ -506,6 +736,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 // Load initial view data
                 loadInteractions();
+                // Populate dashboard stat cards (shared across interactions view)
+                apiFetch('/analytics/dashboard').then(function(d) {
+                    if (d) updateDashboardCards(d);
+                });
             }
         } catch (e) {
             // Not connected — static mode, mock HTML stays
@@ -714,43 +948,352 @@ document.addEventListener('DOMContentLoaded', function() {
         requestAnimationFrame(simulatePlayback);
     }
 
-    // ======== MODAL LOGIC ========
-    var uploadBtn = document.getElementById('uploadBtn');
-    var uploadModal = document.getElementById('uploadModal');
+    // (Modal + header-search wiring moved below with full keyboard support)
 
-    if (uploadBtn && uploadModal) {
-        uploadBtn.addEventListener('click', function() { uploadModal.classList.add('active'); });
-        uploadModal.addEventListener('click', function(e) {
-            if (e.target === uploadModal) uploadModal.classList.remove('active');
+    // ======== MINI CHARTS (SVG sparklines) ========
+    renderMiniCharts();
+
+    // ======== THEME TOGGLE ========
+    var themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+        themeToggle.addEventListener('click', function() {
+            var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            var next = isLight ? 'dark' : 'light';
+            if (next === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
+            try { localStorage.setItem('callsight-theme', next); } catch (e) {}
         });
     }
 
-    document.querySelectorAll('.close-modal').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            if (uploadModal) uploadModal.classList.remove('active');
+    // ======== SIDEBAR COLLAPSE ========
+    var sidebar = document.getElementById('appSidebar');
+    var sidebarBtn = document.getElementById('sidebarCollapseBtn');
+    if (sidebar) {
+        // Restore saved state
+        try {
+            if (localStorage.getItem('callsight-sidebar') === 'collapsed') {
+                sidebar.classList.add('collapsed');
+                if (sidebarBtn) {
+                    sidebarBtn.setAttribute('aria-pressed', 'true');
+                    sidebarBtn.setAttribute('aria-label', 'Expand sidebar');
+                }
+                addCollapsedAriaLabels();
+            }
+        } catch (e) {}
+    }
+    if (sidebarBtn) {
+        sidebarBtn.addEventListener('click', function() {
+            var collapsed = sidebar.classList.toggle('collapsed');
+            sidebarBtn.setAttribute('aria-pressed', String(collapsed));
+            sidebarBtn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+            if (collapsed) addCollapsedAriaLabels();
+            try { localStorage.setItem('callsight-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
         });
-    });
-
-    // ======== HEADER SEARCH -> SEARCH VIEW ========
-    var headerSearch = document.querySelector('.header-search input');
-    if (headerSearch) {
-        headerSearch.addEventListener('focus', function() { switchView('search'); });
     }
 
-    // ======== MINI CHARTS ========
-    document.querySelectorAll('.mini-chart').forEach(function(chart) {
-        for (var i = 0; i < 20; i++) {
-            var bar = document.createElement('div');
-            bar.style.cssText =
-                'width: 4px;' +
-                'height: ' + (20 + Math.random() * 80) + '%;' +
-                'background: var(--primary);' +
-                'opacity: 0.3;' +
-                'border-radius: 2px;' +
-                'position: absolute;' +
-                'bottom: 0;' +
-                'left: ' + (i * 6) + 'px;';
-            chart.appendChild(bar);
+    function addCollapsedAriaLabels() {
+        // Copy visible text to aria-label so tooltip and screen readers work when collapsed
+        document.querySelectorAll('.nav-item').forEach(function(item) {
+            if (!item.getAttribute('aria-label')) {
+                var label = (item.textContent || '').trim();
+                if (label) item.setAttribute('aria-label', label);
+            }
+        });
+    }
+    // Always add aria-labels so they're available for collapsed-state tooltip
+    addCollapsedAriaLabels();
+
+    // ======== MODAL MANAGEMENT (focus trap + ESC + focus restore) ========
+    var activeModal = null;
+    var lastFocusedBeforeModal = null;
+
+    function getFocusable(container) {
+        return container.querySelectorAll(
+            'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+    }
+    window.openModal = function(modalEl) {
+        if (!modalEl) return;
+        lastFocusedBeforeModal = document.activeElement;
+        modalEl.classList.add('active');
+        modalEl.setAttribute('aria-hidden', 'false');
+        activeModal = modalEl;
+        document.body.style.overflow = 'hidden';
+        // Focus first focusable (prefer input)
+        var focusables = getFocusable(modalEl);
+        var firstInput = modalEl.querySelector('input, textarea, select');
+        if (firstInput) firstInput.focus();
+        else if (focusables.length) focusables[0].focus();
+    };
+    window.closeModal = function(modalEl) {
+        if (!modalEl) return;
+        modalEl.classList.remove('active');
+        modalEl.setAttribute('aria-hidden', 'true');
+        if (activeModal === modalEl) activeModal = null;
+        document.body.style.overflow = '';
+        if (lastFocusedBeforeModal && document.contains(lastFocusedBeforeModal)) {
+            lastFocusedBeforeModal.focus();
+        }
+    };
+
+    document.addEventListener('keydown', function(e) {
+        if (!activeModal) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            window.closeModal(activeModal);
+            return;
+        }
+        if (e.key === 'Tab') {
+            var focusables = getFocusable(activeModal);
+            if (!focusables.length) return;
+            var first = focusables[0];
+            var last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault(); last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault(); first.focus();
+            }
         }
     });
+
+    // Upload modal hookup (replace any earlier handlers with proper open/close)
+    var uploadModalEl = document.getElementById('uploadModal');
+    var uploadBtnEl = document.getElementById('uploadBtn');
+    if (uploadBtnEl && uploadModalEl) {
+        uploadBtnEl.addEventListener('click', function() { window.openModal(uploadModalEl); });
+        uploadModalEl.addEventListener('click', function(e) {
+            if (e.target === uploadModalEl) window.closeModal(uploadModalEl);
+        });
+    }
+    document.querySelectorAll('.modal-overlay .close-modal').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var modal = btn.closest('.modal-overlay');
+            if (modal) window.closeModal(modal);
+        });
+    });
+    // "data-open-upload" hook from empty state
+    document.querySelectorAll('[data-open-upload]').forEach(function(btn) {
+        btn.addEventListener('click', function() { window.openModal(uploadModalEl); });
+    });
+
+    // ======== COMMAND PALETTE (Cmd/Ctrl+K) ========
+    var cmdkModal = document.getElementById('cmdkModal');
+    var cmdkInput = document.getElementById('cmdkInput');
+    var cmdkList = document.getElementById('cmdkList');
+    var headerSearchBtn = document.getElementById('headerSearchBtn');
+
+    var COMMANDS = [
+        { id: 'interactions', label: 'Go to Interactions', kind: 'View', icon: 'grid' },
+        { id: 'action-items', label: 'Go to Action Items', kind: 'View', icon: 'check' },
+        { id: 'live-call', label: 'Go to Live Call', kind: 'View', icon: 'mic' },
+        { id: 'manager-monitoring', label: 'Go to Team Monitoring', kind: 'View', icon: 'eye' },
+        { id: 'call-library', label: 'Go to Call Library', kind: 'View', icon: 'library' },
+        { id: 'search', label: 'Go to Search', kind: 'View', icon: 'search' },
+        { id: 'contacts', label: 'Go to Contacts', kind: 'View', icon: 'users' },
+        { id: 'analytics', label: 'Go to Analytics', kind: 'View', icon: 'chart' },
+        { id: 'scorecards', label: 'Go to Scorecards', kind: 'View', icon: 'clipboard' },
+        { id: 'agent-performance', label: 'Go to Agent Performance', kind: 'View', icon: 'chart' },
+        { id: 'knowledge-base', label: 'Go to Knowledge Base', kind: 'View', icon: 'book' },
+        { id: 'integrations', label: 'Go to Integrations', kind: 'View', icon: 'plug' },
+        { id: 'preferences', label: 'Go to Preferences', kind: 'View', icon: 'settings' },
+        { id: '__upload', label: 'Upload a call recording', kind: 'Action', icon: 'upload' },
+        { id: '__theme', label: 'Toggle color theme', kind: 'Action', icon: 'theme' },
+        { id: '__sidebar', label: 'Toggle sidebar', kind: 'Action', icon: 'sidebar' }
+    ];
+    var cmdkIdx = 0;
+    var cmdkFiltered = COMMANDS.slice();
+
+    function renderCmdkList() {
+        if (!cmdkList) return;
+        cmdkList.innerHTML = '';
+        if (!cmdkFiltered.length) {
+            var empty = document.createElement('li');
+            empty.className = 'cmdk-empty';
+            empty.textContent = 'No matches';
+            cmdkList.appendChild(empty);
+            return;
+        }
+        cmdkFiltered.forEach(function(cmd, i) {
+            var li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            li.setAttribute('aria-selected', i === cmdkIdx ? 'true' : 'false');
+            li.setAttribute('data-cmd', cmd.id);
+            li.innerHTML =
+                '<span>' + escapeHtml(cmd.label) + '</span>' +
+                '<span class="cmdk-kind">' + escapeHtml(cmd.kind) + '</span>';
+            li.addEventListener('click', function() { runCmd(cmd); });
+            cmdkList.appendChild(li);
+        });
+    }
+    function filterCmdk(q) {
+        q = (q || '').toLowerCase().trim();
+        if (!q) cmdkFiltered = COMMANDS.slice();
+        else cmdkFiltered = COMMANDS.filter(function(c) {
+            return c.label.toLowerCase().indexOf(q) !== -1 || c.kind.toLowerCase().indexOf(q) !== -1;
+        });
+        cmdkIdx = 0;
+        renderCmdkList();
+    }
+    function runCmd(cmd) {
+        window.closeModal(cmdkModal);
+        if (cmd.id === '__upload' && uploadModalEl) { window.openModal(uploadModalEl); return; }
+        if (cmd.id === '__theme' && themeToggle) { themeToggle.click(); return; }
+        if (cmd.id === '__sidebar' && sidebarBtn) { sidebarBtn.click(); return; }
+        if (typeof window.switchView === 'function') window.switchView(cmd.id);
+    }
+    function openCmdk() {
+        if (!cmdkModal) return;
+        filterCmdk('');
+        window.openModal(cmdkModal);
+        if (cmdkInput) cmdkInput.value = '';
+    }
+    if (cmdkInput) {
+        cmdkInput.addEventListener('input', function(e) { filterCmdk(e.target.value); });
+        cmdkInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                cmdkIdx = Math.min(cmdkIdx + 1, cmdkFiltered.length - 1);
+                renderCmdkList();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                cmdkIdx = Math.max(cmdkIdx - 1, 0);
+                renderCmdkList();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (cmdkFiltered[cmdkIdx]) runCmd(cmdkFiltered[cmdkIdx]);
+            }
+        });
+    }
+    if (cmdkModal) {
+        cmdkModal.addEventListener('click', function(e) {
+            if (e.target === cmdkModal) window.closeModal(cmdkModal);
+        });
+    }
+    if (headerSearchBtn) {
+        headerSearchBtn.addEventListener('click', openCmdk);
+    }
+    document.addEventListener('keydown', function(e) {
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+            e.preventDefault();
+            openCmdk();
+        }
+    });
+
+    // ======== TOOLTIP ========
+    var tipEl = document.getElementById('tooltip');
+    function showTip(target) {
+        if (!tipEl) return;
+        var text = target.getAttribute('data-tip');
+        if (!text) return;
+        tipEl.textContent = text;
+        var rect = target.getBoundingClientRect();
+        tipEl.classList.add('visible');
+        // Place below + centered, then clamp
+        var top = rect.bottom + 6;
+        var left = rect.left + rect.width / 2 - tipEl.offsetWidth / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - tipEl.offsetWidth - 8));
+        if (top + tipEl.offsetHeight > window.innerHeight - 8) {
+            top = rect.top - tipEl.offsetHeight - 6;
+        }
+        tipEl.style.top = top + 'px';
+        tipEl.style.left = left + 'px';
+        tipEl.setAttribute('aria-hidden', 'false');
+    }
+    function hideTip() {
+        if (!tipEl) return;
+        tipEl.classList.remove('visible');
+        tipEl.setAttribute('aria-hidden', 'true');
+    }
+    document.addEventListener('mouseover', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) showTip(t);
+    });
+    document.addEventListener('mouseout', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) hideTip();
+    });
+    document.addEventListener('focusin', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) showTip(t);
+    });
+    document.addEventListener('focusout', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) hideTip();
+    });
 });
+
+// ======== SVG SPARKLINES (smooth mini charts) ========
+function renderMiniCharts() {
+    var svgNS = 'http://www.w3.org/2000/svg';
+    document.querySelectorAll('.mini-chart').forEach(function(chart) {
+        if (chart.querySelector('svg')) return;
+        var width = 120;
+        var height = 40;
+        var points = 16;
+        // Seed deterministic per card so it looks stable across reloads
+        var seed = chart.dataset.seed || Math.random().toString(36).slice(2, 8);
+        chart.dataset.seed = seed;
+        var rand = seededRandom(seed);
+        var values = [];
+        var cur = 40 + rand() * 20;
+        for (var i = 0; i < points; i++) {
+            cur += (rand() - 0.5) * 16;
+            cur = Math.max(10, Math.min(cur, height - 6));
+            values.push(cur);
+        }
+        var step = width / (points - 1);
+        var linePath = '';
+        var areaPath = '';
+        values.forEach(function(v, idx) {
+            var x = idx * step;
+            var y = height - v;
+            linePath += (idx === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+        });
+        areaPath = linePath + 'L' + width + ',' + height + ' L0,' + height + ' Z';
+
+        var svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+        svg.setAttribute('preserveAspectRatio', 'none');
+        svg.setAttribute('aria-hidden', 'true');
+
+        var defs = document.createElementNS(svgNS, 'defs');
+        defs.innerHTML = '<linearGradient id="mini-' + seed + '" x1="0%" y1="0%" x2="0%" y2="100%">' +
+            '<stop offset="0%" stop-color="var(--primary)" stop-opacity="0.45"/>' +
+            '<stop offset="100%" stop-color="var(--primary)" stop-opacity="0"/>' +
+            '</linearGradient>';
+        svg.appendChild(defs);
+
+        var area = document.createElementNS(svgNS, 'path');
+        area.setAttribute('d', areaPath);
+        area.setAttribute('fill', 'url(#mini-' + seed + ')');
+        svg.appendChild(area);
+
+        var line = document.createElementNS(svgNS, 'path');
+        line.setAttribute('d', linePath);
+        line.setAttribute('fill', 'none');
+        line.setAttribute('stroke', 'var(--primary)');
+        line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('stroke-linecap', 'round');
+        line.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(line);
+
+        chart.appendChild(svg);
+    });
+}
+
+function seededRandom(seed) {
+    // Simple Mulberry32
+    var h = 0;
+    for (var i = 0; i < seed.length; i++) {
+        h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+    }
+    return function() {
+        h |= 0; h = h + 0x6D2B79F5 | 0;
+        var t = Math.imul(h ^ h >>> 15, 1 | h);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}

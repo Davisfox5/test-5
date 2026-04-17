@@ -12,11 +12,12 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body class="demo-body">
-    <div class="app-layout">
+    <a href="#viewContainer" class="skip-link">Skip to main content</a>
+    <div class="app-layout" id="appLayout">
         <!-- Sidebar -->
-        <aside class="app-sidebar">
+        <aside class="app-sidebar" id="appSidebar" aria-label="Primary navigation">
             <div class="sidebar-brand">
-                <svg width="24" height="24" viewBox="0 0 32 32" fill="none">
+                <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
                     <rect width="32" height="32" rx="8" fill="url(#logo-grad-demo)"/>
                     <path d="M10 22V16C10 12.6863 12.6863 10 16 10V10C19.3137 10 22 12.6863 22 16V22" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
                     <circle cx="16" cy="16" r="2" fill="white"/>
@@ -24,6 +25,9 @@
                     <defs><linearGradient id="logo-grad-demo" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6366F1"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs>
                 </svg>
                 <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+                <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" type="button" aria-label="Collapse sidebar" aria-pressed="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
             </div>
 
             <!-- Role Toggle -->
@@ -152,19 +156,25 @@
         <!-- Main Content -->
         <main class="app-main">
             <header class="app-header">
-                <div class="header-search">
-                    <span class="search-icon">🔍</span>
-                    <input type="text" placeholder="Search transcripts, calls, or insights...">
-                </div>
+                <button class="header-search" id="headerSearchBtn" type="button" aria-label="Open quick search (Ctrl+K)">
+                    <svg class="search-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+                    <span class="header-search-placeholder">Search transcripts, calls, or insights…</span>
+                    <kbd class="kbd-hint"><span class="kbd-mod">⌘</span>K</kbd>
+                </button>
                 <div class="header-actions">
                     <span class="demo-badge">Sample Data</span>
-                    <button class="btn btn-primary btn-sm" id="uploadBtn">
-                        <span class="btn-icon">📤</span> Upload Call
+                    <button class="btn btn-primary btn-sm" id="uploadBtn" type="button">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                        <span>Upload Call</span>
                     </button>
-                    <div class="notification-bell">
-                        <span>🔔</span>
-                        <span class="badge">3</span>
-                    </div>
+                    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">
+                        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </button>
+                    <button class="notification-bell" type="button" aria-label="Notifications (3 unread)">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+                        <span class="badge" aria-hidden="true">3</span>
+                    </button>
                 </div>
             </header>
 
@@ -179,7 +189,7 @@
                         <div class="date-picker">Last 30 Days ▾</div>
                     </div>
 
-                    <div class="stats-grid">
+                    <div class="stats-grid" data-analytics="stat-cards">
                         <div class="stat-card">
                             <span class="stat-label">Total Interactions</span>
                             <div class="stat-value-row">
@@ -205,7 +215,7 @@
                             <div class="mini-chart"></div>
                         </div>
                         <div class="stat-card">
-                            <span class="stat-label">QA Score</span>
+                            <span class="stat-label">QA Score <span class="info-hint" tabindex="0" data-tip="Weighted average of scorecard criteria across all graded interactions. Higher = better adherence to playbook.">?</span></span>
                             <div class="stat-value-row">
                                 <span class="stat-value">92%</span>
                                 <span class="trend up">↑ 5%</span>
@@ -225,19 +235,18 @@
                     </div>
 
                     <!-- Full-width interactions table -->
-                    <div class="interactions-table-wrap">
+                    <div class="interactions-table-wrap" data-sticky-first>
                         <table class="interactions-table">
                             <thead>
                                 <tr>
-                                    <th style="width:36px"></th>
-                                    <th style="width:40px">Ch.</th>
-                                    <th>Title</th>
+                                    <th style="width:36px" aria-label="Expand"></th>
+                                    <th style="width:40px" aria-label="Channel">Ch.</th>
+                                    <th class="col-sticky">Title</th>
                                     <th>Contact</th>
-                                    <th>Topics</th>
+                                    <th>Signals <span class="info-hint" tabindex="0" data-tip="Topics + risk flags for this interaction. Click the row to expand.">?</span></th>
                                     <th>Sentiment</th>
                                     <th>QA</th>
                                     <th>Actions</th>
-                                    <th>Risk</th>
                                     <th>Duration</th>
                                     <th>Date</th>
                                     <th>Status</th>
@@ -247,13 +256,38 @@
                                 <!-- Rows populated dynamically by JS from API -->
                             </tbody>
                         </table>
+                        <!-- Loading skeleton -->
+                        <div class="state-wrap skeleton-wrap" data-state="loading" hidden aria-hidden="true">
+                            <div class="skeleton-row"></div>
+                            <div class="skeleton-row"></div>
+                            <div class="skeleton-row"></div>
+                            <div class="skeleton-row"></div>
+                        </div>
+                        <!-- Empty state -->
+                        <div class="state-wrap empty-state" data-state="empty" hidden>
+                            <div class="state-illustration" aria-hidden="true">
+                                <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            </div>
+                            <h3>No interactions yet</h3>
+                            <p>Connect your phone system or upload a recording to get started.</p>
+                            <button class="btn btn-primary btn-sm" type="button" data-open-upload>Upload a call</button>
+                        </div>
+                        <!-- Error banner -->
+                        <div class="state-wrap error-state" data-state="error" hidden role="alert">
+                            <div class="state-illustration error" aria-hidden="true">
+                                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+                            </div>
+                            <h3>Couldn't load interactions</h3>
+                            <p class="state-error-msg">The server didn't respond. Check your connection and try again.</p>
+                            <button class="btn btn-outline btn-sm" type="button" data-retry>Retry</button>
+                        </div>
                     </div>
 
                     <!-- Pagination -->
                     <div class="table-pagination">
-                        <button disabled>&larr; Prev</button>
+                        <button type="button" disabled>&larr; Prev</button>
                         <span>Page 1 of 3</span>
-                        <button>Next &rarr;</button>
+                        <button type="button">Next &rarr;</button>
                     </div>
                 </section>
 
@@ -384,7 +418,7 @@
                     <!-- Call Metrics Bar -->
                     <div class="call-metrics-bar">
                         <div class="metric-item">
-                            <span class="metric-label">Talk / Listen</span>
+                            <span class="metric-label">Talk / Listen <span class="info-hint" tabindex="0" data-tip="Ratio of time the agent spoke vs. listened. Target: 40-60% talk for discovery calls.">?</span></span>
                             <div class="talk-listen-bar">
                                 <div class="talk-portion" style="width:50%">--</div>
                                 <div class="listen-portion" style="width:50%">--</div>
@@ -474,11 +508,11 @@
                                 <h3>AI Coaching Hints</h3>
                                 <div class="coaching-hint-cards">
                                     <div class="hint-card warning">
-                                        <span class="hint-icon">💡</span>
+                                        <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.8.8 1 1.8 1 2.3h6c0-.5.2-1.5 1-2.3A7 7 0 0 0 12 2z"/></svg></span>
                                         <p>Customer seems hesitant about pricing -- try reframing the value proposition. Emphasize ROI: avg. clients see 23% improvement in close rates.</p>
                                     </div>
                                     <div class="hint-card info">
-                                        <span class="hint-icon">📊</span>
+                                        <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg></span>
                                         <p>Competitor comparison data available. Robert's company currently uses BasicCall -- highlight real-time analytics advantage.</p>
                                     </div>
                                 </div>
@@ -537,7 +571,7 @@
                     <!-- Live Metrics Bottom Bar -->
                     <div class="call-metrics-bar">
                         <div class="metric-item">
-                            <span class="metric-label">Talk / Listen</span>
+                            <span class="metric-label">Talk / Listen <span class="info-hint" tabindex="0" data-tip="Ratio of time the agent spoke vs. listened. Target: 40-60% talk for discovery calls.">?</span></span>
                             <div class="talk-listen-bar">
                                 <div class="talk-portion" style="width:58%">58%</div>
                                 <div class="listen-portion" style="width:42%">42%</div>
@@ -554,8 +588,8 @@
                     </div>
 
                     <!-- Whisper Tray -->
-                    <div class="whisper-tray">
-                        <span class="whisper-icon">🔇</span>
+                    <div class="whisper-tray" role="status" aria-live="polite">
+                        <span class="whisper-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
                         <span class="whisper-label">Manager whisper messages appear here</span>
                     </div>
                 </section>
@@ -648,7 +682,7 @@
                                 <div class="insight-card coaching-card">
                                     <h3>AI Coaching Hints</h3>
                                     <div class="hint-card warning">
-                                        <span class="hint-icon">💡</span>
+                                        <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.8.8 1 1.8 1 2.3h6c0-.5.2-1.5 1-2.3A7 7 0 0 0 12 2z"/></svg></span>
                                         <p>Price hesitation detected. Sarah should pivot to ROI comparison.</p>
                                     </div>
                                 </div>
@@ -790,9 +824,10 @@
                         <h1>Search</h1>
                     </div>
 
+                    <label for="bigSearchInput" class="sr-only">Search across all transcripts, calls, and channels</label>
                     <div class="search-big-input">
-                        <span class="search-icon-lg">🔍</span>
-                        <input type="text" placeholder="Search across all transcripts, calls, and channels..." value="enterprise pricing">
+                        <span class="search-icon-lg" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg></span>
+                        <input type="search" id="bigSearchInput" placeholder="Search across all transcripts, calls, and channels..." value="enterprise pricing">
                     </div>
 
                     <div class="search-results">
@@ -800,7 +835,7 @@
 
                         <div class="search-result-item">
                             <div class="search-result-header">
-                                <span class="channel-icon">📞</span>
+                                <span class="channel-icon-svg voice" aria-label="Voice call"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
                                 <span class="search-result-title">Sales Inquiry - Enterprise Plan</span>
                                 <span class="search-result-date">Apr 10, 2026</span>
                                 <span class="sentiment-badge positive">8.9</span>
@@ -810,7 +845,7 @@
 
                         <div class="search-result-item">
                             <div class="search-result-header">
-                                <span class="channel-icon">📞</span>
+                                <span class="channel-icon-svg voice" aria-label="Voice call"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
                                 <span class="search-result-title">Follow-up Demo - TechVenture LLC</span>
                                 <span class="search-result-date">Apr 8, 2026</span>
                                 <span class="sentiment-badge neutral">6.5</span>
@@ -820,7 +855,7 @@
 
                         <div class="search-result-item">
                             <div class="search-result-header">
-                                <span class="channel-icon">✉️</span>
+                                <span class="channel-icon-svg email" aria-label="Email"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
                                 <span class="search-result-title">Proposal Email - Globex Inc</span>
                                 <span class="search-result-date">Apr 5, 2026</span>
                                 <span class="sentiment-badge positive">7.8</span>
@@ -892,7 +927,7 @@
                                 </div>
                             </div>
                             <div class="insight-card">
-                                <h3>Churn Risk</h3>
+                                <h3>Churn Risk <span class="info-hint" tabindex="0" data-tip="AI-predicted likelihood this contact will disengage in the next 60 days, based on sentiment trajectory, engagement frequency, and negative signals.">?</span></h3>
                                 <span class="churn-badge low">Low Risk</span>
                                 <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">Based on sentiment trends and engagement frequency.</p>
                             </div>
@@ -915,35 +950,35 @@
                             <h3>Interaction History</h3>
                             <div class="history-timeline">
                                 <div class="history-item">
-                                    <span class="channel-icon">📞</span>
+                                    <span class="channel-icon-svg voice" aria-label="Voice call"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
                                     <div class="history-content">
                                         <span class="history-title">Sales Inquiry - Enterprise Plan</span>
                                         <span class="history-date">Apr 10, 2026 &middot; 14:22 &middot; <span class="sentiment-badge positive">8.9</span></span>
                                     </div>
                                 </div>
                                 <div class="history-item">
-                                    <span class="channel-icon">✉️</span>
+                                    <span class="channel-icon-svg email" aria-label="Email"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
                                     <div class="history-content">
                                         <span class="history-title">Follow-up: Enterprise Proposal</span>
                                         <span class="history-date">Apr 9, 2026 &middot; 3 emails &middot; <span class="sentiment-badge positive">8.1</span></span>
                                     </div>
                                 </div>
                                 <div class="history-item">
-                                    <span class="channel-icon">📞</span>
+                                    <span class="channel-icon-svg voice" aria-label="Voice call"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
                                     <div class="history-content">
                                         <span class="history-title">Initial Discovery Call</span>
                                         <span class="history-date">Apr 3, 2026 &middot; 22:10 &middot; <span class="sentiment-badge positive">7.5</span></span>
                                     </div>
                                 </div>
                                 <div class="history-item">
-                                    <span class="channel-icon">🗨️</span>
+                                    <span class="channel-icon-svg chat" aria-label="Chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
                                     <div class="history-content">
                                         <span class="history-title">Chat: Product Questions</span>
                                         <span class="history-date">Mar 28, 2026 &middot; 8 msgs &middot; <span class="sentiment-badge neutral">6.8</span></span>
                                     </div>
                                 </div>
                                 <div class="history-item">
-                                    <span class="channel-icon">📱</span>
+                                    <span class="channel-icon-svg whatsapp" aria-label="WhatsApp"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
                                     <div class="history-content">
                                         <span class="history-title">WhatsApp: Quick pricing Q</span>
                                         <span class="history-date">Mar 25, 2026 &middot; 5 msgs &middot; <span class="sentiment-badge neutral">6.2</span></span>
@@ -983,7 +1018,7 @@
                         <div class="analytics-chart-card">
                             <h3>Call Volume & Sentiment Trends</h3>
                             <div class="trend-chart">
-                                <div class="trend-chart-bars">
+                                <div class="trend-chart-bars" data-analytics="trend-chart">
                                     <div class="trend-bar-group">
                                         <div class="trend-bar" style="--h:55%"></div>
                                         <div class="trend-line-dot" style="--top:35%"></div>
@@ -1032,7 +1067,7 @@
                         <!-- Top Topics -->
                         <div class="insight-card">
                             <h3>Top Topics</h3>
-                            <div class="topics-list">
+                            <div class="topics-list" data-analytics="topics">
                                 <div class="topic-row"><span class="topic-name">Pricing</span><div class="topic-bar"><div class="topic-fill" style="width:85%"></div></div><span class="topic-count">142</span></div>
                                 <div class="topic-row"><span class="topic-name">Integrations</span><div class="topic-bar"><div class="topic-fill" style="width:68%"></div></div><span class="topic-count">114</span></div>
                                 <div class="topic-row"><span class="topic-name">Onboarding</span><div class="topic-bar"><div class="topic-fill" style="width:55%"></div></div><span class="topic-count">92</span></div>
@@ -1045,18 +1080,20 @@
                         <!-- Competitive Mentions -->
                         <div class="insight-card">
                             <h3>Competitive Mentions</h3>
-                            <table class="data-table compact">
-                                <thead>
-                                    <tr>
-                                        <th>Competitor</th>
-                                        <th>Mentions</th>
-                                        <th>Handled Well</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                            <!-- Populated by API -->
-                            </tbody>
-                            </table>
+                            <div data-analytics="competitors">
+                                <table class="data-table compact">
+                                    <thead>
+                                        <tr>
+                                            <th>Competitor</th>
+                                            <th>Mentions</th>
+                                            <th>Handled Well</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Populated by /analytics/competitive -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
@@ -1064,7 +1101,7 @@
                         <!-- Product Feedback Themes -->
                         <div class="insight-card">
                             <h3>Product Feedback Themes</h3>
-                            <div class="feedback-themes">
+                            <div class="feedback-themes" data-analytics="feedback">
                                 <div class="feedback-theme">
                                     <span class="theme-sentiment positive">+</span>
                                     <span class="theme-text">Real-time transcription accuracy praised</span>
@@ -1096,24 +1133,26 @@
                         <!-- Agent Leaderboard -->
                         <div class="insight-card">
                             <h3>Agent Leaderboard</h3>
-                            <table class="data-table compact">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Agent</th>
-                                        <th>Calls</th>
-                                        <th>Avg Sentiment</th>
-                                        <th>QA Score</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr><td>1</td><td class="fw-500">Sarah M.</td><td>148</td><td><span class="sentiment-badge positive">8.9</span></td><td>96%</td></tr>
-                                    <tr><td>2</td><td class="fw-500">Rachel K.</td><td>132</td><td><span class="sentiment-badge positive">8.4</span></td><td>93%</td></tr>
-                                    <tr><td>3</td><td class="fw-500">James T.</td><td>119</td><td><span class="sentiment-badge neutral">7.1</span></td><td>87%</td></tr>
-                                    <tr><td>4</td><td class="fw-500">Emily R.</td><td>104</td><td><span class="sentiment-badge positive">8.0</span></td><td>91%</td></tr>
-                                    <tr><td>5</td><td class="fw-500">Carlos V.</td><td>98</td><td><span class="sentiment-badge positive">7.8</span></td><td>89%</td></tr>
-                                </tbody>
-                            </table>
+                            <div data-analytics="leaderboard">
+                                <table class="data-table compact">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Agent</th>
+                                            <th>Calls</th>
+                                            <th>Avg Sentiment</th>
+                                            <th>QA Score</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr><td>1</td><td class="fw-500">Sarah M.</td><td>148</td><td><span class="sentiment-badge positive">8.9</span></td><td>96%</td></tr>
+                                        <tr><td>2</td><td class="fw-500">Rachel K.</td><td>132</td><td><span class="sentiment-badge positive">8.4</span></td><td>93%</td></tr>
+                                        <tr><td>3</td><td class="fw-500">James T.</td><td>119</td><td><span class="sentiment-badge neutral">7.1</span></td><td>87%</td></tr>
+                                        <tr><td>4</td><td class="fw-500">Emily R.</td><td>104</td><td><span class="sentiment-badge positive">8.0</span></td><td>91%</td></tr>
+                                        <tr><td>5</td><td class="fw-500">Carlos V.</td><td>98</td><td><span class="sentiment-badge positive">7.8</span></td><td>89%</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -1131,28 +1170,28 @@
                         <div class="scorecard-templates-list">
                             <h3>Templates</h3>
                             <div class="template-item active">
-                                <span class="template-icon">📋</span>
+                                <span class="template-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span>
                                 <div>
                                     <span class="template-name">Sales QA</span>
                                     <span class="template-meta">5 criteria &middot; Used 312 times</span>
                                 </div>
                             </div>
                             <div class="template-item">
-                                <span class="template-icon">📋</span>
+                                <span class="template-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span>
                                 <div>
                                     <span class="template-name">Support Resolution</span>
                                     <span class="template-meta">6 criteria &middot; Used 248 times</span>
                                 </div>
                             </div>
                             <div class="template-item">
-                                <span class="template-icon">📋</span>
+                                <span class="template-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span>
                                 <div>
                                     <span class="template-name">Compliance Audit</span>
                                     <span class="template-meta">8 criteria &middot; Used 87 times</span>
                                 </div>
                             </div>
                             <div class="template-item">
-                                <span class="template-icon">📋</span>
+                                <span class="template-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span>
                                 <div>
                                     <span class="template-name">Onboarding QA</span>
                                     <span class="template-meta">4 criteria &middot; Used 156 times</span>
@@ -1260,14 +1299,17 @@
                     <div class="view-header">
                         <h1>Knowledge Base</h1>
                         <div class="header-actions-group">
-                            <button class="btn btn-outline btn-sm">+ New Article</button>
-                            <button class="btn btn-primary btn-sm">📤 Upload Document</button>
+                            <button class="btn btn-outline btn-sm" type="button">+ New Article</button>
+                            <button class="btn btn-primary btn-sm" type="button">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                                Upload Document
+                            </button>
                         </div>
                     </div>
 
                     <div class="kb-document-list">
                         <div class="kb-document">
-                            <span class="kb-source-icon">📄</span>
+                            <span class="kb-source-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
                             <div class="kb-doc-info">
                                 <span class="kb-doc-title">Enterprise Pricing Guide 2026</span>
                                 <span class="kb-doc-meta">PDF &middot; Uploaded Apr 10, 2026 &middot; 24 pages</span>
@@ -1275,7 +1317,7 @@
                             <span class="kb-sync-status synced">Indexed</span>
                         </div>
                         <div class="kb-document">
-                            <span class="kb-source-icon">📝</span>
+                            <span class="kb-source-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>
                             <div class="kb-doc-info">
                                 <span class="kb-doc-title">Product FAQ - Common Objections</span>
                                 <span class="kb-doc-meta">Article &middot; Created Mar 15, 2026 &middot; Internal</span>
@@ -1283,7 +1325,7 @@
                             <span class="kb-sync-status synced">Indexed</span>
                         </div>
                         <div class="kb-document">
-                            <span class="kb-source-icon confluence-icon">🔗</span>
+                            <span class="kb-source-icon confluence-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
                             <div class="kb-doc-info">
                                 <span class="kb-doc-title">Sales Playbook - Confluence</span>
                                 <span class="kb-doc-meta">Confluence &middot; Synced Apr 12, 2026 &middot; 18 pages</span>
@@ -1291,7 +1333,7 @@
                             <span class="kb-sync-status synced">Synced</span>
                         </div>
                         <div class="kb-document">
-                            <span class="kb-source-icon">📓</span>
+                            <span class="kb-source-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
                             <div class="kb-doc-info">
                                 <span class="kb-doc-title">Competitive Battlecards - Notion</span>
                                 <span class="kb-doc-meta">Notion &middot; Synced Apr 11, 2026 &middot; 12 pages</span>
@@ -1299,17 +1341,17 @@
                             <span class="kb-sync-status synced">Synced</span>
                         </div>
                         <div class="kb-document">
-                            <span class="kb-source-icon">📁</span>
+                            <span class="kb-source-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
                             <div class="kb-doc-info">
                                 <span class="kb-doc-title">Technical Architecture Overview</span>
                                 <span class="kb-doc-meta">Google Drive &middot; Synced Apr 9, 2026 &middot; 8 pages</span>
                             </div>
-                            <span class="kb-sync-status syncing">Syncing...</span>
+                            <span class="kb-sync-status syncing">Syncing…</span>
                         </div>
                         <div class="kb-document">
-                            <span class="kb-source-icon">📄</span>
+                            <span class="kb-source-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
                             <div class="kb-doc-info">
-                                <span class="kb-doc-title">Compliance & Security Whitepaper</span>
+                                <span class="kb-doc-title">Compliance &amp; Security Whitepaper</span>
                                 <span class="kb-doc-meta">PDF &middot; Uploaded Mar 22, 2026 &middot; 16 pages</span>
                             </div>
                             <span class="kb-sync-status synced">Indexed</span>
@@ -1329,22 +1371,22 @@
                         <h3>Google Workspace</h3>
                         <div class="integration-cards-row">
                             <div class="integration-card-item connected">
-                                <span class="integration-icon-lg">📧</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
                                 <span class="integration-name">Gmail</span>
                                 <span class="integration-status connected">Connected</span>
                             </div>
                             <div class="integration-card-item connected">
-                                <span class="integration-icon-lg">📅</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg></span>
                                 <span class="integration-name">Calendar</span>
                                 <span class="integration-status connected">Connected</span>
                             </div>
                             <div class="integration-card-item connected">
-                                <span class="integration-icon-lg">👥</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
                                 <span class="integration-name">Contacts</span>
                                 <span class="integration-status connected">Connected</span>
                             </div>
                             <div class="integration-card-item connected">
-                                <span class="integration-icon-lg">🎥</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></span>
                                 <span class="integration-name">Meet</span>
                                 <span class="integration-status connected">Connected</span>
                             </div>
@@ -1355,19 +1397,19 @@
                         <h3>Microsoft</h3>
                         <div class="integration-cards-row">
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">📬</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 7 9 6 9-6"/><circle cx="12" cy="13" r="3"/></svg></span>
                                 <span class="integration-name">Outlook</span>
-                                <button class="btn btn-outline btn-sm">Connect</button>
+                                <button class="btn btn-outline btn-sm" type="button">Connect</button>
                             </div>
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">📅</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" x2="21" y1="10" y2="10"/></svg></span>
                                 <span class="integration-name">Calendar</span>
-                                <button class="btn btn-outline btn-sm">Connect</button>
+                                <button class="btn btn-outline btn-sm" type="button">Connect</button>
                             </div>
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">💬</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
                                 <span class="integration-name">Teams</span>
-                                <button class="btn btn-outline btn-sm">Connect</button>
+                                <button class="btn btn-outline btn-sm" type="button">Connect</button>
                             </div>
                         </div>
                     </div>
@@ -1376,19 +1418,19 @@
                         <h3>CRM</h3>
                         <div class="integration-cards-row">
                             <div class="integration-card-item connected">
-                                <span class="integration-icon-lg">☁️</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></span>
                                 <span class="integration-name">Salesforce</span>
                                 <span class="integration-status connected">Connected</span>
                             </div>
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">🟠</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="14" r="4"/><circle cx="12" cy="4" r="2"/><path d="M12 6v4M6 14H3M21 14h-3M7 8l-2-2M17 8l2-2"/></svg></span>
                                 <span class="integration-name">HubSpot</span>
-                                <button class="btn btn-outline btn-sm">Connect</button>
+                                <button class="btn btn-outline btn-sm" type="button">Connect</button>
                             </div>
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">🔵</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><path d="M7 8h6a4 4 0 0 1 0 8H7"/></svg></span>
                                 <span class="integration-name">Pipedrive</span>
-                                <button class="btn btn-outline btn-sm">Connect</button>
+                                <button class="btn btn-outline btn-sm" type="button">Connect</button>
                             </div>
                         </div>
                     </div>
@@ -1397,17 +1439,19 @@
                         <h3>Data Enrichment</h3>
                         <div class="integration-cards-row">
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">🧑‍💼</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-3-3.87"/><path d="M4 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
                                 <span class="integration-name">People Data Labs</span>
                                 <label class="toggle-switch">
+                                    <span class="sr-only">Enable People Data Labs</span>
                                     <input type="checkbox" checked>
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
                             <div class="integration-card-item">
-                                <span class="integration-icon-lg">🚀</span>
+                                <span class="integration-icon-lg" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22 22 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></span>
                                 <span class="integration-name">Apollo</span>
                                 <label class="toggle-switch">
+                                    <span class="sr-only">Enable Apollo</span>
                                     <input type="checkbox">
                                     <span class="toggle-slider"></span>
                                 </label>
@@ -1545,16 +1589,18 @@
     </div>
 
     <!-- Modal for Upload -->
-    <div class="modal-overlay" id="uploadModal">
-        <div class="modal">
+    <div class="modal-overlay" id="uploadModal" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle" aria-hidden="true">
+        <div class="modal" role="document">
             <div class="modal-header">
-                <h2>Upload Call Recording</h2>
-                <button class="close-modal">&times;</button>
+                <h2 id="uploadModalTitle">Upload Call Recording</h2>
+                <button class="close-modal" type="button" aria-label="Close dialog">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+                </button>
             </div>
             <div class="upload-area" id="uploadDropZone">
-                <span class="upload-icon">📁</span>
+                <span class="upload-icon" aria-hidden="true"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg></span>
                 <p>Drag and drop your audio file here</p>
-                <span>or</span>
+                <span class="upload-or">or</span>
                 <button class="btn btn-outline btn-sm" id="browseFilesBtn" type="button">Browse Files</button>
                 <p class="upload-hint">Supports MP3, WAV, OGG, WebM (Max 500MB)</p>
             </div>
@@ -1566,6 +1612,29 @@
             </div>
         </div>
     </div>
+
+    <!-- Command Palette -->
+    <div class="modal-overlay cmdk-overlay" id="cmdkModal" role="dialog" aria-modal="true" aria-labelledby="cmdkTitle" aria-hidden="true">
+        <div class="cmdk-panel" role="document">
+            <div class="cmdk-input-row">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+                <input id="cmdkInput" type="text" placeholder="Jump to view, search transcripts, or run a command…" aria-label="Command palette">
+                <kbd class="cmdk-hint">Esc</kbd>
+            </div>
+            <h2 id="cmdkTitle" class="sr-only">Command palette</h2>
+            <ul class="cmdk-list" id="cmdkList" role="listbox" aria-label="Commands">
+                <!-- Populated by JS -->
+            </ul>
+            <div class="cmdk-footer">
+                <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+                <span><kbd>↵</kbd> select</span>
+                <span><kbd>Esc</kbd> close</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tooltip (singleton) -->
+    <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
