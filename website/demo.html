@@ -26,26 +26,116 @@
                 <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
             </div>
 
+            <!-- Role Toggle -->
+            <div class="role-toggle-wrap">
+                <div class="role-toggle" id="roleToggle">
+                    <button class="role-btn active" data-role="agent">Agent View</button>
+                    <button class="role-btn" data-role="manager">Manager View</button>
+                </div>
+            </div>
+
             <nav class="sidebar-nav">
-                <a href="#" class="nav-item active" data-view="overview">
-                    <span class="nav-icon">📊</span> Overview
+                <!-- Top-level items (ungrouped) -->
+                <a href="#" class="nav-item active" data-view="interactions">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                    </span> Dashboard
                 </a>
-                <a href="#" class="nav-item" data-view="calls">
-                    <span class="nav-icon">📞</span> Calls
+                <a href="#" class="nav-item manager-only" data-view="manager-monitoring">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </span> Team Monitoring
                 </a>
-                <a href="#" class="nav-item" data-view="transcripts">
-                    <span class="nav-icon">📝</span> Transcripts
+                <a href="#" class="nav-item" data-view="live-call">
+                    <span class="nav-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                    </span> Live Call
                 </a>
-                <a href="#" class="nav-item" data-view="insights">
-                    <span class="nav-icon">💡</span> AI Insights
-                </a>
-                <a href="#" class="nav-item" data-view="team">
-                    <span class="nav-icon">👥</span> Team Performance
-                </a>
-                <div class="nav-divider"></div>
-                <a href="#" class="nav-item" data-view="settings">
-                    <span class="nav-icon">⚙️</span> Settings
-                </a>
+
+                <!-- WORKSPACE group -->
+                <div class="nav-group" data-group="workspace">
+                    <div class="nav-group-header">
+                        <span class="nav-group-label">WORKSPACE</span>
+                        <svg class="nav-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#" class="nav-item" data-view="interactions">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            </span> Interactions
+                        </a>
+                        <a href="#" class="nav-item" data-view="action-items">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            </span> Action Items
+                        </a>
+                        <a href="#" class="nav-item" data-view="contacts">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                            </span> Contacts
+                        </a>
+                        <a href="#" class="nav-item" data-view="search">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+                            </span> Search
+                        </a>
+                    </div>
+                </div>
+
+                <!-- INSIGHTS group -->
+                <div class="nav-group" data-group="insights">
+                    <div class="nav-group-header">
+                        <span class="nav-group-label">INSIGHTS</span>
+                        <svg class="nav-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#" class="nav-item" data-view="analytics">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg>
+                            </span> Analytics
+                        </a>
+                        <a href="#" class="nav-item" data-view="call-library">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                            </span> Call Library
+                        </a>
+                        <a href="#" class="nav-item" data-view="scorecards">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/></svg>
+                            </span> Scorecards
+                        </a>
+                        <a href="#" class="nav-item manager-only" data-view="agent-performance">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                            </span> Agent Performance
+                        </a>
+                    </div>
+                </div>
+
+                <!-- SETTINGS group -->
+                <div class="nav-group" data-group="settings">
+                    <div class="nav-group-header">
+                        <span class="nav-group-label">SETTINGS</span>
+                        <svg class="nav-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#" class="nav-item" data-view="knowledge-base">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+                            </span> Knowledge Base
+                        </a>
+                        <a href="#" class="nav-item" data-view="integrations">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+                            </span> Integrations
+                        </a>
+                        <a href="#" class="nav-item" data-view="preferences">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                            </span> Preferences
+                        </a>
+                    </div>
+                </div>
             </nav>
 
             <div class="sidebar-footer">
@@ -67,6 +157,7 @@
                     <input type="text" placeholder="Search transcripts, calls, or insights...">
                 </div>
                 <div class="header-actions">
+                    <span class="demo-badge">Sample Data</span>
                     <button class="btn btn-primary btn-sm" id="uploadBtn">
                         <span class="btn-icon">📤</span> Upload Call
                     </button>
@@ -78,21 +169,24 @@
             </header>
 
             <div class="view-container" id="viewContainer">
-                <!-- Dashboard View (Default) -->
-                <section class="view active" id="overview">
+
+                <!-- ============================================================ -->
+                <!-- 1. INTERACTIONS VIEW (default) -->
+                <!-- ============================================================ -->
+                <section class="view active" id="interactions">
                     <div class="view-header">
-                        <h1>Performance Overview</h1>
-                        <div class="date-picker">Last 7 Days ▾</div>
+                        <h1>Interactions</h1>
+                        <div class="date-picker">Last 30 Days ▾</div>
                     </div>
 
                     <div class="stats-grid">
                         <div class="stat-card">
-                            <span class="stat-label">Total Calls</span>
+                            <span class="stat-label">Total Interactions</span>
                             <div class="stat-value-row">
-                                <span class="stat-value">482</span>
-                                <span class="trend up">↑ 12.5%</span>
+                                <span class="stat-value">1,247</span>
+                                <span class="trend up">↑ 14.2%</span>
                             </div>
-                            <div class="mini-chart" id="callsMiniChart"></div>
+                            <div class="mini-chart"></div>
                         </div>
                         <div class="stat-card">
                             <span class="stat-label">Avg. Sentiment</span>
@@ -100,7 +194,7 @@
                                 <span class="stat-value">8.4<small>/10</small></span>
                                 <span class="trend up">↑ 0.6</span>
                             </div>
-                            <div class="mini-chart" id="sentimentMiniChart"></div>
+                            <div class="mini-chart"></div>
                         </div>
                         <div class="stat-card">
                             <span class="stat-label">Action Items</span>
@@ -108,132 +202,108 @@
                                 <span class="stat-value">126</span>
                                 <span class="trend down">↓ 4.2%</span>
                             </div>
-                            <div class="mini-chart" id="actionsMiniChart"></div>
+                            <div class="mini-chart"></div>
                         </div>
                         <div class="stat-card">
-                            <span class="stat-label">Coaching Score</span>
+                            <span class="stat-label">QA Score</span>
                             <div class="stat-value-row">
                                 <span class="stat-value">92%</span>
                                 <span class="trend up">↑ 5%</span>
                             </div>
-                            <div class="mini-chart" id="coachingMiniChart"></div>
+                            <div class="mini-chart"></div>
                         </div>
                     </div>
 
-                    <div class="dashboard-bottom-grid">
-                        <div class="recent-calls-card">
-                            <div class="card-header">
-                                <h2>Recent Calls</h2>
-                                <a href="#" class="view-all">View All</a>
-                            </div>
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Call Title</th>
-                                        <th>Date</th>
-                                        <th>Sentiment</th>
-                                        <th>Duration</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr class="clickable-row">
-                                        <td>
-                                            <div class="call-title">
-                                                <span class="call-icon">📞</span>
-                                                Sales Inquiry - Acme Corp
-                                            </div>
-                                        </td>
-                                        <td>Oct 24, 2:30 PM</td>
-                                        <td><span class="sentiment-badge positive">Positive (8.9)</span></td>
-                                        <td>14:22</td>
-                                        <td><span class="status-badge complete">Analyzed</span></td>
-                                    </tr>
-                                    <tr class="clickable-row">
-                                        <td>
-                                            <div class="call-title">
-                                                <span class="call-icon">📞</span>
-                                                Product Support - Sarah Miller
-                                            </div>
-                                        </td>
-                                        <td>Oct 24, 11:15 AM</td>
-                                        <td><span class="sentiment-badge neutral">Neutral (6.2)</span></td>
-                                        <td>08:45</td>
-                                        <td><span class="status-badge complete">Analyzed</span></td>
-                                    </tr>
-                                    <tr class="clickable-row">
-                                        <td>
-                                            <div class="call-title">
-                                                <span class="call-icon">📞</span>
-                                                Initial Outreach - Globex Inc
-                                            </div>
-                                        </td>
-                                        <td>Oct 23, 4:50 PM</td>
-                                        <td><span class="sentiment-badge positive">Positive (9.1)</span></td>
-                                        <td>22:10</td>
-                                        <td><span class="status-badge complete">Analyzed</span></td>
-                                    </tr>
-                                    <tr class="clickable-row">
-                                        <td>
-                                            <div class="call-title">
-                                                <span class="call-icon">📞</span>
-                                                Billing Concern - Mike Ross
-                                            </div>
-                                        </td>
-                                        <td>Oct 23, 1:20 PM</td>
-                                        <td><span class="sentiment-badge negative">Negative (3.5)</span></td>
-                                        <td>12:30</td>
-                                        <td><span class="status-badge complete">Analyzed</span></td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                    <!-- Channel filter tabs -->
+                    <div class="channel-tabs">
+                        <button class="channel-tab active" data-channel="all">All</button>
+                        <button class="channel-tab" data-channel="voice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Calls</button>
+                        <button class="channel-tab" data-channel="sms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> SMS</button>
+                        <button class="channel-tab" data-channel="email"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg> Email</button>
+                        <button class="channel-tab" data-channel="chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Chat</button>
+                        <button class="channel-tab" data-channel="whatsapp"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> WhatsApp</button>
+                    </div>
 
-                        <div class="insights-summary-card">
-                            <div class="card-header">
-                                <h2>Top AI Action Items</h2>
-                            </div>
-                            <div class="action-items-list">
-                                <div class="action-item">
-                                    <input type="checkbox" id="ai1">
-                                    <label for="ai1">
-                                        <span class="ai-title">Send Enterprise Deck to Acme Corp</span>
-                                        <span class="ai-meta">From "Sales Inquiry" • Priority: High</span>
-                                    </label>
-                                </div>
-                                <div class="action-item">
-                                    <input type="checkbox" id="ai2">
-                                    <label for="ai2">
-                                        <span class="ai-title">Schedule Follow-up with Globex Inc</span>
-                                        <span class="ai-meta">From "Initial Outreach" • Priority: Med</span>
-                                    </label>
-                                </div>
-                                <div class="action-item">
-                                    <input type="checkbox" id="ai3">
-                                    <label for="ai3">
-                                        <span class="ai-title">Escalate bill issue to finance team</span>
-                                        <span class="ai-meta">From "Billing Concern" • Priority: High</span>
-                                    </label>
-                                </div>
-                                <div class="action-item">
-                                    <input type="checkbox" id="ai4">
-                                    <label for="ai4">
-                                        <span class="ai-title">Update CRM with Sarah Miller's feedback</span>
-                                        <span class="ai-meta">From "Product Support" • Priority: Low</span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
+                    <!-- Full-width interactions table -->
+                    <div class="interactions-table-wrap">
+                        <table class="interactions-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px"></th>
+                                    <th style="width:40px">Ch.</th>
+                                    <th>Title</th>
+                                    <th>Contact</th>
+                                    <th>Topics</th>
+                                    <th>Sentiment</th>
+                                    <th>QA</th>
+                                    <th>Actions</th>
+                                    <th>Risk</th>
+                                    <th>Duration</th>
+                                    <th>Date</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Rows populated dynamically by JS from API -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="table-pagination">
+                        <button disabled>&larr; Prev</button>
+                        <span>Page 1 of 3</span>
+                        <button>Next &rarr;</button>
                     </div>
                 </section>
 
-                <!-- CALL DETAIL VIEW (Mocking the synced transcript player) -->
-                <section class="view" id="call-detail">
+                <!-- ============================================================ -->
+                <!-- ACTION ITEMS VIEW (new standalone page) -->
+                <!-- ============================================================ -->
+                <section class="view" id="action-items">
+                    <div class="view-header">
+                        <h1>Action Items</h1>
+                        <div class="date-picker">Last 30 Days &#x25BE;</div>
+                    </div>
+
+                    <div class="action-items-filter-bar">
+                        <button class="action-filter-btn active" data-status="all">All (18)</button>
+                        <button class="action-filter-btn" data-status="pending">Pending (7)</button>
+                        <button class="action-filter-btn" data-status="in_progress">In Progress (4)</button>
+                        <button class="action-filter-btn" data-status="done">Done (5)</button>
+                        <button class="action-filter-btn" data-status="overdue">Overdue (2)</button>
+                    </div>
+
+                    <div class="interactions-table-wrap">
+                        <table class="interactions-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:30px"></th>
+                                    <th>Title</th>
+                                    <th>Source Interaction</th>
+                                    <th>Category</th>
+                                    <th>Priority</th>
+                                    <th>Assigned To</th>
+                                    <th>Status</th>
+                                    <th>Due Date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <!-- Populated by API -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 2. INTERACTION DETAIL VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="interaction-detail">
                     <div class="view-header">
                         <div class="breadcrumb">
-                            <a href="#" class="back-link">← Back to Calls</a>
+                            <a href="#" class="back-link" data-back="interactions">← Back to Interactions</a>
                         </div>
-                        <h1>Sales Inquiry - Acme Corp</h1>
+                        <h1><!-- Populated by JS --></h1>
                     </div>
 
                     <div class="call-player-grid">
@@ -242,21 +312,12 @@
                                 <div class="audio-controls">
                                     <button class="btn-play">▶</button>
                                     <div class="progress-bar">
-                                        <div class="progress" style="width: 35%"></div>
+                                        <div class="progress" style="width: 0%"></div>
                                     </div>
-                                    <span class="time">05:12 / 14:22</span>
+                                    <span class="time">--:-- / --:--</span>
                                 </div>
                                 <div class="waveform">
-                                    <div class="wave" style="--height: 40%"></div>
-                                    <div class="wave" style="--height: 60%"></div>
-                                    <div class="wave active" style="--height: 80%"></div>
-                                    <div class="wave" style="--height: 50%"></div>
-                                    <div class="wave" style="--height: 30%"></div>
-                                    <div class="wave" style="--height: 70%"></div>
-                                    <div class="wave" style="--height: 40%"></div>
-                                    <div class="wave" style="--height: 90%"></div>
-                                    <div class="wave" style="--height: 60%"></div>
-                                    <div class="wave" style="--height: 40%"></div>
+                                    <!-- Waveform populated by JS -->
                                 </div>
                             </div>
 
@@ -265,26 +326,7 @@
                                     <input type="text" placeholder="Search transcript...">
                                 </div>
                                 <div class="transcript-scroll">
-                                    <div class="transcript-entry">
-                                        <span class="entry-time">00:00</span>
-                                        <span class="entry-speaker agent">Sarah (Sales Agent)</span>
-                                        <p class="entry-text">Thanks for calling CallSight AI. This is Sarah speaking, how can I help you today?</p>
-                                    </div>
-                                    <div class="transcript-entry">
-                                        <span class="entry-time">00:15</span>
-                                        <span class="entry-speaker customer">David (Acme Corp)</span>
-                                        <p class="entry-text">Hi Sarah, I'm calling to inquire about your enterprise pricing. We have a team of about 200 agents and we're looking for a solution that can handle high volume.</p>
-                                    </div>
-                                    <div class="transcript-entry active">
-                                        <span class="entry-time">00:42</span>
-                                        <span class="entry-speaker agent">Sarah (Sales Agent)</span>
-                                        <p class="entry-text">That's great! We have a specialized enterprise plan that includes unlimited minutes and custom multi-tenant isolation. I'd love to walk you through our dashboard features.</p>
-                                    </div>
-                                    <div class="transcript-entry">
-                                        <span class="entry-time">01:05</span>
-                                        <span class="entry-speaker customer">David (Acme Corp)</span>
-                                        <p class="entry-text">One specific concern we have is sensitive data. How do you handle PII redaction in transcripts?</p>
-                                    </div>
+                                    <!-- Transcript entries populated by JS -->
                                 </div>
                             </div>
                         </div>
@@ -292,28 +334,1213 @@
                         <div class="insights-column">
                             <div class="insight-card">
                                 <h3>AI Summary</h3>
-                                <p>Call focused on Acme Corp's enterprise needs for 200+ agents. Key concerns identified around PII redaction and high-volume stability. Agent Sarah effectively positioned enterprise benefits and scheduled a deep dive.</p>
+                                <p><!-- Populated by JS --></p>
                             </div>
+
                             <div class="insight-card">
-                                <h3>Sentiment & Coaching</h3>
+                                <h3>Sentiment Trajectory</h3>
                                 <div class="sentiment-over-time">
-                                    <div class="s-bar pos" style="height: 80%"></div>
-                                    <div class="s-bar pos" style="height: 70%"></div>
-                                    <div class="s-bar pos" style="height: 90%"></div>
-                                    <div class="s-bar neu" style="height: 50%"></div>
-                                    <div class="s-bar pos" style="height: 85%"></div>
-                                </div>
-                                <div class="coaching-notes">
-                                    <div class="notepoint positive">Excellent rapport building in intro.</div>
-                                    <div class="notepoint positive">Clearly articulated pricing structures.</div>
-                                    <div class="notepoint neutral">Action item: Mention SOC2 compliance early next time.</div>
+                                    <!-- Populated by JS -->
                                 </div>
                             </div>
+
+                            <div class="insight-card">
+                                <h3>Coaching Notes</h3>
+                                <div class="coaching-notes">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Scorecard: Sales QA</h3>
+                                <div class="scorecard-score">--<small>/100</small></div>
+                                <div class="criterion-bars">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Notable Snippets</h3>
+                                <div class="snippets-list">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Comments</h3>
+                                <div class="comments-list">
+                                    <!-- Populated by JS -->
+                                </div>
+                                <div class="comment-input-row">
+                                    <input type="text" placeholder="Add a comment..." class="comment-input">
+                                    <button class="btn btn-primary btn-sm">Post</button>
+                                </div>
+                            </div>
+
                             <button class="btn btn-primary btn-block">Generate Follow-up Email</button>
                         </div>
                     </div>
+
+                    <!-- Call Metrics Bar -->
+                    <div class="call-metrics-bar">
+                        <div class="metric-item">
+                            <span class="metric-label">Talk / Listen</span>
+                            <div class="talk-listen-bar">
+                                <div class="talk-portion" style="width:50%">--</div>
+                                <div class="listen-portion" style="width:50%">--</div>
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Fillers</span>
+                            <span class="metric-value">--</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Questions</span>
+                            <span class="metric-value">--</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Speech Rate</span>
+                            <span class="metric-value">--</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Interruptions</span>
+                            <span class="metric-value">--</span>
+                        </div>
+                    </div>
                 </section>
-            </div>
+
+                <!-- ============================================================ -->
+                <!-- 3. LIVE CALL VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="live-call">
+                    <div class="view-header">
+                        <h1>Live Call</h1>
+                        <div class="live-indicator"><span class="live-dot"></span> LIVE</div>
+                    </div>
+
+                    <div class="live-call-grid">
+                        <div class="live-left">
+                            <div class="live-transcript-panel">
+                                <h3>Live Transcript</h3>
+                                <div class="live-transcript-scroll">
+                                    <div class="transcript-entry">
+                                        <span class="entry-time">00:00</span>
+                                        <span class="entry-speaker agent">Sarah M. (Agent)</span>
+                                        <p class="entry-text">Good afternoon, thank you for calling. This is Sarah, how can I help?</p>
+                                    </div>
+                                    <div class="transcript-entry">
+                                        <span class="entry-time">00:08</span>
+                                        <span class="entry-speaker customer">Robert Hayes (Prospect)</span>
+                                        <p class="entry-text">Hi Sarah, I saw your demo last week and I had some questions about pricing for the enterprise tier.</p>
+                                    </div>
+                                    <div class="transcript-entry">
+                                        <span class="entry-time">00:22</span>
+                                        <span class="entry-speaker agent">Sarah M. (Agent)</span>
+                                        <p class="entry-text">Of course! I'd be happy to go over that. Could you tell me a bit more about your team size and the volume of calls you handle?</p>
+                                    </div>
+                                    <div class="transcript-entry active">
+                                        <span class="entry-time">00:38</span>
+                                        <span class="entry-speaker customer">Robert Hayes (Prospect)</span>
+                                        <p class="entry-text">We have about 150 agents across three locations. The price seems a bit steep compared to what we're paying now...</p>
+                                    </div>
+                                    <div class="transcript-entry typing">
+                                        <span class="entry-time">00:55</span>
+                                        <span class="entry-speaker agent">Sarah M. (Agent)</span>
+                                        <p class="entry-text"><span class="typing-cursor">|</span></p>
+                                    </div>
+                                </div>
+                                <div class="live-waveform">
+                                    <div class="wave-bar" style="--delay: 0s"></div>
+                                    <div class="wave-bar" style="--delay: 0.1s"></div>
+                                    <div class="wave-bar" style="--delay: 0.2s"></div>
+                                    <div class="wave-bar" style="--delay: 0.3s"></div>
+                                    <div class="wave-bar" style="--delay: 0.4s"></div>
+                                    <div class="wave-bar" style="--delay: 0.5s"></div>
+                                    <div class="wave-bar" style="--delay: 0.6s"></div>
+                                    <div class="wave-bar" style="--delay: 0.7s"></div>
+                                    <div class="wave-bar" style="--delay: 0.8s"></div>
+                                    <div class="wave-bar" style="--delay: 0.9s"></div>
+                                    <div class="wave-bar" style="--delay: 1.0s"></div>
+                                    <div class="wave-bar" style="--delay: 0.15s"></div>
+                                    <div class="wave-bar" style="--delay: 0.35s"></div>
+                                    <div class="wave-bar" style="--delay: 0.55s"></div>
+                                    <div class="wave-bar" style="--delay: 0.75s"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="live-right">
+                            <div class="insight-card coaching-card">
+                                <h3>AI Coaching Hints</h3>
+                                <div class="coaching-hint-cards">
+                                    <div class="hint-card warning">
+                                        <span class="hint-icon">💡</span>
+                                        <p>Customer seems hesitant about pricing -- try reframing the value proposition. Emphasize ROI: avg. clients see 23% improvement in close rates.</p>
+                                    </div>
+                                    <div class="hint-card info">
+                                        <span class="hint-icon">📊</span>
+                                        <p>Competitor comparison data available. Robert's company currently uses BasicCall -- highlight real-time analytics advantage.</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Compliance Checklist</h3>
+                                <div class="compliance-list">
+                                    <label class="compliance-item checked">
+                                        <input type="checkbox" checked disabled> Greeting
+                                    </label>
+                                    <label class="compliance-item checked">
+                                        <input type="checkbox" checked disabled> Consent
+                                    </label>
+                                    <label class="compliance-item">
+                                        <input type="checkbox" disabled> Needs Assessment
+                                    </label>
+                                    <label class="compliance-item">
+                                        <input type="checkbox" disabled> Closing
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Caller Info</h3>
+                                <div class="caller-info-grid">
+                                    <div class="caller-field">
+                                        <span class="field-label">Name</span>
+                                        <span class="field-value">Robert Hayes</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Company</span>
+                                        <span class="field-value">TechVenture LLC</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Phone</span>
+                                        <span class="field-value">+1 (555) 234-8901</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Last Interaction</span>
+                                        <span class="field-value">Apr 8, 2026</span>
+                                    </div>
+                                    <div class="caller-field full-width">
+                                        <span class="field-label">Sentiment Trend</span>
+                                        <div class="mini-sparkline">
+                                            <svg viewBox="0 0 120 30" class="sparkline-svg">
+                                                <polyline points="0,25 20,20 40,18 60,22 80,15 100,10 120,8" fill="none" stroke="#10B981" stroke-width="2"/>
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Live Metrics Bottom Bar -->
+                    <div class="call-metrics-bar">
+                        <div class="metric-item">
+                            <span class="metric-label">Talk / Listen</span>
+                            <div class="talk-listen-bar">
+                                <div class="talk-portion" style="width:58%">58%</div>
+                                <div class="listen-portion" style="width:42%">42%</div>
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Questions</span>
+                            <span class="metric-value">3</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Sentiment</span>
+                            <span class="metric-value sentiment-positive">Positive</span>
+                        </div>
+                    </div>
+
+                    <!-- Whisper Tray -->
+                    <div class="whisper-tray">
+                        <span class="whisper-icon">🔇</span>
+                        <span class="whisper-label">Manager whisper messages appear here</span>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 4. MANAGER MONITORING VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="manager-monitoring">
+                    <div class="view-header">
+                        <h1>Active Sessions</h1>
+                        <span class="live-indicator"><span class="live-dot"></span> 3 Live</span>
+                    </div>
+
+                    <div class="monitoring-cards-grid">
+                        <div class="monitoring-card">
+                            <div class="monitoring-card-header">
+                                <div class="monitoring-agent">
+                                    <div class="user-avatar sm">SM</div>
+                                    <div>
+                                        <span class="monitoring-agent-name">Sarah M.</span>
+                                        <span class="monitoring-caller">Robert Hayes, TechVenture</span>
+                                    </div>
+                                </div>
+                                <div class="monitoring-meta">
+                                    <span class="monitoring-duration">04:32</span>
+                                    <span class="sentiment-badge positive">8.2</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-sm btn-block">Monitor</button>
+                        </div>
+                        <div class="monitoring-card">
+                            <div class="monitoring-card-header">
+                                <div class="monitoring-agent">
+                                    <div class="user-avatar sm">JT</div>
+                                    <div>
+                                        <span class="monitoring-agent-name">James T.</span>
+                                        <span class="monitoring-caller">Linda Xu, Pinnacle Corp</span>
+                                    </div>
+                                </div>
+                                <div class="monitoring-meta">
+                                    <span class="monitoring-duration">12:18</span>
+                                    <span class="sentiment-badge neutral">5.9</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-sm btn-block">Monitor</button>
+                        </div>
+                        <div class="monitoring-card">
+                            <div class="monitoring-card-header">
+                                <div class="monitoring-agent">
+                                    <div class="user-avatar sm">RK</div>
+                                    <div>
+                                        <span class="monitoring-agent-name">Rachel K.</span>
+                                        <span class="monitoring-caller">Dan Morris, Apex Ltd</span>
+                                    </div>
+                                </div>
+                                <div class="monitoring-meta">
+                                    <span class="monitoring-duration">01:45</span>
+                                    <span class="sentiment-badge positive">7.4</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-sm btn-block">Monitor</button>
+                        </div>
+                    </div>
+
+                    <!-- Mock Monitoring Detail -->
+                    <div class="monitoring-detail-panel">
+                        <h2>Monitoring: Sarah M. &rarr; Robert Hayes</h2>
+                        <div class="monitoring-detail-grid">
+                            <div class="monitoring-transcript">
+                                <h3>Read-only Transcript</h3>
+                                <div class="transcript-scroll" style="max-height: 300px;">
+                                    <div class="transcript-entry">
+                                        <span class="entry-time">00:00</span>
+                                        <span class="entry-speaker agent">Sarah M.</span>
+                                        <p class="entry-text">Good afternoon, thank you for calling. This is Sarah, how can I help?</p>
+                                    </div>
+                                    <div class="transcript-entry">
+                                        <span class="entry-time">00:08</span>
+                                        <span class="entry-speaker customer">Robert Hayes</span>
+                                        <p class="entry-text">Hi Sarah, I had some questions about pricing for the enterprise tier.</p>
+                                    </div>
+                                    <div class="transcript-entry active">
+                                        <span class="entry-time">00:38</span>
+                                        <span class="entry-speaker customer">Robert Hayes</span>
+                                        <p class="entry-text">The price seems a bit steep compared to what we're paying now...</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="monitoring-right">
+                                <div class="insight-card coaching-card">
+                                    <h3>AI Coaching Hints</h3>
+                                    <div class="hint-card warning">
+                                        <span class="hint-icon">💡</span>
+                                        <p>Price hesitation detected. Sarah should pivot to ROI comparison.</p>
+                                    </div>
+                                </div>
+                                <div class="whisper-input-card">
+                                    <h3>Send Whisper</h3>
+                                    <div class="whisper-input-row">
+                                        <input type="text" placeholder="Type a whisper message to Sarah..." class="whisper-input">
+                                        <button class="btn btn-primary btn-sm">Send</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 5. CALL LIBRARY VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="call-library">
+                    <div class="view-header">
+                        <h1>Call Library</h1>
+                    </div>
+
+                    <div class="library-filters">
+                        <select class="filter-select">
+                            <option>All Types</option>
+                            <option>Best Practice</option>
+                            <option>Training</option>
+                            <option>Flagged</option>
+                        </select>
+                        <select class="filter-select">
+                            <option>All Quality</option>
+                            <option>Exemplary</option>
+                            <option>Needs Improvement</option>
+                            <option>Flagged</option>
+                        </select>
+                        <select class="filter-select">
+                            <option>All Agents</option>
+                            <option>Sarah M.</option>
+                            <option>James T.</option>
+                            <option>Rachel K.</option>
+                        </select>
+                        <input type="text" class="filter-tags-input" placeholder="Filter by tags...">
+                    </div>
+
+                    <div class="library-grid">
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge exemplary">Exemplary</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Strong objection handling on pricing</h4>
+                            <div class="library-time-range">2:34 - 3:12</div>
+                            <div class="library-source">Sales Inquiry - Acme Corp &middot; Apr 10, 2026</div>
+                            <p class="library-excerpt">"I understand the price may seem higher, but let me show you the ROI our clients typically see in the first quarter..."</p>
+                            <div class="library-tags">
+                                <span class="tag">objection-handling</span>
+                                <span class="tag">pricing</span>
+                            </div>
+                        </div>
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge exemplary">Exemplary</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Perfect needs discovery sequence</h4>
+                            <div class="library-time-range">0:45 - 2:10</div>
+                            <div class="library-source">Initial Outreach - Globex Inc &middot; Apr 8, 2026</div>
+                            <p class="library-excerpt">"Before I dive into features, could you walk me through your current workflow and where the biggest pain points are?"</p>
+                            <div class="library-tags">
+                                <span class="tag">discovery</span>
+                                <span class="tag">best-practice</span>
+                            </div>
+                        </div>
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge needs-improvement">Needs Improvement</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Missed upsell opportunity</h4>
+                            <div class="library-time-range">8:20 - 9:15</div>
+                            <div class="library-source">Support Call - Lisa Park &middot; Apr 7, 2026</div>
+                            <p class="library-excerpt">"Sure, I can help with that billing change. Is there anything else?" -- Customer had mentioned expanding team but agent didn't follow up.</p>
+                            <div class="library-tags">
+                                <span class="tag">upsell</span>
+                                <span class="tag">training</span>
+                            </div>
+                        </div>
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge flagged">Flagged</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Compliance gap - missing consent</h4>
+                            <div class="library-time-range">0:00 - 0:30</div>
+                            <div class="library-source">Cancellation Save - Mike Ross &middot; Apr 5, 2026</div>
+                            <p class="library-excerpt">Agent jumped straight to retention offer without confirming recording consent per compliance guidelines.</p>
+                            <div class="library-tags">
+                                <span class="tag">compliance</span>
+                                <span class="tag">consent</span>
+                            </div>
+                        </div>
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge exemplary">Exemplary</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Excellent rapport in first 30 seconds</h4>
+                            <div class="library-time-range">0:00 - 0:32</div>
+                            <div class="library-source">Onboarding - Tom Bradley &middot; Apr 12, 2026</div>
+                            <p class="library-excerpt">"Welcome aboard, Tom! I've pulled up your account and I can see you're already set up with three team members. Let's make sure everyone's configured perfectly."</p>
+                            <div class="library-tags">
+                                <span class="tag">rapport</span>
+                                <span class="tag">onboarding</span>
+                            </div>
+                        </div>
+                        <div class="library-card">
+                            <div class="library-card-header">
+                                <span class="quality-badge needs-improvement">Needs Improvement</span>
+                                <span class="library-play-btn">▶</span>
+                            </div>
+                            <h4 class="library-card-title">Excessive filler words during pitch</h4>
+                            <div class="library-time-range">4:10 - 5:45</div>
+                            <div class="library-source">Demo Call - Wayne Enterprises &middot; Apr 3, 2026</div>
+                            <p class="library-excerpt">"So, um, basically what we do is, like, we take your calls and, you know, analyze them with our AI engine which is, um, really powerful..."</p>
+                            <div class="library-tags">
+                                <span class="tag">fillers</span>
+                                <span class="tag">presentation</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 6. SEARCH VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="search">
+                    <div class="view-header">
+                        <h1>Search</h1>
+                    </div>
+
+                    <div class="search-big-input">
+                        <span class="search-icon-lg">🔍</span>
+                        <input type="text" placeholder="Search across all transcripts, calls, and channels..." value="enterprise pricing">
+                    </div>
+
+                    <div class="search-results">
+                        <div class="search-result-count">3 results for "enterprise pricing"</div>
+
+                        <div class="search-result-item">
+                            <div class="search-result-header">
+                                <span class="channel-icon">📞</span>
+                                <span class="search-result-title">Sales Inquiry - Enterprise Plan</span>
+                                <span class="search-result-date">Apr 10, 2026</span>
+                                <span class="sentiment-badge positive">8.9</span>
+                            </div>
+                            <p class="search-result-excerpt">...I'm calling to inquire about your <mark>enterprise pricing</mark>. We have a team of about 200 agents and we're looking for a solution that can handle high volume...</p>
+                        </div>
+
+                        <div class="search-result-item">
+                            <div class="search-result-header">
+                                <span class="channel-icon">📞</span>
+                                <span class="search-result-title">Follow-up Demo - TechVenture LLC</span>
+                                <span class="search-result-date">Apr 8, 2026</span>
+                                <span class="sentiment-badge neutral">6.5</span>
+                            </div>
+                            <p class="search-result-excerpt">...I had some questions about <mark>enterprise pricing</mark> for the higher tier. The per-seat cost seems a bit steep compared to what we're paying now with our current provider...</p>
+                        </div>
+
+                        <div class="search-result-item">
+                            <div class="search-result-header">
+                                <span class="channel-icon">✉️</span>
+                                <span class="search-result-title">Proposal Email - Globex Inc</span>
+                                <span class="search-result-date">Apr 5, 2026</span>
+                                <span class="sentiment-badge positive">7.8</span>
+                            </div>
+                            <p class="search-result-excerpt">...Attached is our <mark>enterprise pricing</mark> sheet with the volume discounts we discussed. For 300+ seats, we can offer an additional 15% discount on the annual plan...</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 7. CONTACTS VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="contacts">
+                    <div class="view-header">
+                        <h1>Contacts</h1>
+                        <button class="btn btn-primary btn-sm">+ Add Contact</button>
+                    </div>
+
+                    <div class="recent-calls-card" style="margin-bottom:2rem;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Company</th>
+                                    <th>Phone</th>
+                                    <th>Email</th>
+                                    <th>Interactions</th>
+                                    <th>Last Seen</th>
+                                    <th>Sentiment</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <!-- Populated by API -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Contact Detail (sub-view) -->
+                <section class="view" id="contact-detail">
+                    <div class="view-header">
+                        <div class="breadcrumb">
+                            <a href="#" class="back-link" data-back="contacts">← Back to Contacts</a>
+                        </div>
+                        <h1>David Chen &mdash; Acme Corp</h1>
+                    </div>
+
+                    <div class="contact-detail-grid">
+                        <div class="contact-info-panel">
+                            <div class="insight-card">
+                                <h3>Contact Info</h3>
+                                <div class="caller-info-grid">
+                                    <div class="caller-field">
+                                        <span class="field-label">Phone</span>
+                                        <span class="field-value">+1 (555) 123-4567</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Email</span>
+                                        <span class="field-value">d.chen@acme.com</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Company</span>
+                                        <span class="field-value">Acme Corp</span>
+                                    </div>
+                                    <div class="caller-field">
+                                        <span class="field-label">Total Interactions</span>
+                                        <span class="field-value">12</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="insight-card">
+                                <h3>Churn Risk</h3>
+                                <span class="churn-badge low">Low Risk</span>
+                                <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">Based on sentiment trends and engagement frequency.</p>
+                            </div>
+                            <div class="insight-card">
+                                <h3>Sentiment Over Time</h3>
+                                <div class="sentiment-over-time" style="height:80px;">
+                                    <div class="s-bar pos" style="height:60%"></div>
+                                    <div class="s-bar pos" style="height:65%"></div>
+                                    <div class="s-bar pos" style="height:70%"></div>
+                                    <div class="s-bar pos" style="height:75%"></div>
+                                    <div class="s-bar pos" style="height:80%"></div>
+                                    <div class="s-bar pos" style="height:78%"></div>
+                                    <div class="s-bar pos" style="height:85%"></div>
+                                    <div class="s-bar pos" style="height:88%"></div>
+                                    <div class="s-bar pos" style="height:90%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="contact-history-panel">
+                            <h3>Interaction History</h3>
+                            <div class="history-timeline">
+                                <div class="history-item">
+                                    <span class="channel-icon">📞</span>
+                                    <div class="history-content">
+                                        <span class="history-title">Sales Inquiry - Enterprise Plan</span>
+                                        <span class="history-date">Apr 10, 2026 &middot; 14:22 &middot; <span class="sentiment-badge positive">8.9</span></span>
+                                    </div>
+                                </div>
+                                <div class="history-item">
+                                    <span class="channel-icon">✉️</span>
+                                    <div class="history-content">
+                                        <span class="history-title">Follow-up: Enterprise Proposal</span>
+                                        <span class="history-date">Apr 9, 2026 &middot; 3 emails &middot; <span class="sentiment-badge positive">8.1</span></span>
+                                    </div>
+                                </div>
+                                <div class="history-item">
+                                    <span class="channel-icon">📞</span>
+                                    <div class="history-content">
+                                        <span class="history-title">Initial Discovery Call</span>
+                                        <span class="history-date">Apr 3, 2026 &middot; 22:10 &middot; <span class="sentiment-badge positive">7.5</span></span>
+                                    </div>
+                                </div>
+                                <div class="history-item">
+                                    <span class="channel-icon">🗨️</span>
+                                    <div class="history-content">
+                                        <span class="history-title">Chat: Product Questions</span>
+                                        <span class="history-date">Mar 28, 2026 &middot; 8 msgs &middot; <span class="sentiment-badge neutral">6.8</span></span>
+                                    </div>
+                                </div>
+                                <div class="history-item">
+                                    <span class="channel-icon">📱</span>
+                                    <div class="history-content">
+                                        <span class="history-title">WhatsApp: Quick pricing Q</span>
+                                        <span class="history-date">Mar 25, 2026 &middot; 5 msgs &middot; <span class="sentiment-badge neutral">6.2</span></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 8. ANALYTICS VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="analytics">
+                    <div class="view-header">
+                        <h1>Analytics</h1>
+                        <div class="date-picker">Last 30 Days ▾</div>
+                    </div>
+
+                    <!-- Company Health Score -->
+                    <div class="analytics-top-row">
+                        <div class="health-score-card">
+                            <h3>Company Health Score</h3>
+                            <div class="health-gauge">
+                                <svg viewBox="0 0 120 120" class="gauge-svg">
+                                    <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="10"/>
+                                    <circle cx="60" cy="60" r="52" fill="none" stroke="url(#gauge-grad)" stroke-width="10" stroke-dasharray="327" stroke-dashoffset="59" stroke-linecap="round" transform="rotate(-90 60 60)"/>
+                                    <defs><linearGradient id="gauge-grad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#6366F1"/><stop offset="100%" stop-color="#10B981"/></linearGradient></defs>
+                                </svg>
+                                <div class="gauge-label">
+                                    <span class="gauge-value">82</span>
+                                    <span class="gauge-sub">/100</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="analytics-chart-card">
+                            <h3>Call Volume & Sentiment Trends</h3>
+                            <div class="trend-chart">
+                                <div class="trend-chart-bars">
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:55%"></div>
+                                        <div class="trend-line-dot" style="--top:35%"></div>
+                                        <span class="trend-label">Mon</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:72%"></div>
+                                        <div class="trend-line-dot" style="--top:28%"></div>
+                                        <span class="trend-label">Tue</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:65%"></div>
+                                        <div class="trend-line-dot" style="--top:30%"></div>
+                                        <span class="trend-label">Wed</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:80%"></div>
+                                        <div class="trend-line-dot" style="--top:22%"></div>
+                                        <span class="trend-label">Thu</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:90%"></div>
+                                        <div class="trend-line-dot" style="--top:18%"></div>
+                                        <span class="trend-label">Fri</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:40%"></div>
+                                        <div class="trend-line-dot" style="--top:40%"></div>
+                                        <span class="trend-label">Sat</span>
+                                    </div>
+                                    <div class="trend-bar-group">
+                                        <div class="trend-bar" style="--h:30%"></div>
+                                        <div class="trend-line-dot" style="--top:42%"></div>
+                                        <span class="trend-label">Sun</span>
+                                    </div>
+                                </div>
+                                <div class="trend-legend">
+                                    <span class="legend-item"><span class="legend-bar"></span> Call Volume</span>
+                                    <span class="legend-item"><span class="legend-dot"></span> Avg Sentiment</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="analytics-mid-row">
+                        <!-- Top Topics -->
+                        <div class="insight-card">
+                            <h3>Top Topics</h3>
+                            <div class="topics-list">
+                                <div class="topic-row"><span class="topic-name">Pricing</span><div class="topic-bar"><div class="topic-fill" style="width:85%"></div></div><span class="topic-count">142</span></div>
+                                <div class="topic-row"><span class="topic-name">Integrations</span><div class="topic-bar"><div class="topic-fill" style="width:68%"></div></div><span class="topic-count">114</span></div>
+                                <div class="topic-row"><span class="topic-name">Onboarding</span><div class="topic-bar"><div class="topic-fill" style="width:55%"></div></div><span class="topic-count">92</span></div>
+                                <div class="topic-row"><span class="topic-name">API / Webhooks</span><div class="topic-bar"><div class="topic-fill" style="width:45%"></div></div><span class="topic-count">75</span></div>
+                                <div class="topic-row"><span class="topic-name">Security / Compliance</span><div class="topic-bar"><div class="topic-fill" style="width:38%"></div></div><span class="topic-count">64</span></div>
+                                <div class="topic-row"><span class="topic-name">Billing</span><div class="topic-bar"><div class="topic-fill" style="width:30%"></div></div><span class="topic-count">50</span></div>
+                            </div>
+                        </div>
+
+                        <!-- Competitive Mentions -->
+                        <div class="insight-card">
+                            <h3>Competitive Mentions</h3>
+                            <table class="data-table compact">
+                                <thead>
+                                    <tr>
+                                        <th>Competitor</th>
+                                        <th>Mentions</th>
+                                        <th>Handled Well</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                            <!-- Populated by API -->
+                            </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="analytics-bottom-row">
+                        <!-- Product Feedback Themes -->
+                        <div class="insight-card">
+                            <h3>Product Feedback Themes</h3>
+                            <div class="feedback-themes">
+                                <div class="feedback-theme">
+                                    <span class="theme-sentiment positive">+</span>
+                                    <span class="theme-text">Real-time transcription accuracy praised</span>
+                                    <span class="theme-count">47 mentions</span>
+                                </div>
+                                <div class="feedback-theme">
+                                    <span class="theme-sentiment positive">+</span>
+                                    <span class="theme-text">AI coaching suggestions found helpful</span>
+                                    <span class="theme-count">38 mentions</span>
+                                </div>
+                                <div class="feedback-theme">
+                                    <span class="theme-sentiment negative">-</span>
+                                    <span class="theme-text">Mobile app missing key features</span>
+                                    <span class="theme-count">22 mentions</span>
+                                </div>
+                                <div class="feedback-theme">
+                                    <span class="theme-sentiment negative">-</span>
+                                    <span class="theme-text">Webhook setup too complex</span>
+                                    <span class="theme-count">15 mentions</span>
+                                </div>
+                                <div class="feedback-theme">
+                                    <span class="theme-sentiment positive">+</span>
+                                    <span class="theme-text">Dashboard UX improvement well-received</span>
+                                    <span class="theme-count">31 mentions</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Agent Leaderboard -->
+                        <div class="insight-card">
+                            <h3>Agent Leaderboard</h3>
+                            <table class="data-table compact">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Agent</th>
+                                        <th>Calls</th>
+                                        <th>Avg Sentiment</th>
+                                        <th>QA Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>1</td><td class="fw-500">Sarah M.</td><td>148</td><td><span class="sentiment-badge positive">8.9</span></td><td>96%</td></tr>
+                                    <tr><td>2</td><td class="fw-500">Rachel K.</td><td>132</td><td><span class="sentiment-badge positive">8.4</span></td><td>93%</td></tr>
+                                    <tr><td>3</td><td class="fw-500">James T.</td><td>119</td><td><span class="sentiment-badge neutral">7.1</span></td><td>87%</td></tr>
+                                    <tr><td>4</td><td class="fw-500">Emily R.</td><td>104</td><td><span class="sentiment-badge positive">8.0</span></td><td>91%</td></tr>
+                                    <tr><td>5</td><td class="fw-500">Carlos V.</td><td>98</td><td><span class="sentiment-badge positive">7.8</span></td><td>89%</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 9. SCORECARDS VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="scorecards">
+                    <div class="view-header">
+                        <h1>Scorecards</h1>
+                        <button class="btn btn-primary btn-sm">+ New Template</button>
+                    </div>
+
+                    <div class="scorecards-layout">
+                        <div class="scorecard-templates-list">
+                            <h3>Templates</h3>
+                            <div class="template-item active">
+                                <span class="template-icon">📋</span>
+                                <div>
+                                    <span class="template-name">Sales QA</span>
+                                    <span class="template-meta">5 criteria &middot; Used 312 times</span>
+                                </div>
+                            </div>
+                            <div class="template-item">
+                                <span class="template-icon">📋</span>
+                                <div>
+                                    <span class="template-name">Support Resolution</span>
+                                    <span class="template-meta">6 criteria &middot; Used 248 times</span>
+                                </div>
+                            </div>
+                            <div class="template-item">
+                                <span class="template-icon">📋</span>
+                                <div>
+                                    <span class="template-name">Compliance Audit</span>
+                                    <span class="template-meta">8 criteria &middot; Used 87 times</span>
+                                </div>
+                            </div>
+                            <div class="template-item">
+                                <span class="template-icon">📋</span>
+                                <div>
+                                    <span class="template-name">Onboarding QA</span>
+                                    <span class="template-meta">4 criteria &middot; Used 156 times</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="scorecard-editor-preview">
+                            <div class="insight-card">
+                                <h3>Sales QA Template</h3>
+                                <div class="criteria-editor">
+                                    <div class="criteria-row">
+                                        <span class="criteria-name">Greeting & Rapport</span>
+                                        <span class="criteria-weight">Weight: 20%</span>
+                                    </div>
+                                    <div class="criteria-row">
+                                        <span class="criteria-name">Needs Discovery</span>
+                                        <span class="criteria-weight">Weight: 25%</span>
+                                    </div>
+                                    <div class="criteria-row">
+                                        <span class="criteria-name">Product Knowledge</span>
+                                        <span class="criteria-weight">Weight: 20%</span>
+                                    </div>
+                                    <div class="criteria-row">
+                                        <span class="criteria-name">Objection Handling</span>
+                                        <span class="criteria-weight">Weight: 20%</span>
+                                    </div>
+                                    <div class="criteria-row">
+                                        <span class="criteria-name">Close & Next Steps</span>
+                                        <span class="criteria-weight">Weight: 15%</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>Sample Scored Interaction</h3>
+                                <div class="scored-header">
+                                    <span>Sales Inquiry - Acme Corp</span>
+                                    <span class="scorecard-score inline">85<small>/100</small></span>
+                                </div>
+                                <div class="criterion-bars">
+                                    <div class="criterion-row">
+                                        <span class="criterion-label">Greeting & Rapport (20%)</span>
+                                        <div class="criterion-bar"><div class="criterion-fill green" style="width:95%"></div></div>
+                                        <span class="criterion-val">95</span>
+                                    </div>
+                                    <div class="criterion-row">
+                                        <span class="criterion-label">Needs Discovery (25%)</span>
+                                        <div class="criterion-bar"><div class="criterion-fill green" style="width:82%"></div></div>
+                                        <span class="criterion-val">82</span>
+                                    </div>
+                                    <div class="criterion-row">
+                                        <span class="criterion-label">Product Knowledge (20%)</span>
+                                        <div class="criterion-bar"><div class="criterion-fill green" style="width:90%"></div></div>
+                                        <span class="criterion-val">90</span>
+                                    </div>
+                                    <div class="criterion-row">
+                                        <span class="criterion-label">Objection Handling (20%)</span>
+                                        <div class="criterion-bar"><div class="criterion-fill yellow" style="width:78%"></div></div>
+                                        <span class="criterion-val">78</span>
+                                    </div>
+                                    <div class="criterion-row">
+                                        <span class="criterion-label">Close & Next Steps (15%)</span>
+                                        <div class="criterion-bar"><div class="criterion-fill green" style="width:80%"></div></div>
+                                        <span class="criterion-val">80</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- AGENT PERFORMANCE VIEW (manager only) -->
+                <!-- ============================================================ -->
+                <section class="view" id="agent-performance">
+                    <div class="view-header">
+                        <h1>Agent Performance</h1>
+                        <div class="date-picker">Last 30 Days &#x25BE;</div>
+                    </div>
+                    <div class="interactions-table-wrap">
+                        <table class="interactions-table">
+                            <thead>
+                                <tr>
+                                    <th>Agent</th>
+                                    <th>Interactions</th>
+                                    <th>Avg Sentiment</th>
+                                    <th>QA Score</th>
+                                    <th>Talk/Listen</th>
+                                    <th>Resolution Rate</th>
+                                    <th>Coaching Trend</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <!-- Populated by API -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 10. KNOWLEDGE BASE VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="knowledge-base">
+                    <div class="view-header">
+                        <h1>Knowledge Base</h1>
+                        <div class="header-actions-group">
+                            <button class="btn btn-outline btn-sm">+ New Article</button>
+                            <button class="btn btn-primary btn-sm">📤 Upload Document</button>
+                        </div>
+                    </div>
+
+                    <div class="kb-document-list">
+                        <div class="kb-document">
+                            <span class="kb-source-icon">📄</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Enterprise Pricing Guide 2026</span>
+                                <span class="kb-doc-meta">PDF &middot; Uploaded Apr 10, 2026 &middot; 24 pages</span>
+                            </div>
+                            <span class="kb-sync-status synced">Indexed</span>
+                        </div>
+                        <div class="kb-document">
+                            <span class="kb-source-icon">📝</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Product FAQ - Common Objections</span>
+                                <span class="kb-doc-meta">Article &middot; Created Mar 15, 2026 &middot; Internal</span>
+                            </div>
+                            <span class="kb-sync-status synced">Indexed</span>
+                        </div>
+                        <div class="kb-document">
+                            <span class="kb-source-icon confluence-icon">🔗</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Sales Playbook - Confluence</span>
+                                <span class="kb-doc-meta">Confluence &middot; Synced Apr 12, 2026 &middot; 18 pages</span>
+                            </div>
+                            <span class="kb-sync-status synced">Synced</span>
+                        </div>
+                        <div class="kb-document">
+                            <span class="kb-source-icon">📓</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Competitive Battlecards - Notion</span>
+                                <span class="kb-doc-meta">Notion &middot; Synced Apr 11, 2026 &middot; 12 pages</span>
+                            </div>
+                            <span class="kb-sync-status synced">Synced</span>
+                        </div>
+                        <div class="kb-document">
+                            <span class="kb-source-icon">📁</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Technical Architecture Overview</span>
+                                <span class="kb-doc-meta">Google Drive &middot; Synced Apr 9, 2026 &middot; 8 pages</span>
+                            </div>
+                            <span class="kb-sync-status syncing">Syncing...</span>
+                        </div>
+                        <div class="kb-document">
+                            <span class="kb-source-icon">📄</span>
+                            <div class="kb-doc-info">
+                                <span class="kb-doc-title">Compliance & Security Whitepaper</span>
+                                <span class="kb-doc-meta">PDF &middot; Uploaded Mar 22, 2026 &middot; 16 pages</span>
+                            </div>
+                            <span class="kb-sync-status synced">Indexed</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 11. INTEGRATIONS VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="integrations">
+                    <div class="view-header">
+                        <h1>Integrations</h1>
+                    </div>
+
+                    <div class="integrations-section">
+                        <h3>Google Workspace</h3>
+                        <div class="integration-cards-row">
+                            <div class="integration-card-item connected">
+                                <span class="integration-icon-lg">📧</span>
+                                <span class="integration-name">Gmail</span>
+                                <span class="integration-status connected">Connected</span>
+                            </div>
+                            <div class="integration-card-item connected">
+                                <span class="integration-icon-lg">📅</span>
+                                <span class="integration-name">Calendar</span>
+                                <span class="integration-status connected">Connected</span>
+                            </div>
+                            <div class="integration-card-item connected">
+                                <span class="integration-icon-lg">👥</span>
+                                <span class="integration-name">Contacts</span>
+                                <span class="integration-status connected">Connected</span>
+                            </div>
+                            <div class="integration-card-item connected">
+                                <span class="integration-icon-lg">🎥</span>
+                                <span class="integration-name">Meet</span>
+                                <span class="integration-status connected">Connected</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="integrations-section">
+                        <h3>Microsoft</h3>
+                        <div class="integration-cards-row">
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">📬</span>
+                                <span class="integration-name">Outlook</span>
+                                <button class="btn btn-outline btn-sm">Connect</button>
+                            </div>
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">📅</span>
+                                <span class="integration-name">Calendar</span>
+                                <button class="btn btn-outline btn-sm">Connect</button>
+                            </div>
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">💬</span>
+                                <span class="integration-name">Teams</span>
+                                <button class="btn btn-outline btn-sm">Connect</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="integrations-section">
+                        <h3>CRM</h3>
+                        <div class="integration-cards-row">
+                            <div class="integration-card-item connected">
+                                <span class="integration-icon-lg">☁️</span>
+                                <span class="integration-name">Salesforce</span>
+                                <span class="integration-status connected">Connected</span>
+                            </div>
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">🟠</span>
+                                <span class="integration-name">HubSpot</span>
+                                <button class="btn btn-outline btn-sm">Connect</button>
+                            </div>
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">🔵</span>
+                                <span class="integration-name">Pipedrive</span>
+                                <button class="btn btn-outline btn-sm">Connect</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="integrations-section">
+                        <h3>Data Enrichment</h3>
+                        <div class="integration-cards-row">
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">🧑‍💼</span>
+                                <span class="integration-name">People Data Labs</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="integration-card-item">
+                                <span class="integration-icon-lg">🚀</span>
+                                <span class="integration-name">Apollo</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- 12. SETTINGS VIEW -->
+                <!-- ============================================================ -->
+                <section class="view" id="preferences">
+                    <div class="view-header">
+                        <h1>Preferences</h1>
+                    </div>
+
+                    <div class="settings-sections">
+                        <div class="settings-section">
+                            <h3>Automation Level</h3>
+                            <p class="settings-desc">Control how AI processes and acts on call data.</p>
+                            <div class="radio-group">
+                                <label class="radio-item">
+                                    <input type="radio" name="automation" value="manual"> Manual
+                                    <span class="radio-desc">AI analyzes but takes no actions</span>
+                                </label>
+                                <label class="radio-item active">
+                                    <input type="radio" name="automation" value="approval" checked> Approval Required
+                                    <span class="radio-desc">AI suggests actions, requires human approval</span>
+                                </label>
+                                <label class="radio-item">
+                                    <input type="radio" name="automation" value="auto"> Fully Automated
+                                    <span class="radio-desc">AI executes actions automatically (emails, CRM updates)</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>PII Redaction</h3>
+                            <p class="settings-desc">Automatically redact sensitive information from transcripts.</p>
+                            <div class="settings-toggle-row">
+                                <span>Enable PII Redaction</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="pii-entities">
+                                <label class="checkbox-item"><input type="checkbox" checked> Social Security Numbers</label>
+                                <label class="checkbox-item"><input type="checkbox" checked> Credit Card Numbers</label>
+                                <label class="checkbox-item"><input type="checkbox" checked> Phone Numbers</label>
+                                <label class="checkbox-item"><input type="checkbox"> Email Addresses</label>
+                                <label class="checkbox-item"><input type="checkbox" checked> Physical Addresses</label>
+                                <label class="checkbox-item"><input type="checkbox"> Names</label>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>Transcription Engine</h3>
+                            <p class="settings-desc">Select the speech-to-text engine for processing calls.</p>
+                            <select class="settings-select">
+                                <option selected>Deepgram Nova-2</option>
+                                <option>OpenAI Whisper Large v3</option>
+                                <option>Google Speech-to-Text v2</option>
+                                <option>AWS Transcribe</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>API Keys</h3>
+                            <p class="settings-desc">Manage your API keys for programmatic access.</p>
+                            <table class="data-table compact">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Key</th>
+                                        <th>Created</th>
+                                        <th>Last Used</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="fw-500">Production</td>
+                                        <td><code>cs_live_****...7f3a</code></td>
+                                        <td>Mar 1, 2026</td>
+                                        <td>Apr 15, 2026</td>
+                                        <td><button class="btn btn-ghost btn-sm">Revoke</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td class="fw-500">Staging</td>
+                                        <td><code>cs_test_****...9b2c</code></td>
+                                        <td>Feb 15, 2026</td>
+                                        <td>Apr 14, 2026</td>
+                                        <td><button class="btn btn-ghost btn-sm">Revoke</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <button class="btn btn-outline btn-sm" style="margin-top:1rem;">+ Generate New Key</button>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>Webhook Endpoints</h3>
+                            <p class="settings-desc">Configure webhook endpoints for real-time event notifications.</p>
+                            <table class="data-table compact">
+                                <thead>
+                                    <tr>
+                                        <th>URL</th>
+                                        <th>Events</th>
+                                        <th>Status</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>https://api.acme.com/webhooks/callsight</code></td>
+                                        <td>call.completed, transcript.ready</td>
+                                        <td><span class="status-badge complete">Active</span></td>
+                                        <td><button class="btn btn-ghost btn-sm">Edit</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>https://hooks.slack.com/services/T0...</code></td>
+                                        <td>sentiment.alert</td>
+                                        <td><span class="status-badge complete">Active</span></td>
+                                        <td><button class="btn btn-ghost btn-sm">Edit</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <button class="btn btn-outline btn-sm" style="margin-top:1rem;">+ Add Endpoint</button>
+                        </div>
+                    </div>
+                </section>
+
+            </div><!-- /view-container -->
         </main>
     </div>
 
