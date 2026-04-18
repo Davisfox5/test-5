@@ -61,7 +61,11 @@ from backend.app.api.action_items import router as action_items_router  # noqa: 
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.conversations import router as conversations_router  # noqa: E402
 from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
-from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
+from backend.app.api.email_push import router as email_push_router  # noqa: E402
+# Campaigns API/UI intentionally disabled for now — models + migration remain
+# so the schema is consistent, but the HTTP surface is off until we're ready
+# to expose it.  Re-enable by uncommenting here and in the include_router call.
+# from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -77,7 +81,8 @@ app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["ac
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
 app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
-app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
+app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
+# app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 

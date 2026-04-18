@@ -91,6 +91,22 @@ class Settings(BaseSettings):
     # ── Embeddings (optional — enables Qdrant RAG) ────────
     VOYAGE_API_KEY: str = ""
 
+    # ── Email push notifications ──────────────────────────
+    # Base URL the OAuth providers can reach to POST inbound
+    # notifications.  Needs to be an https URL in production.
+    PUBLIC_WEBHOOK_BASE_URL: str = ""
+    # Gmail Pub/Sub topic the backend subscribes each mailbox to.
+    # Format: "projects/{project}/topics/{topic}".  Must have the
+    # Gmail service account granted Publisher on it.
+    GMAIL_PUBSUB_TOPIC: str = ""
+    # Shared secret between the backend and Google Pub/Sub push
+    # subscription (passed as ?token=... on the push URL so we can
+    # drop any untrusted caller fast).
+    GMAIL_PUSH_TOKEN: str = ""
+    # Shared "clientState" string Microsoft Graph echoes back to prove
+    # the subscription owner is us.
+    GRAPH_CLIENT_STATE: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
