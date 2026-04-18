@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # ── Encryption key for OAuth tokens at rest ──────────
     TOKEN_ENCRYPTION_KEY: str = ""  # 32-byte Fernet key
 
+    # ── Embeddings (optional — enables Qdrant RAG) ────────
+    VOYAGE_API_KEY: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

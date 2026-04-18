@@ -771,6 +771,7 @@ document.addEventListener('DOMContentLoaded', function() {
             else if (viewId === 'contacts') loadContacts();
             else if (viewId === 'analytics') loadAnalytics();
             else if (viewId === 'call-library') loadLibrary();
+            else if (viewId === 'conversations' && typeof loadConversations === 'function') loadConversations();
         }
     };
 
@@ -1298,3 +1299,189 @@ function seededRandom(seed) {
         return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
 }
+
+// ======== CONVERSATIONS ========
+// Standalone module so the diff is contained. Talks to /api/v1/conversations
+// endpoints; falls back to an empty-state row when the API is unreachable
+// or the tenant hasn't connected an inbox yet.
+
+var _currentConversationId = null;
+var _currentConversationProviderIntegrationId = null;
+
+async function loadConversations(filter) {
+    var body = document.getElementById('conversationsTableBody');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="8" class="empty-row">Loading…</td></tr>';
+    var qs = '';
+    if (filter && filter !== 'all') {
+        if (filter === 'waiting_agent') qs = '?status=waiting_agent';
+        else qs = '?classification=' + encodeURIComponent(filter);
+    }
+    var rows = await apiFetch('/conversations' + qs);
+    if (!rows || !rows.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty-row">No conversations yet — connect Gmail or Outlook in Integrations.</td></tr>';
+        return;
+    }
+    body.innerHTML = '';
+    rows.forEach(function(conv) {
+        var tr = document.createElement('tr');
+        tr.className = 'interaction-row';
+        tr.setAttribute('data-conv-id', conv.id);
+        var insights = conv.insights || {};
+        var latestSentiment = (insights.sentiment_series || []).slice(-1)[0];
+        var churn = insights.latest_churn_risk;
+        var signalBits = [];
+        if (churn && churn > 0.6) signalBits.push('<span class="badge risk">churn risk</span>');
+        if (insights.latest_upsell_score && insights.latest_upsell_score > 0.6) signalBits.push('<span class="badge upsell">upsell</span>');
+        tr.innerHTML =
+            '<td>' + (CHANNEL_ICONS[conv.channel] || CHANNEL_ICONS.email) + '</td>' +
+            '<td>' + escapeHtml(conv.subject || '(no subject)') + '</td>' +
+            '<td>' + escapeHtml(conv.classification || '—') + '</td>' +
+            '<td><span class="status-pill ' + (conv.status || 'open') + '">' + (conv.status || 'open') + '</span></td>' +
+            '<td>' + (conv.message_count || 0) + '</td>' +
+            '<td>' + formatRelativeDate(conv.last_message_at) + '</td>' +
+            '<td>' + (latestSentiment != null ? latestSentiment.toFixed(1) : '—') + '</td>' +
+            '<td>' + signalBits.join(' ') + '</td>';
+        tr.addEventListener('click', function() { openConversation(conv.id); });
+        body.appendChild(tr);
+    });
+}
+
+async function openConversation(conversationId) {
+    _currentConversationId = conversationId;
+    window.switchView('conversation-detail');
+    var data = await apiFetch('/conversations/' + conversationId);
+    if (!data) return;
+    document.getElementById('conversationDetailSubject').textContent = data.subject || '(no subject)';
+    document.getElementById('conversationDetailMeta').textContent =
+        (data.classification || 'unclassified') + ' · ' + (data.status || 'open') +
+        ' · ' + (data.message_count || 0) + ' messages';
+
+    var threadEl = document.getElementById('conversationThread');
+    threadEl.innerHTML = '';
+    (data.messages || []).forEach(function(m) {
+        var div = document.createElement('div');
+        div.className = 'conv-message ' + (m.direction === 'inbound' ? 'inbound' : 'outbound');
+        div.innerHTML =
+            '<div class="conv-message-header">' +
+                '<span class="conv-who">' + (m.direction === 'inbound' ? 'Customer' : 'Agent') + '</span>' +
+                '<span class="conv-from">' + escapeHtml(m.from_address || '') + '</span>' +
+                '<span class="conv-when">' + formatRelativeDate(m.created_at) + '</span>' +
+            '</div>' +
+            '<div class="conv-subject">' + escapeHtml(m.subject || '') + '</div>' +
+            '<pre class="conv-body">' + escapeHtml((m.raw_text || '').slice(0, 8000)) + '</pre>';
+        threadEl.appendChild(div);
+    });
+
+    var insightsEl = document.getElementById('conversationInsights');
+    var insights = data.insights || {};
+    insightsEl.innerHTML =
+        '<div><label>Latest summary</label><p>' + escapeHtml(insights.latest_summary || '—') + '</p></div>' +
+        '<div><label>Churn risk</label><p>' + (insights.latest_churn_risk != null ? insights.latest_churn_risk.toFixed(2) : '—') + '</p></div>' +
+        '<div><label>Upsell score</label><p>' + (insights.latest_upsell_score != null ? insights.latest_upsell_score.toFixed(2) : '—') + '</p></div>';
+
+    // Reset draft panel
+    document.getElementById('conversationDraftOutput').hidden = true;
+    document.getElementById('conversationDraftInstructions').value = '';
+
+    // Look up the first email-capable integration so Send has a target.
+    var integrations = await apiFetch('/oauth/status');
+    if (integrations && integrations.integrations && integrations.integrations.length) {
+        var first = integrations.integrations.find(function(i) {
+            return i.provider === 'google' || i.provider === 'microsoft';
+        });
+        _currentConversationProviderIntegrationId = first ? first.id : null;
+    } else {
+        _currentConversationProviderIntegrationId = null;
+    }
+}
+
+async function draftConversationReply() {
+    if (!_currentConversationId) return;
+    var instructionsEl = document.getElementById('conversationDraftInstructions');
+    var btn = document.getElementById('conversationDraftBtn');
+    btn.disabled = true;
+    btn.textContent = 'Drafting…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/draft-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ extra_instructions: instructionsEl.value || null })
+        });
+        if (!resp) { btn.textContent = 'Generate draft'; btn.disabled = false; return; }
+        document.getElementById('conversationDraftOutput').hidden = false;
+        document.getElementById('conversationDraftSubject').value = resp.subject || '';
+        document.getElementById('conversationDraftBody').value = resp.body || '';
+        document.getElementById('conversationDraftRationale').textContent = resp.rationale || '';
+        document.getElementById('conversationDraftFlag').hidden = !resp.requires_human_review;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate draft';
+    }
+}
+
+async function sendConversationReply() {
+    if (!_currentConversationId) return;
+    if (!_currentConversationProviderIntegrationId) {
+        alert('Connect Gmail or Outlook first (Integrations view).');
+        return;
+    }
+    var subject = document.getElementById('conversationDraftSubject').value;
+    var body = document.getElementById('conversationDraftBody').value;
+    // Derive recipient from the most recent inbound message's from-address.
+    var inboundFrom = null;
+    document.querySelectorAll('#conversationThread .conv-message.inbound .conv-from').forEach(function(el) {
+        inboundFrom = el.textContent.trim();
+    });
+    if (!inboundFrom) { alert('No inbound message to reply to.'); return; }
+
+    var btn = document.getElementById('conversationSendBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/send-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subject: subject,
+                body: body,
+                to: [inboundFrom],
+                cc: [],
+                integration_id: _currentConversationProviderIntegrationId
+            })
+        });
+        if (resp) {
+            btn.textContent = 'Sent ✓';
+            setTimeout(function() { openConversation(_currentConversationId); }, 500);
+        } else {
+            btn.textContent = 'Send reply';
+        }
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
+// Wire UI events once the DOM is ready.
+document.addEventListener('DOMContentLoaded', function() {
+    var draftBtn = document.getElementById('conversationDraftBtn');
+    if (draftBtn) draftBtn.addEventListener('click', draftConversationReply);
+    var sendBtn = document.getElementById('conversationSendBtn');
+    if (sendBtn) sendBtn.addEventListener('click', sendConversationReply);
+    document.querySelectorAll('[data-conv-filter]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('[data-conv-filter]').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            loadConversations(btn.getAttribute('data-conv-filter'));
+        });
+    });
+});
+
+window.loadConversations = loadConversations;
+window.openConversation = openConversation;

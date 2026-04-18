@@ -170,6 +170,9 @@ class Interaction(Base):
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL")
     )
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
 
     # Type and source — voice|email|chat (sms/whatsapp stubbed)
     channel: Mapped[str] = mapped_column(String, nullable=False)
@@ -448,3 +451,62 @@ class EmailSyncCursor(Base):
     history_id: Mapped[Optional[str]] = mapped_column(String)       # Gmail historyId
     delta_link: Mapped[Optional[str]] = mapped_column(Text)         # Graph deltaLink
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ──────────────────────────────────────────────────────────
+# MARKETING CAMPAIGNS
+#
+# We don't generate campaigns — we monitor them.  External ESPs (Mailchimp,
+# HubSpot, Klaviyo, SendGrid, etc.) push metadata + engagement events in,
+# and we attribute replies / downstream interactions back so AI analysis
+# can correlate campaign framing with customer sentiment.
+# ──────────────────────────────────────────────────────────
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)  # email|sms|push|other
+    provider: Mapped[Optional[str]] = mapped_column(String)  # mailchimp|hubspot|klaviyo|sendgrid|custom
+    external_id: Mapped[Optional[str]] = mapped_column(String)  # ESP's campaign id
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    variant: Mapped[Optional[str]] = mapped_column(String)  # A/B label
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)  # rollup: sentiment, reply rate, churn delta
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignRecipient(Base):
+    """Which contacts received which campaign message (needed for attribution)."""
+
+    __tablename__ = "campaign_recipients"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    email_address: Mapped[Optional[str]] = mapped_column(String)
+    external_message_id: Mapped[Optional[str]] = mapped_column(String)  # ESP/per-send id
+    rfc822_message_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CampaignEvent(Base):
+    """Engagement event from the ESP — open/click/bounce/unsubscribe/reply/convert."""
+
+    __tablename__ = "campaign_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    recipient_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaign_recipients.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    event_type: Mapped[str] = mapped_column(String, nullable=False)  # open|click|bounce|unsubscribe|reply|convert
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)

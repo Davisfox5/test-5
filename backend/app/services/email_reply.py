@@ -112,19 +112,15 @@ async def _contact_history(
 
 
 async def _kb_excerpts(db: AsyncSession, tenant_id, query: str, k: int = 5) -> List[KBDocument]:
-    """Pull KB docs.  Real RAG hits Qdrant; this fallback grabs the most
-    recently synced docs so we always provide *some* grounding surface.
+    """Pull grounding docs via the retrieval service.
 
-    The Sonnet call still checks "never fabricate" so an imperfect
-    shortlist only degrades quality — it can't invent wrong facts.
+    Uses Qdrant + embeddings when configured, and a tenant-scoped
+    keyword ranker otherwise.  See services/kb_retrieval.py.
     """
-    result = await db.execute(
-        select(KBDocument)
-        .where(KBDocument.tenant_id == tenant_id)
-        .order_by(KBDocument.last_synced_at.desc().nullslast())
-        .limit(k)
-    )
-    return result.scalars().all()
+    from backend.app.services.kb_retrieval import retrieve
+
+    ranked = await retrieve(db, tenant_id, query, k=k)
+    return [doc for doc, _score in ranked]
 
 
 def _format_thread(messages: List[Interaction]) -> str:

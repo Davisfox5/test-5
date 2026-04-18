@@ -476,11 +476,57 @@ def _run_pipeline(
         )
         session.add(snippet_row)
 
-    # ── Step 17: Fire outbound webhooks (placeholder) ────────────────
-    logger.info(
-        "TODO: Fire outbound webhooks for interaction %s (tenant %s)",
-        interaction_id, tenant_id,
-    )
+    # ── Step 17: Fire outbound webhooks ──────────────────────────────
+    from backend.app.services.webhook_dispatcher import dispatch_sync
+
+    analyzed_payload = {
+        "event": "interaction.analyzed",
+        "tenant_id": tenant_id,
+        "interaction_id": interaction_id,
+        "channel": interaction.channel,
+        "direction": interaction.direction,
+        "classification": getattr(interaction, "classification", None),
+        "contact_id": str(interaction.contact_id) if interaction.contact_id else None,
+        "conversation_id": (
+            str(interaction.conversation_id) if interaction.conversation_id else None
+        ),
+        "summary": insights.get("summary"),
+        "sentiment_score": insights.get("sentiment_score"),
+        "churn_risk": insights.get("churn_risk"),
+        "upsell_score": insights.get("upsell_score"),
+        "action_item_count": len(insights.get("action_items", [])),
+    }
+    try:
+        dispatch_sync(session, tenant.id, "interaction.analyzed", analyzed_payload)
+    except Exception:
+        logger.exception("Webhook dispatch raised (non-fatal)")
+
+    # Conversation-level fan-out — only when this message actually has a thread.
+    if interaction.conversation_id is not None:
+        conv_row = (
+            session.query(Conversation)
+            .filter(Conversation.id == interaction.conversation_id)
+            .first()
+        )
+        if conv_row is not None:
+            try:
+                dispatch_sync(
+                    session,
+                    tenant.id,
+                    "conversation.updated",
+                    {
+                        "event": "conversation.updated",
+                        "tenant_id": tenant_id,
+                        "conversation_id": str(conv_row.id),
+                        "channel": conv_row.channel,
+                        "classification": conv_row.classification,
+                        "status": conv_row.status,
+                        "message_count": conv_row.message_count,
+                        "latest_summary": (conv_row.insights or {}).get("latest_summary"),
+                    },
+                )
+            except Exception:
+                logger.exception("Conversation webhook dispatch raised (non-fatal)")
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)

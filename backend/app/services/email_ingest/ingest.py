@@ -26,7 +26,15 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from backend.app.models import Contact, Conversation, Interaction, Tenant, User
+from backend.app.models import (
+    CampaignEvent,
+    CampaignRecipient,
+    Contact,
+    Conversation,
+    Interaction,
+    Tenant,
+    User,
+)
 from backend.app.services.email_classifier import (
     EmailClassifier,
     EmailForClassification,
@@ -206,6 +214,32 @@ async def ingest_email(
     contact = _upsert_contact(session, tenant.id, counterparty)
     agent = _resolve_agent(session, tenant.id, email.agent_email)
 
+    # Campaign attribution: if this is an inbound reply to a tracked
+    # campaign send, link it and record a reply event so campaign
+    # analytics stay fresh without a separate pass.
+    campaign_id = None
+    if email.direction == "inbound" and email.in_reply_to:
+        recipient = (
+            session.query(CampaignRecipient)
+            .filter(
+                CampaignRecipient.tenant_id == tenant.id,
+                CampaignRecipient.rfc822_message_id == email.in_reply_to,
+            )
+            .first()
+        )
+        if recipient is not None:
+            campaign_id = recipient.campaign_id
+            session.add(
+                CampaignEvent(
+                    campaign_id=recipient.campaign_id,
+                    tenant_id=tenant.id,
+                    recipient_id=recipient.id,
+                    contact_id=contact.id if contact else None,
+                    event_type="reply",
+                    metadata_={"message_id": email.message_id},
+                )
+            )
+
     thread_key = _thread_key(email)
     conversation = _upsert_conversation(
         session=session,
@@ -222,6 +256,7 @@ async def ingest_email(
         agent_id=agent.id if agent else None,
         contact_id=contact.id if contact else None,
         conversation_id=conversation.id,
+        campaign_id=campaign_id,
         channel="email",
         source=email.provider,
         direction=email.direction,
