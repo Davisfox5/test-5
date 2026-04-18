@@ -1,4 +1,9 @@
-"""Interactions API — unified CRUD for voice, SMS, email, chat, WhatsApp."""
+"""Interactions API — unified CRUD for voice, email, chat.
+
+SMS and WhatsApp channels are stubbed out — see
+``backend/app/services/sms_ingest.py``.  Existing rows with those channel
+values remain queryable but new ones cannot be created through the API.
+"""
 
 import uuid
 from datetime import datetime
@@ -19,8 +24,11 @@ router = APIRouter()
 # ── Pydantic Schemas ─────────────────────────────────────
 
 
+# SMS / WhatsApp intentionally excluded from the accepted channel list.
+# They confound email/voice analysis during early tenant onboarding and
+# are re-enabled by adding them back to this Literal.
 class InteractionCreate(BaseModel):
-    channel: Literal["voice", "sms", "email", "chat", "whatsapp"]
+    channel: Literal["voice", "email", "chat"]
     source: Optional[str] = None
     direction: Optional[Literal["inbound", "outbound", "internal"]] = None
     title: Optional[str] = None
@@ -73,7 +81,7 @@ class InteractionUpdate(BaseModel):
 
 @router.get("/interactions", response_model=List[InteractionOut])
 async def list_interactions(
-    channel: Optional[str] = Query(None, description="Filter by channel: voice|sms|email|chat|whatsapp"),
+    channel: Optional[str] = Query(None, description="Filter by channel: voice|email|chat"),
     status: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -118,8 +126,11 @@ async def create_interaction(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Create a text-based interaction (SMS, email, chat, WhatsApp text).
-    For voice uploads, use POST /interactions/upload instead.
+    """Create a text-based interaction (email, chat).
+
+    For voice uploads, use POST /interactions/upload instead.  Email
+    ingestion normally runs through the OAuth poller, not this endpoint.
+    SMS/WhatsApp are disabled (see services/sms_ingest.py).
     """
     interaction = Interaction(
         tenant_id=tenant.id,
@@ -138,8 +149,13 @@ async def create_interaction(
     db.add(interaction)
     await db.flush()
 
-    # TODO: dispatch Celery task for text analysis pipeline
-    # analyze_text_interaction.delay(str(interaction.id))
+    # Dispatch the text-analysis pipeline (email/chat share the same branch).
+    try:
+        from backend.app.tasks import process_text_interaction
+
+        process_text_interaction.delay(str(interaction.id))
+    except Exception:  # pragma: no cover — Celery may be unavailable in tests
+        pass
 
     return interaction
 

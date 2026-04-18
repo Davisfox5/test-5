@@ -46,6 +46,11 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
+        # Poll every connected email integration every 2 minutes.
+        "email-ingest-poll": {
+            "task": "email_ingest_poll",
+            "schedule": 120.0,
+        },
     },
 )
 
@@ -250,6 +255,7 @@ def _run_pipeline(
     from backend.app.models import (
         ActionItem,
         Contact,
+        Conversation,
         InteractionScore,
         InteractionSnippet,
         ScorecardTemplate,
@@ -397,6 +403,36 @@ def _run_pipeline(
         contact = session.query(Contact).filter(Contact.id == interaction.contact_id).first()
         if contact is not None:
             update_contact_rollup(contact, insights, interaction.created_at)
+
+    # ── Step 13c: Update conversation rollup (email threading) ───────
+    if interaction.conversation_id is not None:
+        conv = (
+            session.query(Conversation)
+            .filter(Conversation.id == interaction.conversation_id)
+            .first()
+        )
+        if conv is not None:
+            # Keep a small rolling summary + sentiment series at the conv level
+            # so the reply generator and UI don't have to aggregate on read.
+            conv_insights = dict(conv.insights or {})
+            series = list(conv_insights.get("sentiment_series") or [])
+            sscore = insights.get("sentiment_score")
+            if sscore is not None:
+                try:
+                    series.append(float(sscore))
+                    conv_insights["sentiment_series"] = series[-50:]
+                except (TypeError, ValueError):
+                    pass
+            conv_insights["latest_summary"] = insights.get("summary", "")
+            conv_insights["latest_churn_risk"] = insights.get("churn_risk")
+            conv_insights["latest_upsell_score"] = insights.get("upsell_score")
+            conv.insights = conv_insights
+            # Direction drives status: inbound customer → waiting on us;
+            # outbound agent → waiting on customer.
+            if interaction.direction == "inbound":
+                conv.status = "waiting_agent"
+            elif interaction.direction == "outbound":
+                conv.status = "waiting_customer"
 
     # ── Step 14: Insert action items ─────────────────────────────────
     for ai_item in insights.get("action_items", []):
@@ -576,11 +612,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
 @celery_app.task(bind=True, name="process_text_interaction", max_retries=3)
 def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
-    """Batch pipeline for a text-based interaction (chat, email, SMS, etc.).
+    """Batch pipeline for a text-based interaction (email, chat).
 
     Similar to :func:`process_voice_interaction` but skips audio download
     and transcription (steps 3–4).  Uses ``raw_text`` from the interaction
     directly, converting it into a single-segment transcript.
+
+    SMS/WhatsApp paths are stubbed (see services/sms_ingest.py) but this
+    function remains channel-agnostic — if those channels are re-enabled
+    they'll flow through here unchanged.
     """
     from backend.app.models import Interaction, Tenant
 
@@ -659,6 +699,26 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
 
 # ── Scheduled periodic tasks ─────────────────────────────────────────────
+
+
+@celery_app.task(name="email_ingest_poll")
+def email_ingest_poll() -> Dict[str, Any]:
+    """Poll every connected Google/Microsoft integration for new mail.
+
+    Scheduled every 2 minutes by Celery Beat.  Each integration advances
+    its own ``EmailSyncCursor`` so we only fetch deltas.  External,
+    customer-facing emails are created as ``Interaction(channel='email')``
+    rows and enqueued for the standard text-analysis pipeline.  Internal
+    emails are dropped with a log line and never touch the Interaction
+    table.
+    """
+    from backend.app.services.email_ingest.poller import poll_all
+
+    session = _get_sync_session()
+    try:
+        return poll_all(session)
+    finally:
+        session.close()
 
 
 @celery_app.task(name="tenant_insights_weekly")
