@@ -30,6 +30,9 @@ alembic>=1.13
 redis>=5                          # ElastiCache — pub/sub, sessions, Celery broker
 celery[redis]>=5                  # Async task queue
 
+# === Observability ===
+prometheus-client>=0.20            # /metrics for the continuous-improvement system
+
 # === Vector DB ===
 qdrant-client>=1.9                # Knowledge base RAG
 
@@ -40,10 +43,14 @@ elasticsearch[async]>=8           # Transcript search across all interactions
 clerk-backend-api>=1              # Managed auth (transitional)
 python-jose[cryptography]>=3.3   # JWT validation
 
+# === Token encryption at rest (Fernet) ===
+cryptography>=42
+
 # === OAuth / Google ===
 google-auth>=2
 google-api-python-client>=2
 google-auth-oauthlib>=1
+requests>=2.31                    # used by Google token refresh
 
 # === OAuth / Microsoft ===
 msal>=1.28

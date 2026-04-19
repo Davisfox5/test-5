@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import KBDocument, Tenant
+from backend.app.services.kb_retrieval import (
+    delete_from_index,
+    index_document,
+    retrieve,
+)
 
 router = APIRouter()
 
@@ -107,6 +112,7 @@ async def create_kb_doc(
     )
     db.add(doc)
     await db.flush()
+    await index_document(db, doc)
     return doc
 
 
@@ -130,6 +136,7 @@ async def update_kb_doc(
     if body.tags is not None:
         doc.tags = body.tags
 
+    await index_document(db, doc)
     return doc
 
 
@@ -144,6 +151,7 @@ async def delete_kb_doc(
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    await delete_from_index(tenant.id, doc.id)
     await db.delete(doc)
 
 
@@ -193,6 +201,7 @@ async def upload_kb_file(
     )
     db.add(doc)
     await db.flush()
+    await index_document(db, doc)
     return doc
 
 
@@ -203,24 +212,9 @@ async def search_kb(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Search knowledge base documents by text match.
-
-    This is a placeholder implementation using SQL ILIKE.
-    Will be replaced with Qdrant vector search for semantic matching.
-    """
-    # TODO: Replace with Qdrant vector similarity search
-    search_pattern = f"%{query}%"
-    stmt = (
-        select(KBDocument)
-        .where(
-            KBDocument.tenant_id == tenant.id,
-            KBDocument.content.ilike(search_pattern) | KBDocument.title.ilike(search_pattern),
-        )
-        .order_by(KBDocument.created_at.desc())
-        .limit(limit)
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    """Search KB docs — Qdrant vector search when available, keyword fallback otherwise."""
+    ranked = await retrieve(db, tenant.id, query, k=limit)
+    return [doc for doc, _score in ranked]
 
 
 @router.post("/kb/sync/{provider}", status_code=202)
