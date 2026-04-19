@@ -16,7 +16,14 @@ from sqlalchemy import select
 
 from backend.app.config import get_settings
 from backend.app.db import async_session
-from backend.app.models import Interaction, LiveSession, PinnedKBCard, Tenant
+from backend.app.models import (
+    Interaction,
+    KBChunk,
+    KBDocument,
+    LiveSession,
+    PinnedKBCard,
+    Tenant,
+)
 from backend.app.services.kb.classifier import classify
 from backend.app.services.kb.retrieval import RetrievalService, hit_to_payload
 from backend.app.services.live_coaching import LiveCoachingService
@@ -544,8 +551,6 @@ async def _load_pinned_cards(
 ) -> List[dict]:
     """Return rehydrated pinned-card payloads for the agent UI."""
     try:
-        from backend.app.models import KBChunk, KBDocument, PinnedKBCard  # local import
-
         async with async_session() as db:
             stmt = (
                 select(PinnedKBCard, KBChunk, KBDocument)

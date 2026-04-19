@@ -16,6 +16,7 @@ from backend.app.db import get_db
 from backend.app.models import Contact, KBChunk, KBDocument, PinnedKBCard, Tenant
 from backend.app.services.kb import RetrievalService, ingest_document, reindex_tenant
 from backend.app.services.kb.embedder import VoyageEmbedderError
+from backend.app.services.kb.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,15 @@ async def delete_kb_doc(
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # For Qdrant, the Postgres FK cascade doesn't reach the vector store — we
+    # have to clean it up explicitly. For pgvector this is a no-op since the
+    # cascade on kb_chunks already drops the vectors.
+    try:
+        await get_vector_store().delete_doc(db, tenant.id, doc.id)
+    except Exception:
+        logger.exception("Vector store delete_doc failed for %s — row delete continues", doc.id)
+
     await db.delete(doc)
 
 
