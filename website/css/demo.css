@@ -3098,3 +3098,145 @@ span.channel-icon-svg svg { width: 14px; height: 14px; }
     outline: none;
     border-color: #7c3aed;
 }
+
+/* ============================================================ */
+/*  ONBOARDING INTERVIEW view                                    */
+/* ============================================================ */
+.onboarding-shell {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 16px;
+    min-height: 500px;
+}
+.onboarding-sidebar {
+    background: var(--bg-elevated, #fff);
+    border: 1px solid var(--border-main, #e5e7eb);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.onboarding-sidebar h3 { margin: 0; font-size: 14px; }
+
+.onboarding-checklist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.onboarding-checklist li {
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-muted, #6b7280);
+}
+.onboarding-checklist li::before {
+    content: "○";
+    color: var(--text-muted, #9ca3af);
+    font-size: 14px;
+    line-height: 1;
+}
+.onboarding-checklist li[data-state="active"]::before {
+    content: "●";
+    color: #7c3aed;
+}
+.onboarding-checklist li[data-state="done"]::before {
+    content: "✓";
+    color: #16a34a;
+}
+.onboarding-checklist li[data-state="done"] {
+    color: var(--text-main, #111827);
+    text-decoration: line-through;
+    text-decoration-color: rgba(22, 163, 74, 0.35);
+}
+.onboarding-checklist li[data-state="active"] {
+    color: var(--text-main, #111827);
+    font-weight: 500;
+}
+
+.onboarding-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+}
+.onboarding-help {
+    font-size: 11px;
+    color: var(--text-muted, #6b7280);
+    margin: 0;
+    line-height: 1.4;
+}
+
+.onboarding-chat {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--bg-elevated, #fff);
+    border: 1px solid var(--border-main, #e5e7eb);
+    border-radius: 8px;
+    padding: 16px;
+    min-height: 500px;
+}
+.onboarding-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-right: 4px;
+}
+.ob-bubble {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+.ob-bubble[data-role="assistant"] {
+    align-self: flex-start;
+    background: var(--bg-main, #f3f4f6);
+    color: var(--text-main, #111827);
+    border-bottom-left-radius: 4px;
+}
+.ob-bubble[data-role="user"] {
+    align-self: flex-end;
+    background: #7c3aed;
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+.ob-bubble[data-role="assistant"][data-typing="true"] {
+    opacity: 0.65;
+    font-style: italic;
+}
+.ob-system {
+    align-self: center;
+    font-size: 11px;
+    color: var(--text-muted, #9ca3af);
+    font-style: italic;
+}
+.onboarding-composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+.onboarding-composer textarea {
+    flex: 1;
+    resize: vertical;
+    min-height: 44px;
+    max-height: 160px;
+    border: 1px solid var(--border-main, #e5e7eb);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.4;
+    background: var(--bg-main, #f9fafb);
+}
+.onboarding-composer textarea:focus {
+    outline: none;
+    border-color: #7c3aed;
+}

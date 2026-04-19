@@ -113,7 +113,42 @@ class Webhook(Base):
     events: Mapped[list] = mapped_column(JSONB, default=lambda: ["*"])
     secret: Mapped[str] = mapped_column(String, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Counters maintained by the dispatcher so the admin UI can show health
+    # without scanning deliveries every page load.
+    last_delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WebhookDelivery(Base):
+    """One row per delivery attempt sequence. Used for retry tracking + audit.
+
+    A single event creates one WebhookDelivery per matching webhook. The row
+    gets updated in place as retries fire; the attempts list holds the per-
+    retry metadata (status_code, error, timestamp).
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    webhook_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("webhooks.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    event: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # pending | sent | failed | dead_letter
+    status: Mapped[str] = mapped_column(String, default="pending")
+    attempts: Mapped[list] = mapped_column(JSONB, default=list)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_status_code: Mapped[Optional[int]] = mapped_column(Integer)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────

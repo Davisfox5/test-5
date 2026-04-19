@@ -224,6 +224,29 @@ class InferFromSources:
 
         if new_rows:
             await db.flush()
+            # Fan out a webhook for each new suggestion so admins can pipe
+            # them into Slack / review tools without polling the REST API.
+            try:
+                from backend.app.services.webhook_dispatcher import emit_event
+
+                for row in new_rows:
+                    await emit_event(
+                        db,
+                        tenant_id,
+                        "tenant_brief.suggestion_created",
+                        {
+                            "suggestion_id": str(row.id),
+                            "section": row.section,
+                            "path": row.path,
+                            "proposed_value": row.proposed_value,
+                            "rationale": row.rationale,
+                            "confidence": row.confidence,
+                        },
+                    )
+            except Exception:
+                logger.debug(
+                    "suggestion_created emission failed", exc_info=True
+                )
         return new_rows
 
     async def _call_haiku(self, evidence: Dict[str, Any]) -> List[Dict[str, Any]]:

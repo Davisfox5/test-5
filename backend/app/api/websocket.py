@@ -490,6 +490,8 @@ async def _run_coaching(
             websocket,
             redis,
             session_id,
+            tenant_id,
+            contact_id,
             previous_state or {},
             updated_state,
         )
@@ -502,11 +504,13 @@ async def _emit_brief_alerts(
     websocket: WebSocket,
     redis: Optional[aioredis.Redis],
     session_id: str,
+    tenant_id: Optional[uuid.UUID],
+    contact_id: Optional[uuid.UUID],
     previous_state: Dict[str, Any],
     updated_state: Dict[str, Any],
 ) -> None:
     """Compare old vs new coaching state and push targeted alerts to the
-    agent's customer-brief panel for signals that just fired.
+    agent's customer-brief panel (WebSocket) + any subscribed webhooks.
 
     Alerts have `kind` in:
       churn | upsell | escalation | advocate | sentiment_drop
@@ -551,6 +555,33 @@ async def _emit_brief_alerts(
                 f"live:{session_id}:events",
                 json.dumps(alert),
             )
+
+    # Fan out to webhooks. One emit per alert; receivers subscribed to
+    # ``brief_alert.*`` or specific kinds will get picked up by the matcher.
+    if alerts and tenant_id is not None:
+        try:
+            from backend.app.services.webhook_dispatcher import emit_event
+            from backend.app.services.webhook_events import BRIEF_ALERT_EVENT_MAP
+
+            async with async_session() as db:
+                for alert in alerts:
+                    wh_event = BRIEF_ALERT_EVENT_MAP.get(alert["kind"])
+                    if not wh_event:
+                        continue
+                    await emit_event(
+                        db,
+                        tenant_id,
+                        wh_event,
+                        {
+                            "session_id": session_id,
+                            "contact_id": str(contact_id) if contact_id else None,
+                            "kind": alert["kind"],
+                            "message": alert.get("message"),
+                            **{k: v for k, v in alert.items() if k in ("from", "to")},
+                        },
+                    )
+        except Exception:
+            logger.debug("brief_alert webhook emission failed", exc_info=True)
 
 
 def _alert_message_for(kind: str) -> str:

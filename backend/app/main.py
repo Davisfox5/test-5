@@ -62,6 +62,7 @@ from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
+from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -78,13 +79,12 @@ app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["admin"])
 app.include_router(crm_router, prefix=settings.API_V1_PREFIX, tags=["crm"])
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
+app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 
 app.include_router(websocket_router, tags=["websocket"])
 
-# Routers to be added as built:
-# app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
 
 # ── Static Files (minimal demo UI) ───────────────────────
 app.mount("/", StaticFiles(directory="website", html=True), name="website")

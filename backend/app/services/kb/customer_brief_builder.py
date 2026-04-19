@@ -262,6 +262,26 @@ class CustomerBriefBuilder:
                 note.reviewed_at = reviewed_at
 
         customer.customer_brief = brief
+
+        # Fan out a ``customer_brief.updated`` webhook so external systems
+        # (CRM, ops dashboards, Slack bots) can mirror the dossier.
+        try:
+            from backend.app.services.webhook_dispatcher import emit_event
+
+            await emit_event(
+                db,
+                customer.tenant_id,
+                "customer_brief.updated",
+                {
+                    "customer_id": str(customer.id),
+                    "current_status": brief.get("current_status"),
+                    "source_interaction_count": interaction_count,
+                    "notes_reviewed": len(notes or []),
+                },
+            )
+        except Exception:
+            logger.debug("customer_brief.updated emission failed", exc_info=True)
+
         return brief
 
 

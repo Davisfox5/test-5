@@ -392,6 +392,11 @@ def _run_pipeline(
             contact_row.customer_id if contact_row is not None else None
         )
         if cust_id_for_rebuild:
+            from backend.app.services.webhook_events import (
+                CUSTOMER_OUTCOME_EVENT_MAP,
+            )
+
+            customer_events_for_webhooks: List[Dict[str, Any]] = []
             for ev in inferred.customer_events:
                 session.add(
                     CustomerOutcomeEvent(
@@ -405,6 +410,39 @@ def _run_pipeline(
                         source=ev.get("source", "ai_inferred"),
                     )
                 )
+                wh_event = CUSTOMER_OUTCOME_EVENT_MAP.get(ev["event_type"])
+                if wh_event:
+                    customer_events_for_webhooks.append(
+                        {
+                            "webhook_event": wh_event,
+                            "customer_id": str(cust_id_for_rebuild),
+                            "interaction_id": str(interaction.id),
+                            "event_type": ev["event_type"],
+                            "reason": ev.get("reason"),
+                            "signal_strength": ev.get("signal_strength"),
+                            "source": ev.get("source", "ai_inferred"),
+                        }
+                    )
+
+            # Fan out lifecycle events to subscribed webhooks.
+            if customer_events_for_webhooks:
+                from backend.app.db import async_session
+                from backend.app.services.webhook_dispatcher import emit_event
+
+                async def _emit_lifecycle() -> None:
+                    async with async_session() as db:
+                        for ev in customer_events_for_webhooks:
+                            await emit_event(
+                                db,
+                                tenant.id,
+                                ev["webhook_event"],
+                                {k: v for k, v in ev.items() if k != "webhook_event"},
+                            )
+
+                try:
+                    asyncio.run(_emit_lifecycle())
+                except Exception:
+                    logger.exception("Customer lifecycle webhook emission failed")
 
     # Kick a debounced customer-brief rebuild so LINDA has a fresh dossier
     # for the next call with this customer. Best-effort; if Redis/Celery are
@@ -543,14 +581,68 @@ def _run_pipeline(
         )
         session.add(snippet_row)
 
-    # ── Step 17: Fire outbound webhooks (placeholder) ────────────────
-    logger.info(
-        "TODO: Fire outbound webhooks for interaction %s (tenant %s)",
-        interaction_id, tenant_id,
+    # ── Step 17: Fire outbound webhooks ───────────────────────────────
+    # ``interaction.analyzed`` always fires once analysis succeeds.
+    # ``interaction.outcome_inferred`` also fires when the pipeline's
+    # outcome inference step landed on a concrete disposition.
+    _emit_webhooks_for_interaction(
+        tenant_id=tenant.id,
+        interaction_id=uuid.UUID(interaction_id),
+        insights=insights,
+        outcome_type=interaction.outcome_type,
+        outcome_confidence=interaction.outcome_confidence,
     )
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)
+
+
+def _emit_webhooks_for_interaction(
+    tenant_id,
+    interaction_id,
+    insights: Dict[str, Any],
+    outcome_type: Optional[str],
+    outcome_confidence: Optional[float],
+) -> None:
+    """Fan out webhook events for a freshly analyzed interaction.
+
+    Called from inside the sync Celery task, so we hop into an async
+    session via ``asyncio.run``. Never blocks on HTTP — ``emit_event``
+    writes delivery rows and enqueues the delivery task.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.webhook_dispatcher import emit_event
+
+    summary = {
+        "interaction_id": str(interaction_id),
+        "summary": (insights or {}).get("summary", "")[:600],
+        "sentiment_overall": (insights or {}).get("sentiment_overall"),
+        "sentiment_score": (insights or {}).get("sentiment_score"),
+        "churn_risk_signal": (insights or {}).get("churn_risk_signal"),
+        "upsell_signal": (insights or {}).get("upsell_signal"),
+    }
+
+    async def _runner() -> None:
+        async with async_session() as db:
+            await emit_event(db, tenant_id, "interaction.analyzed", summary)
+            if outcome_type:
+                await emit_event(
+                    db,
+                    tenant_id,
+                    "interaction.outcome_inferred",
+                    {
+                        **summary,
+                        "outcome_type": outcome_type,
+                        "outcome_confidence": outcome_confidence,
+                    },
+                )
+
+    try:
+        asyncio.run(_runner())
+    except Exception:
+        logger.exception(
+            "Webhook emission failed for interaction %s", interaction_id
+        )
 
 
 # ── Celery Tasks ─────────────────────────────────────────────────────────
@@ -1021,5 +1113,24 @@ def crm_sync_daily() -> Dict[str, Any]:
                         }
                     )
         return {"runs": results, "count": len(results)}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="webhook_deliver")
+def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
+    """Attempt one HTTP delivery for a WebhookDelivery row.
+
+    The dispatcher re-enqueues retries via ``apply_async(countdown=...)``
+    when it schedules the next attempt, so this task stays stateless.
+    Tolerates the delivery row being gone (e.g., webhook deleted in the
+    meantime) by returning status=missing.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.webhook_dispatcher import deliver_one
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await deliver_one(db, uuid.UUID(delivery_id))
 
     return asyncio.run(_runner())

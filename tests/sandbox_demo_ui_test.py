@@ -435,6 +435,17 @@ def main() -> int:
                 toggle.click()
                 assert toggle.get_attribute("aria-expanded") == "false"
 
+            # ───── Onboarding interview view ─────
+            with step("Onboarding: view renders with chat shell + checklist"):
+                switch_view(page, "onboarding")
+                assert page.locator("#onboarding.view.active").count() == 1
+                assert page.locator("#obMessages").count() == 1
+                assert page.locator("#obComposer").count() == 1
+                # 5 checklist items (goals, kpis, strategies, org, personal_touches).
+                assert page.locator("#obChecklist li").count() == 5
+                # Without an API token, input should be disabled.
+                assert page.locator("#obInput").is_disabled()
+
             # ───── LINDA Insights view ─────
             with step("LINDA Insights: nav + view switch"):
                 switch_view(page, "linda-insights")

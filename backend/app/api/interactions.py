@@ -13,6 +13,8 @@ from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Contact, CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
+from backend.app.services.webhook_dispatcher import emit_event
+from backend.app.services.webhook_events import CUSTOMER_OUTCOME_EVENT_MAP
 
 router = APIRouter()
 
@@ -312,6 +314,41 @@ async def log_outcome(
                 db.add(ev)
                 await db.flush()
                 event_created = str(ev.id)
+
+                # Fan out the lifecycle event — receivers subscribed to
+                # e.g. ``customer.churned`` get notified here too.
+                wh_event = CUSTOMER_OUTCOME_EVENT_MAP.get(body.customer_event_type)
+                if wh_event:
+                    await emit_event(
+                        db,
+                        tenant.id,
+                        wh_event,
+                        {
+                            "customer_id": str(contact.customer_id),
+                            "interaction_id": str(interaction.id),
+                            "event_type": body.customer_event_type,
+                            "magnitude": body.customer_event_magnitude,
+                            "signal_strength": 1.0,
+                            "reason": body.outcome_notes,
+                            "source": "agent_logged",
+                        },
+                    )
+
+    # Always emit outcome_inferred for the explicit disposition, regardless
+    # of whether a lifecycle event was attached.
+    await emit_event(
+        db,
+        tenant.id,
+        "interaction.outcome_inferred",
+        {
+            "interaction_id": str(interaction_id),
+            "outcome_type": interaction.outcome_type,
+            "outcome_value": interaction.outcome_value,
+            "outcome_confidence": interaction.outcome_confidence,
+            "outcome_source": "agent_logged",
+            "outcome_notes": body.outcome_notes,
+        },
+    )
 
     if customer_id_for_rebuild is not None:
         await schedule_customer_brief_rebuild(tenant.id, customer_id_for_rebuild)

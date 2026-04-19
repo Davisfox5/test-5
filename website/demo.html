@@ -133,6 +133,11 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                             </span> LINDA Insights
                         </a>
+                        <a href="#" class="nav-item" data-view="onboarding">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            </span> Onboarding
+                        </a>
                         <a href="#" class="nav-item" data-view="integrations">
                             <span class="nav-icon">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
@@ -1505,6 +1510,42 @@
                 </section>
 
                 <!-- ============================================================ -->
+                <!-- ONBOARDING INTERVIEW VIEW                                     -->
+                <!--   Conversational agent that fills goals/KPIs/strategies/      -->
+                <!--   org_structure/personal_touches on the tenant brief. State   -->
+                <!--   lives in the backend (onboarding_sessions); the UI just     -->
+                <!--   renders message bubbles and POSTs replies.                  -->
+                <!-- ============================================================ -->
+                <section class="view" id="onboarding">
+                    <div class="view-header">
+                        <h1>Onboarding Interview</h1>
+                        <p class="view-subtitle">Answer a few questions so LINDA knows how your business works. You can pause and come back anytime.</p>
+                    </div>
+
+                    <div class="onboarding-shell">
+                        <aside class="onboarding-sidebar">
+                            <h3>Progress</h3>
+                            <ul class="onboarding-checklist" id="obChecklist"></ul>
+                            <div class="onboarding-actions">
+                                <button type="button" class="li-secondary-btn" id="obAbandonBtn" title="Discard this interview">Abandon</button>
+                                <button type="button" class="li-primary-btn" id="obCompleteBtn" disabled>Save &amp; apply</button>
+                            </div>
+                            <p class="onboarding-help" id="obHint">
+                                Loading your interview state…
+                            </p>
+                        </aside>
+
+                        <div class="onboarding-chat">
+                            <div class="onboarding-messages" id="obMessages" aria-live="polite"></div>
+                            <form class="onboarding-composer" id="obComposer">
+                                <textarea id="obInput" rows="2" placeholder="Type your reply…" disabled></textarea>
+                                <button type="submit" class="cb-note-submit" id="obSendBtn" disabled>Send</button>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
                 <!-- 11. INTEGRATIONS VIEW -->
                 <!-- ============================================================ -->
                 <section class="view" id="integrations">
@@ -1833,5 +1874,6 @@
     <script src="js/customer-brief.js"></script>
     <script src="js/linda-insights.js"></script>
     <script src="js/tenant-settings.js"></script>
+    <script src="js/onboarding.js"></script>
 </body>
 </html>
