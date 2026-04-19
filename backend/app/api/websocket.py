@@ -14,6 +14,11 @@ import redis.asyncio as aioredis
 
 from backend.app.config import get_settings
 from backend.app.services.live_coaching import LiveCoachingService
+from backend.app.services.live_coaching_features import (
+    LFTriggerScanner,
+    LiveFeatureWindow,
+    LiveTurn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,15 @@ async def live_transcription(websocket: WebSocket, session_id: str):
     # Tracking state for coaching triggers.
     last_coaching_time: float = time.time()
     words_since_coaching: int = 0
+
+    # Deterministic-feature state (per-connection, no external deps).
+    feature_window = LiveFeatureWindow(window_sec=60.0)
+    lf_scanner = LFTriggerScanner(cooldown_sec=30.0)
+    # Throttle: snapshot every N finals or every MIN_SEC since last emit.
+    last_features_emit_at: float = 0.0
+    finals_since_features_emit: int = 0
+    FEATURES_MIN_INTERVAL_SEC = 5.0
+    FEATURES_EVERY_N_FINALS = 3
 
     try:
         redis = _get_redis()
@@ -116,6 +130,51 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                     await redis.rpush(f"live:{session_id}:buffer", segment)
 
                 words_since_coaching += _word_count(text)
+
+                # ── Deterministic live features (zero-LLM path) ───
+                # Convention: Deepgram speaker index 0 == agent.  Anything
+                # else (incl. None) is treated as customer.  Estimated turn
+                # duration is a rough heuristic — Deepgram's final event
+                # does not carry per-turn duration.
+                word_count = _word_count(text)
+                est_duration = max(0.3, word_count * 0.4)
+                turn = LiveTurn(
+                    speaker_id=str(speaker) if speaker is not None else "customer",
+                    text=text,
+                    start=ts,
+                    end=ts + est_duration,
+                    is_agent=(speaker == 0),
+                )
+                feature_window.push(turn)
+
+                try:
+                    alerts = lf_scanner.push(turn, feature_window)
+                except Exception:  # noqa: BLE001 — alerts must never kill the loop
+                    logger.exception("LF scanner raised for session %s", session_id)
+                    alerts = []
+                for alert in alerts:
+                    alert_payload = {"type": "alert", **alert.to_wire()}
+                    await _safe_send(websocket, alert_payload)
+                    if redis is not None:
+                        await redis.publish(
+                            f"live:{session_id}:events",
+                            json.dumps(alert_payload),
+                        )
+
+                # Features snapshot — throttled so the DOM doesn't churn.
+                finals_since_features_emit += 1
+                features_elapsed = ts - last_features_emit_at
+                if (
+                    finals_since_features_emit >= FEATURES_EVERY_N_FINALS
+                    and features_elapsed >= FEATURES_MIN_INTERVAL_SEC
+                ):
+                    snapshot_payload = {
+                        "type": "features",
+                        **feature_window.snapshot().to_wire(),
+                    }
+                    await _safe_send(websocket, snapshot_payload)
+                    last_features_emit_at = ts
+                    finals_since_features_emit = 0
 
                 # ── Coaching trigger ─────────────────────────────
                 elapsed = ts - last_coaching_time
