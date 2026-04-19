@@ -48,6 +48,7 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    is_white_label: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -388,3 +389,52 @@ class TenantInsight(Base):
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# ASK LINDA — conversations, messages, write proposals
+# ──────────────────────────────────────────────────────────
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    title: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ConversationMessage(Base):
+    """Every turn in a Linda chat — user message, assistant reply, or tool result."""
+
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    role: Mapped[str] = mapped_column(String, nullable=False)  # user | assistant | tool
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class WriteProposal(Base):
+    """A draft write Linda proposed. Only dispatches to the real mutator after explicit user confirm."""
+
+    __tablename__ = "write_proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # action_item | email_draft | crm_update
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")  # pending | confirmed | cancelled | expired
+    resulting_entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
