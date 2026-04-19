@@ -13,7 +13,7 @@ E   ModuleNotFoundError: No module named 'playwright'
 =========================== short test summary info ============================
 ERROR tests/sandbox_demo_ui_test.py
 !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
-1 error in 0.09s
+1 error in 0.08s
 \n[APP.PY CODE BELOW]:
 Your request is quite broad and requires a lot of work. However, I can provide you with a basic setup for a React app that you can build upon. 
 
