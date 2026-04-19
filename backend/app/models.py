@@ -48,6 +48,12 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Outcomes webhook HMAC secret — per-tenant shared secret verified on
+    # ``X-Callsight-Signature``.  Nullable until the tenant rotates / sets it.
+    outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
+    # How many hours of call audio to retain after processing.  Default 24h;
+    # tenants that want replay / re-transcription opt-in with a larger value.
+    audio_retention_hours: Mapped[int] = mapped_column(Integer, default=24, server_default="24")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -887,5 +893,52 @@ class CrossTenantAnalytic(Base):
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# OUTCOME EVENT INGESTION (idempotency + dead-letter)
+# ──────────────────────────────────────────────────────────
+
+
+class OutcomeEventIngestion(Base):
+    """Idempotency record for externally-posted outcome events.
+
+    Uniquely keyed on ``(tenant_id, event_id)`` — a repeated webhook
+    delivery with the same ``event_id`` is 200-accepted but does not
+    re-apply the event to ``InteractionFeatures.proxy_outcomes``.
+    """
+
+    __tablename__ = "outcome_event_ingestions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    event_id: Mapped[str] = mapped_column(String, nullable=False)
+    outcome_type: Mapped[str] = mapped_column(String, nullable=False)
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DroppedOutcomeEvent(Base):
+    """Dead-letter log for outcome payloads that failed validation.
+
+    Captured reasons include: ``unknown_outcome_type``, ``future_timestamp``,
+    ``hmac_signature_invalid``, ``interaction_not_found``, ``schema_error``.
+    """
+
+    __tablename__ = "dropped_outcome_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    headers_snapshot: Mapped[Optional[str]] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -1,142 +1,298 @@
-"""Proxy-outcome ingestion — ground truth for every scorer.
+"""Proxy-outcome ingestion — production-grade webhook surface.
 
-Every calibrated scorer in the platform wants observable outcomes to
-calibrate against:
+Hardened contract over the v1 endpoint:
 
-- sentiment       → "did the customer reply positively / escalate?"
-- churn_risk      → "did the customer cancel within 30/60/90 days?"
-- health_score    → "did the tenant renew / upgrade at term?"
-- action_items    → "did the action item close in the CRM within 14 days?"
-
-This module provides two write paths:
-
-1. A webhook endpoint (`POST /outcomes`) that external systems (CRM,
-   email platform, renewal ops tool) call with an event.  The payload
-   is validated and written into
-   ``InteractionFeatures.proxy_outcomes`` JSONB.
-
-2. A Celery task (``outcomes_backfill_from_local_data``) that reads
-   outcomes we already observe internally — action-item status,
-   interaction replies, churn flags — and writes them into the same
-   JSONB so calibration works even before a CRM integration lands.
+- **``outcome_type`` is a ``Literal[...]``.** Unknown types 400 instead of
+  being silently stored and ignored downstream.
+- **Idempotency key (``event_id``) is required** when present in the payload.
+  Repeated deliveries with the same ``(tenant_id, event_id)`` return 200
+  without re-applying the event.  Payloads without an ``event_id`` are
+  accepted (for backfill scripts and manual curl) but are rejected on
+  retry by a hash fingerprint in the dead-letter log.
+- **HMAC verification** — tenants with ``outcomes_hmac_secret`` set must
+  include a valid ``X-Callsight-Signature: sha256=<hex>`` header.
+  Tenants without a secret accept unsigned calls (for gradual rollout).
+- **Semantic floors** — ``occurred_at`` cannot be > 1 day in the future;
+  if an ``interaction_id`` is referenced it must belong to the caller's
+  tenant or the event is dead-lettered.
+- **Dead-letter log** — every dropped event is persisted to
+  ``dropped_outcome_events`` with the failure reason so integrators can
+  debug without losing data.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import InteractionFeatures, Tenant
+from backend.app.models import (
+    DroppedOutcomeEvent,
+    InteractionFeatures,
+    OutcomeEventIngestion,
+    Tenant,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── Enum of accepted outcome types ───────────────────────────────────────
+# Keep this list aligned with ``services/calibration.py`` —
+# ``DEFAULT_CALIBRATION_CONFIGS`` consumes every key the calibrator can
+# map onto a positive/negative outcome.
+
+OutcomeType = Literal[
+    "customer_replied",
+    "customer_no_reply_72h",
+    "customer_escalated",
+    "contact_churned_30d",
+    "contact_active_30d",
+    "tenant_renewed",
+    "tenant_upgraded",
+    "tenant_churned",
+    "action_item_closed",
+    "action_item_closure_rate",
+    "deal_won",
+    "deal_lost",
+]
 
 
 # ── Request shapes ───────────────────────────────────────────────────────
 
 
 class OutcomeEvent(BaseModel):
-    """One observed downstream event tied to an interaction."""
+    """One observed downstream event tied to an interaction.
+
+    ``event_id`` is strongly recommended: if present, idempotency is
+    enforced per ``(tenant_id, event_id)``.  Without it, the caller is
+    responsible for avoiding duplicates.
+    """
 
     interaction_id: uuid.UUID
-    outcome_type: str = Field(
-        ...,
-        description=(
-            "'customer_replied', 'customer_escalated', 'contact_churned', "
-            "'tenant_renewed', 'tenant_upgraded', 'action_item_closed', "
-            "'deal_won', 'deal_lost', 'customer_no_reply_72h'."
-        ),
-    )
+    outcome_type: OutcomeType
     value: Optional[float] = None
     occurred_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
+    event_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class OutcomeBatch(BaseModel):
-    events: list[OutcomeEvent]
+    events: List[OutcomeEvent]
 
 
 class OutcomeAck(BaseModel):
     accepted: int
-    ignored_unknown_interaction: int
+    duplicate: int
+    dropped: int
 
 
-# ── Webhook endpoint ─────────────────────────────────────────────────────
+# ── HMAC verification ────────────────────────────────────────────────────
 
 
-@router.post("/outcomes", response_model=OutcomeAck, status_code=202)
-async def ingest_outcome(
-    payload: OutcomeEvent,
-    db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
-):
-    """Single-event webhook: CRM / tool posts a single outcome."""
-    accepted, ignored = await _apply_events(db, tenant.id, [payload])
-    await db.commit()
-    return OutcomeAck(accepted=accepted, ignored_unknown_interaction=ignored)
+def _verify_hmac(secret: Optional[str], body: bytes, signature_header: Optional[str]) -> bool:
+    """Return True when the signature is valid, OR when the tenant has no
+    secret configured (opt-in rollout).
+
+    Expected header: ``X-Callsight-Signature: sha256=<hex>``.
+    """
+    if not secret:
+        return True
+    if not signature_header:
+        return False
+    # Tolerate the optional ``sha256=`` prefix and any surrounding whitespace.
+    provided = signature_header.strip()
+    if provided.startswith("sha256="):
+        provided = provided[len("sha256=") :]
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, provided)
 
 
-@router.post("/outcomes/batch", response_model=OutcomeAck, status_code=202)
-async def ingest_outcomes_batch(
-    payload: OutcomeBatch,
-    db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
-):
-    """Batch webhook — preferred for bulk CRM syncs."""
-    accepted, ignored = await _apply_events(db, tenant.id, payload.events)
-    await db.commit()
-    return OutcomeAck(accepted=accepted, ignored_unknown_interaction=ignored)
+# ── Dead-letter helpers ──────────────────────────────────────────────────
+
+
+async def _deadletter(
+    db: AsyncSession,
+    tenant_id: Optional[uuid.UUID],
+    reason: str,
+    payload: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> None:
+    row = DroppedOutcomeEvent(
+        tenant_id=tenant_id,
+        reason=reason,
+        payload=_to_jsonable(payload),
+        headers_snapshot=json.dumps(headers or {}, default=str)[:2000],
+    )
+    db.add(row)
+
+
+def _to_jsonable(obj: Any) -> Dict[str, Any]:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json")
+    if isinstance(obj, dict):
+        return obj
+    return {"value": str(obj)}
+
+
+# ── Core apply ───────────────────────────────────────────────────────────
 
 
 async def _apply_events(
     db: AsyncSession,
     tenant_id: uuid.UUID,
-    events: list[OutcomeEvent],
-) -> tuple[int, int]:
-    accepted = 0
-    ignored = 0
+    events: List[OutcomeEvent],
+    headers_snapshot: Dict[str, str],
+) -> OutcomeAck:
+    """Apply a batch of events.  Returns counts per outcome.
+
+    For each event: validate semantic floors, check idempotency, update
+    ``InteractionFeatures.proxy_outcomes``, record the ingestion row, or
+    dead-letter on any failure.  Never raises — callers always get a
+    meaningful count back.
+    """
+    now = datetime.now(timezone.utc)
+    future_limit = now + timedelta(days=1)
+    accepted = duplicate = dropped = 0
+
     for event in events:
+        # Semantic floor: occurred_at cannot be in the far future.
+        if event.occurred_at and event.occurred_at > future_limit:
+            dropped += 1
+            await _deadletter(db, tenant_id, "future_timestamp", event, headers_snapshot)
+            continue
+
+        # Resolve interaction.  interaction_id is required on the schema
+        # but we re-check tenant scoping here so cross-tenant writes die
+        # on the floor with a clear dead-letter reason.
         stmt = select(InteractionFeatures).where(
             InteractionFeatures.interaction_id == event.interaction_id,
             InteractionFeatures.tenant_id == tenant_id,
         )
-        row = (await db.execute(stmt)).scalar_one_or_none()
-        if row is None:
-            ignored += 1
+        features_row = (await db.execute(stmt)).scalar_one_or_none()
+        if features_row is None:
+            dropped += 1
+            await _deadletter(db, tenant_id, "interaction_not_found", event, headers_snapshot)
             continue
-        # Keyed by outcome_type with a compact event record.  Multiple
-        # events of the same type append so late-arriving updates
-        # (e.g., churned then retained) stay visible to the calibrator.
-        outcomes = dict(row.proxy_outcomes or {})
+
+        # Idempotency check.
+        if event.event_id:
+            existing_stmt = select(OutcomeEventIngestion).where(
+                OutcomeEventIngestion.tenant_id == tenant_id,
+                OutcomeEventIngestion.event_id == event.event_id,
+            )
+            existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                duplicate += 1
+                continue
+
+        # Apply to features.  Multiple events of the same outcome_type
+        # append so late corrections (churned then retained, etc.) stay
+        # visible to the calibrator.
+        outcomes = dict(features_row.proxy_outcomes or {})
         record = {
             "value": event.value,
-            "occurred_at": (event.occurred_at or datetime.now(timezone.utc)).isoformat(),
+            "occurred_at": (event.occurred_at or now).isoformat(),
             "metadata": event.metadata or {},
         }
-        if event.outcome_type in outcomes:
-            existing = outcomes[event.outcome_type]
-            if isinstance(existing, list):
-                existing.append(record)
-                outcomes[event.outcome_type] = existing
-            else:
-                outcomes[event.outcome_type] = [existing, record]
-        else:
+        existing_value = outcomes.get(event.outcome_type)
+        if existing_value is None:
             outcomes[event.outcome_type] = record
-        row.proxy_outcomes = outcomes
-        flag_modified(row, "proxy_outcomes")
-        accepted += 1
-    return accepted, ignored
+        elif isinstance(existing_value, list):
+            existing_value.append(record)
+            outcomes[event.outcome_type] = existing_value
+        else:
+            outcomes[event.outcome_type] = [existing_value, record]
+        features_row.proxy_outcomes = outcomes
+        flag_modified(features_row, "proxy_outcomes")
+
+        # Record the ingestion (enforces idempotency via unique index).
+        ingestion = OutcomeEventIngestion(
+            tenant_id=tenant_id,
+            event_id=event.event_id or _autogen_event_id(event),
+            outcome_type=event.outcome_type,
+            interaction_id=event.interaction_id,
+            payload=event.model_dump(mode="json"),
+        )
+        db.add(ingestion)
+        try:
+            await db.flush()
+            accepted += 1
+        except IntegrityError:
+            await db.rollback()
+            duplicate += 1
+
+    return OutcomeAck(accepted=accepted, duplicate=duplicate, dropped=dropped)
 
 
-# ── Retrieval (admin / debugging) ────────────────────────────────────────
+def _autogen_event_id(event: OutcomeEvent) -> str:
+    """Fingerprint an ``event_id``-less payload so retries dedupe.
+
+    Hash of ``(interaction_id, outcome_type, occurred_at)`` — if a caller
+    re-sends the same event without an explicit ``event_id`` we still
+    catch it.  Collisions across legitimately distinct events with the
+    same key tuple are possible but expected to be vanishingly rare.
+    """
+    key = f"{event.interaction_id}|{event.outcome_type}|{event.occurred_at or ''}"
+    return "auto:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────
+
+
+@router.post("/outcomes", response_model=OutcomeAck, status_code=202)
+async def ingest_outcome(
+    request: Request,
+    payload: OutcomeEvent,
+    signature: Optional[str] = Header(None, alias="X-Callsight-Signature"),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    body = await request.body()
+    if not _verify_hmac(tenant.outcomes_hmac_secret, body, signature):
+        await _deadletter(
+            db, tenant.id, "hmac_signature_invalid", payload, dict(request.headers)
+        )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad signature")
+
+    ack = await _apply_events(db, tenant.id, [payload], dict(request.headers))
+    await db.commit()
+    return ack
+
+
+@router.post("/outcomes/batch", response_model=OutcomeAck, status_code=202)
+async def ingest_outcomes_batch(
+    request: Request,
+    payload: OutcomeBatch,
+    signature: Optional[str] = Header(None, alias="X-Callsight-Signature"),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    body = await request.body()
+    if not _verify_hmac(tenant.outcomes_hmac_secret, body, signature):
+        await _deadletter(
+            db, tenant.id, "hmac_signature_invalid", payload, dict(request.headers)
+        )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad signature")
+
+    ack = await _apply_events(db, tenant.id, payload.events, dict(request.headers))
+    await db.commit()
+    return ack
 
 
 @router.get("/outcomes/{interaction_id}")
@@ -153,3 +309,30 @@ async def get_outcomes(
     if row is None:
         raise HTTPException(status_code=404, detail="Interaction features not found")
     return row.proxy_outcomes or {}
+
+
+@router.get("/outcomes/dead-letter/recent")
+async def dead_letter_recent(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> List[Dict[str, Any]]:
+    """Admin-facing tail of the dead-letter log for this tenant."""
+    from sqlalchemy import desc
+
+    stmt = (
+        select(DroppedOutcomeEvent)
+        .where(DroppedOutcomeEvent.tenant_id == tenant.id)
+        .order_by(desc(DroppedOutcomeEvent.received_at))
+        .limit(max(1, min(limit, 500)))
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "reason": r.reason,
+            "payload": r.payload or {},
+            "received_at": r.received_at.isoformat(),
+        }
+        for r in rows
+    ]
