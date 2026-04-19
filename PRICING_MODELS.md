@@ -225,3 +225,324 @@ drops proportionally as usage approaches the cap.
   a thinner-margin Starter.
 - Recommended launch list: **Starter $39 / Pro $89 / Business $179 / Enterprise $349+**,
   with 20–25% annual-commit discounts.
+
+---
+
+# v2 Additions — Seat Bands, Customer-Facing Tiers, Add-Ons, White-Label
+
+Sections 6–10 build on the v1 reconciled recommendation by adding seat-band
+pricing, customer-facing tier descriptions (plain-English, sales-ready), a
+per-feature add-on price list, and the white-label channel program for
+distributors like Reinvent Telecom.
+
+---
+
+## 6. Seat-Band Tier Structure
+
+Per-seat pricing scales **down** as seat count increases — smaller deployments
+pay more per seat (standard SMB premium); larger deployments get volume pricing.
+Every tier has three bands:
+
+- **SMB** — 1–10 seats (self-serve or light-touch sales)
+- **Mid-Market** — 11–25 seats (assisted sales, standard onboarding)
+- **Growth** — 25+ seats (custom terms, volume-discounted, annual commit encouraged)
+
+### 6.1 Month-to-month list price ($/seat/mo)
+
+| Tier | 1–10 seats (SMB) | 11–25 seats (Mid-Market) | 25+ seats (Growth) |
+|---|---|---|---|
+| **Starter** | $39 | $34 | $29 |
+| **Professional** | $89 | $79 | $69 |
+| **Business** | $179 | $159 | $139 |
+| **Enterprise** | Custom | Custom | Custom (from $299/seat) |
+
+### 6.2 Annual-commit price (20% off; 25% off 2-year)
+
+| Tier | 1–10 (1-yr) | 11–25 (1-yr) | 25+ (1-yr) | 25+ (2-yr) |
+|---|---|---|---|---|
+| **Starter** | $31 | $27 | $23 | $22 |
+| **Professional** | $71 | $63 | $55 | $52 |
+| **Business** | $143 | $127 | $111 | $104 |
+| **Enterprise** | — | — | $239+ | $224+ |
+
+All bands include the **5,000 audio-minute/seat/month cap**. Overage billed at
+**$0.02/min**, trued-up monthly — rarely hit at realistic usage.
+
+### 6.3 Band-selection rules
+
+- Band is set by **current paid seat count**, evaluated each billing cycle.
+- **Grandfathering:** customers crossing a band threshold keep their current
+  rate on existing seats for 12 months; only new seats price into the new band.
+- **Minimums:** no floor on Starter / Pro self-serve; 3-seat min on Business;
+  10-seat min on Enterprise.
+
+---
+
+## 7. Customer-Facing Tier Overview
+
+Plain-English feature guide for sales collateral, partner enablement, and the
+website pricing page. Written for end-customer comprehension — use verbatim.
+
+### 7.1 Starter — "Get the basics right"
+
+**Who it's for:** Small teams that want accurate call transcripts, searchable
+recordings, and one place to review conversations — without the complexity of
+a full AI platform.
+
+**What you get:**
+- Automatic transcription of every call (up to 5,000 minutes per seat, per month)
+- Speaker separation — see who said what on two-party calls
+- Full-text transcript search across your last 90 days of calls
+- AI-generated call summaries so you can skip listening to the full recording
+- Secure cloud storage of every call recording and transcript
+- Mobile and web apps for reps and managers
+- Email support during business hours
+
+**Not included:** live coaching during calls, automated QA scorecards, CRM
+write-back, PII redaction, custom analytics, and integrations beyond email.
+Add these à la carte (see Section 8) or upgrade to Professional.
+
+---
+
+### 7.2 Professional — "Coach smarter, sell more"
+
+**Who it's for:** Revenue teams that want AI to review every conversation,
+surface what's working, and push insights into the CRM they already use.
+
+**Everything in Starter, plus:**
+- **AI deep-dive analysis** on every call — buying signals, objections, next
+  steps, talk-to-listen ratio, commitments
+- **Automatic PII redaction** — credit cards, SSNs, and other sensitive data
+  stripped from transcripts and summaries before storage
+- **Knowledge-Base Q&A** — ask "what did Acme say about pricing last quarter?"
+  across your entire call history
+- **CRM integrations** — two-way sync with Salesforce, HubSpot, or Zoho; auto-
+  log calls, summaries, and action items
+- **Slack notifications** — deal-risk alerts and coaching moments pushed to the
+  right channel in real time
+- **Sampled auto-QA scorecards** — 10% of calls automatically scored against
+  your rubric
+- **Extended retention** — 12 months of searchable transcripts and recordings
+- **Email + chat support**, responses within 1 business day
+
+---
+
+### 7.3 Business — "Run a revenue machine"
+
+**Who it's for:** Sales and CS teams that treat conversation intelligence as
+core infrastructure — coaching every rep, scoring every call, and catching deal
+risk the moment it happens.
+
+**Everything in Professional, plus:**
+- **Live AI coaching** — real-time suggestions in the rep's ear during live
+  calls: objection handling, next-best-question, competitor mentions, compliance
+  prompts
+- **100% auto-QA** — every call scored against your scorecard, with trend
+  charts for each rep, team, and product line
+- **Custom scorecards and rubrics** — build your own QA categories with
+  natural-language rules the AI enforces
+- **Unlimited CRM / tool integrations** plus outbound webhooks to any system
+- **Snippet library** — auto-extracted customer quotes, objections, and
+  testimonials, organized by theme
+- **Script adherence tracking** — see which reps are following the playbook
+  and where calls go off-script
+- **Deal-risk dashboards** for sales leadership with automated rollups
+- **Priority support** — 4-hour response SLA, dedicated Slack channel
+
+---
+
+### 7.4 Enterprise — "Built around your business"
+
+**Who it's for:** Large or regulated organizations that need dedicated
+infrastructure, compliance guarantees, and the ability to shape the platform
+to their workflow.
+
+**Everything in Business, plus:**
+- **Dedicated tenant** — your own isolated infrastructure, not shared
+- **Custom domain + fully branded UI** — your logo, colors, and domain
+- **SSO / SAML / SCIM** with Okta, Azure AD, Google Workspace, and any SAML IdP
+- **Bring-your-own AI key** — point the platform at your Anthropic, Azure
+  OpenAI, or AWS Bedrock account for data-residency or procurement reasons
+- **Custom AI prompts** — our team tunes the analysis and scorecard prompts to
+  your industry, playbook, and compliance needs
+- **On-prem / VPC transcription option** — keep audio inside your network
+- **SOC 2 Type II, HIPAA BAA, GDPR DPA** — included
+- **Uptime SLA** — 99.9% with service credits
+- **Dedicated Customer Success Manager** and business reviews
+- **24/7 support**, 1-hour response SLA
+
+---
+
+## 8. Add-On SKU Price List
+
+For Starter and Professional customers who need a single higher-tier capability
+without upgrading the whole plan. Add-ons are **priced ~30–40% above the bundled
+per-feature cost** — rational for one feature, irrational for two or more (sales
+should steer to the next tier at that point).
+
+### 8.1 Per-seat add-ons (billed per seat, per month)
+
+| Add-on | Price | Available on | What it unlocks |
+|---|---|---|---|
+| **AI Deep Analysis** | $19/seat/mo | Starter | Sonnet-powered per-call analysis (buying signals, objections, next steps) |
+| **PII Redaction** | $9/seat/mo | Starter | Automatic redaction of PII from transcripts and summaries |
+| **Knowledge-Base Q&A** | $12/seat/mo | Starter, Pro | Natural-language search across call history |
+| **CRM Integration Pack** | $19/seat/mo | Starter | Salesforce, HubSpot, Zoho two-way sync |
+| **Live AI Coaching** | $29/seat/mo | Starter, Pro | Real-time in-call coaching (Haiku streaming) |
+| **100% Auto-QA + Scorecards** | $25/seat/mo | Starter, Pro | Every call scored; standard rubric |
+| **Priority Support** | $19/seat/mo | Starter, Pro | 4-hour response SLA, dedicated Slack channel |
+| **Extended Retention — 24 months** | $9/seat/mo | Starter, Pro | Searchable transcripts retained 2 years |
+| **Extended Retention — 7 years (compliance)** | $19/seat/mo | Any | Legal-hold / regulated industries |
+
+### 8.2 Tenant-wide add-ons (billed flat, per month)
+
+| Add-on | Price | Available on | What it unlocks |
+|---|---|---|---|
+| **SSO / SAML / SCIM** | $99/mo flat | Pro, Business | Okta, Azure AD, Google; user auto-provisioning |
+| **Custom Domain + Branded UI** | $49/mo flat | Pro, Business | your-brand.callsight.ai or your own domain |
+| **Bring-Your-Own AI Key** | $49/mo flat | Pro, Business | Route AI spend through your Anthropic / Bedrock account |
+| **Custom Scorecard Authoring** | $149/mo flat | Pro, Business | Self-serve builder for custom QA rubrics |
+| **Dedicated Success Manager** | $499/mo flat | Pro, Business | Named CSM, monthly sync, platform reviews |
+| **Additional Audio Storage** | $0.02/GB/mo | Any | Beyond the 50 GB/seat included |
+| **Usage Overage** | $0.02/min | Any | Beyond the 5,000-min/seat/mo cap |
+
+### 8.3 Worked example — when an add-on beats an upgrade
+
+- **Pro + Live Coaching** ($29) = $118/seat/mo — still cheaper than Business
+  $179. Rational if the team needs coaching but not 100% QA, snippet library,
+  or script tracking.
+- **Pro + Live Coaching ($29) + 100% Auto-QA ($25)** = $143/seat/mo — now
+  within $36 of Business list price ($179), and Business additionally includes
+  unlimited integrations, custom scorecards, snippet library, script tracking,
+  and priority support. At this point, upgrade.
+
+---
+
+## 9. White-Label / Channel Partner Program
+
+**Strategic context:** The majority of CallSight revenue is expected to come
+through white-label distribution — partners like Reinvent Telecom and competing
+master agents / UCaaS distributors who resell CallSight under their own brand
+as part of their own product catalog. This program is a first-class SKU, not
+an afterthought.
+
+### 9.1 Partner tier structure
+
+Partners qualify into three tiers based on committed annual recurring revenue
+(ARR) or seat volume. Tier sets wholesale discount, co-marketing support, and
+service expectations.
+
+| Partner tier | Qualification | Wholesale discount off list | Deal-reg bonus | MDF | Tier 2/3 support |
+|---|---|---|---|---|---|
+| **Authorized Reseller** | 50–250 seats active, $25K+ ARR committed | **35% off list** | +5% on registered deals | — | CallSight handles |
+| **Premier Partner** | 250–1,000 seats active, $150K+ ARR committed | **45% off list** | +5% on registered deals | 2% of quarterly revenue | CallSight handles Tier 3 only |
+| **Elite Distributor** | 1,000+ seats active, $500K+ ARR committed | **55% off list** (up to **60%** with 2-yr commit) | +7% on registered deals | 4% of quarterly revenue | Partner handles Tier 1–2; CallSight Tier 3 |
+
+Partner discounts apply to the **list-price band the end customer qualifies
+for** (1–10 / 11–25 / 25+). Partner sets end-customer price; wholesale COGS to
+partner is fixed by partner tier.
+
+### 9.2 Wholesale price examples — Premier Partner (45% off list)
+
+| Tier | 1–10 list | Partner pays | 11–25 list | Partner pays | 25+ list | Partner pays |
+|---|---|---|---|---|---|---|
+| Starter | $39 | **$21.45** | $34 | **$18.70** | $29 | **$15.95** |
+| Professional | $89 | **$48.95** | $79 | **$43.45** | $69 | **$37.95** |
+| Business | $179 | **$98.45** | $159 | **$87.45** | $139 | **$76.45** |
+| Enterprise | — | custom (min $299 list → $164 partner) | — | — | — | — |
+
+Partners typically mark up 40–80% over wholesale. The discount structure lets
+an Elite Distributor clear 50%+ margin while still undercutting MiaRec, Dubber,
+and Xima on end-customer pricing.
+
+### 9.3 White-label packaging options
+
+Three packaging choices; partner picks one at onboarding and can upgrade.
+
+| Packaging | Branding | Partner handles | CallSight handles | Fee |
+|---|---|---|---|---|
+| **Co-branded ("Powered by CallSight")** | Partner logo + "Powered by CallSight" footer | Sales, Tier 1 support, billing | Platform, Tier 2/3, security, uptime | $0 (included at Premier+) |
+| **Standard White-Label** | Partner brand only; CallSight invisible to end customer | Sales, Tier 1 support, billing, first-line CS | Platform, Tier 3, security, uptime | $199/mo platform fee (Authorized Reseller); included for Premier+ |
+| **Full White-Label + Custom Domain** | Partner brand on partner-owned domain; fully private-labeled | Sales, Tier 1–2, billing, CS, onboarding | Platform, Tier 3, security, uptime, AI models | $499/mo platform fee + $99/mo per custom domain (included for Elite) |
+
+### 9.4 Partner economics worked example
+
+Reinvent Telecom onboards as **Elite Distributor** (1,000+ seats, 2-year commit,
+60% wholesale discount). They deploy CallSight to a 50-seat end customer on
+Business tier, 11–25 seat band ($159 list):
+
+- End customer pays Reinvent: $159/seat/mo
+- Reinvent pays CallSight: $159 × (1 − 0.60) = **$63.60/seat/mo wholesale**
+- Reinvent gross margin: **$95.40/seat/mo (60%)** → $57,240/yr on this one
+  account
+- CallSight recurring revenue: **$38,160/yr** from this single Reinvent
+  subagent sale
+- Across 10 such deployments, one Elite partner drives **~$381K ARR** to
+  CallSight with minimal direct-sales cost.
+
+### 9.5 Deal registration
+
+- Partners register opportunities in the partner portal **before** first
+  customer meeting.
+- Registered deals protected for 90 days, renewable once.
+- Deal-reg bonus (5–7% additional discount) applies for the life of the
+  contract on registered deals.
+- Conflict policy: partner-first. If CallSight direct can't show earlier
+  documented activity, the partner wins the deal.
+
+### 9.6 Onboarding and enablement
+
+| Element | Included at | Notes |
+|---|---|---|
+| Partner portal (deal reg, reporting, billing) | All tiers | Self-serve |
+| Product certification (2 engineers, 4 hrs) | All tiers | Required before first sale |
+| Sales enablement kit (decks, battlecards, ROI tool) | All tiers | Refreshed regularly |
+| Co-selling sales assist | Premier+ | CallSight AE joins partner calls |
+| Business-review cadence | Premier+ | Pipeline, forecast, roadmap preview |
+| Roadmap input | Elite | Partner feature requests enter product planning |
+| Co-marketing campaigns | Premier+ | MDF-funded |
+| Event / conference co-presence | Elite | Shared booth at master-agent events |
+
+### 9.7 Mutual commitments
+
+**Partner commits to:**
+- Ramp against the committed ARR schedule set at contract signature
+- At least 2 certified engineers per 100 partner-deployed seats
+- Tier-1 support per the packaging option selected
+- No cross-selling to CallSight direct-list customers without coordination
+
+**CallSight commits to:**
+- Named partner manager (Premier+) / shared pool (Authorized Reseller)
+- Wholesale pricing locked for term of contract
+- 90-day notice on any material price or feature change
+- Partner-first conflict resolution on registered deals
+- Technical escalation SLA: Tier-3 response ≤ 4 hrs (Premier+) / ≤ 1 hr (Elite)
+
+### 9.8 Target partner mix
+
+First wave targets a small number of Elite Distributors (Reinvent Telecom
+included), a broader set of Premier Partners, and an open Authorized Reseller
+program for any qualified UCaaS / MSP. Elite partners are expected to drive the
+bulk of revenue; Authorized Resellers expand logo count and market coverage.
+**Ramp timing and partner-signing cadence are the CallSight team's call — the
+program structure itself is ready whenever you decide to open it.**
+
+---
+
+## 10. Summary (v2)
+
+- **Seat bands** (1–10 / 11–25 / 25+) with per-seat pricing declining across
+  bands: Starter $39→$29, Pro $89→$69, Business $179→$139, Enterprise custom
+  from $299.
+- **20% annual-commit discount** standard; **25%** for 2-year commits. Intent
+  is to price under the competitor band at every tier.
+- **Add-on SKUs** let Starter / Pro customers unlock individual higher-tier
+  features at a ~30–40% premium — rational for one feature, pushes to upgrade
+  at two or more.
+- **White-label program** with three partner tiers (Authorized Reseller 35%,
+  Premier 45%, Elite 55–60%), three packaging options (co-branded, standard
+  white-label, full white-label + custom domain), deal registration, MDF, and
+  partner-first conflict policy. Designed for Reinvent-class distributors as
+  first-class revenue channels.
+- **Overage:** $0.02/min above the 5K-min/seat cap; rarely hit at realistic
+  usage.
