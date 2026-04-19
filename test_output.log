@@ -12,4 +12,4 @@ E   ModuleNotFoundError: No module named 'playwright'
 =========================== short test summary info ============================
 ERROR tests/sandbox_demo_ui_test.py
 !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
-1 error in 0.09s
+1 error in 0.08s
