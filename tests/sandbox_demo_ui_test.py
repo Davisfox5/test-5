@@ -326,6 +326,61 @@ def main() -> int:
             with step("Live call view: loads with transcript entries"):
                 assert page.locator("#live-call .transcript-entry").count() > 0
 
+            with step("Customer brief card replaces old Caller Info card"):
+                # New element present, old one gone.
+                assert page.locator("#liveCustomerBrief").count() == 1
+                assert page.locator("#live-call .insight-card:has(h3:has-text('Caller Info'))").count() == 0
+                assert page.locator("#cbStatusBadge").count() == 1
+                assert page.locator("#cbNoteForm").count() == 1
+
+            with step("Brief alert: brief_alert event pops a toast in the brief panel"):
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'brief_alert',
+                        kind: 'churn',
+                        message: 'Customer just flagged a concern.',
+                    })"""
+                )
+                page.wait_for_selector("#cbAlertLane .cb-alert[data-kind='churn']", timeout=1000)
+                alert = page.locator("#cbAlertLane .cb-alert").first
+                assert "Customer just flagged a concern." in alert.inner_text()
+
+            with step("Brief alert: dismiss button removes the toast"):
+                page.locator("#cbAlertLane .cb-alert .cb-alert-dismiss").first.click()
+                page.wait_for_selector(
+                    "#cbAlertLane .cb-alert",
+                    state="detached",
+                    timeout=1000,
+                )
+                assert page.locator("#cbAlertLane .cb-alert").count() == 0
+
+            with step("Sentiment: sentiment_update is ignored in historical mode"):
+                # Default mode is historical — the update should not update the score tile.
+                before = page.locator("#cbSentimentScore").inner_text()
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'sentiment_update',
+                        score: 8.4,
+                        trend: 'improving',
+                    })"""
+                )
+                after = page.locator("#cbSentimentScore").inner_text()
+                assert before == after
+
+            with step("Sentiment: after tenant opts in, live updates land"):
+                page.evaluate("() => window.customerBrief.setFeatures({ live_sentiment: true })")
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'sentiment_update',
+                        score: 8.4,
+                        trend: 'improving',
+                    })"""
+                )
+                score = page.locator("#cbSentimentScore").inner_text()
+                assert score.strip().startswith("8.4")
+                mode = page.locator("#cbSentimentMode")
+                assert mode.get_attribute("data-mode") == "live"
+
             with step("KB Answers: empty-state renders before any events"):
                 assert page.locator("#liveKbAnswers .kb-empty").count() == 1
                 assert page.locator("#kbHistoryToggle").count() == 1
@@ -379,6 +434,20 @@ def main() -> int:
                 assert toggle.get_attribute("aria-expanded") == "true"
                 toggle.click()
                 assert toggle.get_attribute("aria-expanded") == "false"
+
+            # ───── LINDA Insights view ─────
+            with step("LINDA Insights: nav + view switch"):
+                switch_view(page, "linda-insights")
+                assert page.locator("#linda-insights.view.active").count() == 1
+                # Three cards present: onboarding, suggestions, playbook.
+                assert page.locator("#liOnboardingCard").count() == 1
+                assert page.locator("#liSuggestionsCard").count() == 1
+                assert page.locator("#liPlaybookCard").count() == 1
+                # Onboarding checklist has 5 sections rendered (or empty —
+                # without API connectivity the checklist is still empty,
+                # but the card + buttons should all render).
+                assert page.locator("#liOnboardingStart").count() == 1
+                assert page.locator("#liInferNow").count() == 1
 
             # ───── Manager monitoring ─────
             # Need to be in manager mode for the nav item, but the view itself is accessible via switchView.

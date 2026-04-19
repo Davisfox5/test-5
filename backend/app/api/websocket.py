@@ -76,6 +76,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
         question_keyterms,
         tenant_context,
         customer_brief,
+        features_enabled,
     ) = await _resolve_session_context(session_id)
 
     # Rehydrate pinned KB cards for this contact so the agent sees them
@@ -185,6 +186,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         contact_id,
                         tenant_context,
                         customer_brief,
+                        features_enabled,
                     )
                     last_coaching_time = time.time()
                     words_since_coaching = 0
@@ -382,6 +384,7 @@ async def _run_coaching(
     contact_id: Optional[uuid.UUID] = None,
     tenant_context: Optional[Dict[str, Any]] = None,
     customer_brief: Optional[Dict[str, Any]] = None,
+    features_enabled: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fetch recent buffer, load coaching state, run incremental coaching.
 
@@ -457,8 +460,106 @@ async def _run_coaching(
             json.dumps(updated_state, default=str),
         )
 
+        # ── Tier-aware live sentiment update ─────────────────────────
+        # Tenants on the live-sentiment package get numeric scores pushed
+        # as they change. Everyone else reads historical sentiment from
+        # Contact.sentiment_trend via the REST endpoint and sees nothing
+        # mid-call. Feature flag:
+        #   tenant.features_enabled["live_sentiment"] == True
+        features = dict(features_enabled or {})
+        if features.get("live_sentiment"):
+            score = updated_state.get("sentiment_score")
+            trend = updated_state.get("sentiment_trend")
+            if score is not None or trend:
+                sentiment_payload = {
+                    "type": "sentiment_update",
+                    "score": score,
+                    "trend": trend,
+                }
+                await _safe_send(websocket, sentiment_payload)
+                await redis.publish(
+                    f"live:{session_id}:events",
+                    json.dumps(sentiment_payload),
+                )
+
+        # ── Brief alerts (3a + 3b: static brief + targeted toasts) ────
+        # When coaching reports a lifecycle signal just fired, pop a toast
+        # in the agent's customer-brief panel. No full brief rebuild —
+        # too expensive mid-call — just a targeted heads-up.
+        await _emit_brief_alerts(
+            websocket,
+            redis,
+            session_id,
+            previous_state or {},
+            updated_state,
+        )
+
     except Exception:
         logger.exception("Coaching failed for session %s", session_id)
+
+
+async def _emit_brief_alerts(
+    websocket: WebSocket,
+    redis: Optional[aioredis.Redis],
+    session_id: str,
+    previous_state: Dict[str, Any],
+    updated_state: Dict[str, Any],
+) -> None:
+    """Compare old vs new coaching state and push targeted alerts to the
+    agent's customer-brief panel for signals that just fired.
+
+    Alerts have `kind` in:
+      churn | upsell | escalation | advocate | sentiment_drop
+    """
+    old_sig = (previous_state.get("brief_signals") or {})
+    new_sig = (updated_state.get("brief_signals") or {})
+    alerts: List[Dict[str, Any]] = []
+
+    for kind in ("churn", "upsell", "escalation", "advocate"):
+        if bool(new_sig.get(kind)) and not bool(old_sig.get(kind)):
+            alerts.append(
+                {
+                    "type": "brief_alert",
+                    "kind": kind,
+                    "message": _alert_message_for(kind),
+                }
+            )
+
+    # Sharp sentiment drop (>= 2 points over the last coaching round).
+    try:
+        old_score = float(previous_state.get("sentiment_score") or 0.0)
+        new_score = float(updated_state.get("sentiment_score") or 0.0)
+    except (TypeError, ValueError):
+        old_score = new_score = 0.0
+    if old_score - new_score >= 2.0 and new_score <= 5.0:
+        alerts.append(
+            {
+                "type": "brief_alert",
+                "kind": "sentiment_drop",
+                "message": (
+                    f"Sentiment dropped from {old_score:.1f} to {new_score:.1f}"
+                ),
+                "from": old_score,
+                "to": new_score,
+            }
+        )
+
+    for alert in alerts:
+        await _safe_send(websocket, alert)
+        if redis is not None:
+            await redis.publish(
+                f"live:{session_id}:events",
+                json.dumps(alert),
+            )
+
+
+def _alert_message_for(kind: str) -> str:
+    return {
+        "churn": "New churn signal detected — the customer just flagged a concern.",
+        "upsell": "Upsell opening — the customer expressed expansion interest.",
+        "escalation": "Caller is asking to escalate. Bring in a manager if needed.",
+        "advocate": "Advocate moment — customer gave strong positive feedback.",
+    }.get(kind, "Brief signal updated.")
 
 
 async def _dispatch_batch_analysis(
@@ -671,15 +772,17 @@ async def _resolve_session_context(
     List[str],
     Dict[str, Any],
     Dict[str, Any],
+    Dict[str, Any],
 ]:
     """Load session-time context: tenant_id, contact_id, keyterms, tenant
-    brief, and customer brief (if a contact is linked to a customer).
+    brief, customer brief, and the tenant's ``features_enabled`` flags
+    (used to gate live sentiment + similar premium surfaces).
 
-    Tolerates unknown session ids (returns empty defaults) so development
-    setups that skip the LiveSession row still work — retrieval and context
-    injection are just disabled.
+    Tolerates unknown session ids — returns empty defaults so dev setups
+    without a LiveSession row still connect; retrieval and context
+    injection just stay disabled.
     """
-    empty = (None, None, [], {}, {})
+    empty = (None, None, [], {}, {}, {})
     try:
         uuid.UUID(session_id)
     except ValueError:
@@ -704,6 +807,7 @@ async def _resolve_session_context(
             contact_id = interaction.contact_id if interaction else None
             keyterms = list(tenant.question_keyterms or [])
             ctx = dict(tenant.tenant_context or {})
+            features = dict(tenant.features_enabled or {})
 
             customer_brief: Dict[str, Any] = {}
             if contact_id is not None:
@@ -713,7 +817,14 @@ async def _resolve_session_context(
                     if customer is not None:
                         customer_brief = dict(customer.customer_brief or {})
 
-            return sess.tenant_id, contact_id, keyterms, ctx, customer_brief
+            return (
+                sess.tenant_id,
+                contact_id,
+                keyterms,
+                ctx,
+                customer_brief,
+                features,
+            )
     except Exception:
         logger.exception("Failed to resolve session context for %s", session_id)
         return empty

@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import Customer, Contact, Interaction, Tenant
+from backend.app.models import Customer, CustomerNote, Contact, Interaction, Tenant
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
 
@@ -432,3 +432,107 @@ async def rebuild_customer_brief_endpoint(
 
     await schedule_customer_brief_rebuild(tenant.id, customer_id)
     return {"customer_id": str(customer_id), "scheduled": True}
+
+
+# ── Customer notes (agent-authored, feed into brief rebuilds) ─────────
+
+
+class CustomerNoteIn(BaseModel):
+    body: str
+    interaction_id: Optional[uuid.UUID] = None
+
+
+class CustomerNoteOut(BaseModel):
+    id: uuid.UUID
+    customer_id: uuid.UUID
+    interaction_id: Optional[uuid.UUID]
+    body: str
+    created_at: datetime
+    reviewed_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+@router.post(
+    "/customers/{customer_id}/notes",
+    response_model=CustomerNoteOut,
+    status_code=201,
+)
+async def add_customer_note(
+    customer_id: uuid.UUID,
+    body: CustomerNoteIn,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Attach a note to a customer. Fed as evidence into the next
+    CustomerBriefBuilder run (which is automatically debounced)."""
+    customer = await db.get(Customer, customer_id)
+    if not customer or customer.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note body is required")
+
+    note = CustomerNote(
+        tenant_id=tenant.id,
+        customer_id=customer_id,
+        interaction_id=body.interaction_id,
+        body=text[:4000],
+    )
+    db.add(note)
+    await db.flush()
+
+    # Schedule a brief rebuild so the note gets folded in soon.
+    await schedule_customer_brief_rebuild(tenant.id, customer_id)
+
+    return note
+
+
+@router.get(
+    "/customers/{customer_id}/notes",
+    response_model=List[CustomerNoteOut],
+)
+async def list_customer_notes(
+    customer_id: uuid.UUID,
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    customer = await db.get(Customer, customer_id)
+    if not customer or customer.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    stmt = (
+        select(CustomerNote)
+        .where(
+            CustomerNote.tenant_id == tenant.id,
+            CustomerNote.customer_id == customer_id,
+        )
+        .order_by(CustomerNote.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return list(rows)
+
+
+# ── Historical sentiment (non-live-tier fallback) ─────────────────────
+
+
+@router.get("/contacts/{contact_id}/sentiment-history")
+async def get_contact_sentiment_history(
+    contact_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Return the contact's rolling sentiment scores across past interactions.
+
+    Tenants on the live-sentiment package receive updates via the live
+    WebSocket; everyone else renders a static sparkline from this endpoint.
+    """
+    contact = await db.get(Contact, contact_id)
+    if not contact or contact.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {
+        "contact_id": str(contact_id),
+        "points": list(contact.sentiment_trend or []),
+        "interaction_count": contact.interaction_count or 0,
+    }

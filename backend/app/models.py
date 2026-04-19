@@ -402,6 +402,34 @@ class LiveSession(Base):
 # ──────────────────────────────────────────────────────────
 
 
+class CustomerNote(Base):
+    """A free-form note an agent attaches to a customer during or after a call.
+
+    Notes are durable evidence that the CustomerBriefBuilder reads on its next
+    run — they let agents capture observations LINDA might have missed in the
+    transcript (e.g., "Sarah mentioned she's leaving Acme next month"). Once
+    the builder has folded a note's content into the brief we mark it
+    ``reviewed_at``; unreviewed notes are the fresh-evidence pile.
+    """
+
+    __tablename__ = "customer_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    author_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class TenantBriefSuggestion(Base):
     """A proposed update to a tenant's onboarding-owned brief section.
 

@@ -771,6 +771,14 @@ document.addEventListener('DOMContentLoaded', function() {
             else if (viewId === 'analytics') loadAnalytics();
             else if (viewId === 'call-library') loadLibrary();
         }
+
+        // Notify any listeners (e.g. linda-insights) that the view changed so
+        // they can refetch their data.
+        try {
+            window.dispatchEvent(
+                new CustomEvent('callsight:viewChanged', { detail: { view: viewId } })
+            );
+        } catch (e) { /* older browsers: ignore */ }
     };
 
     // Make loadInteractionDetail globally accessible

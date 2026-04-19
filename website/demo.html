@@ -128,6 +128,11 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
                             </span> Knowledge Base
                         </a>
+                        <a href="#" class="nav-item" data-view="linda-insights">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                            </span> LINDA Insights
+                        </a>
                         <a href="#" class="nav-item" data-view="integrations">
                             <span class="nav-icon">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
@@ -552,35 +557,116 @@
                                 </div>
                             </div>
 
-                            <div class="insight-card">
-                                <h3>Caller Info</h3>
-                                <div class="caller-info-grid">
+                            <article class="insight-card customer-brief-card" id="liveCustomerBrief" aria-live="polite">
+                                <header class="customer-brief-header">
+                                    <h3>Customer Brief</h3>
+                                    <span class="customer-status-badge" data-status="active" id="cbStatusBadge">Active</span>
+                                </header>
+
+                                <!-- Live alert toasts — populated by kb-cards.js from `brief_alert` events. -->
+                                <div class="customer-brief-alerts" id="cbAlertLane" aria-live="assertive"></div>
+
+                                <!-- Identity row: name / company / phone stays at the top so agents
+                                     still get the quick-reference info the old Caller Info card gave. -->
+                                <div class="caller-info-grid cb-identity">
                                     <div class="caller-field">
-                                        <span class="field-label">Name</span>
-                                        <span class="field-value">Robert Hayes</span>
+                                        <span class="field-label">Contact</span>
+                                        <span class="field-value" id="cbContactName">Robert Hayes</span>
                                     </div>
                                     <div class="caller-field">
-                                        <span class="field-label">Company</span>
-                                        <span class="field-value">TechVenture LLC</span>
+                                        <span class="field-label">Customer</span>
+                                        <span class="field-value" id="cbCustomerName">TechVenture LLC</span>
                                     </div>
                                     <div class="caller-field">
                                         <span class="field-label">Phone</span>
-                                        <span class="field-value">+1 (555) 234-8901</span>
+                                        <span class="field-value" id="cbPhone">+1 (555) 234-8901</span>
                                     </div>
                                     <div class="caller-field">
                                         <span class="field-label">Last Interaction</span>
-                                        <span class="field-value">Apr 8, 2026</span>
+                                        <span class="field-value" id="cbLastInteraction">Apr 8, 2026</span>
                                     </div>
-                                    <div class="caller-field full-width">
-                                        <span class="field-label">Sentiment Trend</span>
+                                </div>
+
+                                <!-- Sentiment tile: live if the tenant subscribes, historical otherwise. -->
+                                <section class="cb-section">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Sentiment</span>
+                                        <span class="cb-sentiment-mode" id="cbSentimentMode">historical</span>
+                                    </div>
+                                    <div class="cb-sentiment-body">
+                                        <span class="cb-sentiment-score" id="cbSentimentScore">—</span>
                                         <div class="mini-sparkline">
-                                            <svg viewBox="0 0 120 30" class="sparkline-svg">
+                                            <svg viewBox="0 0 120 30" class="sparkline-svg" id="cbSentimentSparkline">
                                                 <polyline points="0,25 20,20 40,18 60,22 80,15 100,10 120,8" fill="none" stroke="#10B981" stroke-width="2"/>
                                             </svg>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
+                                </section>
+
+                                <section class="cb-section" data-section="stakeholders">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Stakeholders</span>
+                                        <span class="cb-confidence" data-field="stakeholders" title="LINDA's confidence in this section"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbStakeholders"></ul>
+                                </section>
+
+                                <section class="cb-section" data-section="best_approaches">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Best approaches</span>
+                                        <span class="cb-confidence" data-field="best_approaches"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbBestApproaches"></ul>
+                                </section>
+
+                                <section class="cb-section" data-section="avoid">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Avoid</span>
+                                        <span class="cb-confidence" data-field="avoid"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbAvoid"></ul>
+                                </section>
+
+                                <section class="cb-section cb-signals" data-section="signals">
+                                    <div class="cb-signal-column">
+                                        <div class="cb-section-head">
+                                            <span class="cb-section-title">Churn signals</span>
+                                            <span class="cb-confidence" data-field="churn_signals"></span>
+                                        </div>
+                                        <ul class="cb-list" id="cbChurnSignals"></ul>
+                                    </div>
+                                    <div class="cb-signal-column">
+                                        <div class="cb-section-head">
+                                            <span class="cb-section-title">Upsell signals</span>
+                                            <span class="cb-confidence" data-field="upsell_signals"></span>
+                                        </div>
+                                        <ul class="cb-list" id="cbUpsellSignals"></ul>
+                                    </div>
+                                </section>
+
+                                <section class="cb-section" data-section="objections_raised">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Objections raised</span>
+                                        <span class="cb-confidence" data-field="objections_raised"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbObjections"></ul>
+                                </section>
+
+                                <!-- Inline note composer — notes flow into the next CustomerBriefBuilder run. -->
+                                <section class="cb-notes">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Notes</span>
+                                        <span class="cb-notes-count" id="cbNotesCount">0</span>
+                                    </div>
+                                    <ul class="cb-notes-list" id="cbNotesList"></ul>
+                                    <form class="cb-note-composer" id="cbNoteForm">
+                                        <textarea id="cbNoteInput" rows="2" placeholder="Add a note for LINDA to fold into the brief…"></textarea>
+                                        <div class="cb-note-actions">
+                                            <button type="submit" class="cb-note-submit">Save note</button>
+                                        </div>
+                                    </form>
+                                </section>
+                            </article>
                         </div>
                     </div>
 
@@ -1376,6 +1462,49 @@
                 </section>
 
                 <!-- ============================================================ -->
+                <!-- LINDA INSIGHTS VIEW                                           -->
+                <!--   Admin dashboard for the tenant brief: onboarding progress,  -->
+                <!--   pending suggestions from the Infer-From-Sources agent,      -->
+                <!--   and the learned playbook. One place to "see what LINDA      -->
+                <!--   knows about us and approve what it wants to learn next".    -->
+                <!-- ============================================================ -->
+                <section class="view" id="linda-insights">
+                    <div class="view-header">
+                        <h1>LINDA Insights</h1>
+                        <p class="view-subtitle">What LINDA has learned about your tenant, and the changes it wants to make.</p>
+                    </div>
+
+                    <div class="linda-insights-grid">
+                        <section class="insight-card" id="liOnboardingCard">
+                            <header class="li-card-head">
+                                <h3>Onboarding</h3>
+                                <span class="li-progress" id="liOnboardingProgress">0/5 sections</span>
+                            </header>
+                            <div class="li-progress-bar"><div class="li-progress-fill" id="liOnboardingFill" style="width: 0%"></div></div>
+                            <ul class="li-check-list" id="liOnboardingChecklist"></ul>
+                            <button type="button" class="li-primary-btn" id="liOnboardingStart">Start / resume interview</button>
+                        </section>
+
+                        <section class="insight-card" id="liSuggestionsCard">
+                            <header class="li-card-head">
+                                <h3>Pending suggestions</h3>
+                                <button type="button" class="li-secondary-btn" id="liInferNow">Run agent now</button>
+                            </header>
+                            <p class="li-help">The Infer-From-Sources agent proposes updates from what it sees in recent calls. Nothing is applied until you approve it.</p>
+                            <ul class="li-suggestion-list" id="liSuggestions"></ul>
+                        </section>
+
+                        <section class="insight-card" id="liPlaybookCard">
+                            <header class="li-card-head">
+                                <h3>Learned playbook</h3>
+                                <span class="li-sample" id="liPlaybookSample">—</span>
+                            </header>
+                            <div class="li-playbook" id="liPlaybook"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
                 <!-- 11. INTEGRATIONS VIEW -->
                 <!-- ============================================================ -->
                 <section class="view" id="integrations">
@@ -1655,5 +1784,7 @@
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
     <script src="js/kb-cards.js"></script>
+    <script src="js/customer-brief.js"></script>
+    <script src="js/linda-insights.js"></script>
 </body>
 </html>

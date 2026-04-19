@@ -48,7 +48,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import get_settings
-from backend.app.models import Contact, Customer, CustomerOutcomeEvent, Interaction
+from backend.app.models import (
+    Contact,
+    Customer,
+    CustomerNote,
+    CustomerOutcomeEvent,
+    Interaction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +66,8 @@ _MAX_SUMMARY_CHARS = 500
 _SYSTEM_PROMPT = (
     "You are the CustomerBriefBuilder agent for LINDA. You read the history "
     "of one customer account — their people, their interactions, their "
-    "outcomes — and produce a compact living dossier that LINDA's other "
-    "agents consult at call time.\n\n"
+    "outcomes, and any agent-authored notes — and produce a compact living "
+    "dossier that LINDA's other agents consult at call time.\n\n"
     "Respond in JSON only (no markdown fences) with this shape:\n"
     "{\n"
     '  "current_status": "active|at_risk|churning|champion|new|dormant",\n'
@@ -74,11 +80,27 @@ _SYSTEM_PROMPT = (
     '  "avoid": ["what has NOT worked"],\n'
     '  "churn_signals": ["active risk indicators"],\n'
     '  "upsell_signals": ["active expansion indicators"],\n'
-    '  "timeline": [{"when": "ISO date", "note": "one-line moment"}]\n'
+    '  "timeline": [{"when": "ISO date", "note": "one-line moment"}],\n'
+    '  "field_confidences": {\n'
+    '    "overview": 0.0-1.0,\n'
+    '    "stakeholders": 0.0-1.0,\n'
+    '    "interests": 0.0-1.0,\n'
+    '    "objections_raised": 0.0-1.0,\n'
+    '    "preferences": 0.0-1.0,\n'
+    '    "best_approaches": 0.0-1.0,\n'
+    '    "avoid": 0.0-1.0,\n'
+    '    "churn_signals": 0.0-1.0,\n'
+    '    "upsell_signals": 0.0-1.0\n'
+    "  }\n"
     "}\n\n"
     "Rules:\n"
     "- Keep the whole brief under ~500 words.\n"
     "- Ground every field in the provided evidence — do not invent.\n"
+    "- field_confidences[x] should reflect how strongly the evidence backs "
+    "field x; 0.9+ for repeatedly-confirmed observations, 0.5-0.7 for one "
+    "signal, <0.4 only when you're making a stretch inference. Leave missing "
+    "when the field is empty.\n"
+    "- Weight agent notes heavily — they're explicit human observations.\n"
     "- If a field has no evidence, use empty string or empty array.\n"
     "- Prefer recent signals over old ones when they conflict.\n"
     "- ``current_status`` decision guide: ``churning`` if a churned/at_risk "
@@ -157,17 +179,39 @@ class CustomerBriefBuilder:
             .all()
         )
 
-        evidence = _build_evidence(customer, contacts, interactions, events)
+        notes = list(
+            (
+                await db.execute(
+                    select(CustomerNote)
+                    .where(
+                        CustomerNote.tenant_id == tenant_id,
+                        CustomerNote.customer_id == customer_id,
+                    )
+                    .order_by(CustomerNote.created_at.desc())
+                    .limit(30)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
-        if not interactions and not events:
+        evidence = _build_evidence(customer, contacts, interactions, events, notes)
+
+        if not interactions and not events and not notes:
             brief = _empty_brief()
             brief["current_status"] = "new"
-            return await self._persist(db, customer, brief, interaction_count=0)
+            brief["field_confidences"] = {}
+            return await self._persist(
+                db, customer, brief, interaction_count=0, notes=notes
+            )
 
         brief = await self._call_haiku(evidence)
-        return await self._persist(db, customer, brief, interaction_count=len(interactions))
+        return await self._persist(
+            db, customer, brief, interaction_count=len(interactions), notes=notes
+        )
 
     async def _call_haiku(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        notes_block = "\n---\n".join(evidence.get("notes") or [])
         user_message = (
             "## Customer\n"
             f"{json.dumps(evidence['customer'])}\n\n"
@@ -177,6 +221,11 @@ class CustomerBriefBuilder:
             + "\n---\n".join(evidence["interaction_blocks"])
             + "\n\n## Customer lifecycle events\n"
             + json.dumps(evidence["events"])
+            + (
+                f"\n\n## Agent notes on this customer\n{notes_block}"
+                if notes_block
+                else ""
+            )
             + "\n\nReturn the brief as JSON."
         )
         try:
@@ -199,10 +248,19 @@ class CustomerBriefBuilder:
         customer: Customer,
         brief: Dict[str, Any],
         interaction_count: int,
+        notes: Optional[List[CustomerNote]] = None,
     ) -> Dict[str, Any]:
         brief = dict(brief)
         brief["updated_at"] = datetime.now(timezone.utc).isoformat()
         brief["source_interaction_count"] = interaction_count
+
+        # Mark the notes we just ingested as reviewed so the next run won't
+        # pretend they're fresh evidence.
+        reviewed_at = datetime.now(timezone.utc)
+        for note in notes or []:
+            if note.reviewed_at is None:
+                note.reviewed_at = reviewed_at
+
         customer.customer_brief = brief
         return brief
 
@@ -215,6 +273,7 @@ def _build_evidence(
     contacts: List[Contact],
     interactions: List[Interaction],
     events: List[CustomerOutcomeEvent],
+    notes: Optional[List["CustomerNote"]] = None,
 ) -> Dict[str, Any]:
     return {
         "customer": {
@@ -245,6 +304,13 @@ def _build_evidence(
                 "source": e.source,
             }
             for e in events
+        ],
+        "notes": [
+            (
+                f"[{n.created_at.isoformat() if n.created_at else ''}"
+                f"{' NEW' if n.reviewed_at is None else ''}] {n.body[:500]}"
+            )
+            for n in (notes or [])
         ],
     }
 
@@ -290,6 +356,9 @@ def _empty_brief() -> Dict[str, Any]:
         "churn_signals": [],
         "upsell_signals": [],
         "timeline": [],
+        # Per-field confidences (0.0-1.0) from the last builder run. The
+        # frontend reads these to render a badge next to each section.
+        "field_confidences": {},
     }
 
 
@@ -301,6 +370,17 @@ def _validate_brief(data: Dict[str, Any]) -> Dict[str, Any]:
         val = data.get(key, default)
         if isinstance(default, list):
             out[key] = list(val)[:12] if isinstance(val, list) else default
+        elif isinstance(default, dict):
+            if isinstance(val, dict):
+                clean: Dict[str, Any] = {}
+                for k, v in val.items():
+                    try:
+                        clean[str(k)] = max(0.0, min(1.0, float(v)))
+                    except (TypeError, ValueError):
+                        continue
+                out[key] = clean
+            else:
+                out[key] = default
         elif isinstance(default, str):
             out[key] = str(val)[:2000] if val is not None else default
     return out

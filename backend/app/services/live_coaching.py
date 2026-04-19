@@ -34,10 +34,21 @@ COACHING_SYSTEM_PROMPT = (
     '  "updated_state": {\n'
     '    "previous_summary": "...",\n'
     '    "sentiment_trend": "improving|stable|declining",\n'
+    '    "sentiment_score": 0.0-10.0,\n'
     '    "topics_so_far": ["..."],\n'
-    '    "compliance_status": {"disclosed_recording": true/false, ...}\n'
+    '    "compliance_status": {"disclosed_recording": true/false, ...},\n'
+    '    "brief_signals": {\n'
+    '      "churn": false,\n'
+    '      "upsell": false,\n'
+    '      "escalation": false,\n'
+    '      "advocate": false\n'
+    "    }\n"
     "  }\n"
-    "}"
+    "}\n\n"
+    "``sentiment_score`` uses the same 0-10 scale as post-call analysis "
+    "(10 = most positive). Set ``brief_signals.*`` to true only when you see "
+    "strong evidence in the new dialogue that a key lifecycle signal just "
+    "fired — these are used to pop live alerts on the agent's customer brief."
 )
 
 
