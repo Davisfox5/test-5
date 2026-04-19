@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     CLERK_SECRET_KEY: str = ""
     CLERK_PUBLISHABLE_KEY: str = ""
 
+    # ── Session JWTs (native per-user login) ─────────────
+    # HMAC secret for signing browser session tokens. Must be ≥32 chars in
+    # production. In DEBUG we fall back to an ephemeral value.
+    SESSION_JWT_SECRET: str = ""
+    SESSION_JWT_TTL_HOURS: int = 12
+
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
 

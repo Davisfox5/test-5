@@ -49,6 +49,11 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Subscription seat limits. The admin floor is 1 (min viable org).
+    # Total seat_limit includes the admin(s). Upserted from the billing
+    # system; enforced when creating new User rows.
+    seat_limit: Mapped[int] = mapped_column(Integer, default=1)
+    admin_seat_limit: Mapped[int] = mapped_column(Integer, default=1)
     # LINDA's per-tenant operating brief — everything the orchestrator and its
     # agents should know about this tenant. Assembled by the ContextBuilder
     # agent from KB docs, onboarding-interview answers, explicit overrides,
@@ -73,7 +78,15 @@ class User(Base):
     clerk_user_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
     email: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
+    # agent | manager | admin. Admins can manage users, tenant settings,
+    # integrations, webhooks; managers can monitor calls + approve most
+    # things agents can't; agents are the call-handling role.
     role: Mapped[str] = mapped_column(String, default="agent")
+    # bcrypt hash (60 chars). Null for accounts that authenticate via Clerk
+    # JWT or haven't set a local password yet.
+    password_hash: Mapped[Optional[str]] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")

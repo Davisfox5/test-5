@@ -117,6 +117,33 @@ def main() -> int:
             page.goto(URL)
             page.wait_for_selector("#interactions.view.active")
 
+            with step("Login overlay present when no backend is connected"):
+                # Without any backend, /auth/me can't succeed, so the
+                # overlay should be rendered in the DOM. In this test rig
+                # we deliberately don't log in — existing controllers still
+                # work for non-auth-gated surfaces.
+                assert page.locator("#loginOverlay").count() == 1
+                assert page.locator("#loginForm #loginEmail").count() == 1
+                assert page.locator("#loginForm #loginPassword").count() == 1
+
+            with step("Role-gated nav: agent role hides admin nav items"):
+                page.evaluate(
+                    "() => document.body.setAttribute('data-user-role', 'agent')"
+                )
+                # Preferences and Integrations should be hidden for agents
+                # via CSS. We check `offsetParent` (null when hidden).
+                hidden = page.evaluate(
+                    "() => ["
+                    "document.querySelector('.nav-item[data-view=\"integrations\"]').offsetParent === null,"
+                    "document.querySelector('.nav-item[data-view=\"preferences\"]').offsetParent === null,"
+                    "]"
+                )
+                assert all(hidden), f"expected admin nav hidden for agents: {hidden}"
+                # Reset for later steps.
+                page.evaluate(
+                    "() => document.body.removeAttribute('data-user-role')"
+                )
+
             # ───── Sidebar nav & role toggle ─────
             with step("Nav: switch to Live Call"):
                 switch_view(page, "live-call")

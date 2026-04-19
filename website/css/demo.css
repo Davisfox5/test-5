@@ -3240,3 +3240,95 @@ span.channel-icon-svg svg { width: 14px; height: 14px; }
     outline: none;
     border-color: #7c3aed;
 }
+
+/* ============================================================ */
+/*  LOGIN OVERLAY + role-gated nav                               */
+/* ============================================================ */
+.login-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(17, 24, 39, 0.55);
+    z-index: 2000;
+    padding: 24px;
+}
+.login-overlay[hidden] { display: none; }
+
+.login-card {
+    background: var(--bg-elevated, #fff);
+    border-radius: 10px;
+    padding: 24px;
+    width: 100%;
+    max-width: 360px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.login-card h2 { margin: 0; font-size: 18px; }
+.login-sub {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted, #6b7280);
+    line-height: 1.45;
+}
+.login-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #6b7280);
+}
+.login-label input {
+    border: 1px solid var(--border-main, #e5e7eb);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--bg-main, #f9fafb);
+}
+.login-label input:focus {
+    outline: none;
+    border-color: #7c3aed;
+}
+.login-error {
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+    color: #991b1b;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin: 0;
+}
+.login-error[hidden] { display: none; }
+.login-help {
+    margin: 4px 0 0 0;
+    font-size: 11px;
+    color: var(--text-muted, #9ca3af);
+    line-height: 1.5;
+}
+.login-help code {
+    font-family: ui-monospace, monospace;
+    background: var(--bg-main, #f3f4f6);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+/* Admin-only nav entries hidden for agents. Managers keep workspace nav
+   plus their own scorecards; only admins see Integrations + Preferences. */
+body[data-user-role="agent"] [data-view="linda-insights"],
+body[data-user-role="agent"] [data-view="onboarding"],
+body[data-user-role="agent"] [data-view="integrations"],
+body[data-user-role="agent"] [data-view="preferences"] {
+    display: none;
+}
+body[data-user-role="manager"] [data-view="onboarding"],
+body[data-user-role="manager"] [data-view="integrations"],
+body[data-user-role="manager"] [data-view="preferences"] {
+    display: none;
+}

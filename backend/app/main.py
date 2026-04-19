@@ -59,6 +59,7 @@ from backend.app.api.knowledge_base import router as kb_router  # noqa: E402
 from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.admin import router as admin_router  # noqa: E402
+from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
@@ -74,12 +75,34 @@ app.include_router(contacts_router, prefix=settings.API_V1_PREFIX, tags=["contac
 app.include_router(scorecards_router, prefix=settings.API_V1_PREFIX, tags=["scorecards"])
 app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analytics"])
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
+from fastapi import Depends as _Depends  # noqa: E402
+from backend.app.auth import require_role as _require_role  # noqa: E402
+
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
-app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["admin"])
-app.include_router(crm_router, prefix=settings.API_V1_PREFIX, tags=["crm"])
+# Every /admin/* endpoint requires an admin principal. Tenant-wide API
+# keys satisfy this (they resolve to synthetic-admin). Session JWTs only
+# pass when the user's role == "admin".
+app.include_router(
+    admin_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["admin"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
+app.include_router(
+    crm_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["crm"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
-app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
+app.include_router(
+    webhooks_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["webhooks"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 

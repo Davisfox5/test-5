@@ -1868,6 +1868,30 @@
     <!-- Tooltip (singleton) -->
     <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
+    <!-- Login overlay — shown when /auth/me returns 401 (no valid session).
+         Tenant-wide API keys still work; this is the per-user door. -->
+    <div class="login-overlay" id="loginOverlay" hidden aria-modal="true" role="dialog">
+        <form class="login-card" id="loginForm">
+            <h2>Sign in</h2>
+            <p class="login-sub">Sign in with your user account. Admins, managers, and agents share the same door — your role is picked up automatically.</p>
+            <label class="login-label">
+                Email
+                <input type="email" id="loginEmail" autocomplete="username" required>
+            </label>
+            <label class="login-label">
+                Password
+                <input type="password" id="loginPassword" autocomplete="current-password" required minlength="1">
+            </label>
+            <button type="submit" class="li-primary-btn" id="loginSubmit">Sign in</button>
+            <p class="login-error" id="loginError" hidden></p>
+            <p class="login-help">
+                Don't have a user yet? Use a tenant API key in the URL as
+                <code>?api_key=csk_…</code> and an admin can create your user.
+            </p>
+        </form>
+    </div>
+
+    <script src="js/auth-bootstrap.js"></script>
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
     <script src="js/kb-cards.js"></script>

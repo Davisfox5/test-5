@@ -15,7 +15,12 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_role,
+)
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import KBChunk, Tenant, TenantBriefSuggestion
@@ -216,7 +221,7 @@ async def list_suggestions(
 async def approve_suggestion(
     suggestion_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ) -> Dict[str, Any]:
     """Apply a suggestion to the tenant brief and mark it approved."""
     import uuid as _uuid
@@ -226,11 +231,11 @@ async def approve_suggestion(
     except ValueError:
         return {"error": "invalid id"}
     row = await db.get(TenantBriefSuggestion, sid)
-    if row is None or row.tenant_id != tenant.id:
+    if row is None or row.tenant_id != principal.tenant.id:
         return {"error": "not found"}
     if row.status != "pending":
         return {"error": f"already {row.status}"}
-    brief = await apply_suggestion(db, row)
+    brief = await apply_suggestion(db, row, reviewed_by_user_id=principal.user_id)
     return {"status": "approved", "brief": brief}
 
 
@@ -238,7 +243,7 @@ async def approve_suggestion(
 async def reject_suggestion_endpoint(
     suggestion_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ) -> Dict[str, Any]:
     import uuid as _uuid
 
@@ -247,11 +252,11 @@ async def reject_suggestion_endpoint(
     except ValueError:
         return {"error": "invalid id"}
     row = await db.get(TenantBriefSuggestion, sid)
-    if row is None or row.tenant_id != tenant.id:
+    if row is None or row.tenant_id != principal.tenant.id:
         return {"error": "not found"}
     if row.status != "pending":
         return {"error": f"already {row.status}"}
-    await reject_suggestion(db, row)
+    await reject_suggestion(db, row, reviewed_by_user_id=principal.user_id)
     return {"status": "rejected"}
 
 

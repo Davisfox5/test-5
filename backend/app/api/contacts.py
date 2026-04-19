@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Customer, CustomerNote, Contact, Interaction, Tenant
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
@@ -462,10 +462,11 @@ async def add_customer_note(
     customer_id: uuid.UUID,
     body: CustomerNoteIn,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Attach a note to a customer. Fed as evidence into the next
     CustomerBriefBuilder run (which is automatically debounced)."""
+    tenant = principal.tenant
     customer = await db.get(Customer, customer_id)
     if not customer or customer.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -478,6 +479,8 @@ async def add_customer_note(
         customer_id=customer_id,
         interaction_id=body.interaction_id,
         body=text[:4000],
+        # Audit — which agent authored the note.
+        author_user_id=principal.user_id,
     )
     db.add(note)
     await db.flush()

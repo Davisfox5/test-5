@@ -43,6 +43,8 @@ elasticsearch[async]>=8           # Transcript search across all interactions
 # === Auth ===
 clerk-backend-api>=1              # Managed auth (transitional)
 python-jose[cryptography]>=3.3   # JWT validation
+bcrypt>=4                         # Password hashing for per-user login
+email-validator>=2                # Pydantic EmailStr validator
 
 # === OAuth / Google ===
 google-auth>=2

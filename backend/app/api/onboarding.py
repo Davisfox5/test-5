@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant, require_role
 from backend.app.db import get_db
 from backend.app.models import OnboardingSession, Tenant
 from backend.app.services.kb.onboarding_interview import (
@@ -91,9 +91,15 @@ async def _latest_active_session(
 @router.post("/onboarding/sessions", response_model=OnboardingSessionOut)
 async def start_or_resume(
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(require_role("admin")),
 ):
-    """Create a fresh onboarding session, or resume the tenant's active one."""
+    """Create a fresh onboarding session, or resume the tenant's active one.
+
+    Admin-only: the interview commits to ``Tenant.tenant_context`` on
+    completion, which affects every agent's calls. Only a tenant admin
+    should be able to speak for the whole tenant.
+    """
+    tenant = principal.tenant
     existing = await _latest_active_session(db, tenant.id)
     if existing is not None:
         return _serialise(existing)
@@ -109,6 +115,8 @@ async def start_or_resume(
         tenant_id=tenant.id,
         status="active",
         state=state,
+        # Audit — which admin kicked off the interview.
+        started_by_user_id=principal.user_id,
     )
     db.add(sess)
     await db.flush()

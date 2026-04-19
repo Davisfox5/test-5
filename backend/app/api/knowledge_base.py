@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Contact, KBChunk, KBDocument, PinnedKBCard, Tenant
 from backend.app.services.kb import RetrievalService, ingest_document, reindex_tenant
@@ -360,9 +360,10 @@ class PinnedCardOut(BaseModel):
 async def pin_card(
     body: PinRequest,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Pin a KB chunk for a contact so it carries across calls."""
+    tenant = principal.tenant
     chunk = await db.get(KBChunk, body.chunk_id)
     if not chunk or chunk.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Chunk not found")
@@ -384,6 +385,8 @@ async def pin_card(
             contact_id=body.contact_id,
             doc_id=chunk.doc_id,
             chunk_id=body.chunk_id,
+            # Audit — which agent pinned this card.
+            pinned_by_user_id=principal.user_id,
         )
         db.add(pin)
         await db.flush()
