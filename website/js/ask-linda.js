@@ -91,13 +91,23 @@
         }, [
             el('header', { class: 'linda-chat-header' }, [
                 el('span', { class: 'linda-chat-title' }, 'Ask Linda'),
-                el('button', {
-                    class: 'linda-chat-close',
-                    type: 'button',
-                    'aria-label': 'Close chat',
-                    onClick: closePanel,
-                    html: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
-                }),
+                el('div', { class: 'linda-chat-header-actions' }, [
+                    el('button', {
+                        class: 'linda-chat-new',
+                        type: 'button',
+                        'aria-label': 'Start a new conversation',
+                        title: 'New conversation',
+                        onClick: newConversation,
+                        html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>',
+                    }),
+                    el('button', {
+                        class: 'linda-chat-close',
+                        type: 'button',
+                        'aria-label': 'Close chat',
+                        onClick: closePanel,
+                        html: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+                    }),
+                ]),
             ]),
             el('div', { class: 'linda-chat-log', id: 'linda-chat-log' }),
             el('form', { class: 'linda-chat-composer', onSubmit: onSubmit }, [
@@ -140,6 +150,21 @@
         try { localStorage.setItem(STORAGE_OPEN_KEY, '0'); } catch (e) {}
         document.querySelector('.linda-chat-panel').setAttribute('aria-hidden', 'true');
         document.querySelector('.linda-chat-fab').classList.remove('is-open');
+    }
+
+    function newConversation() {
+        if (state.sending) return;  // don't drop an in-flight stream
+        state.conversationId = null;
+        state.history = [];
+        state.proposals.clear();
+        try {
+            localStorage.removeItem(STORAGE_CONVO_KEY);
+            localStorage.removeItem(STORAGE_HISTORY_KEY);
+        } catch (e) {}
+        const log = document.getElementById('linda-chat-log');
+        if (log) log.innerHTML = '';
+        const input = document.getElementById('linda-chat-input');
+        if (input) { input.value = ''; input.focus(); }
     }
 
     // ── Rendering ──────────────────────────────────────────────────────
@@ -427,5 +452,5 @@
         init();
     }
 
-    window.lindaChat = { open: openPanel, close: closePanel, state: state };
+    window.lindaChat = { open: openPanel, close: closePanel, reset: newConversation, state: state };
 })();
