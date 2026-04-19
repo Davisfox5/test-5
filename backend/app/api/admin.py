@@ -18,10 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.config import get_settings
 from backend.app.db import get_db
-from backend.app.models import KBChunk, Tenant
+from backend.app.models import KBChunk, Tenant, TenantBriefSuggestion
 from backend.app.services.kb import ContextBuilderService, format_brief_for_prompt
 from backend.app.services.kb.context_builder import _validate_brief
 from backend.app.services.kb.context_dispatch import schedule_context_rebuild
+from backend.app.services.kb.infer_from_sources import (
+    InferFromSources,
+    apply_suggestion,
+    reject_suggestion,
+)
 from backend.app.services.kb.vector_health import current_metrics, streak_days
 
 logger = logging.getLogger(__name__)
@@ -152,3 +157,128 @@ async def vector_health(
         },
         "alert_streak_days": streak,
     }
+
+
+# ── Infer-From-Sources: tenant brief suggestions ─────────────────────
+
+
+class BriefSuggestionOut(BaseModel):
+    id: str
+    section: str
+    path: Optional[str]
+    proposed_value: Any
+    rationale: str
+    confidence: Optional[float]
+    evidence_refs: list
+    status: str
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: TenantBriefSuggestion) -> "BriefSuggestionOut":
+        return cls(
+            id=str(row.id),
+            section=row.section,
+            path=row.path,
+            proposed_value=row.proposed_value,
+            rationale=row.rationale,
+            confidence=row.confidence,
+            evidence_refs=list(row.evidence_refs or []),
+            status=row.status,
+            created_at=row.created_at.isoformat() if row.created_at else "",
+        )
+
+
+@router.get("/admin/tenant-context/suggestions")
+async def list_suggestions(
+    status: str = "pending",
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """List pending (or approved/rejected) suggestions from the
+    Infer-From-Sources agent for this tenant."""
+    stmt = (
+        select(TenantBriefSuggestion)
+        .where(
+            TenantBriefSuggestion.tenant_id == tenant.id,
+            TenantBriefSuggestion.status == status,
+        )
+        .order_by(TenantBriefSuggestion.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return {
+        "tenant_id": str(tenant.id),
+        "status": status,
+        "suggestions": [BriefSuggestionOut.from_row(r).model_dump() for r in rows],
+    }
+
+
+@router.post("/admin/tenant-context/suggestions/{suggestion_id}/approve")
+async def approve_suggestion(
+    suggestion_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Apply a suggestion to the tenant brief and mark it approved."""
+    import uuid as _uuid
+
+    try:
+        sid = _uuid.UUID(suggestion_id)
+    except ValueError:
+        return {"error": "invalid id"}
+    row = await db.get(TenantBriefSuggestion, sid)
+    if row is None or row.tenant_id != tenant.id:
+        return {"error": "not found"}
+    if row.status != "pending":
+        return {"error": f"already {row.status}"}
+    brief = await apply_suggestion(db, row)
+    return {"status": "approved", "brief": brief}
+
+
+@router.post("/admin/tenant-context/suggestions/{suggestion_id}/reject")
+async def reject_suggestion_endpoint(
+    suggestion_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    try:
+        sid = _uuid.UUID(suggestion_id)
+    except ValueError:
+        return {"error": "invalid id"}
+    row = await db.get(TenantBriefSuggestion, sid)
+    if row is None or row.tenant_id != tenant.id:
+        return {"error": "not found"}
+    if row.status != "pending":
+        return {"error": f"already {row.status}"}
+    await reject_suggestion(db, row)
+    return {"status": "rejected"}
+
+
+@router.post("/admin/tenant-context/infer-now", status_code=202)
+async def trigger_infer_now(
+    sync: bool = False,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Trigger the Infer-From-Sources agent immediately for this tenant.
+
+    ``sync=true`` runs inline and returns the number of new suggestions;
+    otherwise the work is enqueued as a Celery task.
+    """
+    if sync:
+        agent = InferFromSources()
+        rows = await agent.run(db, tenant.id)
+        return {
+            "tenant_id": str(tenant.id),
+            "new_suggestions": len(rows),
+            "ids": [str(r.id) for r in rows],
+        }
+
+    try:
+        from backend.app.tasks import infer_from_sources_weekly
+
+        infer_from_sources_weekly.delay(str(tenant.id))
+    except Exception:
+        logger.exception("Failed to enqueue infer-from-sources task")
+    return {"tenant_id": str(tenant.id), "scheduled": True}

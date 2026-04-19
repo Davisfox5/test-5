@@ -59,6 +59,13 @@ celery_app.conf.update(
             "task": "tenant_brief_refiner_weekly",
             "schedule": crontab(minute=45, hour=1, day_of_week=1),
         },
+        # Weekly: mine recent signals and propose updates to the tenant's
+        # onboarding-owned brief sections. Emits TenantBriefSuggestion rows
+        # that an admin reviews — never auto-writes to the brief.
+        "infer-from-sources-weekly": {
+            "task": "infer_from_sources_weekly",
+            "schedule": crontab(minute=15, hour=2, day_of_week=1),
+        },
     },
 )
 
@@ -869,6 +876,47 @@ def tenant_brief_refiner_weekly(tenant_id: Optional[str] = None) -> Dict[str, An
                     logger.exception("TenantBriefRefiner failed for tenant %s", tid)
                     results.append({"tenant_id": str(tid), "error": True})
         return {"tenants_processed": len(results), "results": results}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="infer_from_sources_weekly")
+def infer_from_sources_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run the Infer-From-Sources agent for one tenant or all tenants.
+
+    Emits TenantBriefSuggestion rows for the tenant admin to review.
+    Never auto-writes to the tenant brief.
+    """
+    from backend.app.db import async_session
+    from backend.app.models import Tenant as _Tenant
+    from backend.app.services.kb.infer_from_sources import InferFromSources
+    from sqlalchemy import select as _select
+
+    async def _runner() -> Dict[str, Any]:
+        agent = InferFromSources()
+        async with async_session() as db:
+            if tenant_id:
+                tids = [uuid.UUID(tenant_id)]
+            else:
+                rows = await db.execute(_select(_Tenant.id))
+                tids = [uuid.UUID(str(r[0])) for r in rows.all()]
+
+            results: List[Dict[str, Any]] = []
+            for tid in tids:
+                try:
+                    new_rows = await agent.run(db, tid)
+                    results.append(
+                        {
+                            "tenant_id": str(tid),
+                            "new_suggestions": len(new_rows),
+                        }
+                    )
+                except Exception:
+                    logger.exception(
+                        "InferFromSources failed for tenant %s", tid
+                    )
+                    results.append({"tenant_id": str(tid), "error": True})
+            return {"tenants_processed": len(results), "results": results}
 
     return asyncio.run(_runner())
 

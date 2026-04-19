@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -464,41 +465,180 @@ async def _dispatch_batch_analysis(
     redis: aioredis.Redis,
     session_id: str,
 ) -> None:
-    """Create an interaction record from the buffer and queue batch analysis.
+    """Finalise a live session — persist Interaction, enqueue batch pipeline.
 
-    This is a placeholder — the actual implementation would persist to the DB
-    and enqueue a background task (e.g., Celery / ARQ).
+    Steps:
+    1. Read the transcript buffer from Redis.
+    2. Convert wall-clock timestamps into pipeline-ready segments
+       (``start`` / ``end`` / ``speaker_id`` / ``text`` / ``confidence``).
+    3. If the LiveSession already points at an Interaction, update it;
+       otherwise create a new Interaction row on the session's tenant.
+    4. Mark the LiveSession completed and enqueue ``process_voice_interaction``.
+       The existing task detects the pre-populated transcript and skips the
+       audio-transcribe step, then runs triage → analysis → outcome inference
+       → scorecards → customer-brief rebuild.
+    5. Clean up Redis keys either way.
+
+    Tolerant of missing rows — development setups without a LiveSession row
+    (or with an invalid session id) just clean up Redis and return.
     """
-    raw_segments = await redis.lrange(f"live:{session_id}:buffer", 0, -1)
-    if not raw_segments:
-        logger.info("No buffer data for session %s, skipping batch analysis", session_id)
-        return
-
-    segments: List[dict] = []
-    for raw in raw_segments:
-        try:
-            segments.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
-
-    full_text = " ".join(seg.get("text", "") for seg in segments)
-    logger.info(
-        "Session %s ended with %d segments (%d words). "
-        "Batch analysis dispatch placeholder.",
-        session_id,
-        len(segments),
-        _word_count(full_text),
-    )
-
-    # TODO: create Interaction record in DB, upload audio to S3,
-    #       enqueue ai_analysis task.
-
-    # Clean up Redis keys for this session.
-    await redis.delete(
+    buffer_keys = (
         f"live:{session_id}:buffer",
         f"live:{session_id}:coaching_state",
         f"live:{session_id}:recent_kb_chunk_ids",
     )
+
+    raw_segments = await redis.lrange(f"live:{session_id}:buffer", 0, -1)
+    if not raw_segments:
+        logger.info("No buffer data for session %s, skipping batch analysis", session_id)
+        await redis.delete(*buffer_keys)
+        return
+
+    segments_raw: List[dict] = []
+    for raw in raw_segments:
+        try:
+            segments_raw.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+
+    if not segments_raw:
+        await redis.delete(*buffer_keys)
+        return
+
+    segments_dicts = _buffer_to_pipeline_segments(segments_raw)
+    full_text = " ".join(s.get("text", "") for s in segments_dicts)
+    logger.info(
+        "Session %s ended with %d segments (%d words); dispatching batch analysis",
+        session_id,
+        len(segments_dicts),
+        _word_count(full_text),
+    )
+
+    interaction_id: Optional[uuid.UUID] = None
+
+    try:
+        sess_uuid = uuid.UUID(session_id)
+    except ValueError:
+        logger.info("Session id %s is not a UUID; skipping DB finalize", session_id)
+        await redis.delete(*buffer_keys)
+        return
+
+    try:
+        async with async_session() as db:
+            sess_row = await db.get(LiveSession, sess_uuid)
+            if sess_row is None:
+                logger.info("LiveSession %s not found; Redis cleanup only", session_id)
+                return
+
+            first_ts = segments_raw[0].get("timestamp")
+            last_ts = segments_raw[-1].get("timestamp")
+            duration = (
+                int(last_ts - first_ts)
+                if isinstance(first_ts, (int, float)) and isinstance(last_ts, (int, float))
+                else None
+            )
+
+            interaction: Optional[Interaction] = None
+            if sess_row.interaction_id is not None:
+                interaction = await db.get(Interaction, sess_row.interaction_id)
+
+            if interaction is None:
+                interaction = Interaction(
+                    tenant_id=sess_row.tenant_id,
+                    agent_id=sess_row.agent_id,
+                    channel="voice",
+                    source=sess_row.source or "live",
+                    status="processing",
+                    engine="deepgram",
+                    transcript=segments_dicts,
+                    duration_seconds=duration,
+                )
+                db.add(interaction)
+                await db.flush()
+                sess_row.interaction_id = interaction.id
+            else:
+                # Don't clobber a richer transcript from a previous run —
+                # only set ours when the row is still empty.
+                if not interaction.transcript:
+                    interaction.transcript = segments_dicts
+                if interaction.duration_seconds is None:
+                    interaction.duration_seconds = duration
+                interaction.status = "processing"
+
+            sess_row.status = "completed"
+            sess_row.ended_at = datetime.now(timezone.utc)
+            sess_row.transcript_buffer = segments_dicts
+
+            interaction_id = interaction.id
+    except Exception:
+        logger.exception("Failed to finalize live session %s", session_id)
+        interaction_id = None
+    finally:
+        # Always clean up Redis even on DB errors; the live buffer isn't
+        # the source of truth any more.
+        await redis.delete(*buffer_keys)
+
+    if interaction_id is None:
+        return
+
+    # Enqueue the existing voice pipeline. It detects the pre-populated
+    # transcript and skips audio download + transcription, going straight
+    # to PII redaction → metrics → triage → AI analysis → outcome inference
+    # → customer-brief rebuild.
+    try:
+        from backend.app.tasks import process_voice_interaction
+
+        process_voice_interaction.delay(str(interaction_id))
+    except Exception:
+        # Best-effort: if Celery isn't available in this process, log but
+        # don't crash the websocket cleanup path.
+        logger.exception(
+            "Failed to enqueue process_voice_interaction for %s — "
+            "interaction row is saved; operator can retry manually",
+            interaction_id,
+        )
+
+
+def _buffer_to_pipeline_segments(segments_raw: List[dict]) -> List[dict]:
+    """Convert live Redis segments to the shape ``_run_pipeline`` expects.
+
+    Live buffer entries have ``{text, speaker, timestamp}`` with a wall-clock
+    timestamp. The pipeline wants relative ``start``/``end`` seconds plus
+    ``speaker_id``/``confidence``.
+    """
+    out: List[dict] = []
+    if not segments_raw:
+        return out
+
+    base_ts = None
+    for s in segments_raw:
+        ts = s.get("timestamp")
+        if isinstance(ts, (int, float)):
+            base_ts = ts
+            break
+    if base_ts is None:
+        base_ts = 0.0
+
+    for i, s in enumerate(segments_raw):
+        ts = s.get("timestamp")
+        start = float(ts - base_ts) if isinstance(ts, (int, float)) else float(i * 2)
+        # Estimate end as the next segment's start, or +2s for the last one.
+        end = start + 2.0
+        if i + 1 < len(segments_raw):
+            nxt = segments_raw[i + 1].get("timestamp")
+            if isinstance(nxt, (int, float)):
+                end = float(nxt - base_ts)
+        speaker = s.get("speaker")
+        out.append(
+            {
+                "start": start,
+                "end": end,
+                "text": s.get("text", ""),
+                "speaker_id": str(speaker) if speaker is not None else "Unknown",
+                "confidence": 1.0,
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
