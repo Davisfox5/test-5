@@ -564,8 +564,32 @@ class Integration(Base):
     access_token: Mapped[Optional[str]] = mapped_column(Text)  # AES-256 encrypted
     refresh_token: Mapped[Optional[str]] = mapped_column(Text)  # AES-256 encrypted
     scopes: Mapped[list] = mapped_column(JSONB, default=list)
+    # Provider-specific config (Salesforce instance URL, HubSpot portal id,
+    # custom property mappings, etc.). Freeform JSONB so each adapter can
+    # stash what it needs without a model change.
+    provider_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CrmSyncLog(Base):
+    """One row per CRM sync run. Used by the admin UI to show sync status."""
+
+    __tablename__ = "crm_sync_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    # running | success | partial | failed
+    status: Mapped[str] = mapped_column(String, default="running")
+    customers_upserted: Mapped[int] = mapped_column(Integer, default=0)
+    contacts_upserted: Mapped[int] = mapped_column(Integer, default=0)
+    briefs_rebuilt: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # ──────────────────────────────────────────────────────────

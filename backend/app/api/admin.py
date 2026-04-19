@@ -282,3 +282,153 @@ async def trigger_infer_now(
     except Exception:
         logger.exception("Failed to enqueue infer-from-sources task")
     return {"tenant_id": str(tenant.id), "scheduled": True}
+
+
+# ── Tenant settings (admin UI) ────────────────────────────────────────
+
+# Allowlist of flags the UI can flip on `features_enabled`. Each entry is
+# (key, default, human label, help text). Keep in sync with the frontend
+# rendering in website/js/linda-insights.js / preferences-settings.js.
+_FEATURE_FLAG_SPEC: List[Dict[str, Any]] = [
+    {
+        "key": "live_sentiment",
+        "default": False,
+        "label": "Live sentiment updates",
+        "help": "Stream numeric sentiment to the agent during calls. Paid tier.",
+    },
+    {
+        "key": "live_kb_retrieval",
+        "default": True,
+        "label": "Live KB retrieval",
+        "help": "Surface answer cards from the KB when callers ask questions.",
+    },
+    {
+        "key": "keyterm_prompting",
+        "default": False,
+        "label": "Deepgram keyterm prompting",
+        "help": "Boost transcription accuracy for tenant-configured phrases. $0.0013/min add-on.",
+    },
+    {
+        "key": "infer_from_sources_autorun",
+        "default": True,
+        "label": "Weekly Infer-From-Sources runs",
+        "help": "Run the passive agent every week to propose tenant-brief updates.",
+    },
+    {
+        "key": "crm_sync_autorun",
+        "default": False,
+        "label": "Daily CRM sync",
+        "help": "Pull customers + contacts from connected CRMs overnight.",
+    },
+]
+
+
+class TenantSettingsOut(BaseModel):
+    tenant_id: str
+    transcription_engine: str
+    automation_level: str
+    pii_redaction_enabled: bool
+    audio_storage_enabled: bool
+    translation_enabled: bool
+    default_language: str
+    keyterm_boost_list: List[str]
+    question_keyterms: List[str]
+    features_enabled: Dict[str, Any]
+    feature_flag_spec: List[Dict[str, Any]]
+
+
+class TenantSettingsPatch(BaseModel):
+    transcription_engine: Optional[str] = None
+    automation_level: Optional[str] = None
+    pii_redaction_enabled: Optional[bool] = None
+    audio_storage_enabled: Optional[bool] = None
+    translation_enabled: Optional[bool] = None
+    default_language: Optional[str] = None
+    keyterm_boost_list: Optional[List[str]] = None
+    question_keyterms: Optional[List[str]] = None
+    # Partial merge — only keys present here update features_enabled.
+    features_enabled: Optional[Dict[str, Any]] = None
+
+
+def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
+    features = dict(tenant.features_enabled or {})
+    # Fill defaults for known flags so the UI always has something to render.
+    for spec in _FEATURE_FLAG_SPEC:
+        features.setdefault(spec["key"], spec["default"])
+    return {
+        "tenant_id": str(tenant.id),
+        "transcription_engine": tenant.transcription_engine or "deepgram",
+        "automation_level": tenant.automation_level or "approval",
+        "pii_redaction_enabled": bool(tenant.pii_redaction_enabled),
+        "audio_storage_enabled": bool(tenant.audio_storage_enabled),
+        "translation_enabled": bool(tenant.translation_enabled),
+        "default_language": tenant.default_language or "en",
+        "keyterm_boost_list": list(tenant.keyterm_boost_list or []),
+        "question_keyterms": list(tenant.question_keyterms or []),
+        "features_enabled": features,
+        "feature_flag_spec": _FEATURE_FLAG_SPEC,
+    }
+
+
+@router.get("/admin/tenant-settings", response_model=TenantSettingsOut)
+async def get_tenant_settings(
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Return the tenant-level configuration surfaced in the admin UI.
+
+    Includes a ``feature_flag_spec`` list so the frontend can render toggle
+    rows without hard-coding labels / defaults in two places.
+    """
+    return _tenant_settings_payload(tenant)
+
+
+@router.patch("/admin/tenant-settings", response_model=TenantSettingsOut)
+async def patch_tenant_settings(
+    body: TenantSettingsPatch,
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Merge updates into the tenant record. Allowlisted fields only.
+
+    ``features_enabled`` is merged key-by-key so unspecified flags keep
+    their current value. All other scalar fields replace when present.
+    """
+    updates = body.model_dump(exclude_none=True)
+
+    if "transcription_engine" in updates:
+        val = str(updates["transcription_engine"])
+        if val not in ("deepgram", "whisper"):
+            raise HTTPException(status_code=400, detail="invalid transcription_engine")
+        tenant.transcription_engine = val
+    if "automation_level" in updates:
+        val = str(updates["automation_level"])
+        if val not in ("approval", "auto", "shadow"):
+            raise HTTPException(status_code=400, detail="invalid automation_level")
+        tenant.automation_level = val
+    if "pii_redaction_enabled" in updates:
+        tenant.pii_redaction_enabled = bool(updates["pii_redaction_enabled"])
+    if "audio_storage_enabled" in updates:
+        tenant.audio_storage_enabled = bool(updates["audio_storage_enabled"])
+    if "translation_enabled" in updates:
+        tenant.translation_enabled = bool(updates["translation_enabled"])
+    if "default_language" in updates:
+        tenant.default_language = str(updates["default_language"])[:8]
+    if "keyterm_boost_list" in updates:
+        tenant.keyterm_boost_list = [
+            str(s).strip() for s in (updates["keyterm_boost_list"] or []) if str(s).strip()
+        ][:100]
+    if "question_keyterms" in updates:
+        tenant.question_keyterms = [
+            str(s).strip() for s in (updates["question_keyterms"] or []) if str(s).strip()
+        ][:50]
+    if "features_enabled" in updates:
+        merged = dict(tenant.features_enabled or {})
+        allowed = {spec["key"] for spec in _FEATURE_FLAG_SPEC}
+        for k, v in (updates["features_enabled"] or {}).items():
+            if k not in allowed:
+                # Ignore unknown flags rather than 400 — keeps the API
+                # forwards-compatible with newer UIs calling older servers.
+                continue
+            merged[k] = bool(v) if isinstance(v, bool) else v
+        tenant.features_enabled = merged
+
+    return _tenant_settings_payload(tenant)

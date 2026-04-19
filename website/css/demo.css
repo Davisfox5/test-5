@@ -3020,3 +3020,81 @@ span.channel-icon-svg svg { width: 14px; height: 14px; }
     color: var(--text-muted, #9ca3af);
     font-style: italic;
 }
+
+/* ============================================================ */
+/*  TENANT SETTINGS panel inside Preferences                     */
+/* ============================================================ */
+.tenant-settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.tenant-settings-status {
+    font-size: 11px;
+    color: var(--text-muted, #6b7280);
+}
+.tenant-settings-status[data-state="saved"]  { color: #15803d; }
+.tenant-settings-status[data-state="saving"] { color: #7c3aed; }
+.tenant-settings-status[data-state="error"]  { color: #b91c1c; }
+
+.feature-flag-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 10px 0 16px 0;
+}
+.feature-flag-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-main, #e5e7eb);
+}
+.feature-flag-row:last-child { border-bottom: none; }
+.feature-flag-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.feature-flag-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-main, #111827);
+}
+.feature-flag-help {
+    font-size: 11px;
+    color: var(--text-muted, #6b7280);
+    line-height: 1.4;
+}
+
+.tenant-kv-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+.tenant-kv-field { display: flex; flex-direction: column; gap: 4px; }
+.tenant-kv-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #6b7280);
+}
+.tenant-kv-select,
+.tenant-kv-input {
+    font-size: 13px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-main, #e5e7eb);
+    border-radius: 4px;
+    background: var(--bg-main, #f9fafb);
+    font-family: inherit;
+}
+.tenant-kv-select:focus,
+.tenant-kv-input:focus {
+    outline: none;
+    border-color: #7c3aed;
+}

@@ -1611,6 +1611,52 @@
                 <section class="view" id="preferences">
                     <div class="view-header">
                         <h1>Preferences</h1>
+                        <p class="view-subtitle">Workspace-level configuration. Changes save automatically when you toggle them.</p>
+                    </div>
+
+                    <!-- Tenant settings panel — populated from /admin/tenant-settings. -->
+                    <div class="settings-sections">
+                        <div class="settings-section tenant-settings-section" id="tenantSettingsPanel">
+                            <div class="tenant-settings-head">
+                                <h3>LINDA feature flags</h3>
+                                <span class="tenant-settings-status" id="tenantSettingsStatus">Loading…</span>
+                            </div>
+                            <p class="settings-desc">Feature flags that change how LINDA operates for this workspace. Each toggle saves the moment you flip it.</p>
+                            <div class="feature-flag-list" id="featureFlagList"></div>
+
+                            <div class="tenant-kv-row">
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Transcription engine</label>
+                                    <select id="tenantTranscriptionEngine" class="tenant-kv-select">
+                                        <option value="deepgram">Deepgram</option>
+                                        <option value="whisper">Whisper (self-hosted)</option>
+                                    </select>
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Automation level</label>
+                                    <select id="tenantAutomationLevel" class="tenant-kv-select">
+                                        <option value="approval">Approval required</option>
+                                        <option value="auto">Fully automated</option>
+                                        <option value="shadow">Shadow mode (log only)</option>
+                                    </select>
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Default language</label>
+                                    <input type="text" id="tenantDefaultLanguage" class="tenant-kv-input" maxlength="8" placeholder="en">
+                                </div>
+                            </div>
+
+                            <div class="tenant-kv-row">
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Keyterm boost list (comma-separated)</label>
+                                    <input type="text" id="tenantKeytermBoost" class="tenant-kv-input" placeholder="acme, refund policy, enterprise tier">
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Question keyterms (comma-separated)</label>
+                                    <input type="text" id="tenantQuestionKeyterms" class="tenant-kv-input" placeholder="how much, can you, what about">
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="settings-sections">
@@ -1786,5 +1832,6 @@
     <script src="js/kb-cards.js"></script>
     <script src="js/customer-brief.js"></script>
     <script src="js/linda-insights.js"></script>
+    <script src="js/tenant-settings.js"></script>
 </body>
 </html>

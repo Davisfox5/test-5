@@ -589,6 +589,49 @@ def main() -> int:
             # ───── Preferences: radios, select, toggles, keys, webhooks ─────
             switch_view(page, "preferences")
 
+            with step("Tenant settings panel renders in Preferences"):
+                assert page.locator("#tenantSettingsPanel").count() == 1
+                # Panel visible even without API connectivity (status shows error).
+                status = page.locator("#tenantSettingsStatus")
+                assert status.count() == 1
+                # Keyterm inputs + language input + engine/automation selects present.
+                assert page.locator("#tenantTranscriptionEngine").count() == 1
+                assert page.locator("#tenantAutomationLevel").count() == 1
+                assert page.locator("#tenantDefaultLanguage").count() == 1
+                assert page.locator("#tenantKeytermBoost").count() == 1
+                assert page.locator("#tenantQuestionKeyterms").count() == 1
+
+            with step("Tenant settings: feature flag rows render from server spec"):
+                # Inject a fake payload via the controller so we can exercise
+                # the render path without the backend.
+                page.evaluate(
+                    """() => {
+                        window.tenantSettings.settings = {
+                            tenant_id: 't1',
+                            transcription_engine: 'deepgram',
+                            automation_level: 'approval',
+                            pii_redaction_enabled: true,
+                            audio_storage_enabled: false,
+                            translation_enabled: false,
+                            default_language: 'en',
+                            keyterm_boost_list: ['acme'],
+                            question_keyterms: ['how much'],
+                            features_enabled: { live_sentiment: true, live_kb_retrieval: true },
+                            feature_flag_spec: [
+                                { key: 'live_sentiment', default: false, label: 'Live sentiment updates', help: 'Paid tier.' },
+                                { key: 'live_kb_retrieval', default: true, label: 'Live KB retrieval', help: 'KB cards during calls.' }
+                            ]
+                        };
+                        window.tenantSettings.render();
+                    }"""
+                )
+                rows = page.locator("#featureFlagList .feature-flag-row")
+                assert rows.count() == 2
+                # First row's toggle reflects `live_sentiment: true`.
+                assert page.locator(
+                    "#featureFlagList input[data-flag='live_sentiment']"
+                ).is_checked()
+
             with step("Preferences: automation radio switches active"):
                 page.locator("#preferences input[name=automation][value=manual]").check()
                 time.sleep(0.1)

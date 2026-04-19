@@ -66,6 +66,12 @@ celery_app.conf.update(
             "task": "infer_from_sources_weekly",
             "schedule": crontab(minute=15, hour=2, day_of_week=1),
         },
+        # Daily CRM pull — for each tenant with an Integration row on a
+        # CRM provider, pull customers + contacts and refresh briefs.
+        "crm-sync-daily": {
+            "task": "crm_sync_daily",
+            "schedule": crontab(minute=0, hour=3),
+        },
     },
 )
 
@@ -934,5 +940,86 @@ def vector_health_daily() -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_vector_health_check(db)
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="crm_sync_tenant")
+def crm_sync_tenant(tenant_id: str, provider: str) -> Dict[str, Any]:
+    """Run a single CRM sync for ``(tenant_id, provider)``."""
+    from backend.app.db import async_session
+    from backend.app.services.crm.sync_service import sync_crm_for_tenant
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await sync_crm_for_tenant(
+                db, uuid.UUID(tenant_id), provider
+            )
+            return {
+                "provider": summary.provider,
+                "status": summary.status,
+                "customers_upserted": summary.customers_upserted,
+                "contacts_upserted": summary.contacts_upserted,
+                "briefs_rebuilt": summary.briefs_rebuilt,
+                "error": summary.error,
+            }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="crm_sync_daily")
+def crm_sync_daily() -> Dict[str, Any]:
+    """Nightly fan-out: for every Integration on a CRM provider, run a sync.
+
+    Tenants without CRM integrations are silently skipped. A provider that
+    returns ``not implemented`` (e.g. the Pipedrive stub) is counted as
+    skipped rather than failed.
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.db import async_session
+    from backend.app.models import Integration
+    from backend.app.services.crm.sync_service import (
+        SUPPORTED_PROVIDERS,
+        sync_crm_for_tenant,
+    )
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            stmt = _select(
+                Integration.tenant_id, Integration.provider
+            ).where(Integration.provider.in_(list(SUPPORTED_PROVIDERS)))
+            rows = await db.execute(stmt)
+            pairs = {
+                (uuid.UUID(str(t)), p) for (t, p) in rows.all()
+            }
+
+            results: List[Dict[str, Any]] = []
+            for tenant_id, provider in pairs:
+                try:
+                    summary = await sync_crm_for_tenant(db, tenant_id, provider)
+                    results.append(
+                        {
+                            "tenant_id": str(tenant_id),
+                            "provider": provider,
+                            "status": summary.status,
+                            "customers": summary.customers_upserted,
+                            "contacts": summary.contacts_upserted,
+                        }
+                    )
+                except Exception:
+                    logger.exception(
+                        "CRM sync failed for tenant=%s provider=%s",
+                        tenant_id,
+                        provider,
+                    )
+                    results.append(
+                        {
+                            "tenant_id": str(tenant_id),
+                            "provider": provider,
+                            "status": "failed",
+                        }
+                    )
+        return {"runs": results, "count": len(results)}
 
     return asyncio.run(_runner())
