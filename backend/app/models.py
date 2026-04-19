@@ -229,6 +229,40 @@ class EmailSend(Base):
     )
 
 
+class CallRecording(Base):
+    """Audio recording of a voice interaction.
+
+    Populated by the Twilio ``recordingStatusCallback`` handler (and the
+    equivalent providers). We mirror the raw audio into our own S3 bucket
+    so it's retained under the tenant's control even if they revoke the
+    provider integration.
+    """
+
+    __tablename__ = "call_recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
+    )
+    live_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("live_sessions.id", ondelete="SET NULL")
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # twilio|signalwire|telnyx
+    provider_recording_id: Mapped[Optional[str]] = mapped_column(String)
+    s3_key: Mapped[Optional[str]] = mapped_column(String)
+    content_type: Mapped[str] = mapped_column(String, default="audio/wav")
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    # pending | stored | failed
+    status: Mapped[str] = mapped_column(String, default="pending")
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    stored_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class CustomerOutcomeEvent(Base):
     """A lifecycle event on a Customer — the signal we learn from.
 
