@@ -59,6 +59,8 @@ from backend.app.api.knowledge_base import router as kb_router  # noqa: E402
 from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.chat import router as chat_router  # noqa: E402
+from backend.app.api.me import router as me_router  # noqa: E402
+from backend.app.api.signup import router as signup_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -72,6 +74,8 @@ app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analy
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX, tags=["chat"])
+app.include_router(me_router, prefix=settings.API_V1_PREFIX, tags=["me"])
+app.include_router(signup_router, prefix=settings.API_V1_PREFIX, tags=["signup"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 

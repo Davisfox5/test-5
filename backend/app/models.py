@@ -49,6 +49,10 @@ class Tenant(Base):
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
     is_white_label: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # ── Plan + trial ──────────────────────────────────────
+    # plan_tier: sandbox | starter | growth | enterprise
+    plan_tier: Mapped[str] = mapped_column(String, nullable=False, default="sandbox", server_default="sandbox")
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -438,3 +442,21 @@ class WriteProposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ──────────────────────────────────────────────────────────
+# PUBLIC DEMO — email capture (pre-signup leads)
+# ──────────────────────────────────────────────────────────
+
+
+class DemoEmailCapture(Base):
+    """Emails collected from the public demo's 60-second gate. Pre-tenant."""
+
+    __tablename__ = "demo_email_captures"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source: Mapped[Optional[str]] = mapped_column(String)  # e.g. "public-demo", "landing-page"
+    utm: Mapped[dict] = mapped_column(JSONB, default=dict)
+    converted_tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
