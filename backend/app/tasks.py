@@ -46,6 +46,18 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
+        # Poll every connected email integration every 2 minutes —
+        # safety net behind Gmail Pub/Sub / Graph webhooks.
+        "email-ingest-poll": {
+            "task": "email_ingest_poll",
+            "schedule": 120.0,
+        },
+        # Re-register Gmail watches + Graph subscriptions every 12h.
+        # Gmail watches expire in ~7 days; Graph message subs in ~3 days.
+        "email-push-renew": {
+            "task": "email_push_renew_subscriptions",
+            "schedule": 43200.0,
+        },
     },
 )
 
@@ -250,6 +262,7 @@ def _run_pipeline(
     from backend.app.models import (
         ActionItem,
         Contact,
+        Conversation,
         InteractionScore,
         InteractionSnippet,
         ScorecardTemplate,
@@ -398,6 +411,36 @@ def _run_pipeline(
         if contact is not None:
             update_contact_rollup(contact, insights, interaction.created_at)
 
+    # ── Step 13c: Update conversation rollup (email threading) ───────
+    if interaction.conversation_id is not None:
+        conv = (
+            session.query(Conversation)
+            .filter(Conversation.id == interaction.conversation_id)
+            .first()
+        )
+        if conv is not None:
+            # Keep a small rolling summary + sentiment series at the conv level
+            # so the reply generator and UI don't have to aggregate on read.
+            conv_insights = dict(conv.insights or {})
+            series = list(conv_insights.get("sentiment_series") or [])
+            sscore = insights.get("sentiment_score")
+            if sscore is not None:
+                try:
+                    series.append(float(sscore))
+                    conv_insights["sentiment_series"] = series[-50:]
+                except (TypeError, ValueError):
+                    pass
+            conv_insights["latest_summary"] = insights.get("summary", "")
+            conv_insights["latest_churn_risk"] = insights.get("churn_risk")
+            conv_insights["latest_upsell_score"] = insights.get("upsell_score")
+            conv.insights = conv_insights
+            # Direction drives status: inbound customer → waiting on us;
+            # outbound agent → waiting on customer.
+            if interaction.direction == "inbound":
+                conv.status = "waiting_agent"
+            elif interaction.direction == "outbound":
+                conv.status = "waiting_customer"
+
     # ── Step 14: Insert action items ─────────────────────────────────
     for ai_item in insights.get("action_items", []):
         action = ActionItem(
@@ -440,11 +483,57 @@ def _run_pipeline(
         )
         session.add(snippet_row)
 
-    # ── Step 17: Fire outbound webhooks (placeholder) ────────────────
-    logger.info(
-        "TODO: Fire outbound webhooks for interaction %s (tenant %s)",
-        interaction_id, tenant_id,
-    )
+    # ── Step 17: Fire outbound webhooks ──────────────────────────────
+    from backend.app.services.webhook_dispatcher import dispatch_sync
+
+    analyzed_payload = {
+        "event": "interaction.analyzed",
+        "tenant_id": tenant_id,
+        "interaction_id": interaction_id,
+        "channel": interaction.channel,
+        "direction": interaction.direction,
+        "classification": getattr(interaction, "classification", None),
+        "contact_id": str(interaction.contact_id) if interaction.contact_id else None,
+        "conversation_id": (
+            str(interaction.conversation_id) if interaction.conversation_id else None
+        ),
+        "summary": insights.get("summary"),
+        "sentiment_score": insights.get("sentiment_score"),
+        "churn_risk": insights.get("churn_risk"),
+        "upsell_score": insights.get("upsell_score"),
+        "action_item_count": len(insights.get("action_items", [])),
+    }
+    try:
+        dispatch_sync(session, tenant.id, "interaction.analyzed", analyzed_payload)
+    except Exception:
+        logger.exception("Webhook dispatch raised (non-fatal)")
+
+    # Conversation-level fan-out — only when this message actually has a thread.
+    if interaction.conversation_id is not None:
+        conv_row = (
+            session.query(Conversation)
+            .filter(Conversation.id == interaction.conversation_id)
+            .first()
+        )
+        if conv_row is not None:
+            try:
+                dispatch_sync(
+                    session,
+                    tenant.id,
+                    "conversation.updated",
+                    {
+                        "event": "conversation.updated",
+                        "tenant_id": tenant_id,
+                        "conversation_id": str(conv_row.id),
+                        "channel": conv_row.channel,
+                        "classification": conv_row.classification,
+                        "status": conv_row.status,
+                        "message_count": conv_row.message_count,
+                        "latest_summary": (conv_row.insights or {}).get("latest_summary"),
+                    },
+                )
+            except Exception:
+                logger.exception("Conversation webhook dispatch raised (non-fatal)")
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)
@@ -576,11 +665,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
 @celery_app.task(bind=True, name="process_text_interaction", max_retries=3)
 def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
-    """Batch pipeline for a text-based interaction (chat, email, SMS, etc.).
+    """Batch pipeline for a text-based interaction (email, chat).
 
     Similar to :func:`process_voice_interaction` but skips audio download
     and transcription (steps 3–4).  Uses ``raw_text`` from the interaction
     directly, converting it into a single-segment transcript.
+
+    SMS/WhatsApp paths are stubbed (see services/sms_ingest.py) but this
+    function remains channel-agnostic — if those channels are re-enabled
+    they'll flow through here unchanged.
     """
     from backend.app.models import Interaction, Tenant
 
@@ -659,6 +752,261 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
 
 # ── Scheduled periodic tasks ─────────────────────────────────────────────
+
+
+@celery_app.task(name="email_push_process_gmail", bind=True, max_retries=3)
+def email_push_process_gmail(self, integration_id: str, new_history_id: str) -> Dict[str, Any]:
+    """Diff Gmail history from the cursor forward and ingest new messages.
+
+    Called by the Pub/Sub push endpoint.  Keeps the HTTP handler fast:
+    all API calls + DB writes happen here.
+    """
+    import asyncio as _asyncio
+
+    from backend.app.models import EmailSyncCursor, Integration, Tenant, User
+    from backend.app.services.email_classifier import EmailClassifier
+    from backend.app.services.email_ingest.ingest import ingest_email
+    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.push import fetch_gmail_since_history
+
+    session = _get_sync_session()
+    try:
+        integration = (
+            session.query(Integration)
+            .filter(Integration.id == uuid.UUID(integration_id))
+            .first()
+        )
+        if integration is None:
+            return {"status": "integration_missing"}
+
+        tenant = session.query(Tenant).filter(Tenant.id == integration.tenant_id).first()
+        if tenant is None:
+            return {"status": "tenant_missing"}
+
+        user = (
+            session.query(User).filter(User.id == integration.user_id).first()
+            if integration.user_id else None
+        )
+        agent_email = user.email if user else None
+
+        cursor = (
+            session.query(EmailSyncCursor)
+            .filter(EmailSyncCursor.integration_id == integration.id)
+            .first()
+        )
+        if cursor is None:
+            cursor = EmailSyncCursor(
+                integration_id=integration.id,
+                tenant_id=integration.tenant_id,
+                provider="google",
+            )
+            session.add(cursor)
+            session.flush()
+        start_history = cursor.history_id or new_history_id
+
+        access_token = _refresh_if_expired_sync(session, integration)
+        classifier = EmailClassifier()
+        ingested = 0
+
+        async def _run():
+            nonlocal ingested
+            for msg in fetch_gmail_since_history(access_token, start_history, agent_email):
+                if await ingest_email(session, tenant, msg, classifier) is not None:
+                    ingested += 1
+
+        _asyncio.run(_run())
+        # Always move the cursor forward even when nothing ingested, so
+        # an internal-only burst doesn't make us keep re-diffing it.
+        cursor.history_id = new_history_id
+        session.commit()
+        return {"status": "ok", "ingested": ingested}
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Gmail push task failed")
+        raise self.retry(exc=exc, countdown=30)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="email_push_process_graph", bind=True, max_retries=3)
+def email_push_process_graph(
+    self,
+    integration_id: str,
+    message_id: str,
+    parent_folder_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch a single Graph message and route it through the ingest path."""
+    import asyncio as _asyncio
+
+    from backend.app.models import Integration, Tenant, User
+    from backend.app.services.email_classifier import EmailClassifier
+    from backend.app.services.email_ingest.ingest import ingest_email
+    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.push import fetch_graph_message
+
+    session = _get_sync_session()
+    try:
+        integration = (
+            session.query(Integration)
+            .filter(Integration.id == uuid.UUID(integration_id))
+            .first()
+        )
+        if integration is None:
+            return {"status": "integration_missing"}
+
+        tenant = session.query(Tenant).filter(Tenant.id == integration.tenant_id).first()
+        if tenant is None:
+            return {"status": "tenant_missing"}
+
+        user = (
+            session.query(User).filter(User.id == integration.user_id).first()
+            if integration.user_id else None
+        )
+        agent_email = user.email if user else None
+
+        access_token = _refresh_if_expired_sync(session, integration)
+
+        # Folder id hint from the notification is the fastest direction
+        # signal; otherwise we infer from sender vs. agent email.
+        direction_hint = None
+        if parent_folder_id:
+            lowered = parent_folder_id.lower()
+            if "sent" in lowered:
+                direction_hint = "outbound"
+            elif "inbox" in lowered:
+                direction_hint = "inbound"
+
+        msg = fetch_graph_message(access_token, message_id, agent_email, direction_hint)
+        if msg is None:
+            session.commit()
+            return {"status": "fetch_failed"}
+
+        classifier = EmailClassifier()
+        async def _run():
+            return await ingest_email(session, tenant, msg, classifier)
+
+        ingested_id = _asyncio.run(_run())
+        session.commit()
+        return {"status": "ok", "ingested": bool(ingested_id)}
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Graph push task failed")
+        raise self.retry(exc=exc, countdown=30)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="email_push_renew_subscriptions")
+def email_push_renew_subscriptions() -> Dict[str, Any]:
+    """(Re-)register Gmail watches and Graph subscriptions.
+
+    Runs on a 12h schedule.  Expired watches/subscriptions are simply
+    recreated; the provider returns the same stream so we pick up
+    wherever we left off.  Requires PUBLIC_WEBHOOK_BASE_URL /
+    GMAIL_PUBSUB_TOPIC / GRAPH_CLIENT_STATE to be configured —
+    otherwise the task no-ops.
+    """
+    from backend.app.models import EmailSyncCursor, Integration
+    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.push import (
+        subscribe_graph_mailbox,
+        watch_gmail,
+    )
+
+    s = get_settings()
+    base_url = s.PUBLIC_WEBHOOK_BASE_URL.rstrip("/")
+    if not base_url:
+        logger.info("PUBLIC_WEBHOOK_BASE_URL unset — skipping push renewal")
+        return {"status": "skipped", "reason": "no_public_url"}
+
+    session = _get_sync_session()
+    gmail_ok = graph_ok = failed = 0
+    try:
+        integrations = (
+            session.query(Integration)
+            .filter(Integration.provider.in_(["google", "microsoft"]))
+            .all()
+        )
+        for integ in integrations:
+            try:
+                access_token = _refresh_if_expired_sync(session, integ)
+            except Exception:
+                failed += 1
+                logger.exception("Refresh failed for integration %s", integ.id)
+                continue
+
+            cursor = (
+                session.query(EmailSyncCursor)
+                .filter(EmailSyncCursor.integration_id == integ.id)
+                .first()
+            )
+            if cursor is None:
+                cursor = EmailSyncCursor(
+                    integration_id=integ.id,
+                    tenant_id=integ.tenant_id,
+                    provider=integ.provider,
+                )
+                session.add(cursor)
+                session.flush()
+
+            try:
+                if integ.provider == "google" and s.GMAIL_PUBSUB_TOPIC:
+                    resp = watch_gmail(access_token, s.GMAIL_PUBSUB_TOPIC)
+                    # Persist the watch's historyId so the first push
+                    # notification has something to diff against.
+                    cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
+                    gmail_ok += 1
+                elif integ.provider == "microsoft" and s.GRAPH_CLIENT_STATE:
+                    notification_url = (
+                        f"{base_url}{s.API_V1_PREFIX}/email-push/graph"
+                    )
+                    resp = subscribe_graph_mailbox(
+                        access_token,
+                        notification_url=notification_url,
+                        client_state=s.GRAPH_CLIENT_STATE,
+                    )
+                    # Reuse delta_link as a handle to the subscription id —
+                    # the notification endpoint looks it up there.
+                    cursor.delta_link = resp.get("id") or cursor.delta_link
+                    graph_ok += 1
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Push subscription failed for integration %s (%s)",
+                    integ.id, integ.provider,
+                )
+        session.commit()
+    finally:
+        session.close()
+
+    return {
+        "status": "ok",
+        "gmail_subscribed": gmail_ok,
+        "graph_subscribed": graph_ok,
+        "failed": failed,
+    }
+
+
+@celery_app.task(name="email_ingest_poll")
+def email_ingest_poll() -> Dict[str, Any]:
+    """Poll every connected Google/Microsoft integration for new mail.
+
+    Scheduled every 2 minutes by Celery Beat.  Each integration advances
+    its own ``EmailSyncCursor`` so we only fetch deltas.  External,
+    customer-facing emails are created as ``Interaction(channel='email')``
+    rows and enqueued for the standard text-analysis pipeline.  Internal
+    emails are dropped with a log line and never touch the Interaction
+    table.
+    """
+    from backend.app.services.email_ingest.poller import poll_all
+
+    session = _get_sync_session()
+    try:
+        return poll_all(session)
+    finally:
+        session.close()
 
 
 @celery_app.task(name="tenant_insights_weekly")

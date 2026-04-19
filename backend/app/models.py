@@ -153,7 +153,10 @@ class Contact(Base):
 
 
 # ──────────────────────────────────────────────────────────
-# INTERACTIONS (omnichannel — voice, sms, email, chat, whatsapp)
+# INTERACTIONS (omnichannel — voice, email, chat)
+#
+# SMS and WhatsApp rows may exist from earlier backfills; they remain
+# readable but no new rows with those channels are created.
 # ──────────────────────────────────────────────────────────
 
 
@@ -164,9 +167,15 @@ class Interaction(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
 
-    # Type and source
-    channel: Mapped[str] = mapped_column(String, nullable=False)  # voice|sms|email|chat|whatsapp
+    # Type and source — voice|email|chat (sms/whatsapp stubbed)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound|internal
 
@@ -180,6 +189,19 @@ class Interaction(Base):
     audio_s3_key: Mapped[Optional[str]] = mapped_column(String)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
     caller_phone: Mapped[Optional[str]] = mapped_column(String)
+
+    # Email-specific (populated for channel='email')
+    from_address: Mapped[Optional[str]] = mapped_column(String)
+    to_addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    cc_addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    message_id: Mapped[Optional[str]] = mapped_column(String, unique=True)  # RFC-822
+    in_reply_to: Mapped[Optional[str]] = mapped_column(String)
+    references: Mapped[list] = mapped_column(JSONB, default=list)
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String)  # Gmail/Graph id
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
+    classification: Mapped[Optional[str]] = mapped_column(String)  # sales|support|it|other
+    classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
 
     # Processing
     status: Mapped[str] = mapped_column(String, default="processing")
@@ -388,3 +410,103 @@ class TenantInsight(Base):
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# CONVERSATIONS (threading across email / voice / chat)
+# ──────────────────────────────────────────────────────────
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    thread_key: Mapped[Optional[str]] = mapped_column(String, index=True)  # RFC-822 root id or hash
+    classification: Mapped[Optional[str]] = mapped_column(String)  # sales|support|it|other
+    status: Mapped[str] = mapped_column(String, default="open")  # open|waiting_customer|waiting_agent|closed
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# EMAIL INGESTION CURSOR (per-integration sync state)
+# ──────────────────────────────────────────────────────────
+
+
+class EmailSyncCursor(Base):
+    __tablename__ = "email_sync_cursors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE"), unique=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # google|microsoft
+    history_id: Mapped[Optional[str]] = mapped_column(String)       # Gmail historyId
+    delta_link: Mapped[Optional[str]] = mapped_column(Text)         # Graph deltaLink
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ──────────────────────────────────────────────────────────
+# MARKETING CAMPAIGNS
+#
+# We don't generate campaigns — we monitor them.  External ESPs (Mailchimp,
+# HubSpot, Klaviyo, SendGrid, etc.) push metadata + engagement events in,
+# and we attribute replies / downstream interactions back so AI analysis
+# can correlate campaign framing with customer sentiment.
+# ──────────────────────────────────────────────────────────
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)  # email|sms|push|other
+    provider: Mapped[Optional[str]] = mapped_column(String)  # mailchimp|hubspot|klaviyo|sendgrid|custom
+    external_id: Mapped[Optional[str]] = mapped_column(String)  # ESP's campaign id
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    variant: Mapped[Optional[str]] = mapped_column(String)  # A/B label
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)  # rollup: sentiment, reply rate, churn delta
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignRecipient(Base):
+    """Which contacts received which campaign message (needed for attribution)."""
+
+    __tablename__ = "campaign_recipients"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    email_address: Mapped[Optional[str]] = mapped_column(String)
+    external_message_id: Mapped[Optional[str]] = mapped_column(String)  # ESP/per-send id
+    rfc822_message_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CampaignEvent(Base):
+    """Engagement event from the ESP — open/click/bounce/unsubscribe/reply/convert."""
+
+    __tablename__ = "campaign_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    recipient_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaign_recipients.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    event_type: Mapped[str] = mapped_column(String, nullable=False)  # open|click|bounce|unsubscribe|reply|convert
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
