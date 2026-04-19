@@ -58,6 +58,11 @@ class Tenant(Base):
     # Seat + admin limits + feature defaults are derived from this on every
     # change via ``apply_tier``.
     subscription_tier: Mapped[str] = mapped_column(String, default="solo")
+    # Stripe linkage. Set by the admin endpoint ``/admin/stripe/link`` or
+    # by the webhook on first ``customer.subscription.created`` we see for
+    # the tenant. ``stripe_subscription_id`` is the current active sub.
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String)
     # LINDA's per-tenant operating brief — everything the orchestrator and its
     # agents should know about this tenant. Assembled by the ContextBuilder
     # agent from KB docs, onboarding-interview answers, explicit overrides,

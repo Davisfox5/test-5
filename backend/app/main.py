@@ -64,6 +64,7 @@ from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.emails import router as emails_router  # noqa: E402
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
+from backend.app.api.stripe_webhook import router as stripe_router  # noqa: E402
 from backend.app.api.telephony import router as telephony_router  # noqa: E402
 from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
 
@@ -105,6 +106,9 @@ app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onbo
 # us via shared secret (X-Twilio-Signature). Outbound dial requires
 # admin auth, enforced per-endpoint.
 app.include_router(telephony_router, prefix=settings.API_V1_PREFIX, tags=["telephony"])
+# Stripe: webhook is unauthenticated (Stripe signature proves it's
+# them); the admin `link` endpoint is gated per-endpoint via require_role.
+app.include_router(stripe_router, prefix=settings.API_V1_PREFIX, tags=["billing"])
 app.include_router(
     webhooks_router,
     prefix=settings.API_V1_PREFIX,

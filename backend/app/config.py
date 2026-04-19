@@ -106,7 +106,16 @@ class Settings(BaseSettings):
     PDL_API_KEY: str = ""
     APOLLO_API_KEY: str = ""
 
-    # ── AWS (S3 audio storage) ───────────────────────────
+    # ── Stripe (billing) ─────────────────────────────────
+    STRIPE_API_KEY: str = ""
+    # ``whsec_...`` signing secret from the Stripe webhook endpoint.
+    STRIPE_WEBHOOK_SECRET: str = ""
+    # Price IDs that map 1:1 to SUBSCRIPTION_TIERS keys. Leave blank for
+    # tiers you don't sell yet.
+    STRIPE_PRICE_SOLO: str = ""
+    STRIPE_PRICE_TEAM: str = ""
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_ENTERPRISE: str = ""
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_S3_BUCKET: str = ""
