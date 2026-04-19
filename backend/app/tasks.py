@@ -58,6 +58,54 @@ celery_app.conf.update(
             "task": "email_push_renew_subscriptions",
             "schedule": 43200.0,
         },
+        # ── Continuous AI improvement ─────────────────────────────────
+        # Drain the feedback Redis stream into feedback_events every 30s.
+        "consume-feedback-stream": {
+            "task": "consume_feedback_stream",
+            "schedule": 30.0,
+        },
+        # Refresh per-tenant few-shot pools nightly at 03:00 UTC.
+        "refresh-few-shot-pools": {
+            "task": "refresh_few_shot_pools",
+            "schedule": crontab(minute=0, hour=3),
+        },
+        # WER aggregation Sundays 02:00 UTC.
+        "compute-wer-weekly": {
+            "task": "compute_wer_weekly",
+            "schedule": crontab(minute=0, hour=2, day_of_week=0),
+        },
+        # Vocabulary candidate discovery weekly, Sundays 03:00 UTC.
+        "discover-vocabulary-candidates": {
+            "task": "discover_vocabulary_candidates",
+            "schedule": crontab(minute=0, hour=3, day_of_week=0),
+        },
+        # Vocabulary digest email/Slack weekly, Mondays 09:00 UTC.
+        "vocabulary-digest-weekly": {
+            "task": "vocabulary_digest_weekly",
+            "schedule": crontab(minute=0, hour=9, day_of_week=1),
+        },
+        # Cross-tenant aggregate metrics — Mondays 00:30 UTC, after
+        # tenant_insights_weekly has finished.
+        "cross-tenant-aggregate-metrics": {
+            "task": "cross_tenant_aggregate_metrics",
+            "schedule": crontab(minute=30, hour=0, day_of_week=1),
+        },
+        # Quality regression watchdog runs hourly; the task itself bails
+        # quickly when no rollouts are active.
+        "quality-regression-check": {
+            "task": "quality_regression_check",
+            "schedule": 3600.0,
+        },
+        # Biweekly variant winner selection (Tue/Fri 04:00 UTC).
+        "variant-winner-selection": {
+            "task": "variant_winner_selection",
+            "schedule": crontab(minute=0, hour=4, day_of_week="2,5"),
+        },
+        # Campaign variant winner selection (same cadence as variant).
+        "campaign-variant-winner-selection": {
+            "task": "campaign_variant_winner_selection",
+            "schedule": crontab(minute=15, hour=4, day_of_week="2,5"),
+        },
     },
 )
 
@@ -320,14 +368,50 @@ def _run_pipeline(
     )
 
     # ── Step 9: AI analysis ──────────────────────────────────────────
+    # Resolve the active prompt variant for this tenant (A/B-routed by
+    # hash(tenant_id, surface)).  Falls back to the producer's hardcoded
+    # constant when no variants are seeded yet.
+    from backend.app.services.ai_analysis import ANALYSIS_SYSTEM_PROMPT
+    from backend.app.services.personalization_service import (
+        build_analysis_context_block,
+        build_rag_context_block,
+        get_parameter_overrides,
+    )
+    from backend.app.services.prompt_variant_service import (
+        select_variant_sync,
+        to_uuid as _variant_to_uuid,
+    )
+
+    variant = select_variant_sync(
+        session,
+        tenant,
+        surface="analysis",
+        tier=recommended_tier,
+        channel=interaction.channel,
+        fallback_template=ANALYSIS_SYSTEM_PROMPT,
+    )
+    tenant_block = build_analysis_context_block(session, tenant)
+    rag_block = build_rag_context_block(
+        session, tenant, triage_result, channel=interaction.channel
+    )
+    overrides = get_parameter_overrides(session, tenant, surface="analysis")
+
     insights: Dict[str, Any] = asyncio.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
-            tier=recommended_tier,
+            tier=overrides.get("force_tier") or recommended_tier,
             triage_result=triage_result,
+            system_prompt_override=variant.prompt_template,
+            tenant_context_block=tenant_block,
+            rag_context_block=rag_block,
+            max_tokens_override=overrides.get("max_tokens"),
         )
     )
-    logger.info("AI analysis complete for interaction %s", interaction_id)
+    interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
+    logger.info(
+        "AI analysis complete for interaction %s (variant=%s status=%s)",
+        interaction_id, variant.name, variant.status,
+    )
 
     # ── Step 10: Scorecard scoring ───────────────────────────────────
     scorecard_results: List[Dict[str, Any]] = []
@@ -537,6 +621,18 @@ def _run_pipeline(
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)
+
+    # ── Step 18: Schedule LLM-judge evaluation (Layer 2) ─────────────
+    # 15-min delay so the interaction settles in DB and (for replies) any
+    # follow-on edit-distance event has been written.
+    try:
+        evaluate_analysis.apply_async(args=[interaction_id], countdown=900)
+        if interaction.channel == "email":
+            evaluate_classification.apply_async(args=[interaction_id], countdown=900)
+            if interaction.direction == "outbound":
+                evaluate_reply.apply_async(args=[interaction_id], countdown=900)
+    except Exception:
+        logger.exception("Failed to enqueue evaluator tasks (non-fatal)")
 
 
 # ── Celery Tasks ─────────────────────────────────────────────────────────
@@ -1022,5 +1118,165 @@ def tenant_insights_weekly() -> Dict[str, Any]:
     try:
         processed = rollup_all_tenants_weekly(session)
         return {"tenants_processed": processed}
+    finally:
+        session.close()
+
+
+# ── Continuous AI improvement tasks ──────────────────────────────────────
+
+
+@celery_app.task(name="consume_feedback_stream")
+def consume_feedback_stream() -> Dict[str, Any]:
+    """Drain the Redis feedback stream into ``feedback_events``.
+
+    Idempotent and safe to run on a 30s cadence.  Returns number of events
+    persisted in this batch.
+    """
+    from backend.app.services import feedback_service
+
+    session = _get_sync_session()
+    try:
+        return feedback_service.consume_batch(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="evaluate_analysis", bind=True, max_retries=3)
+def evaluate_analysis(self, interaction_id: str) -> Dict[str, Any]:
+    """LLM-judge the analysis insights for an interaction.  Chained 15-min after the producer."""
+    from backend.app.services.llm_judge import evaluate_analysis as run
+
+    session = _get_sync_session()
+    try:
+        return run(session, interaction_id)
+    except Exception as exc:
+        logger.exception("evaluate_analysis failed for %s", interaction_id)
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="evaluate_classification", bind=True, max_retries=3)
+def evaluate_classification(self, interaction_id: str) -> Dict[str, Any]:
+    """LLM-judge an email classification verdict."""
+    from backend.app.services.llm_judge import evaluate_classification as run
+
+    session = _get_sync_session()
+    try:
+        return run(session, interaction_id)
+    except Exception as exc:
+        logger.exception("evaluate_classification failed for %s", interaction_id)
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="evaluate_reply", bind=True, max_retries=3)
+def evaluate_reply(self, interaction_id: str) -> Dict[str, Any]:
+    """LLM-judge an outbound email reply (5 LLM dimensions; edit-distance is sync)."""
+    from backend.app.services.llm_judge import evaluate_reply as run
+
+    session = _get_sync_session()
+    try:
+        return run(session, interaction_id)
+    except Exception as exc:
+        logger.exception("evaluate_reply failed for %s", interaction_id)
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="refresh_few_shot_pools")
+def refresh_few_shot_pools() -> Dict[str, Any]:
+    """Promote high-quality interactions into each tenant's few-shot pool."""
+    from backend.app.services.personalization_service import refresh_pools_all_tenants
+
+    session = _get_sync_session()
+    try:
+        return refresh_pools_all_tenants(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="compute_wer_weekly")
+def compute_wer_weekly() -> Dict[str, Any]:
+    """Aggregate the prior 7 days of transcript_corrections into wer_metrics."""
+    from backend.app.services.wer_service import compute_weekly
+
+    session = _get_sync_session()
+    try:
+        return compute_weekly(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="discover_vocabulary_candidates")
+def discover_vocabulary_candidates() -> Dict[str, Any]:
+    """Surface new candidate keyterms from corrections + low-confidence segments."""
+    from backend.app.services.vocabulary_service import discover_candidates_all_tenants
+
+    session = _get_sync_session()
+    try:
+        return discover_candidates_all_tenants(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="cross_tenant_aggregate_metrics")
+def cross_tenant_aggregate_metrics() -> Dict[str, Any]:
+    """Compute opt-in cross-tenant aggregates (no tenant_id leakage)."""
+    from backend.app.services.cross_tenant_metrics import aggregate_weekly
+
+    session = _get_sync_session()
+    try:
+        return aggregate_weekly(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="quality_regression_check")
+def quality_regression_check() -> Dict[str, Any]:
+    """Watchdog: alert if 24h rolling quality drops > 5% vs. 7-day baseline."""
+    from backend.app.services.regression_watchdog import check_all_active_rollouts
+
+    session = _get_sync_session()
+    try:
+        return check_all_active_rollouts(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="variant_winner_selection")
+def variant_winner_selection() -> Dict[str, Any]:
+    """Promote / retire prompt variants based on accumulated quality scores."""
+    from backend.app.services.variant_rollout import evaluate_active_experiments
+
+    session = _get_sync_session()
+    try:
+        return evaluate_active_experiments(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="vocabulary_digest_weekly")
+def vocabulary_digest_weekly() -> Dict[str, Any]:
+    """Send the weekly Slack digest of pending vocabulary candidates."""
+    from backend.app.services.digest_service import send_vocabulary_digests
+
+    session = _get_sync_session()
+    try:
+        return send_vocabulary_digests(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="campaign_variant_winner_selection")
+def campaign_variant_winner_selection() -> Dict[str, Any]:
+    """Decide winners for active campaign A/B variants using engagement events."""
+    from backend.app.services.campaign_winner_service import decide_active_campaigns
+
+    session = _get_sync_session()
+    try:
+        return decide_active_campaigns(session)
     finally:
         session.close()

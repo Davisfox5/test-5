@@ -179,6 +179,9 @@ class Interaction(Base):
     source: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound|internal
 
+    # Which PromptVariant produced the most recent .insights (for A/B + rollback).
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+
     # Content
     title: Mapped[Optional[str]] = mapped_column(String)
     transcript: Mapped[list] = mapped_column(JSONB, default=list)
@@ -431,6 +434,10 @@ class Conversation(Base):
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Active classifier/reply-drafter variant for the thread — same variant for
+    # the whole conversation so the user's experience is consistent within an
+    # A/B test window.
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -510,3 +517,236 @@ class CampaignEvent(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)  # open|click|bounce|unsubscribe|reply|convert
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+
+
+# ──────────────────────────────────────────────────────────
+# CONTINUOUS AI IMPROVEMENT
+#
+# Layer 1 — feedback capture (FeedbackEvent, TranscriptCorrection).
+# Layer 2 — quality scoring (InsightQualityScore, EvaluationReferenceSet).
+# Layer 3 — prompt versioning + experiments (PromptVariant, Experiment).
+# Layer 4 — per-tenant personalisation (TenantPromptConfig).
+# Layer 5 — ASR improvement (VocabularyCandidate, WerMetric).
+# Layer 6/7 — orchestration metrics (CrossTenantAnalytic).
+# ──────────────────────────────────────────────────────────
+
+
+class FeedbackEvent(Base):
+    """User feedback signal on any AI surface — both implicit + explicit."""
+
+    __tablename__ = "feedback_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("action_items.id"))
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    # 'analysis' | 'email_classifier' | 'email_reply' | 'live_coaching'
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    signal_type: Mapped[str] = mapped_column(String, nullable=False)  # 'implicit' | 'explicit'
+    insight_dimension: Mapped[Optional[str]] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    session_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TranscriptCorrection(Base):
+    """Manual transcript edit — feeds vocabulary discovery and WER."""
+
+    __tablename__ = "transcript_corrections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    corrected_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_at_correction: Mapped[Optional[float]] = mapped_column(Float)
+    corrected_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    correction_source: Mapped[str] = mapped_column(String, default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InsightQualityScore(Base):
+    """Per-dimension quality score from the LLM judge or human reviewer."""
+
+    __tablename__ = "insight_quality_scores"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    evaluator_type: Mapped[str] = mapped_column(String, nullable=False)
+    evaluator_id: Mapped[str] = mapped_column(String, nullable=False)
+    dimension: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PromptVariant(Base):
+    """Versioned LLM prompt template, A/B-routable across the production surfaces.
+
+    Status lifecycle: draft → shadow → canary → active → (rolled_back | retired).
+    """
+
+    __tablename__ = "prompt_variants"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    target_surface: Mapped[str] = mapped_column(String, nullable=False)
+    target_tier: Mapped[Optional[str]] = mapped_column(String)
+    target_channel: Mapped[Optional[str]] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    parent_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    retired_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class TenantPromptConfig(Base):
+    """Per-tenant prompt-time customisation — vocab, persona, few-shot, RAG, params."""
+
+    __tablename__ = "tenant_prompt_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), unique=True)
+    active_prompt_variant_ids: Mapped[dict] = mapped_column(JSONB, default=dict)
+    few_shot_pool: Mapped[dict] = mapped_column(JSONB, default=dict)
+    persona_block: Mapped[Optional[str]] = mapped_column(Text)
+    acronyms: Mapped[dict] = mapped_column(JSONB, default=dict)
+    custom_terms: Mapped[list] = mapped_column(JSONB, default=list)
+    rag_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    parameter_overrides: Mapped[dict] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+
+
+class VocabularyCandidate(Base):
+    """Candidate term discovered from corrections / low-confidence segments."""
+
+    __tablename__ = "vocabulary_candidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    term: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[str] = mapped_column(String, default="medium")
+    source: Mapped[Optional[str]] = mapped_column(String)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    reviewed_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EvaluationReferenceSet(Base):
+    """Frozen, versioned snapshot of reference interactions for evaluation."""
+
+    __tablename__ = "evaluation_reference_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    interaction_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    reference_outputs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    frozen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class Experiment(Base):
+    """A/B test, prompt-optimisation run, or other experiment record."""
+
+    __tablename__ = "experiments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    surface: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="running")
+    hypothesis: Mapped[Optional[str]] = mapped_column(Text)
+    control_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    treatment_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    start_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    end_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    result_summary: Mapped[dict] = mapped_column(JSONB, default=dict)
+    conclusion: Mapped[Optional[str]] = mapped_column(Text)
+    decided_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WerMetric(Base):
+    """Weekly word-error-rate aggregate per (tenant, engine, channel)."""
+
+    __tablename__ = "wer_metrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    asr_engine: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[Optional[str]] = mapped_column(String)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    word_error_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CrossTenantAnalytic(Base):
+    """Cross-tenant aggregate metric — no ``tenant_id`` column by design.
+
+    Tenants opted out via ``Tenant.features_enabled.data_use_for_improvement = false``
+    are excluded from these aggregates upstream by the rollup job.
+    """
+
+    __tablename__ = "cross_tenant_analytics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    metric_name: Mapped[str] = mapped_column(String, nullable=False)
+    bucket: Mapped[Optional[str]] = mapped_column(String)
+    surface: Mapped[Optional[str]] = mapped_column(String)
+    channel: Mapped[Optional[str]] = mapped_column(String)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    value: Mapped[Optional[float]] = mapped_column(Float)
+    distribution: Mapped[dict] = mapped_column(JSONB, default=dict)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

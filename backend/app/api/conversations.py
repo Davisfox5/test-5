@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Conversation, Integration, Interaction, Tenant, User
+from backend.app.services import feedback_service
 from backend.app.services.email_reply import ReplyDrafter
 from backend.app.services.email_send import send_via_gmail, send_via_graph
 from backend.app.services.token_crypto import decrypt_token
@@ -76,6 +77,7 @@ class SendReplyRequest(BaseModel):
     to: List[EmailStr]
     cc: List[EmailStr] = []
     integration_id: uuid.UUID
+    user_id: Optional[uuid.UUID] = None  # who is sending (for feedback attribution)
 
 
 # ── Listing / detail ─────────────────────────────────────
@@ -149,6 +151,25 @@ async def draft_reply(
 
     drafter = ReplyDrafter()
     draft = await drafter.draft(db, tenant, conv, body.extra_instructions)
+
+    # Cache the drafted body so the send-reply endpoint can compute the
+    # edit-distance signal (the only ground-truth dimension for the reply
+    # judge).  Keyed by ("anon" + conv_id) when no user is supplied — the
+    # demo flow doesn't always have a user context, but a tenant always does.
+    feedback_service.cache_draft_body("anon", str(conv_id), draft.body)
+    feedback_service.emit_event(
+        tenant_id=tenant.id,
+        surface="email_reply",
+        event_type="reply_drafted",
+        signal_type="implicit",
+        conversation_id=conv_id,
+        payload={
+            "rationale": draft.rationale,
+            "requires_human_review": draft.requires_human_review,
+            "citations_count": len(draft.citations or []),
+        },
+    )
+
     return DraftReplyResponse(**draft.__dict__)
 
 
@@ -253,6 +274,26 @@ async def send_reply(
     )
     db.add(outbound)
     await db.flush()
+
+    # Edit-distance feedback: compare the actually-sent body against the
+    # cached draft.  This is the gold-standard quality signal for the reply
+    # drafter — the only dimension that doesn't need an LLM judge.
+    cached_draft = feedback_service.fetch_cached_draft("anon", str(conv_id))
+    if cached_draft is not None:
+        event_type, payload = feedback_service.classify_reply_change(
+            cached_draft, body.body
+        )
+        feedback_service.emit_event(
+            tenant_id=tenant.id,
+            surface="email_reply",
+            event_type=event_type,
+            signal_type="implicit",
+            conversation_id=conv_id,
+            interaction_id=outbound.id,
+            user_id=body.user_id,
+            payload=payload,
+        )
+        feedback_service.clear_cached_draft("anon", str(conv_id))
 
     # Enqueue analysis so the agent's response gets scored by the pipeline.
     try:

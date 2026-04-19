@@ -453,6 +453,8 @@
                             <div class="insight-card">
                                 <h3>AI Summary</h3>
                                 <p><!-- Populated by JS --></p>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="summary"></div>
+                                <div data-cs-rating data-cs-surface="analysis"></div>
                             </div>
 
                             <div class="insight-card">
@@ -460,6 +462,7 @@
                                 <div class="sentiment-over-time">
                                     <!-- Populated by JS -->
                                 </div>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="sentiment"></div>
                             </div>
 
                             <div class="insight-card">
@@ -467,6 +470,7 @@
                                 <div class="coaching-notes">
                                     <!-- Populated by JS -->
                                 </div>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="coaching"></div>
                             </div>
 
                             <div class="insight-card">
@@ -1074,6 +1078,17 @@
                     <div class="view-header">
                         <h1>Analytics</h1>
                         <div class="date-picker">Last 30 Days ▾</div>
+                    </div>
+
+                    <!-- AI Health (Tier 2 — populated by ai-health.js) -->
+                    <div class="analytics-chart-card" style="margin-bottom:1.5rem;">
+                        <h3>AI Health</h3>
+                        <p class="muted" style="margin:0 0 0.5rem;font-size:0.8rem;">
+                            Quality scores, transcription accuracy, feedback velocity, and pending vocabulary review for your tenant.
+                        </p>
+                        <div id="cs-ai-health-card"></div>
+                        <h4 style="margin-top:1.25rem;">Pending vocabulary candidates</h4>
+                        <div id="cs-vocab-pending"></div>
                     </div>
 
                     <!-- Company Health Score -->
@@ -1716,5 +1731,7 @@
 
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
+    <script src="js/feedback.js"></script>
+    <script src="js/ai-health.js"></script>
 </body>
 </html>

@@ -30,6 +30,9 @@ alembic>=1.13
 redis>=5                          # ElastiCache — pub/sub, sessions, Celery broker
 celery[redis]>=5                  # Async task queue
 
+# === Observability ===
+prometheus-client>=0.20            # /metrics for the continuous-improvement system
+
 # === Vector DB ===
 qdrant-client>=1.9                # Knowledge base RAG
 

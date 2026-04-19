@@ -25,9 +25,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+import time
+
 import anthropic
 
 from backend.app.config import get_settings
+from backend.app.services import metrics as _metrics
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -160,10 +163,17 @@ class EmailClassifier:
             api_key=get_settings().ANTHROPIC_API_KEY
         )
 
-    async def classify(self, email: EmailForClassification) -> ClassificationResult:
+    async def classify(
+        self,
+        email: EmailForClassification,
+        system_prompt_override: Optional[str] = None,
+        tenant_context_block: Optional[str] = None,
+    ) -> ClassificationResult:
         pre = _prefilter(email)
         if pre is not None:
             return pre
+
+        system_prompt = system_prompt_override or SYSTEM_PROMPT
 
         user_content = (
             f"## Tenant-internal domains\n"
@@ -177,14 +187,20 @@ class EmailClassifier:
             f"{json.dumps({k: v for k, v in email.headers.items() if k.lower() in {'list-id','auto-submitted','precedence','x-mailer','return-path'}})}\n\n"
             f"Body preview:\n{email.body_preview[:2000]}"
         )
+        if tenant_context_block:
+            user_content = f"{tenant_context_block}\n\n{user_content}"
 
         try:
+            t0 = time.perf_counter()
             response = await self._client.messages.create(
                 model=HAIKU_MODEL,
                 max_tokens=256,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[{"role": "user", "content": user_content}],
             )
+            _metrics.LLM_LATENCY.labels(
+                surface="email_classifier", model=HAIKU_MODEL
+            ).observe(time.perf_counter() - t0)
             raw = response.content[0].text
             data: Dict[str, Any] = json.loads(_strip_json_fences(raw))
             is_external = bool(data.get("is_external", False))

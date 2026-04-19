@@ -25,11 +25,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import time
+
 import anthropic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import get_settings
+from backend.app.services import metrics as _metrics
 from backend.app.models import (
     Contact,
     Conversation,
@@ -82,6 +85,34 @@ class ReplyDraft:
 def _tenant_tone(tenant: Tenant) -> str:
     branding = tenant.branding_config or {}
     return branding.get("email_tone") or branding.get("tone") or "professional, concise, warm"
+
+
+def _tone_examples(tenant: Tenant, classification: Optional[str]) -> str:
+    """Return up to 2 tone exemplars matching the conversation classification.
+
+    ``branding_config.email_tone_examples`` is a list of
+    ``{"scenario": str, "ideal_response": str, "tags": [str]}`` items.  Tags
+    that match the conversation's classification (sales/support/it/other) are
+    preferred; otherwise we fall back to the first two regardless.
+    """
+    branding = tenant.branding_config or {}
+    examples = branding.get("email_tone_examples") or []
+    if not examples:
+        return ""
+    target = (classification or "").lower()
+
+    def _matches(ex: Dict[str, Any]) -> bool:
+        tags = [str(t).lower() for t in (ex.get("tags") or [])]
+        return target in tags if target else False
+
+    matched = [e for e in examples if _matches(e)] or examples
+    chosen = matched[:2]
+    lines: List[str] = ["## Tone exemplars"]
+    for i, ex in enumerate(chosen, start=1):
+        scenario = str(ex.get("scenario") or f"example {i}")
+        ideal = str(ex.get("ideal_response") or "")
+        lines.append(f"### {scenario}\n{ideal[:1500]}")
+    return "\n\n".join(lines)
 
 
 async def _conversation_messages(db: AsyncSession, conversation_id) -> List[Interaction]:
@@ -169,6 +200,8 @@ class ReplyDrafter:
         tenant: Tenant,
         conversation: Conversation,
         extra_instructions: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
+        tenant_context_block: Optional[str] = None,
     ) -> ReplyDraft:
         messages = await _conversation_messages(db, conversation.id)
         history = await _contact_history(
@@ -185,37 +218,46 @@ class ReplyDrafter:
             messages[-1].raw_text if messages else ""
         )
         kb_docs = await _kb_excerpts(db, tenant.id, kb_query)
+        tone_block = _tone_examples(tenant, conversation.classification)
+        system_prompt = system_prompt_override or SYSTEM_PROMPT
 
-        user_content = (
-            f"## Tenant\n"
-            f"name: {tenant.name}\n"
-            f"tone: {_tenant_tone(tenant)}\n\n"
-            f"## Conversation classification\n"
-            f"{conversation.classification or 'unknown'}\n\n"
-            f"## Contact\n"
-            f"name: {contact.name if contact else '(unknown)'}\n"
-            f"email: {contact.email if contact else '(unknown)'}\n"
-            f"prior interactions: {contact.interaction_count if contact else 0}\n"
-            f"sentiment trend: {contact.sentiment_trend if contact else []}\n\n"
-            f"## Prior conversations with this contact\n"
-            f"{_format_history(history)}\n\n"
-            f"## Current thread (most recent message last)\n"
-            f"{_format_thread(messages)}\n\n"
-            f"## Knowledge base excerpts\n"
-            f"{_format_kb(kb_docs)}\n\n"
-            f"## Extra instructions from the agent\n"
-            f"{extra_instructions or '(none)'}\n"
+        sections: List[str] = []
+        if tenant_context_block:
+            sections.append(tenant_context_block)
+        sections.extend([
+            f"## Tenant\nname: {tenant.name}\ntone: {_tenant_tone(tenant)}",
+            f"## Conversation classification\n{conversation.classification or 'unknown'}",
+            (
+                f"## Contact\n"
+                f"name: {contact.name if contact else '(unknown)'}\n"
+                f"email: {contact.email if contact else '(unknown)'}\n"
+                f"prior interactions: {contact.interaction_count if contact else 0}\n"
+                f"sentiment trend: {contact.sentiment_trend if contact else []}"
+            ),
+            f"## Prior conversations with this contact\n{_format_history(history)}",
+            f"## Current thread (most recent message last)\n{_format_thread(messages)}",
+            f"## Knowledge base excerpts\n{_format_kb(kb_docs)}",
+        ])
+        if tone_block:
+            sections.append(tone_block)
+        sections.append(
+            f"## Extra instructions from the agent\n{extra_instructions or '(none)'}"
         )
+        user_content = "\n\n".join(sections)
 
+        t0 = time.perf_counter()
         response = await self._client.messages.create(
             model=SONNET,
             max_tokens=2048,
             system=[{
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": system_prompt,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": user_content}],
+        )
+        _metrics.LLM_LATENCY.labels(surface="email_reply", model=SONNET).observe(
+            time.perf_counter() - t0
         )
         raw = response.content[0].text
         try:

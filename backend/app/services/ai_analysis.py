@@ -6,9 +6,12 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+import time
+
 import anthropic
 
 from backend.app.config import get_settings
+from backend.app.services import metrics as _metrics
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,10 @@ class AIAnalysisService:
         transcript_segments: List[Dict[str, Any]],
         tier: str = "sonnet",
         triage_result: Optional[Dict[str, Any]] = None,
+        system_prompt_override: Optional[str] = None,
+        tenant_context_block: Optional[str] = None,
+        rag_context_block: Optional[str] = None,
+        max_tokens_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -87,11 +94,24 @@ class AIAnalysisService:
             ``"haiku"`` for simple calls, ``"sonnet"`` for complex calls.
         triage_result:
             Optional output from :class:`TriageService` to give the model context.
+        system_prompt_override:
+            If provided, used in place of :data:`ANALYSIS_SYSTEM_PROMPT`.  This
+            is how the prompt-variant service hot-swaps the active prompt.  The
+            base cache hit is preserved when this is None.
+        tenant_context_block:
+            Optional per-tenant block (vocabulary, persona, acronyms) appended to
+            the **user message** so the system prompt cache key stays stable
+            across tenants.
+        rag_context_block:
+            Optional knowledge-base excerpts retrieved for this specific call.
+        max_tokens_override:
+            Per-tenant parameter override for ``max_tokens``.
         """
         model = MODELS.get(tier, MODELS["sonnet"])
         formatted = _format_transcript(transcript_segments)
+        system_prompt = system_prompt_override or ANALYSIS_SYSTEM_PROMPT
 
-        # Build user message, optionally prepending triage context.
+        # Build user message, optionally prepending triage + tenant + RAG context.
         parts: List[str] = []
         if triage_result:
             summary = triage_result.get("quick_summary", "")
@@ -101,21 +121,30 @@ class AIAnalysisService:
                 f"Quick summary: {summary}\n"
                 f"Detected topics: {topics}\n"
             )
+        if tenant_context_block:
+            parts.append(tenant_context_block)
+        if rag_context_block:
+            parts.append(rag_context_block)
         parts.append(f"## Transcript\n{formatted}")
         user_content = "\n".join(parts)
 
+        raw_text = ""
         try:
+            t0 = time.perf_counter()
             response = await self._client.messages.create(
                 model=model,
-                max_tokens=8192,
+                max_tokens=max_tokens_override or 8192,
                 system=[
                     {
                         "type": "text",
-                        "text": ANALYSIS_SYSTEM_PROMPT,
+                        "text": system_prompt,
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
                 messages=[{"role": "user", "content": user_content}],
+            )
+            _metrics.LLM_LATENCY.labels(surface="analysis", model=model).observe(
+                time.perf_counter() - t0
             )
 
             raw_text = response.content[0].text
@@ -130,9 +159,8 @@ class AIAnalysisService:
 
         except json.JSONDecodeError as exc:
             logger.error("AI analysis JSON parse error: %s — raw: %s", exc, raw_text)
-            # Return whatever we can salvage.
             return {
-                "summary": raw_text if "raw_text" in dir() else "",
+                "summary": raw_text,
                 "error": f"JSON parse error: {exc}",
             }
         except anthropic.APIError as exc:
