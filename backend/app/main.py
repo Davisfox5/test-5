@@ -61,8 +61,10 @@ from backend.app.api.action_items import router as action_items_router  # noqa: 
 from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
+from backend.app.api.emails import router as emails_router  # noqa: E402
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
+from backend.app.api.telephony import router as telephony_router  # noqa: E402
 from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
@@ -95,8 +97,14 @@ app.include_router(
     tags=["crm"],
     dependencies=[_Depends(_require_role("admin"))],
 )
+app.include_router(emails_router, prefix=settings.API_V1_PREFIX, tags=["emails"])
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
+# Telephony ingress (Twilio voice webhook + Media Streams WS + outbound
+# dial). The voice webhook and WS are unauthenticated — Twilio verifies
+# us via shared secret (X-Twilio-Signature). Outbound dial requires
+# admin auth, enforced per-endpoint.
+app.include_router(telephony_router, prefix=settings.API_V1_PREFIX, tags=["telephony"])
 app.include_router(
     webhooks_router,
     prefix=settings.API_V1_PREFIX,

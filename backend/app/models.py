@@ -54,6 +54,10 @@ class Tenant(Base):
     # system; enforced when creating new User rows.
     seat_limit: Mapped[int] = mapped_column(Integer, default=1)
     admin_seat_limit: Mapped[int] = mapped_column(Integer, default=1)
+    # Tier key from backend.app.services.subscription_tiers.SUBSCRIPTION_TIERS.
+    # Seat + admin limits + feature defaults are derived from this on every
+    # change via ``apply_tier``.
+    subscription_tier: Mapped[str] = mapped_column(String, default="solo")
     # LINDA's per-tenant operating brief — everything the orchestrator and its
     # agents should know about this tenant. Assembled by the ContextBuilder
     # agent from KB docs, onboarding-interview answers, explicit overrides,
@@ -192,6 +196,37 @@ class Customer(Base):
 # ──────────────────────────────────────────────────────────
 # CUSTOMER OUTCOME EVENTS (lifecycle signals)
 # ──────────────────────────────────────────────────────────
+
+
+class EmailSend(Base):
+    """Outbound email delivery record — audit + dedupe.
+
+    Populated when an agent/admin sends a follow-up email via the stored
+    Gmail/Outlook OAuth token. One row per attempt; failed deliveries are
+    kept (``status='failed'``) so the UI can show a retry button.
+    """
+
+    __tablename__ = "email_sends"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
+    )
+    sender_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # google | microsoft
+    to_address: Mapped[str] = mapped_column(String, nullable=False)
+    cc_address: Mapped[Optional[str]] = mapped_column(String)
+    subject: Mapped[str] = mapped_column(String, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # pending | sent | failed
+    status: Mapped[str] = mapped_column(String, default="pending")
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class CustomerOutcomeEvent(Base):

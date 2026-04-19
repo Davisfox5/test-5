@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -356,6 +356,8 @@ class TenantSettingsPatch(BaseModel):
 
 
 def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
+    from backend.app.services.subscription_tiers import list_tiers
+
     features = dict(tenant.features_enabled or {})
     # Fill defaults for known flags so the UI always has something to render.
     for spec in _FEATURE_FLAG_SPEC:
@@ -372,6 +374,12 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
         "question_keyterms": list(tenant.question_keyterms or []),
         "features_enabled": features,
         "feature_flag_spec": _FEATURE_FLAG_SPEC,
+        # Subscription surface. Seats are controlled by the tier; the UI
+        # shows the tier picker + the current limits as read-only.
+        "subscription_tier": getattr(tenant, "subscription_tier", "solo") or "solo",
+        "seat_limit": tenant.seat_limit,
+        "admin_seat_limit": tenant.admin_seat_limit,
+        "tier_catalog": list_tiers(),
     }
 
 
@@ -436,4 +444,40 @@ async def patch_tenant_settings(
             merged[k] = bool(v) if isinstance(v, bool) else v
         tenant.features_enabled = merged
 
+    return _tenant_settings_payload(tenant)
+
+
+# ── Subscription tier ─────────────────────────────────────────────────
+
+
+class TierChangeIn(BaseModel):
+    tier: str
+
+
+@router.post("/admin/tenant-settings/tier", response_model=TenantSettingsOut)
+async def change_subscription_tier(
+    body: TierChangeIn,
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Change the tenant's subscription tier.
+
+    Applies the tier's seat limits + feature flag defaults. Does NOT
+    deactivate existing users if the new tier's seat_limit is below the
+    current active count — UI surfaces that mismatch so admins can
+    off-board intentionally.
+
+    Eventually this endpoint will be driven by a billing webhook (Stripe
+    subscription.updated). For now it's admin-only and manual.
+    """
+    from backend.app.services.subscription_tiers import SUBSCRIPTION_TIERS, apply_tier
+
+    if body.tier not in SUBSCRIPTION_TIERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown tier: {body.tier}. Supported: "
+                + ", ".join(SUBSCRIPTION_TIERS.keys())
+            ),
+        )
+    apply_tier(tenant, body.tier)
     return _tenant_settings_payload(tenant)
