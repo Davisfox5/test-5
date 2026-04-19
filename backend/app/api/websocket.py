@@ -6,13 +6,19 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from deepgram import DeepgramClient
 import redis.asyncio as aioredis
+from sqlalchemy import select
 
 from backend.app.config import get_settings
+from backend.app.db import async_session
+from backend.app.models import Interaction, LiveSession, PinnedKBCard, Tenant
+from backend.app.services.kb.classifier import classify
+from backend.app.services.kb.retrieval import RetrievalService, hit_to_payload
 from backend.app.services.live_coaching import LiveCoachingService
 
 logger = logging.getLogger(__name__)
@@ -47,10 +53,21 @@ async def live_transcription(websocket: WebSocket, session_id: str):
     redis: Optional[aioredis.Redis] = None
     dg_connection = None
     coaching_service = LiveCoachingService()
+    retrieval_service = RetrievalService()
 
     # Tracking state for coaching triggers.
     last_coaching_time: float = time.time()
     words_since_coaching: int = 0
+
+    # Tenant + contact context for tenant-scoped retrieval + pin-aware exclusions.
+    tenant_id, contact_id, question_keyterms = await _resolve_session_context(session_id)
+
+    # Rehydrate pinned KB cards for this contact so the agent sees them
+    # immediately when the call connects.
+    if contact_id is not None and tenant_id is not None:
+        pins = await _load_pinned_cards(tenant_id, contact_id)
+        for pin_payload in pins:
+            await _safe_send(websocket, pin_payload)
 
     try:
         redis = _get_redis()
@@ -65,9 +82,12 @@ async def live_transcription(websocket: WebSocket, session_id: str):
             "utterance_end_ms": "1000",
         }
 
-        # TODO: pull keyterms from tenant config when available
-        # if tenant_keyterms:
-        #     dg_options["keywords"] = tenant_keyterms
+        # Tenant-opt-in: only send keyterms when the tenant has configured them.
+        # Deepgram bills keyterm prompting as a ~$0.0013/min add-on, so we
+        # leave it off for tenants that haven't opted in. Local substring
+        # detection inside _contains_keyterm still runs for free either way.
+        if question_keyterms:
+            dg_options["keyterm"] = question_keyterms
 
         dg_connection = dg_client.listen.live.v("1")
 
@@ -117,7 +137,26 @@ async def live_transcription(websocket: WebSocket, session_id: str):
 
                 words_since_coaching += _word_count(text)
 
-                # ── Coaching trigger ─────────────────────────────
+                # ── Event-driven retrieval (caller turns only) ───
+                # Deepgram tags the first speaker as 0; we treat non-zero as caller.
+                # Some integrations map speakers differently — if the session
+                # has no diarization, speaker will be None and we skip to avoid
+                # firing on agent speech.
+                if speaker not in (None, 0, "0"):
+                    asyncio.create_task(
+                        _run_kb_lookup(
+                            websocket=websocket,
+                            redis=redis,
+                            session_id=session_id,
+                            retrieval_service=retrieval_service,
+                            tenant_id=tenant_id,
+                            contact_id=contact_id,
+                            caller_text=text,
+                            keyterm_hit=_contains_keyterm(text, question_keyterms),
+                        )
+                    )
+
+                # ── Coaching trigger (30s heartbeat) ─────────────
                 elapsed = ts - last_coaching_time
                 if elapsed >= 30 or words_since_coaching >= 200:
                     await _run_coaching(
@@ -125,6 +164,9 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         redis,
                         session_id,
                         coaching_service,
+                        retrieval_service,
+                        tenant_id,
+                        contact_id,
                     )
                     last_coaching_time = time.time()
                     words_since_coaching = 0
@@ -153,6 +195,9 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                     redis,
                     session_id,
                     coaching_service,
+                    retrieval_service,
+                    tenant_id,
+                    contact_id,
                 )
                 last_coaching_time = time.time()
                 words_since_coaching = 0
@@ -313,8 +358,16 @@ async def _run_coaching(
     redis: Optional[aioredis.Redis],
     session_id: str,
     coaching_service: LiveCoachingService,
+    retrieval_service: Optional[RetrievalService] = None,
+    tenant_id: Optional[uuid.UUID] = None,
+    contact_id: Optional[uuid.UUID] = None,
 ) -> None:
-    """Fetch recent buffer, load coaching state, run incremental coaching."""
+    """Fetch recent buffer, load coaching state, run incremental coaching.
+
+    When a retrieval service and tenant are available, we also grab the most
+    recent caller turn and fetch top-K KB chunks as ``kb_hits`` so Haiku can
+    weave verified documentation into the phrasing.
+    """
     if redis is None:
         return
 
@@ -343,9 +396,19 @@ async def _run_coaching(
         # Use only the most recent segments as "new" (last 20 segments or so).
         new_segments = segments[-20:]
 
+        # Optionally enrich with KB hits drawn from the most recent caller turn.
+        kb_hits_for_coach: List[dict] = []
+        if retrieval_service is not None and tenant_id is not None:
+            caller_turn = _last_caller_text(new_segments)
+            if caller_turn:
+                kb_hits_for_coach = await _fetch_kb_hits_for_coaching(
+                    retrieval_service, tenant_id, contact_id, caller_turn
+                )
+
         result = await coaching_service.hint_incremental(
             new_segments=new_segments,
             previous_state=previous_state,
+            kb_hits=kb_hits_for_coach or None,
         )
 
         # Send each hint to the agent.
@@ -412,4 +475,252 @@ async def _dispatch_batch_analysis(
     await redis.delete(
         f"live:{session_id}:buffer",
         f"live:{session_id}:coaching_state",
+        f"live:{session_id}:recent_kb_chunk_ids",
     )
+
+
+# ---------------------------------------------------------------------------
+# Live KB retrieval
+# ---------------------------------------------------------------------------
+
+
+def _contains_keyterm(text: str, keyterms: List[str]) -> bool:
+    """Case-insensitive substring match against tenant keyterms."""
+    if not keyterms or not text:
+        return False
+    lower = text.lower()
+    return any(k.lower() in lower for k in keyterms)
+
+
+def _last_caller_text(segments: List[dict]) -> str:
+    """Return the most recent caller turn text (speaker != 0)."""
+    for seg in reversed(segments):
+        spk = seg.get("speaker")
+        if spk not in (None, 0, "0"):
+            return seg.get("text", "") or ""
+    return ""
+
+
+async def _resolve_session_context(
+    session_id: str,
+) -> tuple[Optional[uuid.UUID], Optional[uuid.UUID], List[str]]:
+    """Load tenant_id, contact_id, and tenant question keyterms for a session.
+
+    Tolerates unknown session ids (returns all-None) so development setups that
+    skip the LiveSession row still work — retrieval is just disabled.
+    """
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        return None, None, []
+
+    try:
+        async with async_session() as db:
+            stmt = (
+                select(LiveSession, Interaction, Tenant)
+                .join(Tenant, Tenant.id == LiveSession.tenant_id)
+                .join(
+                    Interaction,
+                    Interaction.id == LiveSession.interaction_id,
+                    isouter=True,
+                )
+                .where(LiveSession.id == uuid.UUID(session_id))
+            )
+            row = (await db.execute(stmt)).first()
+            if row is None:
+                return None, None, []
+            sess, interaction, tenant = row
+            contact_id = interaction.contact_id if interaction else None
+            keyterms = list(tenant.question_keyterms or [])
+            return sess.tenant_id, contact_id, keyterms
+    except Exception:
+        logger.exception("Failed to resolve session context for %s", session_id)
+        return None, None, []
+
+
+async def _load_pinned_cards(
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+) -> List[dict]:
+    """Return rehydrated pinned-card payloads for the agent UI."""
+    try:
+        from backend.app.models import KBChunk, KBDocument, PinnedKBCard  # local import
+
+        async with async_session() as db:
+            stmt = (
+                select(PinnedKBCard, KBChunk, KBDocument)
+                .join(KBChunk, KBChunk.id == PinnedKBCard.chunk_id)
+                .join(KBDocument, KBDocument.id == PinnedKBCard.doc_id)
+                .where(
+                    PinnedKBCard.tenant_id == tenant_id,
+                    PinnedKBCard.contact_id == contact_id,
+                )
+                .order_by(PinnedKBCard.pinned_at.desc())
+            )
+            rows = (await db.execute(stmt)).all()
+    except Exception:
+        logger.exception("Failed to load pinned KB cards")
+        return []
+
+    payloads: List[dict] = []
+    for pin, chunk, doc in rows:
+        payloads.append(
+            {
+                "type": "kb_answer",
+                "pinned": True,
+                "pin_id": str(pin.id),
+                "query": "",
+                "snippet": chunk.text,
+                "chunk_id": str(chunk.id),
+                "doc_id": str(doc.id),
+                "doc_title": doc.title,
+                "source_url": doc.source_url,
+                "confidence": 1.0,
+                "source": "pin_rehydrate",
+            }
+        )
+    return payloads
+
+
+async def _excluded_chunk_ids(
+    redis: Optional[aioredis.Redis],
+    session_id: str,
+    tenant_id: Optional[uuid.UUID],
+    contact_id: Optional[uuid.UUID],
+) -> List[uuid.UUID]:
+    """Chunks we've already surfaced this session + contact pins."""
+    excluded: List[uuid.UUID] = []
+
+    if redis is not None:
+        recent = await redis.lrange(f"live:{session_id}:recent_kb_chunk_ids", 0, -1)
+        for raw in recent:
+            try:
+                excluded.append(uuid.UUID(raw))
+            except (ValueError, TypeError):
+                continue
+
+    if tenant_id is not None and contact_id is not None:
+        try:
+            async with async_session() as db:
+                rows = await db.execute(
+                    select(PinnedKBCard.chunk_id).where(
+                        PinnedKBCard.tenant_id == tenant_id,
+                        PinnedKBCard.contact_id == contact_id,
+                    )
+                )
+                for (chunk_id,) in rows.all():
+                    excluded.append(uuid.UUID(str(chunk_id)))
+        except Exception:
+            logger.exception("Failed to load pinned chunk ids")
+
+    return excluded
+
+
+async def _fetch_kb_hits_for_coaching(
+    retrieval_service: RetrievalService,
+    tenant_id: uuid.UUID,
+    contact_id: Optional[uuid.UUID],
+    caller_text: str,
+) -> List[dict]:
+    """Fetch top-K hits to feed into the coaching LLM as ``kb_hits``."""
+    try:
+        async with async_session() as db:
+            excluded: List[uuid.UUID] = []
+            if contact_id is not None:
+                pins = await retrieval_service.pinned_chunk_ids(db, tenant_id, contact_id)
+                excluded = pins
+            hits = await retrieval_service.search(
+                db,
+                tenant_id=tenant_id,
+                query=caller_text,
+                k=3,
+                exclude_chunk_ids=excluded,
+            )
+            return [
+                {
+                    "title": h.doc_title or "Untitled",
+                    "snippet": h.text[:400],
+                    "source_url": h.source_url,
+                    "score": h.score,
+                }
+                for h in hits
+            ]
+    except Exception:
+        logger.exception("KB hits fetch failed for coaching")
+        return []
+
+
+async def _run_kb_lookup(
+    websocket: WebSocket,
+    redis: Optional[aioredis.Redis],
+    session_id: str,
+    retrieval_service: RetrievalService,
+    tenant_id: Optional[uuid.UUID],
+    contact_id: Optional[uuid.UUID],
+    caller_text: str,
+    keyterm_hit: bool,
+) -> None:
+    """Classify the caller turn and, if it's a question, push KB cards.
+
+    Sends one ``kb_answer`` message per hit to the agent and the monitor
+    channel. Non-blocking — called via ``asyncio.create_task``.
+    """
+    if tenant_id is None or not caller_text.strip():
+        return
+
+    try:
+        verdict = await classify(
+            caller_text, deepgram_keyterm_hit=keyterm_hit
+        )
+        if not verdict.is_question:
+            return
+
+        excluded = await _excluded_chunk_ids(redis, session_id, tenant_id, contact_id)
+
+        async with async_session() as db:
+            hits = await retrieval_service.search(
+                db,
+                tenant_id=tenant_id,
+                query=verdict.query or caller_text,
+                k=3,
+                exclude_chunk_ids=excluded,
+            )
+
+        if not hits:
+            return
+
+        # Per the UX decision: show all results as suggestions regardless of
+        # confidence. Sort by score so the strongest hit is on top.
+        hits.sort(key=lambda h: h.score, reverse=True)
+
+        for hit in hits:
+            payload = {
+                "type": "kb_answer",
+                "pinned": False,
+                "query": verdict.query or caller_text,
+                "snippet": hit.text,
+                **{
+                    k: v
+                    for k, v in hit_to_payload(hit).items()
+                    if k in ("chunk_id", "doc_id", "doc_title", "source_url", "score")
+                },
+                "confidence": hit.score,
+                "urgency": verdict.urgency,
+                "source": verdict.source,
+            }
+            await _safe_send(websocket, payload)
+            if redis is not None:
+                await redis.publish(
+                    f"live:{session_id}:events",
+                    json.dumps(payload),
+                )
+                # Remember this chunk so we don't re-surface it on the next turn.
+                await redis.rpush(
+                    f"live:{session_id}:recent_kb_chunk_ids",
+                    str(hit.chunk_id),
+                )
+                await redis.expire(
+                    f"live:{session_id}:recent_kb_chunk_ids", 60 * 60
+                )
+    except Exception:
+        logger.exception("KB lookup failed for session %s", session_id)

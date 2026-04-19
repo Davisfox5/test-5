@@ -1,5 +1,6 @@
 """Knowledge Base API — document management, upload, search, and external sync."""
 
+import logging
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -12,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import KBDocument, Tenant
+from backend.app.models import Contact, KBChunk, KBDocument, PinnedKBCard, Tenant
+from backend.app.services.kb import RetrievalService, ingest_document, reindex_tenant
+from backend.app.services.kb.embedder import VoyageEmbedderError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -107,6 +112,17 @@ async def create_kb_doc(
     )
     db.add(doc)
     await db.flush()
+
+    try:
+        await ingest_document(db, doc)
+    except VoyageEmbedderError:
+        # Surface the failure to the client so they know retrieval won't work,
+        # but the doc row is already saved — they can retry via /kb/docs/{id}/reindex.
+        logger.exception("Failed to embed new KB doc %s", doc.id)
+        raise HTTPException(
+            status_code=502,
+            detail="Document saved, but embedding failed. Retry reindex when available.",
+        )
     return doc
 
 
@@ -123,12 +139,24 @@ async def update_kb_doc(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    content_changed = body.content is not None and body.content != doc.content
+
     if body.title is not None:
         doc.title = body.title
     if body.content is not None:
         doc.content = body.content
     if body.tags is not None:
         doc.tags = body.tags
+
+    if content_changed:
+        try:
+            await ingest_document(db, doc)
+        except VoyageEmbedderError:
+            logger.exception("Failed to re-embed updated KB doc %s", doc.id)
+            raise HTTPException(
+                status_code=502,
+                detail="Document saved, but re-embedding failed. Retry reindex when available.",
+            )
 
     return doc
 
@@ -193,34 +221,216 @@ async def upload_kb_file(
     )
     db.add(doc)
     await db.flush()
+
+    try:
+        await ingest_document(db, doc)
+    except VoyageEmbedderError:
+        logger.exception("Failed to embed uploaded KB doc %s", doc.id)
+        raise HTTPException(
+            status_code=502,
+            detail="Document saved, but embedding failed. Retry reindex when available.",
+        )
     return doc
 
 
-@router.get("/kb/search", response_model=List[KBDocOut])
-async def search_kb(
-    query: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(20, le=100),
+@router.post("/kb/docs/{doc_id}/reindex", status_code=202)
+async def reindex_kb_doc(
+    doc_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Search knowledge base documents by text match.
+    """Re-embed a single document. Useful when a prior embed failed."""
+    stmt = select(KBDocument).where(
+        KBDocument.id == doc_id, KBDocument.tenant_id == tenant.id
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    chunks = await ingest_document(db, doc, force=True)
+    return {"doc_id": str(doc_id), "chunks_written": chunks}
 
-    This is a placeholder implementation using SQL ILIKE.
-    Will be replaced with Qdrant vector search for semantic matching.
+
+@router.post("/kb/reindex", status_code=202)
+async def reindex_all_kb(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Re-embed every document for the tenant. Use after a backend swap."""
+    total = await reindex_tenant(db, tenant.id, force=True)
+    return {"tenant_id": str(tenant.id), "chunks_written": total}
+
+
+class KBSearchHitOut(BaseModel):
+    chunk_id: str
+    doc_id: str
+    chunk_idx: int
+    text: str
+    score: float
+    doc_title: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+@router.get("/kb/search", response_model=List[KBSearchHitOut])
+async def search_kb(
+    query: str = Query(..., min_length=1, description="Natural-language query"),
+    limit: int = Query(5, le=20),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Semantic search over embedded KB chunks.
+
+    Falls back to a SQL ILIKE scan if the embedder is unavailable, so callers
+    still get something useful when Voyage is down.
     """
-    # TODO: Replace with Qdrant vector similarity search
-    search_pattern = f"%{query}%"
+    service = RetrievalService()
+    hits = await service.search(db, tenant.id, query, k=limit)
+    if hits:
+        return [
+            KBSearchHitOut(
+                chunk_id=str(h.chunk_id),
+                doc_id=str(h.doc_id),
+                chunk_idx=h.chunk_idx,
+                text=h.text,
+                score=h.score,
+                doc_title=h.doc_title,
+                source_url=h.source_url,
+            )
+            for h in hits
+        ]
+
+    # Fallback: keyword match when we have no embeddings or the embedder failed.
+    pattern = f"%{query}%"
     stmt = (
         select(KBDocument)
         .where(
             KBDocument.tenant_id == tenant.id,
-            KBDocument.content.ilike(search_pattern) | KBDocument.title.ilike(search_pattern),
+            KBDocument.content.ilike(pattern) | KBDocument.title.ilike(pattern),
         )
-        .order_by(KBDocument.created_at.desc())
         .limit(limit)
     )
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    rows = await db.execute(stmt)
+    docs = rows.scalars().all()
+    return [
+        KBSearchHitOut(
+            chunk_id=str(d.id),
+            doc_id=str(d.id),
+            chunk_idx=0,
+            text=(d.content or "")[:400],
+            score=0.0,
+            doc_title=d.title,
+            source_url=d.source_url,
+        )
+        for d in docs
+    ]
+
+
+class PinRequest(BaseModel):
+    contact_id: uuid.UUID
+    chunk_id: uuid.UUID
+
+
+class PinOut(BaseModel):
+    id: uuid.UUID
+    contact_id: uuid.UUID
+    doc_id: uuid.UUID
+    chunk_id: uuid.UUID
+    pinned_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PinnedCardOut(BaseModel):
+    id: uuid.UUID
+    contact_id: uuid.UUID
+    doc_id: uuid.UUID
+    chunk_id: uuid.UUID
+    pinned_at: datetime
+    chunk_text: str
+    doc_title: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+@router.post("/kb/pins", response_model=PinOut, status_code=201)
+async def pin_card(
+    body: PinRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Pin a KB chunk for a contact so it carries across calls."""
+    chunk = await db.get(KBChunk, body.chunk_id)
+    if not chunk or chunk.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+    contact = await db.get(Contact, body.contact_id)
+    if not contact or contact.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    existing = await db.execute(
+        select(PinnedKBCard).where(
+            PinnedKBCard.tenant_id == tenant.id,
+            PinnedKBCard.contact_id == body.contact_id,
+            PinnedKBCard.chunk_id == body.chunk_id,
+        )
+    )
+    pin = existing.scalar_one_or_none()
+    if pin is None:
+        pin = PinnedKBCard(
+            tenant_id=tenant.id,
+            contact_id=body.contact_id,
+            doc_id=chunk.doc_id,
+            chunk_id=body.chunk_id,
+        )
+        db.add(pin)
+        await db.flush()
+    return pin
+
+
+@router.delete("/kb/pins/{pin_id}", status_code=204)
+async def unpin_card(
+    pin_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    pin = await db.get(PinnedKBCard, pin_id)
+    if not pin or pin.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Pin not found")
+    await db.delete(pin)
+
+
+@router.get("/kb/pins", response_model=List[PinnedCardOut])
+async def list_pins_for_contact(
+    contact_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """List pinned KB cards for a contact, with chunk text inlined so the
+    frontend can rehydrate the sidebar when a new call starts."""
+    stmt = (
+        select(PinnedKBCard, KBChunk, KBDocument)
+        .join(KBChunk, KBChunk.id == PinnedKBCard.chunk_id)
+        .join(KBDocument, KBDocument.id == PinnedKBCard.doc_id)
+        .where(
+            PinnedKBCard.tenant_id == tenant.id,
+            PinnedKBCard.contact_id == contact_id,
+        )
+        .order_by(PinnedKBCard.pinned_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    out: List[PinnedCardOut] = []
+    for pin, chunk, doc in rows:
+        out.append(
+            PinnedCardOut(
+                id=pin.id,
+                contact_id=pin.contact_id,
+                doc_id=pin.doc_id,
+                chunk_id=pin.chunk_id,
+                pinned_at=pin.pinned_at,
+                chunk_text=chunk.text,
+                doc_title=doc.title,
+                source_url=doc.source_url,
+            )
+        )
+    return out
 
 
 @router.post("/kb/sync/{provider}", status_code=202)

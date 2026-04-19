@@ -506,7 +506,7 @@
                         <div class="live-right">
                             <div class="insight-card coaching-card">
                                 <h3>AI Coaching Hints</h3>
-                                <div class="coaching-hint-cards">
+                                <div class="coaching-hint-cards" id="liveCoachingHints">
                                     <div class="hint-card warning">
                                         <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.8.8 1 1.8 1 2.3h6c0-.5.2-1.5 1-2.3A7 7 0 0 0 12 2z"/></svg></span>
                                         <p>Customer seems hesitant about pricing -- try reframing the value proposition. Emphasize ROI: avg. clients see 23% improvement in close rates.</p>
@@ -516,6 +516,22 @@
                                         <p>Competitor comparison data available. Robert's company currently uses BasicCall -- highlight real-time analytics advantage.</p>
                                     </div>
                                 </div>
+                            </div>
+
+                            <div class="insight-card kb-answers-card">
+                                <h3>
+                                    <span class="kb-header-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+                                    KB Answers
+                                </h3>
+                                <div class="kb-answer-cards" id="liveKbAnswers" aria-live="polite">
+                                    <p class="kb-empty">Verbatim answers from the knowledge base will appear here when the caller asks a question.</p>
+                                </div>
+                                <button type="button" class="kb-history-toggle" id="kbHistoryToggle" aria-expanded="false" aria-controls="kbHistoryDrawer">
+                                    <span class="kb-history-label">History</span>
+                                    <span class="kb-history-count" id="kbHistoryCount">0</span>
+                                    <svg class="kb-history-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </button>
+                                <div class="kb-history-drawer" id="kbHistoryDrawer" hidden></div>
                             </div>
 
                             <div class="insight-card">
@@ -1638,5 +1654,6 @@
 
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
+    <script src="js/kb-cards.js"></script>
 </body>
 </html>

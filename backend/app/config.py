@@ -38,9 +38,30 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     DEFAULT_TRANSCRIPTION_ENGINE: Literal["deepgram", "whisper"] = "deepgram"
 
-    # ── Vector DB (Qdrant) ───────────────────────────────
+    # ── Vector DB ────────────────────────────────────────
+    # Which backend serves KB retrieval. "pgvector" is the default and requires
+    # no extra infrastructure. Flip to "qdrant" after running a reindex once the
+    # pgvector health signals start firing.
+    VECTOR_BACKEND: Literal["pgvector", "qdrant"] = "pgvector"
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
+
+    # ── Embeddings (Voyage AI) ───────────────────────────
+    VOYAGE_API_KEY: str = ""
+    VOYAGE_EMBED_MODEL: str = "voyage-3"
+    # Must match the model's output dim (voyage-3 = 1024, voyage-3-large = 2048)
+    VOYAGE_EMBED_DIM: int = 1024
+    KB_CHUNK_TOKENS: int = 500
+    KB_CHUNK_OVERLAP_TOKENS: int = 80
+
+    # ── Vector health monitoring ─────────────────────────
+    # Thresholds for the dev-only /admin/vector-health signal.
+    VECTOR_HEALTH_P95_MS: int = 150
+    VECTOR_HEALTH_SIZE_MILESTONES: list[int] = [1_000_000, 3_000_000, 5_000_000]
+    VECTOR_HEALTH_ALERT_DAYS: int = 7
+    # Optional: when set, auto-create a GitHub issue on sustained threshold breach.
+    GITHUB_ALERT_REPO: str = ""  # e.g., "davisfox5/test-5"
+    GITHUB_ALERT_TOKEN: str = ""
 
     # ── Full-Text Search (Elasticsearch) ─────────────────
     ELASTICSEARCH_URL: str = "http://localhost:9200"

@@ -45,6 +45,7 @@ class Tenant(Base):
     enrichment_pdl_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     enrichment_apollo_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     keyterm_boost_list: Mapped[list] = mapped_column(JSONB, default=list)
+    question_keyterms: Mapped[list] = mapped_column(JSONB, default=list)
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
@@ -351,8 +352,49 @@ class KBDocument(Base):
     source_external_id: Mapped[Optional[str]] = mapped_column(String)
     tags: Mapped[list] = mapped_column(JSONB, default=list)
     qdrant_point_id: Mapped[Optional[str]] = mapped_column(String)
+    embedded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KBChunk(Base):
+    """One embedded slice of a KB document.
+
+    For the pgvector backend, ``embedding`` stores the vector directly. For the
+    Qdrant backend, the point lives in Qdrant and this row is just metadata.
+    """
+
+    __tablename__ = "kb_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    doc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"), index=True)
+    chunk_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[Optional[int]] = mapped_column(Integer)
+    content_hash: Mapped[Optional[str]] = mapped_column(String)
+    # pgvector column is added by the migration (sqlalchemy doesn't ship a vector type).
+    # We access it via raw SQL in PgVectorStore.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PinnedKBCard(Base):
+    """An agent pin on a KB chunk for a particular contact.
+
+    While pinned, the retrieval pipeline will still surface the chunk in search
+    results but will suppress re-triggering a new card for it within a session
+    or subsequent calls with the same contact.
+    """
+
+    __tablename__ = "pinned_kb_cards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    doc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"))
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_chunks.id", ondelete="CASCADE"))
+    pinned_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    pinned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ──────────────────────────────────────────────────────────

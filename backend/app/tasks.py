@@ -46,6 +46,13 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
+        # Dev-only: check pgvector health once a day at 00:30 UTC. Emits a
+        # distinctive WARN log on sustained breach and optionally opens a
+        # GitHub issue. Zero cost — reuses existing Redis + DB.
+        "vector-health-daily": {
+            "task": "vector_health_daily",
+            "schedule": crontab(minute=30, hour=0),
+        },
     },
 )
 
@@ -676,3 +683,20 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+@celery_app.task(name="vector_health_daily")
+def vector_health_daily() -> Dict[str, Any]:
+    """Daily sustained-threshold check for the vector store.
+
+    Uses the async engine via ``asyncio.run`` since the check touches Redis
+    async APIs and is cheap to boot a loop for.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.kb.vector_health_check import run_vector_health_check
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await run_vector_health_check(db)
+
+    return asyncio.run(_runner())
