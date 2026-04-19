@@ -1,5 +1,27 @@
 # Scoring & Orchestration Architecture
 
+> **How this relates to the `PromptVariant` / continuous-AI-improvement
+> system on `main`.**  The two systems are complementary:
+>
+> - **`PromptVariant`** (main) versions the *input* to Claude — the
+>   system prompt template, target tier / surface, A/B rollout state.
+>   Recorded on each interaction via ``Interaction.prompt_variant_id``.
+> - **`ScorerVersion`** (this doc) versions the *output-side*
+>   calibration — the Platt / Cox / IRT weights that convert raw LLM
+>   outputs and deterministic features into calibrated scores.
+>   Recorded on each interaction via
+>   ``InteractionFeatures.scorer_versions``.
+>
+> Together they answer two different questions: "which prompt produced
+> this analysis?" and "which scoring weights interpreted it?"  A single
+> interaction's lineage is fully reconstructible by joining both IDs.
+>
+> Likewise, `FeedbackEvent` (main) is the implicit/explicit signal
+> stream from the product surfaces; `CorrectionEvent` (this doc) is a
+> targeted replacement of a specific scorer's output.  Both feed the
+> weekly calibration + variant-selection loops.
+
+
 **Status:** design-of-record for the metrics, scoring, and orchestrator layer.
 Versioned alongside the code.  Prior iteration: all statistics were recomputed
 ad-hoc from `interactions.insights` JSONB with a single LLM producing both

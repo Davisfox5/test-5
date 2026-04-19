@@ -156,7 +156,10 @@ class Contact(Base):
 
 
 # ──────────────────────────────────────────────────────────
-# INTERACTIONS (omnichannel — voice, sms, email, chat, whatsapp)
+# INTERACTIONS (omnichannel — voice, email, chat)
+#
+# SMS and WhatsApp rows may exist from earlier backfills; they remain
+# readable but no new rows with those channels are created.
 # ──────────────────────────────────────────────────────────
 
 
@@ -167,11 +170,20 @@ class Interaction(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
 
-    # Type and source
-    channel: Mapped[str] = mapped_column(String, nullable=False)  # voice|sms|email|chat|whatsapp
+    # Type and source — voice|email|chat (sms/whatsapp stubbed)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound|internal
+
+    # Which PromptVariant produced the most recent .insights (for A/B + rollback).
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
 
     # Content
     title: Mapped[Optional[str]] = mapped_column(String)
@@ -183,6 +195,19 @@ class Interaction(Base):
     audio_s3_key: Mapped[Optional[str]] = mapped_column(String)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
     caller_phone: Mapped[Optional[str]] = mapped_column(String)
+
+    # Email-specific (populated for channel='email')
+    from_address: Mapped[Optional[str]] = mapped_column(String)
+    to_addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    cc_addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    message_id: Mapped[Optional[str]] = mapped_column(String, unique=True)  # RFC-822
+    in_reply_to: Mapped[Optional[str]] = mapped_column(String)
+    references: Mapped[list] = mapped_column(JSONB, default=list)
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String)  # Gmail/Graph id
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
+    classification: Mapped[Optional[str]] = mapped_column(String)  # sales|support|it|other
+    classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
 
     # Processing
     status: Mapped[str] = mapped_column(String, default="processing")
@@ -446,22 +471,6 @@ class DeltaReport(Base):
     )
 
 
-class _ProfileBase:
-    """Shared columns for all four profile tables.
-
-    Each profile version is append-only; latest version per entity is
-    the working truth.  ``source_event`` links back to the delta or
-    reflection that produced this version for audit.
-    """
-
-    version: Mapped[int]
-    profile: Mapped[dict]
-    top_factors: Mapped[list]
-    source_event: Mapped[dict]
-    confidence: Mapped[Optional[float]]
-    created_at: Mapped[datetime]
-
-
 class ClientProfile(Base):
     __tablename__ = "client_profiles"
 
@@ -531,9 +540,13 @@ class BusinessProfile(Base):
 class ScorerVersion(Base):
     """A named calibration/weight snapshot for one scorer.
 
-    ``tenant_id`` NULL denotes the global default; per-tenant overrides
-    appear with that tenant's id.  Only one ``is_active`` row is
-    permitted per ``(tenant_id, scorer_name)``.
+    Note: ``ScorerVersion`` (this file) versions *output-side* calibration
+    — the Platt / Cox / IRT weights that turn raw LLM outputs and
+    deterministic features into calibrated scores.  It is distinct from
+    ``PromptVariant`` below, which versions *input-side* prompts sent to
+    Claude.  Both coexist: ``Interaction.prompt_variant_id`` records which
+    prompt produced the insights blob; ``InteractionFeatures.scorer_versions``
+    records which scoring weights applied on top.
     """
 
     __tablename__ = "scorer_versions"
@@ -554,9 +567,11 @@ class ScorerVersion(Base):
 class CorrectionEvent(Base):
     """Active-learning correction submitted by a user.
 
-    Each row represents one human correction of a scorer's output.  The
-    events grow the golden evaluation set organically and feed back into
-    the weekly recalibration pass.
+    Distinct from ``FeedbackEvent`` below: a ``CorrectionEvent`` is a
+    targeted replacement of a specific scorer's output (e.g. user marks
+    "this churn_risk is wrong — it should be low").  ``FeedbackEvent``
+    is the generic implicit/explicit signal stream ingested from the
+    product surfaces (thumbs, copy-edit, retry, accept).
     """
 
     __tablename__ = "correction_events"
@@ -573,5 +588,304 @@ class CorrectionEvent(Base):
     correction: Mapped[dict] = mapped_column(JSONB, default=dict)
     note: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# CONVERSATIONS (threading across email / voice / chat)
+# ──────────────────────────────────────────────────────────
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    thread_key: Mapped[Optional[str]] = mapped_column(String, index=True)
+    classification: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open")
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# EMAIL INGESTION CURSOR
+# ──────────────────────────────────────────────────────────
+
+
+class EmailSyncCursor(Base):
+    __tablename__ = "email_sync_cursors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE"), unique=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    history_id: Mapped[Optional[str]] = mapped_column(String)
+    delta_link: Mapped[Optional[str]] = mapped_column(Text)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ──────────────────────────────────────────────────────────
+# MARKETING CAMPAIGNS
+# ──────────────────────────────────────────────────────────
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[Optional[str]] = mapped_column(String)
+    external_id: Mapped[Optional[str]] = mapped_column(String)
+    subject: Mapped[Optional[str]] = mapped_column(String)
+    variant: Mapped[Optional[str]] = mapped_column(String)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    email_address: Mapped[Optional[str]] = mapped_column(String)
+    external_message_id: Mapped[Optional[str]] = mapped_column(String)
+    rfc822_message_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CampaignEvent(Base):
+    __tablename__ = "campaign_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    recipient_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaign_recipients.id"))
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+
+
+# ──────────────────────────────────────────────────────────
+# CONTINUOUS AI IMPROVEMENT
+# ──────────────────────────────────────────────────────────
+
+
+class FeedbackEvent(Base):
+    __tablename__ = "feedback_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("action_items.id"))
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    signal_type: Mapped[str] = mapped_column(String, nullable=False)
+    insight_dimension: Mapped[Optional[str]] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    session_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TranscriptCorrection(Base):
+    __tablename__ = "transcript_corrections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    corrected_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_at_correction: Mapped[Optional[float]] = mapped_column(Float)
+    corrected_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    correction_source: Mapped[str] = mapped_column(String, default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InsightQualityScore(Base):
+    __tablename__ = "insight_quality_scores"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    evaluator_type: Mapped[str] = mapped_column(String, nullable=False)
+    evaluator_id: Mapped[str] = mapped_column(String, nullable=False)
+    dimension: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PromptVariant(Base):
+    """Versioned LLM prompt template, A/B-routable across production surfaces.
+
+    See the note on ``ScorerVersion`` for how these two versioning systems
+    relate: prompt variants govern the *input* to Claude, scorer versions
+    govern the *output*-side calibration.
+    """
+
+    __tablename__ = "prompt_variants"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    target_surface: Mapped[str] = mapped_column(String, nullable=False)
+    target_tier: Mapped[Optional[str]] = mapped_column(String)
+    target_channel: Mapped[Optional[str]] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    parent_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    retired_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class TenantPromptConfig(Base):
+    __tablename__ = "tenant_prompt_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), unique=True)
+    active_prompt_variant_ids: Mapped[dict] = mapped_column(JSONB, default=dict)
+    few_shot_pool: Mapped[dict] = mapped_column(JSONB, default=dict)
+    persona_block: Mapped[Optional[str]] = mapped_column(Text)
+    acronyms: Mapped[dict] = mapped_column(JSONB, default=dict)
+    custom_terms: Mapped[list] = mapped_column(JSONB, default=list)
+    rag_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    parameter_overrides: Mapped[dict] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+
+
+class VocabularyCandidate(Base):
+    __tablename__ = "vocabulary_candidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    term: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[str] = mapped_column(String, default="medium")
+    source: Mapped[Optional[str]] = mapped_column(String)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    reviewed_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EvaluationReferenceSet(Base):
+    __tablename__ = "evaluation_reference_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    interaction_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    reference_outputs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    frozen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class Experiment(Base):
+    __tablename__ = "experiments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    surface: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="running")
+    hypothesis: Mapped[Optional[str]] = mapped_column(Text)
+    control_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    treatment_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    start_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    end_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    result_summary: Mapped[dict] = mapped_column(JSONB, default=dict)
+    conclusion: Mapped[Optional[str]] = mapped_column(Text)
+    decided_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WerMetric(Base):
+    __tablename__ = "wer_metrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    asr_engine: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[Optional[str]] = mapped_column(String)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    word_error_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CrossTenantAnalytic(Base):
+    """Cross-tenant aggregate metric — no ``tenant_id`` column by design."""
+
+    __tablename__ = "cross_tenant_analytics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    metric_name: Mapped[str] = mapped_column(String, nullable=False)
+    bucket: Mapped[Optional[str]] = mapped_column(String)
+    surface: Mapped[Optional[str]] = mapped_column(String)
+    channel: Mapped[Optional[str]] = mapped_column(String)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    value: Mapped[Optional[float]] = mapped_column(Float)
+    distribution: Mapped[dict] = mapped_column(JSONB, default=dict)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

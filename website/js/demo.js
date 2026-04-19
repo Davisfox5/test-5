@@ -1,14 +1,25 @@
+// ======== THEME (runs before DOMContentLoaded to avoid flash) ========
+(function initTheme() {
+    try {
+        var stored = localStorage.getItem('callsight-theme');
+        var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        var theme = stored || (prefersLight ? 'light' : 'dark');
+        if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    } catch (e) { /* ignore */ }
+})();
+
 // ======== API CONFIGURATION ========
 let API_CONNECTED = false;
-let API_KEY = localStorage.getItem('callsight-api-key') || 'csk_RZBACFHd64i0dof_k8dp86mzGw58zWeZCRa8_nrMTuw';
+let API_KEY = localStorage.getItem('callsight-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
 
-// Channel icon SVG templates for dynamic row building
+// Channel icon SVG templates for dynamic row building.
+// SMS/WhatsApp icons removed while those channels are stubbed — the
+// backend still stores legacy rows with those channels, so unknown
+// channels fall back to the voice icon in the row renderer.
 const CHANNEL_ICONS = {
     voice: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
-    sms: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
     email: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>',
-    chat: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
-    whatsapp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>'
+    chat: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>'
 };
 
 /**
@@ -103,19 +114,56 @@ function priorityBadgeHtml(priority) {
 // ======== API DATA LOADING FUNCTIONS ========
 
 /**
+ * Toggle between loading / empty / error / data states for the interactions panel.
+ */
+function setInteractionsState(state, errorMessage) {
+    var wrap = document.querySelector('#interactions [data-sticky-first]');
+    if (!wrap) return;
+    var table = wrap.querySelector('table');
+    ['loading', 'empty', 'error'].forEach(function(s) {
+        var el = wrap.querySelector('[data-state="' + s + '"]');
+        if (!el) return;
+        if (s === state) {
+            el.hidden = false;
+            if (s === 'error' && errorMessage) {
+                var msg = el.querySelector('.state-error-msg');
+                if (msg) msg.textContent = errorMessage;
+            }
+        } else {
+            el.hidden = true;
+        }
+    });
+    if (table) table.style.display = (state === 'data' ? '' : 'none');
+}
+
+/**
  * Load interactions from API and rebuild the table tbody.
  */
 async function loadInteractions(channel) {
+    setInteractionsState('loading');
     var path = '/interactions?limit=50';
     if (channel && channel !== 'all') {
         path += '&channel=' + encodeURIComponent(channel);
     }
-    var data = await apiFetch(path);
-    if (!data) return; // stay with mock HTML
+    var data;
+    try {
+        data = await apiFetch(path);
+    } catch (e) {
+        setInteractionsState('error', 'The server didn\u2019t respond. Check your connection and try again.');
+        return;
+    }
+    if (!data) {
+        // Static mode — fall back to existing HTML (mock data)
+        setInteractionsState('data');
+        return;
+    }
+    if (!data.length) {
+        setInteractionsState('empty');
+        return;
+    }
 
     var tbody = document.querySelector('#interactions .interactions-table tbody');
     if (!tbody) return;
-
     tbody.innerHTML = '';
 
     data.forEach(function(item) {
@@ -125,24 +173,35 @@ async function loadInteractions(channel) {
         var summary = '';
         var actionsDone = 0;
         var actionsTotal = 0;
+        var risks = [];
 
         if (item.insights) {
             sentiment = item.insights.sentiment_score || item.insights.sentiment || 0;
             qaScore = item.insights.qa_score || 0;
             topics = item.insights.topics || [];
             summary = item.insights.summary || '';
-        }
-        if (item.call_metrics) {
-            // call_metrics may have action item counts
+            if (item.insights.risk_flags) risks = item.insights.risk_flags;
         }
         if (item.action_items) {
             actionsTotal = item.action_items.length;
             actionsDone = item.action_items.filter(function(a) { return a.status === 'done'; }).length;
         }
 
-        var topicsPills = topics.map(function(t) {
-            return '<span class="topic-pill">' + escapeHtml(t) + '</span>';
-        }).join('');
+        // Unified "Signals" cell: up to 2 topics + up to 1 risk, then +N
+        var signals = [];
+        topics.slice(0, 2).forEach(function(t) {
+            signals.push('<span class="topic-pill">' + escapeHtml(t) + '</span>');
+        });
+        if (risks.length) {
+            var r = risks[0];
+            signals.push('<span class="risk-flag ' + escapeHtml(r.type || r) + '" title="' + escapeHtml(r.label || r.type || r) + '">!</span>');
+        }
+        var hidden = Math.max(0, (topics.length - 2) + Math.max(0, risks.length - 1));
+        if (hidden > 0) {
+            var tooltip = (topics.slice(2).concat(risks.slice(1).map(function(x) { return x.label || x.type || x; }))).join(', ');
+            signals.push('<span class="signals-more" data-tip="' + escapeHtml(tooltip) + '">+' + hidden + '</span>');
+        }
+        var signalsHtml = '<span class="signals-cell">' + signals.join('') + '</span>';
 
         var sentVal = (typeof sentiment === 'number') ? sentiment.toFixed(1) : sentiment;
         var sentCls = sentimentClass(parseFloat(sentVal) || 0);
@@ -165,15 +224,14 @@ async function loadInteractions(channel) {
         tr.setAttribute('data-channel', item.channel || 'voice');
         tr.setAttribute('data-id', item.id);
         tr.innerHTML =
-            '<td><svg class="expand-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></td>' +
-            '<td><span class="channel-icon-svg ' + escapeHtml(item.channel || 'voice') + '">' + (CHANNEL_ICONS[item.channel] || CHANNEL_ICONS.voice) + '</span></td>' +
-            '<td class="fw-500 interaction-title" data-target="interaction-detail" data-interaction-id="' + item.id + '">' + escapeHtml(item.title || 'Untitled') + '</td>' +
+            '<td><svg class="expand-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg></td>' +
+            '<td><span class="channel-icon-svg ' + escapeHtml(item.channel || 'voice') + '" aria-label="' + escapeHtml(item.channel || 'voice') + '">' + (CHANNEL_ICONS[item.channel] || CHANNEL_ICONS.voice) + '</span></td>' +
+            '<td class="fw-500 interaction-title col-sticky" data-target="interaction-detail" data-interaction-id="' + item.id + '">' + escapeHtml(item.title || 'Untitled') + '</td>' +
             '<td>' + escapeHtml(contactName) + '</td>' +
-            '<td>' + topicsPills + '</td>' +
+            '<td>' + signalsHtml + '</td>' +
             '<td><span class="sentiment-badge ' + sentCls + '">' + sentVal + '</span></td>' +
             '<td><div class="qa-score-bar"><span>' + qaScore + '</span><div class="qa-bar-track"><div class="qa-bar-fill ' + qaCls + '" style="width:' + qaScore + '%"></div></div></div></td>' +
             '<td><span class="action-completion ' + actionCls + '">' + actionLabel + '</span></td>' +
-            '<td><span class="risk-flags"></span></td>' +
             '<td>' + duration + '</td>' +
             '<td><span class="date-relative" title="' + escapeHtml(item.created_at || '') + '">' + formatRelativeDate(item.created_at) + '</span></td>' +
             '<td>' + statusBadgeHtml(item.status || 'processing') + '</td>';
@@ -184,7 +242,7 @@ async function loadInteractions(channel) {
         expandTr.className = 'row-expand';
         expandTr.setAttribute('data-channel', item.channel || 'voice');
         expandTr.innerHTML =
-            '<td colspan="12"><div class="row-expand-content">' +
+            '<td colspan="11"><div class="row-expand-content">' +
             '<p class="row-expand-summary">' + escapeHtml(summary) + '</p>' +
             '<div class="row-expand-footer">' +
             '<span style="font-size:13px;color:var(--text-muted)">QA: <strong>' + qaScore + '/100</strong></span>' +
@@ -193,6 +251,7 @@ async function loadInteractions(channel) {
         tbody.appendChild(expandTr);
     });
 
+    setInteractionsState('data');
     // Re-bind row expand/collapse for new rows
     bindRowExpand();
 }
@@ -712,6 +771,7 @@ document.addEventListener('DOMContentLoaded', function() {
             else if (viewId === 'contacts') loadContacts();
             else if (viewId === 'analytics') loadAnalytics();
             else if (viewId === 'call-library') loadLibrary();
+            else if (viewId === 'conversations' && typeof loadConversations === 'function') loadConversations();
         }
     };
 
@@ -890,43 +950,538 @@ document.addEventListener('DOMContentLoaded', function() {
         requestAnimationFrame(simulatePlayback);
     }
 
-    // ======== MODAL LOGIC ========
-    var uploadBtn = document.getElementById('uploadBtn');
-    var uploadModal = document.getElementById('uploadModal');
+    // (Modal + header-search wiring moved below with full keyboard support)
 
-    if (uploadBtn && uploadModal) {
-        uploadBtn.addEventListener('click', function() { uploadModal.classList.add('active'); });
-        uploadModal.addEventListener('click', function(e) {
-            if (e.target === uploadModal) uploadModal.classList.remove('active');
+    // ======== MINI CHARTS (SVG sparklines) ========
+    renderMiniCharts();
+
+    // ======== THEME TOGGLE ========
+    var themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+        themeToggle.addEventListener('click', function() {
+            var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            var next = isLight ? 'dark' : 'light';
+            if (next === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
+            try { localStorage.setItem('callsight-theme', next); } catch (e) {}
         });
     }
 
-    document.querySelectorAll('.close-modal').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            if (uploadModal) uploadModal.classList.remove('active');
+    // ======== SIDEBAR COLLAPSE ========
+    var sidebar = document.getElementById('appSidebar');
+    var sidebarBtn = document.getElementById('sidebarCollapseBtn');
+    if (sidebar) {
+        // Restore saved state
+        try {
+            if (localStorage.getItem('callsight-sidebar') === 'collapsed') {
+                sidebar.classList.add('collapsed');
+                if (sidebarBtn) {
+                    sidebarBtn.setAttribute('aria-pressed', 'true');
+                    sidebarBtn.setAttribute('aria-label', 'Expand sidebar');
+                }
+                addCollapsedAriaLabels();
+            }
+        } catch (e) {}
+    }
+    if (sidebarBtn) {
+        sidebarBtn.addEventListener('click', function() {
+            var collapsed = sidebar.classList.toggle('collapsed');
+            sidebarBtn.setAttribute('aria-pressed', String(collapsed));
+            sidebarBtn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+            if (collapsed) addCollapsedAriaLabels();
+            try { localStorage.setItem('callsight-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
         });
-    });
-
-    // ======== HEADER SEARCH -> SEARCH VIEW ========
-    var headerSearch = document.querySelector('.header-search input');
-    if (headerSearch) {
-        headerSearch.addEventListener('focus', function() { switchView('search'); });
     }
 
-    // ======== MINI CHARTS ========
-    document.querySelectorAll('.mini-chart').forEach(function(chart) {
-        for (var i = 0; i < 20; i++) {
-            var bar = document.createElement('div');
-            bar.style.cssText =
-                'width: 4px;' +
-                'height: ' + (20 + Math.random() * 80) + '%;' +
-                'background: var(--primary);' +
-                'opacity: 0.3;' +
-                'border-radius: 2px;' +
-                'position: absolute;' +
-                'bottom: 0;' +
-                'left: ' + (i * 6) + 'px;';
-            chart.appendChild(bar);
+    function addCollapsedAriaLabels() {
+        // Copy visible text to aria-label so tooltip and screen readers work when collapsed
+        document.querySelectorAll('.nav-item').forEach(function(item) {
+            if (!item.getAttribute('aria-label')) {
+                var label = (item.textContent || '').trim();
+                if (label) item.setAttribute('aria-label', label);
+            }
+        });
+    }
+    // Always add aria-labels so they're available for collapsed-state tooltip
+    addCollapsedAriaLabels();
+
+    // ======== MODAL MANAGEMENT (focus trap + ESC + focus restore) ========
+    var activeModal = null;
+    var lastFocusedBeforeModal = null;
+
+    function getFocusable(container) {
+        return container.querySelectorAll(
+            'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+    }
+    window.openModal = function(modalEl) {
+        if (!modalEl) return;
+        lastFocusedBeforeModal = document.activeElement;
+        modalEl.classList.add('active');
+        modalEl.setAttribute('aria-hidden', 'false');
+        activeModal = modalEl;
+        document.body.style.overflow = 'hidden';
+        // Focus first focusable (prefer input)
+        var focusables = getFocusable(modalEl);
+        var firstInput = modalEl.querySelector('input, textarea, select');
+        if (firstInput) firstInput.focus();
+        else if (focusables.length) focusables[0].focus();
+    };
+    window.closeModal = function(modalEl) {
+        if (!modalEl) return;
+        modalEl.classList.remove('active');
+        modalEl.setAttribute('aria-hidden', 'true');
+        if (activeModal === modalEl) activeModal = null;
+        document.body.style.overflow = '';
+        if (lastFocusedBeforeModal && document.contains(lastFocusedBeforeModal)) {
+            lastFocusedBeforeModal.focus();
+        }
+    };
+
+    document.addEventListener('keydown', function(e) {
+        if (!activeModal) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            window.closeModal(activeModal);
+            return;
+        }
+        if (e.key === 'Tab') {
+            var focusables = getFocusable(activeModal);
+            if (!focusables.length) return;
+            var first = focusables[0];
+            var last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault(); last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault(); first.focus();
+            }
         }
     });
+
+    // Upload modal hookup (replace any earlier handlers with proper open/close)
+    var uploadModalEl = document.getElementById('uploadModal');
+    var uploadBtnEl = document.getElementById('uploadBtn');
+    if (uploadBtnEl && uploadModalEl) {
+        uploadBtnEl.addEventListener('click', function() { window.openModal(uploadModalEl); });
+        uploadModalEl.addEventListener('click', function(e) {
+            if (e.target === uploadModalEl) window.closeModal(uploadModalEl);
+        });
+    }
+    document.querySelectorAll('.modal-overlay .close-modal').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var modal = btn.closest('.modal-overlay');
+            if (modal) window.closeModal(modal);
+        });
+    });
+    // "data-open-upload" hook from empty state
+    document.querySelectorAll('[data-open-upload]').forEach(function(btn) {
+        btn.addEventListener('click', function() { window.openModal(uploadModalEl); });
+    });
+
+    // ======== COMMAND PALETTE (Cmd/Ctrl+K) ========
+    var cmdkModal = document.getElementById('cmdkModal');
+    var cmdkInput = document.getElementById('cmdkInput');
+    var cmdkList = document.getElementById('cmdkList');
+    var headerSearchBtn = document.getElementById('headerSearchBtn');
+
+    var COMMANDS = [
+        { id: 'interactions', label: 'Go to Interactions', kind: 'View', icon: 'grid' },
+        { id: 'action-items', label: 'Go to Action Items', kind: 'View', icon: 'check' },
+        { id: 'live-call', label: 'Go to Live Call', kind: 'View', icon: 'mic' },
+        { id: 'manager-monitoring', label: 'Go to Team Monitoring', kind: 'View', icon: 'eye' },
+        { id: 'call-library', label: 'Go to Call Library', kind: 'View', icon: 'library' },
+        { id: 'search', label: 'Go to Search', kind: 'View', icon: 'search' },
+        { id: 'contacts', label: 'Go to Contacts', kind: 'View', icon: 'users' },
+        { id: 'analytics', label: 'Go to Analytics', kind: 'View', icon: 'chart' },
+        { id: 'scorecards', label: 'Go to Scorecards', kind: 'View', icon: 'clipboard' },
+        { id: 'agent-performance', label: 'Go to Agent Performance', kind: 'View', icon: 'chart' },
+        { id: 'knowledge-base', label: 'Go to Knowledge Base', kind: 'View', icon: 'book' },
+        { id: 'integrations', label: 'Go to Integrations', kind: 'View', icon: 'plug' },
+        { id: 'preferences', label: 'Go to Preferences', kind: 'View', icon: 'settings' },
+        { id: '__upload', label: 'Upload a call recording', kind: 'Action', icon: 'upload' },
+        { id: '__theme', label: 'Toggle color theme', kind: 'Action', icon: 'theme' },
+        { id: '__sidebar', label: 'Toggle sidebar', kind: 'Action', icon: 'sidebar' }
+    ];
+    var cmdkIdx = 0;
+    var cmdkFiltered = COMMANDS.slice();
+
+    function renderCmdkList() {
+        if (!cmdkList) return;
+        cmdkList.innerHTML = '';
+        if (!cmdkFiltered.length) {
+            var empty = document.createElement('li');
+            empty.className = 'cmdk-empty';
+            empty.textContent = 'No matches';
+            cmdkList.appendChild(empty);
+            return;
+        }
+        cmdkFiltered.forEach(function(cmd, i) {
+            var li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            li.setAttribute('aria-selected', i === cmdkIdx ? 'true' : 'false');
+            li.setAttribute('data-cmd', cmd.id);
+            li.innerHTML =
+                '<span>' + escapeHtml(cmd.label) + '</span>' +
+                '<span class="cmdk-kind">' + escapeHtml(cmd.kind) + '</span>';
+            li.addEventListener('click', function() { runCmd(cmd); });
+            cmdkList.appendChild(li);
+        });
+    }
+    function filterCmdk(q) {
+        q = (q || '').toLowerCase().trim();
+        if (!q) cmdkFiltered = COMMANDS.slice();
+        else cmdkFiltered = COMMANDS.filter(function(c) {
+            return c.label.toLowerCase().indexOf(q) !== -1 || c.kind.toLowerCase().indexOf(q) !== -1;
+        });
+        cmdkIdx = 0;
+        renderCmdkList();
+    }
+    function runCmd(cmd) {
+        window.closeModal(cmdkModal);
+        if (cmd.id === '__upload' && uploadModalEl) { window.openModal(uploadModalEl); return; }
+        if (cmd.id === '__theme' && themeToggle) { themeToggle.click(); return; }
+        if (cmd.id === '__sidebar' && sidebarBtn) { sidebarBtn.click(); return; }
+        if (typeof window.switchView === 'function') window.switchView(cmd.id);
+    }
+    function openCmdk() {
+        if (!cmdkModal) return;
+        filterCmdk('');
+        window.openModal(cmdkModal);
+        if (cmdkInput) cmdkInput.value = '';
+    }
+    if (cmdkInput) {
+        cmdkInput.addEventListener('input', function(e) { filterCmdk(e.target.value); });
+        cmdkInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                cmdkIdx = Math.min(cmdkIdx + 1, cmdkFiltered.length - 1);
+                renderCmdkList();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                cmdkIdx = Math.max(cmdkIdx - 1, 0);
+                renderCmdkList();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (cmdkFiltered[cmdkIdx]) runCmd(cmdkFiltered[cmdkIdx]);
+            }
+        });
+    }
+    if (cmdkModal) {
+        cmdkModal.addEventListener('click', function(e) {
+            if (e.target === cmdkModal) window.closeModal(cmdkModal);
+        });
+    }
+    if (headerSearchBtn) {
+        headerSearchBtn.addEventListener('click', openCmdk);
+    }
+    document.addEventListener('keydown', function(e) {
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+            e.preventDefault();
+            openCmdk();
+        }
+    });
+
+    // ======== TOOLTIP ========
+    var tipEl = document.getElementById('tooltip');
+    function showTip(target) {
+        if (!tipEl) return;
+        var text = target.getAttribute('data-tip');
+        if (!text) return;
+        tipEl.textContent = text;
+        var rect = target.getBoundingClientRect();
+        tipEl.classList.add('visible');
+        // Place below + centered, then clamp
+        var top = rect.bottom + 6;
+        var left = rect.left + rect.width / 2 - tipEl.offsetWidth / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - tipEl.offsetWidth - 8));
+        if (top + tipEl.offsetHeight > window.innerHeight - 8) {
+            top = rect.top - tipEl.offsetHeight - 6;
+        }
+        tipEl.style.top = top + 'px';
+        tipEl.style.left = left + 'px';
+        tipEl.setAttribute('aria-hidden', 'false');
+    }
+    function hideTip() {
+        if (!tipEl) return;
+        tipEl.classList.remove('visible');
+        tipEl.setAttribute('aria-hidden', 'true');
+    }
+    document.addEventListener('mouseover', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) showTip(t);
+    });
+    document.addEventListener('mouseout', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) hideTip();
+    });
+    document.addEventListener('focusin', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) showTip(t);
+    });
+    document.addEventListener('focusout', function(e) {
+        var t = e.target.closest('[data-tip]');
+        if (t) hideTip();
+    });
 });
+
+// ======== SVG SPARKLINES (smooth mini charts) ========
+function renderMiniCharts() {
+    var svgNS = 'http://www.w3.org/2000/svg';
+    document.querySelectorAll('.mini-chart').forEach(function(chart) {
+        if (chart.querySelector('svg')) return;
+        var width = 120;
+        var height = 40;
+        var points = 16;
+        // Seed deterministic per card so it looks stable across reloads
+        var seed = chart.dataset.seed || Math.random().toString(36).slice(2, 8);
+        chart.dataset.seed = seed;
+        var rand = seededRandom(seed);
+        var values = [];
+        var cur = 40 + rand() * 20;
+        for (var i = 0; i < points; i++) {
+            cur += (rand() - 0.5) * 16;
+            cur = Math.max(10, Math.min(cur, height - 6));
+            values.push(cur);
+        }
+        var step = width / (points - 1);
+        var linePath = '';
+        var areaPath = '';
+        values.forEach(function(v, idx) {
+            var x = idx * step;
+            var y = height - v;
+            linePath += (idx === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+        });
+        areaPath = linePath + 'L' + width + ',' + height + ' L0,' + height + ' Z';
+
+        var svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+        svg.setAttribute('preserveAspectRatio', 'none');
+        svg.setAttribute('aria-hidden', 'true');
+
+        var defs = document.createElementNS(svgNS, 'defs');
+        defs.innerHTML = '<linearGradient id="mini-' + seed + '" x1="0%" y1="0%" x2="0%" y2="100%">' +
+            '<stop offset="0%" stop-color="var(--primary)" stop-opacity="0.45"/>' +
+            '<stop offset="100%" stop-color="var(--primary)" stop-opacity="0"/>' +
+            '</linearGradient>';
+        svg.appendChild(defs);
+
+        var area = document.createElementNS(svgNS, 'path');
+        area.setAttribute('d', areaPath);
+        area.setAttribute('fill', 'url(#mini-' + seed + ')');
+        svg.appendChild(area);
+
+        var line = document.createElementNS(svgNS, 'path');
+        line.setAttribute('d', linePath);
+        line.setAttribute('fill', 'none');
+        line.setAttribute('stroke', 'var(--primary)');
+        line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('stroke-linecap', 'round');
+        line.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(line);
+
+        chart.appendChild(svg);
+    });
+}
+
+function seededRandom(seed) {
+    // Simple Mulberry32
+    var h = 0;
+    for (var i = 0; i < seed.length; i++) {
+        h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+    }
+    return function() {
+        h |= 0; h = h + 0x6D2B79F5 | 0;
+        var t = Math.imul(h ^ h >>> 15, 1 | h);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+// ======== CONVERSATIONS ========
+// Standalone module so the diff is contained. Talks to /api/v1/conversations
+// endpoints; falls back to an empty-state row when the API is unreachable
+// or the tenant hasn't connected an inbox yet.
+
+var _currentConversationId = null;
+var _currentConversationProviderIntegrationId = null;
+
+async function loadConversations(filter) {
+    var body = document.getElementById('conversationsTableBody');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="8" class="empty-row">Loading…</td></tr>';
+    var qs = '';
+    if (filter && filter !== 'all') {
+        if (filter === 'waiting_agent') qs = '?status=waiting_agent';
+        else qs = '?classification=' + encodeURIComponent(filter);
+    }
+    var rows = await apiFetch('/conversations' + qs);
+    if (!rows || !rows.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty-row">No conversations yet — connect Gmail or Outlook in Integrations.</td></tr>';
+        return;
+    }
+    body.innerHTML = '';
+    rows.forEach(function(conv) {
+        var tr = document.createElement('tr');
+        tr.className = 'interaction-row';
+        tr.setAttribute('data-conv-id', conv.id);
+        var insights = conv.insights || {};
+        var latestSentiment = (insights.sentiment_series || []).slice(-1)[0];
+        var churn = insights.latest_churn_risk;
+        var signalBits = [];
+        if (churn && churn > 0.6) signalBits.push('<span class="badge risk">churn risk</span>');
+        if (insights.latest_upsell_score && insights.latest_upsell_score > 0.6) signalBits.push('<span class="badge upsell">upsell</span>');
+        tr.innerHTML =
+            '<td>' + (CHANNEL_ICONS[conv.channel] || CHANNEL_ICONS.email) + '</td>' +
+            '<td>' + escapeHtml(conv.subject || '(no subject)') + '</td>' +
+            '<td>' + escapeHtml(conv.classification || '—') + '</td>' +
+            '<td><span class="status-pill ' + (conv.status || 'open') + '">' + (conv.status || 'open') + '</span></td>' +
+            '<td>' + (conv.message_count || 0) + '</td>' +
+            '<td>' + formatRelativeDate(conv.last_message_at) + '</td>' +
+            '<td>' + (latestSentiment != null ? latestSentiment.toFixed(1) : '—') + '</td>' +
+            '<td>' + signalBits.join(' ') + '</td>';
+        tr.addEventListener('click', function() { openConversation(conv.id); });
+        body.appendChild(tr);
+    });
+}
+
+async function openConversation(conversationId) {
+    _currentConversationId = conversationId;
+    window.switchView('conversation-detail');
+    var data = await apiFetch('/conversations/' + conversationId);
+    if (!data) return;
+    document.getElementById('conversationDetailSubject').textContent = data.subject || '(no subject)';
+    document.getElementById('conversationDetailMeta').textContent =
+        (data.classification || 'unclassified') + ' · ' + (data.status || 'open') +
+        ' · ' + (data.message_count || 0) + ' messages';
+
+    var threadEl = document.getElementById('conversationThread');
+    threadEl.innerHTML = '';
+    (data.messages || []).forEach(function(m) {
+        var div = document.createElement('div');
+        div.className = 'conv-message ' + (m.direction === 'inbound' ? 'inbound' : 'outbound');
+        div.innerHTML =
+            '<div class="conv-message-header">' +
+                '<span class="conv-who">' + (m.direction === 'inbound' ? 'Customer' : 'Agent') + '</span>' +
+                '<span class="conv-from">' + escapeHtml(m.from_address || '') + '</span>' +
+                '<span class="conv-when">' + formatRelativeDate(m.created_at) + '</span>' +
+            '</div>' +
+            '<div class="conv-subject">' + escapeHtml(m.subject || '') + '</div>' +
+            '<pre class="conv-body">' + escapeHtml((m.raw_text || '').slice(0, 8000)) + '</pre>';
+        threadEl.appendChild(div);
+    });
+
+    var insightsEl = document.getElementById('conversationInsights');
+    var insights = data.insights || {};
+    insightsEl.innerHTML =
+        '<div><label>Latest summary</label><p>' + escapeHtml(insights.latest_summary || '—') + '</p></div>' +
+        '<div><label>Churn risk</label><p>' + (insights.latest_churn_risk != null ? insights.latest_churn_risk.toFixed(2) : '—') + '</p></div>' +
+        '<div><label>Upsell score</label><p>' + (insights.latest_upsell_score != null ? insights.latest_upsell_score.toFixed(2) : '—') + '</p></div>';
+
+    // Reset draft panel
+    document.getElementById('conversationDraftOutput').hidden = true;
+    document.getElementById('conversationDraftInstructions').value = '';
+
+    // Look up the first email-capable integration so Send has a target.
+    var integrations = await apiFetch('/oauth/status');
+    if (integrations && integrations.integrations && integrations.integrations.length) {
+        var first = integrations.integrations.find(function(i) {
+            return i.provider === 'google' || i.provider === 'microsoft';
+        });
+        _currentConversationProviderIntegrationId = first ? first.id : null;
+    } else {
+        _currentConversationProviderIntegrationId = null;
+    }
+}
+
+async function draftConversationReply() {
+    if (!_currentConversationId) return;
+    var instructionsEl = document.getElementById('conversationDraftInstructions');
+    var btn = document.getElementById('conversationDraftBtn');
+    btn.disabled = true;
+    btn.textContent = 'Drafting…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/draft-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ extra_instructions: instructionsEl.value || null })
+        });
+        if (!resp) { btn.textContent = 'Generate draft'; btn.disabled = false; return; }
+        document.getElementById('conversationDraftOutput').hidden = false;
+        document.getElementById('conversationDraftSubject').value = resp.subject || '';
+        document.getElementById('conversationDraftBody').value = resp.body || '';
+        document.getElementById('conversationDraftRationale').textContent = resp.rationale || '';
+        document.getElementById('conversationDraftFlag').hidden = !resp.requires_human_review;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate draft';
+    }
+}
+
+async function sendConversationReply() {
+    if (!_currentConversationId) return;
+    if (!_currentConversationProviderIntegrationId) {
+        alert('Connect Gmail or Outlook first (Integrations view).');
+        return;
+    }
+    var subject = document.getElementById('conversationDraftSubject').value;
+    var body = document.getElementById('conversationDraftBody').value;
+    // Derive recipient from the most recent inbound message's from-address.
+    var inboundFrom = null;
+    document.querySelectorAll('#conversationThread .conv-message.inbound .conv-from').forEach(function(el) {
+        inboundFrom = el.textContent.trim();
+    });
+    if (!inboundFrom) { alert('No inbound message to reply to.'); return; }
+
+    var btn = document.getElementById('conversationSendBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/send-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subject: subject,
+                body: body,
+                to: [inboundFrom],
+                cc: [],
+                integration_id: _currentConversationProviderIntegrationId
+            })
+        });
+        if (resp) {
+            btn.textContent = 'Sent ✓';
+            setTimeout(function() { openConversation(_currentConversationId); }, 500);
+        } else {
+            btn.textContent = 'Send reply';
+        }
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
+// Wire UI events once the DOM is ready.
+document.addEventListener('DOMContentLoaded', function() {
+    var draftBtn = document.getElementById('conversationDraftBtn');
+    if (draftBtn) draftBtn.addEventListener('click', draftConversationReply);
+    var sendBtn = document.getElementById('conversationSendBtn');
+    if (sendBtn) sendBtn.addEventListener('click', sendConversationReply);
+    document.querySelectorAll('[data-conv-filter]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('[data-conv-filter]').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            loadConversations(btn.getAttribute('data-conv-filter'));
+        });
+    });
+});
+
+window.loadConversations = loadConversations;
+window.openConversation = openConversation;

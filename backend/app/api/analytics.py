@@ -764,3 +764,182 @@ async def tenant_insights_list(
         )
         for row in rows
     ]
+
+
+# ── Continuous AI improvement: AI health, vocab pending, reply quality ──
+
+
+class AiHealth(BaseModel):
+    quality_score_avg_7d: Optional[float]
+    quality_score_avg_30d: Optional[float]
+    feedback_events_7d: int
+    asr_wer_7d: Optional[float]
+    pending_vocab_candidates: int
+    flagged_for_review_count: int
+
+
+@router.get("/analytics/ai-health", response_model=AiHealth)
+async def ai_health(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Per-tenant AI health snapshot — composite quality, WER, feedback velocity."""
+    tenant_id = str(tenant.id)
+    rows = (
+        await db.execute(
+            text(
+                """
+                WITH q7 AS (
+                    SELECT AVG(score) AS v
+                    FROM insight_quality_scores
+                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'
+                ),
+                q30 AS (
+                    SELECT AVG(score) AS v
+                    FROM insight_quality_scores
+                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '30 days'
+                ),
+                fb AS (
+                    SELECT COUNT(*) AS n
+                    FROM feedback_events
+                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'
+                ),
+                wer AS (
+                    SELECT AVG(word_error_rate) AS v
+                    FROM wer_metrics
+                    WHERE tenant_id = :t AND period_end >= CURRENT_DATE - INTERVAL '14 days'
+                ),
+                vocab AS (
+                    SELECT COUNT(*) AS n
+                    FROM vocabulary_candidates
+                    WHERE tenant_id = :t AND status = 'pending'
+                ),
+                flagged AS (
+                    SELECT COUNT(*) AS n
+                    FROM interactions
+                    WHERE tenant_id = :t AND status = 'flagged_for_review'
+                )
+                SELECT q7.v, q30.v, fb.n, wer.v, vocab.n, flagged.n
+                FROM q7, q30, fb, wer, vocab, flagged
+                """
+            ),
+            {"t": tenant_id},
+        )
+    ).fetchone()
+    if rows is None:
+        raise HTTPException(status_code=500, detail="ai-health query returned no rows")
+    return AiHealth(
+        quality_score_avg_7d=float(rows[0]) if rows[0] is not None else None,
+        quality_score_avg_30d=float(rows[1]) if rows[1] is not None else None,
+        feedback_events_7d=int(rows[2] or 0),
+        asr_wer_7d=float(rows[3]) if rows[3] is not None else None,
+        pending_vocab_candidates=int(rows[4] or 0),
+        flagged_for_review_count=int(rows[5] or 0),
+    )
+
+
+class VocabPendingRow(BaseModel):
+    id: uuid.UUID
+    term: str
+    confidence: str
+    source: Optional[str]
+    occurrence_count: int
+
+
+@router.get("/analytics/vocabulary-pending", response_model=List[VocabPendingRow])
+async def vocabulary_pending(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT id, term, confidence, source, occurrence_count
+                FROM vocabulary_candidates
+                WHERE tenant_id = :t AND status = 'pending'
+                ORDER BY occurrence_count DESC, created_at DESC
+                LIMIT 50
+                """
+            ),
+            {"t": str(tenant.id)},
+        )
+    ).fetchall()
+    return [
+        VocabPendingRow(
+            id=row[0],
+            term=row[1],
+            confidence=row[2],
+            source=row[3],
+            occurrence_count=int(row[4] or 0),
+        )
+        for row in rows
+    ]
+
+
+class ReplyQualityRow(BaseModel):
+    period: str
+    sample_size: int
+    avg_similarity: Optional[float]
+    pct_sent_unchanged: Optional[float]
+    avg_quality_score: Optional[float]
+
+
+@router.get("/analytics/reply-quality", response_model=List[ReplyQualityRow])
+async def reply_quality(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Reply edit-distance + LLM-judge quality, bucketed weekly."""
+    rows = (
+        await db.execute(
+            text(
+                """
+                WITH events AS (
+                    SELECT
+                        date_trunc('week', created_at) AS wk,
+                        COUNT(*) AS n,
+                        AVG(NULLIF((payload ->> 'similarity')::float, NULL)) AS avg_sim,
+                        AVG(
+                            CASE WHEN event_type = 'reply_sent_unchanged'
+                                 THEN 1.0 ELSE 0.0 END
+                        ) AS pct_unchanged
+                    FROM feedback_events
+                    WHERE tenant_id = :t
+                      AND event_type IN ('reply_sent_unchanged', 'reply_edited_before_send')
+                      AND created_at >= NOW() - INTERVAL '12 weeks'
+                    GROUP BY 1
+                ),
+                quality AS (
+                    SELECT date_trunc('week', created_at) AS wk,
+                           AVG(score) AS qavg
+                    FROM insight_quality_scores
+                    WHERE tenant_id = :t
+                      AND surface = 'email_reply'
+                      AND created_at >= NOW() - INTERVAL '12 weeks'
+                    GROUP BY 1
+                )
+                SELECT
+                    e.wk::date,
+                    e.n,
+                    e.avg_sim,
+                    e.pct_unchanged,
+                    q.qavg
+                FROM events e
+                LEFT JOIN quality q USING (wk)
+                ORDER BY e.wk ASC
+                """
+            ),
+            {"t": str(tenant.id)},
+        )
+    ).fetchall()
+    return [
+        ReplyQualityRow(
+            period=str(row[0]),
+            sample_size=int(row[1] or 0),
+            avg_similarity=float(row[2]) if row[2] is not None else None,
+            pct_sent_unchanged=float(row[3]) if row[3] is not None else None,
+            avg_quality_score=float(row[4]) if row[4] is not None else None,
+        )
+        for row in rows
+    ]

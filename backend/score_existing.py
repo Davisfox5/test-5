@@ -33,24 +33,22 @@ DB_URL = os.environ["DATABASE_URL"]
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app.services.scorecard_service import ScorecardService
-from backend.app.services.transcription import Segment
 
 
-def _segments_from_transcript(transcript_json):
-    """Convert stored transcript JSONB into Segment dataclass instances."""
+def _segments_to_dicts(transcript_json):
+    """Convert stored transcript segments to the dict format ScorecardService expects."""
     segments = []
     for s in transcript_json or []:
         start_ms = s.get("start_ms", 0)
-        end_ms = s.get("end_ms", start_ms + 1500)
-        segments.append(
-            Segment(
-                start=start_ms / 1000.0,
-                end=end_ms / 1000.0,
-                text=s.get("text", ""),
-                speaker_id=s.get("speaker_id"),
-                confidence=s.get("confidence"),
-            )
-        )
+        minutes = (start_ms // 1000) // 60
+        seconds = (start_ms // 1000) % 60
+        time_str = f"{minutes:02d}:{seconds:02d}"
+        segments.append({
+            "time": time_str,
+            "start_time": time_str,
+            "speaker": s.get("speaker_name") or s.get("speaker_id") or "Unknown",
+            "text": s.get("text", ""),
+        })
     return segments
 
 
@@ -73,8 +71,23 @@ def _pick_template(title: str, source: str, sales_template: dict, support_templa
     return sales_template
 
 
+def _connect_with_retry(max_attempts: int = 5):
+    """Connect to the DB, retrying on DNS/connection failures (Neon endpoint wake lag)."""
+    import time as _time
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return psycopg2.connect(DB_URL, sslmode="require", connect_timeout=15)
+        except psycopg2.OperationalError as exc:
+            last_err = exc
+            wait = 2 * (attempt + 1)
+            print(f"  DB connect attempt {attempt+1} failed: {str(exc)[:60]} — retrying in {wait}s", flush=True)
+            _time.sleep(wait)
+    raise last_err
+
+
 async def main():
-    conn = psycopg2.connect(DB_URL, sslmode="require")
+    conn = _connect_with_retry()
     conn.autocommit = False
     cur = conn.cursor()
 
@@ -130,7 +143,7 @@ async def main():
 
         print(f"[{idx}/{len(rows)}] scoring: {title} (template: {template.get('name')})...", end=" ", flush=True)
 
-        segments = _segments_from_transcript(
+        segments = _segments_to_dicts(
             transcript_json if isinstance(transcript_json, list) else (json.loads(transcript_json) if transcript_json else [])
         )
         insights = insights_json if isinstance(insights_json, dict) else (json.loads(insights_json) if insights_json else {})
@@ -141,6 +154,18 @@ async def main():
                 print(f"empty result — {result.get('error','')[:60]}")
                 failed += 1
                 continue
+
+            # Use a fresh connection if the previous one dropped (DNS/timeout hiccup).
+            try:
+                cur.execute("SELECT 1")
+            except Exception:
+                print(" (reconnecting...)", end=" ", flush=True)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = _connect_with_retry()
+                cur = conn.cursor()
 
             cur.execute(
                 """
@@ -162,7 +187,16 @@ async def main():
             succeeded += 1
         except Exception as exc:
             print(f"FAILED: {exc}")
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                # Connection may be dead — reopen for next iteration.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = _connect_with_retry()
+                cur = conn.cursor()
             failed += 1
 
         # Gentle rate limit

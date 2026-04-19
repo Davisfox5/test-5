@@ -62,6 +62,14 @@ from backend.app.api.profiles import router as profiles_router  # noqa: E402
 from backend.app.api.outcomes import router as outcomes_router  # noqa: E402
 from backend.app.api.corrections import router as corrections_router  # noqa: E402
 from backend.app.api.quality import router as quality_router  # noqa: E402
+from backend.app.api.oauth import router as oauth_router  # noqa: E402
+from backend.app.api.conversations import router as conversations_router  # noqa: E402
+from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
+from backend.app.api.email_push import router as email_push_router  # noqa: E402
+from backend.app.api.feedback import router as feedback_router  # noqa: E402
+from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
+from backend.app.api.experiments import router as experiments_router  # noqa: E402
+from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -78,14 +86,31 @@ app.include_router(profiles_router, prefix=settings.API_V1_PREFIX, tags=["profil
 app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcomes"])
 app.include_router(corrections_router, prefix=settings.API_V1_PREFIX, tags=["corrections"])
 app.include_router(quality_router, prefix=settings.API_V1_PREFIX, tags=["quality"])
+app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
+app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
+app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
+app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
+app.include_router(feedback_router, prefix=settings.API_V1_PREFIX, tags=["feedback"])
+app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["evaluation"])
+app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])
+app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 
 app.include_router(websocket_router, tags=["websocket"])
 
-# Routers to be added as built:
-# app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
-# app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
+
+# ── Prometheus /metrics ──────────────────────────────────
+from fastapi import Response  # noqa: E402
+
+from backend.app.services import metrics as _ai_metrics  # noqa: E402
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> Response:
+    payload, content_type = _ai_metrics.metrics_handler()
+    return Response(content=payload, media_type=content_type)
+
 
 # ── Static Files (minimal demo UI) ───────────────────────
 app.mount("/", StaticFiles(directory="website", html=True), name="website")
