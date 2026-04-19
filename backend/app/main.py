@@ -1,4 +1,4 @@
-"""CallSight AI — FastAPI application entry point."""
+"""LINDA — FastAPI application entry point."""
 
 from __future__ import annotations
 

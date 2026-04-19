@@ -26,7 +26,7 @@ settings = get_settings()
 # ── Celery app ───────────────────────────────────────────────────────────
 
 celery_app = Celery(
-    "callsight",
+    "linda",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
 )

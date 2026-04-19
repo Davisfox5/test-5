@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CallSight AI — Analyze all seeded interactions with the real AI pipeline.
+LINDA — Analyze all seeded interactions with the real AI pipeline.
 
 Runs triage, analysis, scorecard scoring, and snippet extraction on every
-interaction with status='transcribed' in the callsight-demo tenant.
+interaction with status='transcribed' in the linda-demo tenant.
 
 Usage:
     python -m backend.analyze_seed      # from project root
@@ -109,10 +109,10 @@ async def analyze_all() -> None:
         cur = conn.cursor()
 
         # Get tenant id
-        cur.execute("SELECT id FROM tenants WHERE slug = 'callsight-demo'")
+        cur.execute("SELECT id FROM tenants WHERE slug = 'linda-demo'")
         row = cur.fetchone()
         if not row:
-            print("ERROR: Tenant 'callsight-demo' not found. Run backend/seed.py first.")
+            print("ERROR: Tenant 'linda-demo' not found. Run backend/seed.py first.")
             return
         tenant_id = str(row[0])
 

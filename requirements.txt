@@ -1,4 +1,4 @@
-# CallSight AI — Backend Dependencies
+# LINDA — Backend Dependencies
 # Python 3.12+
 
 # === Web Framework ===

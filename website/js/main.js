@@ -1,7 +1,27 @@
+// ======== MIGRATION: one-time rename of legacy callsight-* localStorage keys ========
+(function migrateLegacyStorageKeys() {
+    try {
+        var legacyPrefix = 'callsight-';
+        var newPrefix = 'linda-';
+        var legacy = [];
+        for (var i = 0; i < localStorage.length; i++) {
+            var k = localStorage.key(i);
+            if (k && k.indexOf(legacyPrefix) === 0) legacy.push(k);
+        }
+        legacy.forEach(function(k) {
+            var newKey = newPrefix + k.slice(legacyPrefix.length);
+            if (localStorage.getItem(newKey) === null) {
+                localStorage.setItem(newKey, localStorage.getItem(k));
+            }
+            localStorage.removeItem(k);
+        });
+    } catch (e) { /* ignore */ }
+})();
+
 // ======== THEME (runs before DOMContentLoaded to avoid flash) ========
 (function initTheme() {
     try {
-        var stored = localStorage.getItem('callsight-theme');
+        var stored = localStorage.getItem('linda-theme');
         var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
         var theme = stored || (prefersLight ? 'light' : 'dark');
         if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
@@ -68,7 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 document.documentElement.removeAttribute('data-theme');
             }
-            try { localStorage.setItem('callsight-theme', next); } catch (e) {}
+            try { localStorage.setItem('linda-theme', next); } catch (e) {}
         });
     }
 

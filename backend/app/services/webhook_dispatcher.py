@@ -52,8 +52,8 @@ class WebhookDispatcher:
         signature = self.sign_payload(payload_str, webhook.secret)
 
         headers = {
-            "X-CallSight-Signature": f"sha256={signature}",
-            "X-CallSight-Event": event,
+            "X-Linda-Signature": f"sha256={signature}",
+            "X-Linda-Event": event,
             "Content-Type": "application/json",
         }
 

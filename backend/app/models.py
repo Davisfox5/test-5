@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models — every table in the CallSight schema."""
+"""SQLAlchemy ORM models — every table in the LINDA schema."""
 
 import uuid
 from datetime import date, datetime

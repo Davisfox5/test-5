@@ -11,7 +11,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Clean up logs to be less noisy
-        print(f"[CallSight Server] {args[0]} - {args[1]}")
+        print(f"[LINDA Server] {args[0]} - {args[1]}")
 
 if __name__ == "__main__":
     if not os.path.exists(DIRECTORY):
@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
         print(f"==========================================")
-        print(f"🚀 CallSight AI Live Website is running!")
+        print(f"🚀 LINDA Live Website is running!")
         print(f"🔗 URL: http://localhost:{PORT}")
         print(f"📂 Serving from: ./{DIRECTORY}")
         print(f"==========================================")

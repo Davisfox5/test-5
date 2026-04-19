@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CallSight AI — Seed script for the new interactions schema.
+LINDA — Seed script for the new interactions schema.
 
 Reads conversation data from the three legacy seed files (seed_sales.py,
 seed_it.py, seed_cs.py) and inserts everything into the new schema:
@@ -110,7 +110,7 @@ def seed() -> None:
             ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
             RETURNING id
             """,
-            (tenant_id, "CallSight Demo", "callsight-demo"),
+            (tenant_id, "Linda Demo", "linda-demo"),
         )
         tenant_id = str(cur.fetchone()[0])
         print(f"Tenant: {tenant_id}")
