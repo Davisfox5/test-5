@@ -1,4 +1,4 @@
-"""Contacts & Companies API — CRM-like directory for managing contacts and companies."""
+"""Contacts & Customers API — CRM-like directory for managing contacts and customers."""
 
 import uuid
 from datetime import datetime
@@ -12,7 +12,9 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import Company, Contact, Interaction, Tenant
+from backend.app.models import Customer, Contact, Interaction, Tenant
+from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
+from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
 
 router = APIRouter()
 
@@ -20,7 +22,7 @@ router = APIRouter()
 # ── Pydantic Schemas ─────────────────────────────────────
 
 
-class CompanyCreate(BaseModel):
+class CustomerCreate(BaseModel):
     name: str
     domain: Optional[str] = None
     crm_id: Optional[str] = None
@@ -28,7 +30,7 @@ class CompanyCreate(BaseModel):
     metadata: Optional[Dict] = None
 
 
-class CompanyOut(BaseModel):
+class CustomerOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     name: str
@@ -40,7 +42,7 @@ class CompanyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CompanyUpdate(BaseModel):
+class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     domain: Optional[str] = None
     crm_id: Optional[str] = None
@@ -52,7 +54,7 @@ class ContactCreate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    company_id: Optional[uuid.UUID] = None
+    customer_id: Optional[uuid.UUID] = None
     crm_id: Optional[str] = None
     crm_source: Optional[str] = None
     metadata: Optional[Dict] = None
@@ -64,7 +66,7 @@ class ContactOut(BaseModel):
     name: Optional[str]
     email: Optional[str]
     phone: Optional[str]
-    company_id: Optional[uuid.UUID]
+    customer_id: Optional[uuid.UUID]
     crm_id: Optional[str]
     crm_source: Optional[str]
     interaction_count: int
@@ -87,7 +89,7 @@ class InteractionSummary(BaseModel):
 
 
 class ContactDetail(ContactOut):
-    company: Optional[CompanyOut] = None
+    customer: Optional[CustomerOut] = None
     recent_interactions: List[InteractionSummary] = []
 
 
@@ -95,7 +97,7 @@ class ContactUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    company_id: Optional[uuid.UUID] = None
+    customer_id: Optional[uuid.UUID] = None
     crm_id: Optional[str] = None
     crm_source: Optional[str] = None
     metadata: Optional[Dict] = None
@@ -104,8 +106,8 @@ class ContactUpdate(BaseModel):
 # ── Helper ───────────────────────────────────────────────
 
 
-def _company_to_out(c: Company) -> CompanyOut:
-    return CompanyOut(
+def _customer_to_out(c: Customer) -> CustomerOut:
+    return CustomerOut(
         id=c.id,
         tenant_id=c.tenant_id,
         name=c.name,
@@ -123,7 +125,7 @@ def _contact_to_out(c: Contact) -> ContactOut:
         name=c.name,
         email=c.email,
         phone=c.phone,
-        company_id=c.company_id,
+        customer_id=c.customer_id,
         crm_id=c.crm_id,
         crm_source=c.crm_source,
         interaction_count=c.interaction_count,
@@ -142,7 +144,7 @@ async def list_contacts(
     name: Optional[str] = Query(None, description="Filter by name (case-insensitive partial match)"),
     phone: Optional[str] = Query(None),
     email: Optional[str] = Query(None),
-    company_id: Optional[uuid.UUID] = Query(None),
+    customer_id: Optional[uuid.UUID] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -161,8 +163,8 @@ async def list_contacts(
         stmt = stmt.where(Contact.phone == phone)
     if email:
         stmt = stmt.where(Contact.email == email)
-    if company_id:
-        stmt = stmt.where(Contact.company_id == company_id)
+    if customer_id:
+        stmt = stmt.where(Contact.customer_id == customer_id)
 
     result = await db.execute(stmt)
     contacts = result.scalars().all()
@@ -177,7 +179,7 @@ async def get_contact(
 ):
     stmt = (
         select(Contact)
-        .options(selectinload(Contact.company))
+        .options(selectinload(Contact.customer))
         .where(Contact.id == contact_id, Contact.tenant_id == tenant.id)
     )
     result = await db.execute(stmt)
@@ -195,11 +197,11 @@ async def get_contact(
     interactions_result = await db.execute(interactions_stmt)
     interactions = interactions_result.scalars().all()
 
-    company_out = _company_to_out(contact.company) if contact.company else None
+    customer_out = _customer_to_out(contact.customer) if contact.customer else None
 
     return ContactDetail(
         **_contact_to_out(contact).model_dump(),
-        company=company_out,
+        customer=customer_out,
         recent_interactions=[
             InteractionSummary(
                 id=i.id,
@@ -224,7 +226,7 @@ async def create_contact(
         name=body.name,
         email=body.email,
         phone=body.phone,
-        company_id=body.company_id,
+        customer_id=body.customer_id,
         crm_id=body.crm_id,
         crm_source=body.crm_source,
         metadata_=body.metadata or {},
@@ -253,8 +255,8 @@ async def update_contact(
         contact.email = body.email
     if body.phone is not None:
         contact.phone = body.phone
-    if body.company_id is not None:
-        contact.company_id = body.company_id
+    if body.customer_id is not None:
+        contact.customer_id = body.customer_id
     if body.crm_id is not None:
         contact.crm_id = body.crm_id
     if body.crm_source is not None:
@@ -304,35 +306,35 @@ async def list_contact_interactions(
     return result.scalars().all()
 
 
-# ── Company Endpoints ────────────────────────────────────
+# ── Customer Endpoints ────────────────────────────────────
 
 
-@router.get("/companies", response_model=List[CompanyOut])
-async def list_companies(
+@router.get("/customers", response_model=List[CustomerOut])
+async def list_customers(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
     stmt = (
-        select(Company)
-        .where(Company.tenant_id == tenant.id)
-        .order_by(Company.name)
+        select(Customer)
+        .where(Customer.tenant_id == tenant.id)
+        .order_by(Customer.name)
         .limit(limit)
         .offset(offset)
     )
     result = await db.execute(stmt)
-    companies = result.scalars().all()
-    return [_company_to_out(c) for c in companies]
+    customers = result.scalars().all()
+    return [_customer_to_out(c) for c in customers]
 
 
-@router.post("/companies", response_model=CompanyOut, status_code=201)
-async def create_company(
-    body: CompanyCreate,
+@router.post("/customers", response_model=CustomerOut, status_code=201)
+async def create_customer(
+    body: CustomerCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    company = Company(
+    customer = Customer(
         tenant_id=tenant.id,
         name=body.name,
         domain=body.domain,
@@ -340,47 +342,93 @@ async def create_company(
         industry=body.industry,
         metadata_=body.metadata or {},
     )
-    db.add(company)
+    db.add(customer)
     await db.flush()
-    return _company_to_out(company)
+    return _customer_to_out(customer)
 
 
-@router.patch("/companies/{company_id}", response_model=CompanyOut)
-async def update_company(
-    company_id: uuid.UUID,
-    body: CompanyUpdate,
+@router.patch("/customers/{customer_id}", response_model=CustomerOut)
+async def update_customer(
+    customer_id: uuid.UUID,
+    body: CustomerUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    stmt = select(Company).where(Company.id == company_id, Company.tenant_id == tenant.id)
+    stmt = select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant.id)
     result = await db.execute(stmt)
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
 
     if body.name is not None:
-        company.name = body.name
+        customer.name = body.name
     if body.domain is not None:
-        company.domain = body.domain
+        customer.domain = body.domain
     if body.crm_id is not None:
-        company.crm_id = body.crm_id
+        customer.crm_id = body.crm_id
     if body.industry is not None:
-        company.industry = body.industry
+        customer.industry = body.industry
     if body.metadata is not None:
-        company.metadata_ = body.metadata
+        customer.metadata_ = body.metadata
 
-    return _company_to_out(company)
+    return _customer_to_out(customer)
 
 
-@router.delete("/companies/{company_id}", status_code=204)
-async def delete_company(
-    company_id: uuid.UUID,
+@router.delete("/customers/{customer_id}", status_code=204)
+async def delete_customer(
+    customer_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    stmt = select(Company).where(Company.id == company_id, Company.tenant_id == tenant.id)
+    stmt = select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant.id)
     result = await db.execute(stmt)
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    await db.delete(company)
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await db.delete(customer)
+
+
+# ── Customer brief (LINDA's per-customer dossier) ─────────────────────
+
+
+class CustomerBriefOut(BaseModel):
+    customer_id: uuid.UUID
+    brief: Dict
+
+
+@router.get("/customers/{customer_id}/brief", response_model=CustomerBriefOut)
+async def get_customer_brief(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Return the customer brief LINDA uses at call time for this customer."""
+    customer = await db.get(Customer, customer_id)
+    if not customer or customer.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return CustomerBriefOut(customer_id=customer.id, brief=dict(customer.customer_brief or {}))
+
+
+@router.post("/customers/{customer_id}/brief/rebuild", status_code=202)
+async def rebuild_customer_brief_endpoint(
+    customer_id: uuid.UUID,
+    sync: bool = False,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Trigger a rebuild of the customer brief.
+
+    ``sync=true`` runs inline and returns the new brief. Otherwise enqueues a
+    debounced Celery task so a burst of triggers collapses into one run.
+    """
+    customer = await db.get(Customer, customer_id)
+    if not customer or customer.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if sync:
+        builder = CustomerBriefBuilder()
+        brief = await builder.build(db, tenant.id, customer_id)
+        return {"customer_id": str(customer_id), "brief": brief}
+
+    await schedule_customer_brief_rebuild(tenant.id, customer_id)
+    return {"customer_id": str(customer_id), "scheduled": True}

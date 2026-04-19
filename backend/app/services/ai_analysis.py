@@ -10,6 +10,9 @@ import anthropic
 
 from backend.app.config import get_settings
 from backend.app.services.kb.context_builder import format_brief_for_prompt
+from backend.app.services.kb.customer_brief_builder import (
+    format_customer_brief_for_prompt,
+)
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -77,7 +80,8 @@ class AIAnalysisService:
         transcript_segments: List[Dict[str, Any]],
         tier: str = "sonnet",
         triage_result: Optional[Dict[str, Any]] = None,
-        company_context: Optional[Dict[str, Any]] = None,
+        tenant_context: Optional[Dict[str, Any]] = None,
+        customer_brief: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -89,7 +93,7 @@ class AIAnalysisService:
             ``"haiku"`` for simple calls, ``"sonnet"`` for complex calls.
         triage_result:
             Optional output from :class:`TriageService` to give the model context.
-        company_context:
+        tenant_context:
             Optional LINDA-built brief assembled from the tenant's KB. When
             present, injected as a second cacheable system block so the model
             grounds observations in the tenant's own product/policy reality.
@@ -110,16 +114,26 @@ class AIAnalysisService:
         parts.append(f"## Transcript\n{formatted}")
         user_content = "\n".join(parts)
 
-        # Assemble the system prompt. The company-context block goes BEFORE
-        # the base instructions and gets its own cache_control so repeated
-        # calls within a tenant hit the prompt cache.
+        # Assemble the system prompt. Tenant context goes first (most stable,
+        # best prompt-cache hit rate), customer brief second (call-specific
+        # but reused across multiple calls with the same customer), then the
+        # analyst instructions.
         system_blocks: List[Dict[str, Any]] = []
-        context_text = format_brief_for_prompt(company_context or {})
-        if context_text:
+        tenant_text = format_brief_for_prompt(tenant_context or {})
+        if tenant_text:
             system_blocks.append(
                 {
                     "type": "text",
-                    "text": context_text,
+                    "text": tenant_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        customer_text = format_customer_brief_for_prompt(customer_brief or {})
+        if customer_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": customer_text,
                     "cache_control": {"type": "ephemeral"},
                 }
             )

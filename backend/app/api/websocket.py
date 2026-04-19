@@ -17,6 +17,8 @@ from sqlalchemy import select
 from backend.app.config import get_settings
 from backend.app.db import async_session
 from backend.app.models import (
+    Contact,
+    Customer,
     Interaction,
     KBChunk,
     KBDocument,
@@ -67,7 +69,13 @@ async def live_transcription(websocket: WebSocket, session_id: str):
     words_since_coaching: int = 0
 
     # Tenant + contact context for tenant-scoped retrieval + pin-aware exclusions.
-    tenant_id, contact_id, question_keyterms, company_context = await _resolve_session_context(session_id)
+    (
+        tenant_id,
+        contact_id,
+        question_keyterms,
+        tenant_context,
+        customer_brief,
+    ) = await _resolve_session_context(session_id)
 
     # Rehydrate pinned KB cards for this contact so the agent sees them
     # immediately when the call connects.
@@ -174,7 +182,8 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         retrieval_service,
                         tenant_id,
                         contact_id,
-                        company_context,
+                        tenant_context,
+                        customer_brief,
                     )
                     last_coaching_time = time.time()
                     words_since_coaching = 0
@@ -206,7 +215,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                     retrieval_service,
                     tenant_id,
                     contact_id,
-                    company_context,
+                    tenant_context,
                 )
                 last_coaching_time = time.time()
                 words_since_coaching = 0
@@ -370,7 +379,8 @@ async def _run_coaching(
     retrieval_service: Optional[RetrievalService] = None,
     tenant_id: Optional[uuid.UUID] = None,
     contact_id: Optional[uuid.UUID] = None,
-    company_context: Optional[Dict[str, Any]] = None,
+    tenant_context: Optional[Dict[str, Any]] = None,
+    customer_brief: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fetch recent buffer, load coaching state, run incremental coaching.
 
@@ -419,7 +429,8 @@ async def _run_coaching(
             new_segments=new_segments,
             previous_state=previous_state,
             kb_hits=kb_hits_for_coach or None,
-            company_context=company_context,
+            tenant_context=tenant_context,
+            customer_brief=customer_brief,
         )
 
         # Send each hint to the agent.
@@ -514,17 +525,25 @@ def _last_caller_text(segments: List[dict]) -> str:
 
 async def _resolve_session_context(
     session_id: str,
-) -> tuple[Optional[uuid.UUID], Optional[uuid.UUID], List[str], Dict[str, Any]]:
-    """Load tenant_id, contact_id, keyterms, and the LINDA company-context brief.
+) -> tuple[
+    Optional[uuid.UUID],
+    Optional[uuid.UUID],
+    List[str],
+    Dict[str, Any],
+    Dict[str, Any],
+]:
+    """Load session-time context: tenant_id, contact_id, keyterms, tenant
+    brief, and customer brief (if a contact is linked to a customer).
 
-    Tolerates unknown session ids (returns empty defaults) so development setups
-    that skip the LiveSession row still work — retrieval and context injection
-    are just disabled.
+    Tolerates unknown session ids (returns empty defaults) so development
+    setups that skip the LiveSession row still work — retrieval and context
+    injection are just disabled.
     """
+    empty = (None, None, [], {}, {})
     try:
         uuid.UUID(session_id)
     except ValueError:
-        return None, None, [], {}
+        return empty
 
     try:
         async with async_session() as db:
@@ -540,15 +559,24 @@ async def _resolve_session_context(
             )
             row = (await db.execute(stmt)).first()
             if row is None:
-                return None, None, [], {}
+                return empty
             sess, interaction, tenant = row
             contact_id = interaction.contact_id if interaction else None
             keyterms = list(tenant.question_keyterms or [])
-            ctx = dict(tenant.company_context or {})
-            return sess.tenant_id, contact_id, keyterms, ctx
+            ctx = dict(tenant.tenant_context or {})
+
+            customer_brief: Dict[str, Any] = {}
+            if contact_id is not None:
+                contact_row = await db.get(Contact, contact_id)
+                if contact_row is not None and contact_row.customer_id is not None:
+                    customer = await db.get(Customer, contact_row.customer_id)
+                    if customer is not None:
+                        customer_brief = dict(customer.customer_brief or {})
+
+            return sess.tenant_id, contact_id, keyterms, ctx, customer_brief
     except Exception:
         logger.exception("Failed to resolve session context for %s", session_id)
-        return None, None, [], {}
+        return empty
 
 
 async def _load_pinned_cards(

@@ -10,6 +10,9 @@ import anthropic
 
 from backend.app.config import get_settings
 from backend.app.services.kb.context_builder import format_brief_for_prompt
+from backend.app.services.kb.customer_brief_builder import (
+    format_customer_brief_for_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,8 @@ class LiveCoachingService:
         new_segments: List[dict],
         previous_state: dict,
         kb_hits: Optional[List[dict]] = None,
-        company_context: Optional[dict] = None,
+        tenant_context: Optional[dict] = None,
+        customer_brief: Optional[dict] = None,
     ) -> dict:
         """Generate coaching hints from new transcript segments and prior state.
 
@@ -58,7 +62,7 @@ class LiveCoachingService:
             new_segments: Recent transcript segments (each has ``text``, ``speaker``).
             previous_state: Compact JSON state from the last coaching round.
             kb_hits: Optional top-K RAG results from the knowledge base.
-            company_context: Optional LINDA-built brief assembled from the
+            tenant_context: Optional LINDA-built brief assembled from the
                 tenant's KB. Injected into the system prompt so live coaching
                 is grounded in the tenant's own product/policy reality.
 
@@ -88,10 +92,22 @@ class LiveCoachingService:
 
         user_message = "\n".join(user_parts)
 
-        system_prompt = COACHING_SYSTEM_PROMPT
-        context_text = format_brief_for_prompt(company_context or {})
-        if context_text:
-            system_prompt = f"{context_text}\n\n---\n\n{COACHING_SYSTEM_PROMPT}"
+        # Stack tenant context → customer brief → analyst instructions.
+        prefix_parts: List[str] = []
+        tenant_text = format_brief_for_prompt(tenant_context or {})
+        if tenant_text:
+            prefix_parts.append(tenant_text)
+        customer_text = format_customer_brief_for_prompt(customer_brief or {})
+        if customer_text:
+            prefix_parts.append(customer_text)
+        if prefix_parts:
+            system_prompt = (
+                "\n\n---\n\n".join(prefix_parts)
+                + "\n\n---\n\n"
+                + COACHING_SYSTEM_PROMPT
+            )
+        else:
+            system_prompt = COACHING_SYSTEM_PROMPT
 
         try:
             response = await self.client.messages.create(

@@ -1,17 +1,17 @@
 """Admin-only endpoints. Not exposed to end users.
 
-Today this is limited to vector-health introspection. Auth gate reuses the
-standard API key dependency — in production this route should be restricted to
-admin tokens via an extra scope check, but for now any tenant with an API key
-can inspect their own signals.
+Auth gate reuses the standard API key dependency — in production these routes
+should be restricted to admin tokens via an extra scope check, but for now any
+tenant with an API key can inspect / edit their own signals.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import KBChunk, Tenant
 from backend.app.services.kb import ContextBuilderService, format_brief_for_prompt
+from backend.app.services.kb.context_builder import _validate_brief
 from backend.app.services.kb.context_dispatch import schedule_context_rebuild
 from backend.app.services.kb.vector_health import current_metrics, streak_days
 
@@ -28,13 +29,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/admin/company-context")
-async def get_company_context(
+@router.get("/admin/tenant-context")
+async def get_tenant_context(
     tenant: Tenant = Depends(get_current_tenant),
 ) -> Dict[str, Any]:
-    """Return LINDA's current per-tenant company-context brief plus a
-    rendered preview of how it lands in the system prompt."""
-    brief = dict(tenant.company_context or {})
+    """Return LINDA's current per-tenant operating brief plus a rendered
+    preview of how it lands in the system prompt."""
+    brief = dict(tenant.tenant_context or {})
     return {
         "tenant_id": str(tenant.id),
         "brief": brief,
@@ -42,14 +43,53 @@ async def get_company_context(
     }
 
 
-@router.post("/admin/company-context/rebuild", status_code=202)
-async def rebuild_company_context(
+class TenantContextFields(BaseModel):
+    """Subset of the tenant brief that the tenant owns directly.
+
+    These come from the onboarding interview or later explicit instruction.
+    The ContextBuilder (KB agent) and TenantBriefRefiner (outcomes agent)
+    both leave these sections alone when they run.
+    """
+
+    goals: Optional[List[str]] = None
+    kpis: Optional[List[Dict[str, Any]]] = None
+    strategies: Optional[List[str]] = None
+    org_structure: Optional[Dict[str, Any]] = None
+    personal_touches: Optional[Dict[str, Any]] = None
+
+
+@router.put("/admin/tenant-context/fields")
+async def set_tenant_context_fields(
+    body: TenantContextFields,
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Set the onboarding-owned sections of LINDA's tenant brief.
+
+    Merges provided fields into ``tenant.tenant_context`` — only keys present
+    in the request body are updated; omitted keys are left as-is. Use this
+    during onboarding (when the tenant answers the structured interview),
+    or later to push explicit overrides ("actually, we no longer do handwritten
+    notes, change that to a Slack shout-out").
+    """
+    brief = _validate_brief(tenant.tenant_context or {})
+    updates = body.model_dump(exclude_none=True)
+    brief.update(updates)
+    tenant.tenant_context = brief
+    return {
+        "tenant_id": str(tenant.id),
+        "updated_keys": list(updates.keys()),
+        "brief": brief,
+    }
+
+
+@router.post("/admin/tenant-context/rebuild", status_code=202)
+async def rebuild_tenant_context(
     mode: str = "full",
     sync: bool = False,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> Dict[str, Any]:
-    """Force a rebuild of the company-context brief.
+    """Force a rebuild of the tenant-context brief.
 
     * ``mode=full`` (default) — stream every KB doc through the merger.
     * ``mode=debounce`` — just bump the debounce timer so an incremental

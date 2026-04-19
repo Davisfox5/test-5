@@ -430,7 +430,7 @@ def main() -> int:
                 page.locator("#contacts button:has-text('Add Contact')").click()
                 page.wait_for_selector("#genericModal.active", timeout=1000)
                 page.locator("#cName").fill("Test Lead")
-                page.locator("#cCompany").fill("Testco")
+                page.locator("#cCustomer").fill("Testco")
                 page.locator("#cPhone").fill("+1 (555) 000-0000")
                 page.locator("#cEmail").fill("lead@testco.com")
                 page.locator("#genericModal .generic-modal-actions button:has-text('Create')").click()

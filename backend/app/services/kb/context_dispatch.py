@@ -1,7 +1,7 @@
 """Debounce scheduler for LINDA context rebuilds.
 
 When a KB doc is created/updated/deleted we want to rebuild the tenant's
-company_context brief — but not *per doc*. Bulk uploads would otherwise fire
+tenant_context brief — but not *per doc*. Bulk uploads would otherwise fire
 dozens of rebuilds. We coalesce them into a single rebuild that runs 30s
 after the last trigger.
 
@@ -64,9 +64,9 @@ async def schedule_context_rebuild(
     # collapses into one run. Celery deduplicates by virtue of our debounce
     # check below refusing to run if the token has been pushed forward.
     try:
-        from backend.app.tasks import rebuild_company_context
+        from backend.app.tasks import rebuild_tenant_context
 
-        rebuild_company_context.apply_async(
+        rebuild_tenant_context.apply_async(
             args=[str(tenant_id), full],
             countdown=_DEBOUNCE_SECONDS,
         )
@@ -75,6 +75,69 @@ async def schedule_context_rebuild(
         # scheduling is best-effort and the admin rebuild endpoint is the
         # fallback.
         logger.debug("Failed to enqueue context rebuild task", exc_info=True)
+
+
+_CUSTOMER_DEBOUNCE_SECONDS = 30
+_CUSTOMER_DEBOUNCE_KEY = "customer_brief:debounce:{customer_id}"
+_CUSTOMER_PENDING_KEY = "customer_brief:pending:{customer_id}"
+
+
+async def schedule_customer_brief_rebuild(
+    tenant_id: uuid.UUID,
+    customer_id: uuid.UUID,
+) -> None:
+    """Mark a customer for a brief rebuild, debounced the same way as the
+    tenant brief. Safe to call on interaction close or any CRM update."""
+    try:
+        r = _get_redis()
+        now_ts = time.time()
+        await r.set(
+            _CUSTOMER_PENDING_KEY.format(customer_id=customer_id),
+            str(tenant_id),
+            ex=3600,
+        )
+        await r.set(
+            _CUSTOMER_DEBOUNCE_KEY.format(customer_id=customer_id),
+            str(now_ts + _CUSTOMER_DEBOUNCE_SECONDS),
+            ex=_CUSTOMER_DEBOUNCE_SECONDS * 4,
+        )
+        await r.aclose()
+    except Exception:
+        logger.debug("Failed to mark pending customer brief rebuild", exc_info=True)
+        return
+
+    try:
+        from backend.app.tasks import rebuild_customer_brief
+
+        rebuild_customer_brief.apply_async(
+            args=[str(tenant_id), str(customer_id)],
+            countdown=_CUSTOMER_DEBOUNCE_SECONDS,
+        )
+    except Exception:
+        logger.debug("Failed to enqueue customer brief rebuild task", exc_info=True)
+
+
+async def claim_customer_debounce(customer_id: uuid.UUID) -> bool:
+    """Mirror of ``claim_debounce`` for customer briefs."""
+    try:
+        r = _get_redis()
+        key = _CUSTOMER_DEBOUNCE_KEY.format(customer_id=customer_id)
+        raw = await r.get(key)
+        if raw is None:
+            await r.aclose()
+            return False
+        if time.time() < float(raw):
+            await r.aclose()
+            return False
+        await r.delete(
+            key,
+            _CUSTOMER_PENDING_KEY.format(customer_id=customer_id),
+        )
+        await r.aclose()
+        return True
+    except Exception:
+        logger.debug("claim_customer_debounce errored — assuming run", exc_info=True)
+        return True
 
 
 async def claim_debounce(tenant_id: uuid.UUID) -> bool:

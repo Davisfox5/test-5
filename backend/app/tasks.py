@@ -53,6 +53,12 @@ celery_app.conf.update(
             "task": "vector_health_daily",
             "schedule": crontab(minute=30, hour=0),
         },
+        # Weekly: read the last 14 days of outcomes per tenant and refine
+        # the playbook_insights section of each tenant's brief.
+        "tenant-brief-refiner-weekly": {
+            "task": "tenant_brief_refiner_weekly",
+            "schedule": crontab(minute=45, hour=1, day_of_week=1),
+        },
     },
 )
 
@@ -314,16 +320,91 @@ def _run_pipeline(
     )
 
     # ── Step 9: AI analysis ──────────────────────────────────────────
-    company_context = dict(getattr(tenant, "company_context", None) or {})
+    tenant_context = dict(getattr(tenant, "tenant_context", None) or {})
+
+    # Pull the customer's living brief if this interaction is tied to a
+    # contact that belongs to a Customer row. Gives Sonnet account-specific
+    # grounding on top of the tenant-wide playbook.
+    customer_brief: Dict[str, Any] = {}
+    if interaction.contact_id:
+        from backend.app.models import Customer as _Customer
+
+        _contact = (
+            session.query(Contact)
+            .filter(Contact.id == interaction.contact_id)
+            .first()
+        )
+        if _contact and _contact.customer_id:
+            _customer = session.query(_Customer).filter(_Customer.id == _contact.customer_id).first()
+            if _customer:
+                customer_brief = dict(_customer.customer_brief or {})
+
     insights: Dict[str, Any] = asyncio.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
             tier=recommended_tier,
             triage_result=triage_result,
-            company_context=company_context,
+            tenant_context=tenant_context,
+            customer_brief=customer_brief,
         )
     )
     logger.info("AI analysis complete for interaction %s", interaction_id)
+
+    # ── Step 9b: Outcome inference ──────────────────────────────────
+    # Squeeze the analysis JSON into a normalised outcome label and,
+    # where warranted, emit CustomerOutcomeEvent rows that downstream
+    # agents (TenantBriefRefiner, CustomerBriefBuilder) will read.
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    from backend.app.models import CustomerOutcomeEvent
+    from backend.app.services.kb.outcome_inference import infer_outcome
+
+    inferred = infer_outcome(insights)
+    interaction.outcome_type = inferred.outcome_type
+    interaction.outcome_value = inferred.outcome_value
+    interaction.outcome_confidence = inferred.outcome_confidence
+    interaction.outcome_source = "ai_inferred"
+    interaction.outcome_notes = inferred.outcome_notes
+    interaction.outcome_captured_at = _dt.now(_tz.utc)
+
+    cust_id_for_rebuild: Optional[uuid.UUID] = None
+    if interaction.contact_id:
+        contact_row = (
+            session.query(Contact)
+            .filter(Contact.id == interaction.contact_id)
+            .first()
+        )
+        cust_id_for_rebuild = (
+            contact_row.customer_id if contact_row is not None else None
+        )
+        if cust_id_for_rebuild:
+            for ev in inferred.customer_events:
+                session.add(
+                    CustomerOutcomeEvent(
+                        tenant_id=tenant.id,
+                        customer_id=cust_id_for_rebuild,
+                        interaction_id=interaction.id,
+                        event_type=ev["event_type"],
+                        magnitude=ev.get("magnitude"),
+                        signal_strength=ev.get("signal_strength"),
+                        reason=ev.get("reason"),
+                        source=ev.get("source", "ai_inferred"),
+                    )
+                )
+
+    # Kick a debounced customer-brief rebuild so LINDA has a fresh dossier
+    # for the next call with this customer. Best-effort; if Redis/Celery are
+    # unavailable in this env we'll catch up on the next interaction.
+    if cust_id_for_rebuild is not None:
+        try:
+            from backend.app.services.kb.context_dispatch import (
+                schedule_customer_brief_rebuild,
+            )
+
+            asyncio.run(schedule_customer_brief_rebuild(tenant.id, cust_id_for_rebuild))
+        except Exception:
+            logger.debug("schedule_customer_brief_rebuild failed", exc_info=True)
 
     # ── Step 10: Scorecard scoring ───────────────────────────────────
     scorecard_results: List[Dict[str, Any]] = []
@@ -687,8 +768,8 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         session.close()
 
 
-@celery_app.task(name="rebuild_company_context")
-def rebuild_company_context(tenant_id: str, full: bool = False) -> Dict[str, Any]:
+@celery_app.task(name="rebuild_tenant_context")
+def rebuild_tenant_context(tenant_id: str, full: bool = False) -> Dict[str, Any]:
     """Rebuild LINDA's per-tenant company-context brief from the KB.
 
     Debounced via a Redis token key (see ``schedule_context_rebuild``) so a
@@ -732,6 +813,62 @@ def rebuild_company_context(tenant_id: str, full: bool = False) -> Dict[str, Any
                 return {"tenant_id": tenant_id, "mode": "incremental", "skipped": "no_docs"}
             brief = await builder.merge_document(db, tid, row)
             return {"tenant_id": tenant_id, "mode": "incremental", "brief_keys": list(brief.keys())}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="rebuild_customer_brief")
+def rebuild_customer_brief(tenant_id: str, customer_id: str) -> Dict[str, Any]:
+    """Rebuild one customer's brief (debounced via Redis). Fired on
+    interaction close, outcome log, and admin demand."""
+    from backend.app.db import async_session
+    from backend.app.services.kb.context_dispatch import claim_customer_debounce
+    from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
+
+    async def _runner() -> Dict[str, Any]:
+        cid = uuid.UUID(customer_id)
+        if not await claim_customer_debounce(cid):
+            return {"customer_id": customer_id, "skipped": "debounced"}
+        builder = CustomerBriefBuilder()
+        async with async_session() as db:
+            brief = await builder.build(db, uuid.UUID(tenant_id), cid)
+            return {
+                "customer_id": customer_id,
+                "status": brief.get("current_status"),
+                "source_interaction_count": brief.get("source_interaction_count"),
+            }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="tenant_brief_refiner_weekly")
+def tenant_brief_refiner_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run the TenantBriefRefiner for one tenant (if tenant_id given) or all
+    tenants. Invoked by Celery beat once a week, and also as a fan-out from
+    admin-triggered refines."""
+    from backend.app.db import async_session
+    from backend.app.models import Tenant as _Tenant
+    from backend.app.services.kb.tenant_brief_refiner import TenantBriefRefiner
+    from sqlalchemy import select as _select
+
+    async def _runner() -> Dict[str, Any]:
+        refiner = TenantBriefRefiner()
+        async with async_session() as db:
+            if tenant_id:
+                tids = [uuid.UUID(tenant_id)]
+            else:
+                rows = await db.execute(_select(_Tenant.id))
+                tids = [uuid.UUID(str(r[0])) for r in rows.all()]
+
+            results: List[Dict[str, Any]] = []
+            for tid in tids:
+                try:
+                    pb = await refiner.refine(db, tid)
+                    results.append({"tenant_id": str(tid), "sample_size": pb.get("sample_size")})
+                except Exception:
+                    logger.exception("TenantBriefRefiner failed for tenant %s", tid)
+                    results.append({"tenant_id": str(tid), "error": True})
+        return {"tenants_processed": len(results), "results": results}
 
     return asyncio.run(_runner())
 

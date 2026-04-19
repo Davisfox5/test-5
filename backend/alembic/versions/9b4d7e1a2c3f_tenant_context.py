@@ -1,4 +1,4 @@
-"""Add Tenant.company_context JSONB for LINDA's per-tenant context brief.
+"""Add Tenant.tenant_context JSONB for LINDA's per-tenant context brief.
 
 Revision ID: 9b4d7e1a2c3f
 Revises: 7a1c3e4b9d12
@@ -21,7 +21,7 @@ def upgrade() -> None:
     op.add_column(
         "tenants",
         sa.Column(
-            "company_context",
+            "tenant_context",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
@@ -30,4 +30,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("tenants", "company_context")
+    op.drop_column("tenants", "tenant_context")

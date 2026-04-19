@@ -49,10 +49,11 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
-    # Summarized brief of the tenant's product/policy/tone/objection knowledge,
-    # assembled from their KB by the ContextBuilder agent. Injected into
-    # LINDA's analysis and coaching system prompts.
-    company_context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # LINDA's per-tenant operating brief — everything the orchestrator and its
+    # agents should know about this tenant. Assembled by the ContextBuilder
+    # agent from KB docs, onboarding-interview answers, explicit overrides,
+    # and the outcomes-loop refiner. Injected into analyze/coaching prompts.
+    tenant_context: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -116,12 +117,16 @@ class Webhook(Base):
 
 
 # ──────────────────────────────────────────────────────────
-# COMPANIES
+# CUSTOMERS (tenants' own customers — CRM-style accounts)
 # ──────────────────────────────────────────────────────────
 
 
-class Company(Base):
-    __tablename__ = "companies"
+class Customer(Base):
+    """A customer of the tenant — i.e., a CRM-style account the tenant sells
+    to or supports. The tenant itself is ``Tenant``; this model represents
+    the *end customers* whose contacts appear on calls."""
+
+    __tablename__ = "customers"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
@@ -130,6 +135,48 @@ class Company(Base):
     crm_id: Mapped[Optional[str]] = mapped_column(String)
     industry: Mapped[Optional[str]] = mapped_column(String)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    # Per-customer dossier, built by CustomerBriefBuilder. Readable by
+    # LINDA's agents at call time to ground live coaching in what we know
+    # about this specific customer.
+    customer_brief: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+# ──────────────────────────────────────────────────────────
+# CUSTOMER OUTCOME EVENTS (lifecycle signals)
+# ──────────────────────────────────────────────────────────
+
+
+class CustomerOutcomeEvent(Base):
+    """A lifecycle event on a Customer — the signal we learn from.
+
+    Emitted by the AI analysis pipeline (when insights indicate churn/upsell
+    triggers), by webhook sync from a CRM, or manually via the outcome API.
+    The CustomerBriefBuilder reads these to populate the "what's worked, what's
+    failed" section of each customer's brief, and the TenantBriefRefiner
+    aggregates them across customers to learn tenant-wide patterns.
+    """
+
+    __tablename__ = "customer_outcome_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    # Enum-ish string. Supported values:
+    #   became_customer | upsold | renewed | churned | satisfaction_change
+    #   | escalation | advocate_signal | at_risk_flagged
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    magnitude: Mapped[Optional[float]] = mapped_column(Float)
+    signal_strength: Mapped[Optional[float]] = mapped_column(Float)
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    source: Mapped[Optional[str]] = mapped_column(String)  # ai_inferred|agent_logged|crm_sync
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────
@@ -145,7 +192,7 @@ class Contact(Base):
     name: Mapped[Optional[str]] = mapped_column(String)
     email: Mapped[Optional[str]] = mapped_column(String)
     phone: Mapped[Optional[str]] = mapped_column(String)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id"))
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("customers.id"))
     crm_id: Mapped[Optional[str]] = mapped_column(String)
     crm_source: Mapped[Optional[str]] = mapped_column(String)
     interaction_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -154,7 +201,7 @@ class Contact(Base):
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    company: Mapped[Optional["Company"]] = relationship()
+    customer: Mapped[Optional["Customer"]] = relationship()
 
 
 # ──────────────────────────────────────────────────────────
@@ -204,6 +251,18 @@ class Interaction(Base):
     detected_language: Mapped[Optional[str]] = mapped_column(String)
 
     participants: Mapped[list] = mapped_column(JSONB, default=list)
+
+    # Call-level outcome. Populated either by the AI analysis pass (from
+    # insights.churn_risk / action_items / dispositions) or by the agent via
+    # POST /interactions/{id}/outcome. Feeds both the TenantBriefRefiner
+    # (what works / doesn't) and the CustomerBriefBuilder (per-customer wins).
+    outcome_type: Mapped[Optional[str]] = mapped_column(String)
+    outcome_value: Mapped[Optional[float]] = mapped_column(Float)
+    outcome_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    outcome_source: Mapped[Optional[str]] = mapped_column(String)
+    outcome_notes: Mapped[Optional[str]] = mapped_column(Text)
+    outcome_captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
