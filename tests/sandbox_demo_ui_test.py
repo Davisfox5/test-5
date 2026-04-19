@@ -326,6 +326,60 @@ def main() -> int:
             with step("Live call view: loads with transcript entries"):
                 assert page.locator("#live-call .transcript-entry").count() > 0
 
+            with step("KB Answers: empty-state renders before any events"):
+                assert page.locator("#liveKbAnswers .kb-empty").count() == 1
+                assert page.locator("#kbHistoryToggle").count() == 1
+
+            with step("KB Answers: kb_answer event renders a card"):
+                page.evaluate(
+                    """() => window.kbCards.handleEvent({
+                        type: 'kb_answer',
+                        chunk_id: 'c-001',
+                        doc_id: 'd-001',
+                        doc_title: 'Pricing Playbook',
+                        source_url: 'https://example.com/pricing',
+                        snippet: 'Pro tier is $99/month with an annual discount of 20%.',
+                        confidence: 0.87,
+                        source: 'regex',
+                    })"""
+                )
+                page.wait_for_selector("#liveKbAnswers .kb-card", timeout=1000)
+                card = page.locator("#liveKbAnswers .kb-card").first
+                assert "Pricing Playbook" in card.inner_text()
+                assert "Pro tier is $99/month" in card.inner_text()
+                assert page.locator("#liveKbAnswers .kb-empty").count() == 0
+
+            with step("KB Answers: dedupe keeps a single card for repeat events"):
+                # Fire the same chunk again — should not add a second card.
+                page.evaluate(
+                    """() => window.kbCards.handleEvent({
+                        type: 'kb_answer',
+                        chunk_id: 'c-001',
+                        doc_id: 'd-001',
+                        doc_title: 'Pricing Playbook',
+                        snippet: 'Pro tier is $99/month with an annual discount of 20%.',
+                        confidence: 0.9,
+                    })"""
+                )
+                assert page.locator("#liveKbAnswers .kb-card").count() == 1
+
+            with step("KB Answers: dismiss removes the card"):
+                page.locator("#liveKbAnswers .kb-card .kb-dismiss-btn").first.click()
+                page.wait_for_selector(
+                    "#liveKbAnswers .kb-card",
+                    state="detached",
+                    timeout=1000,
+                )
+                assert page.locator("#liveKbAnswers .kb-card").count() == 0
+
+            with step("KB Answers: history drawer toggles open/closed"):
+                toggle = page.locator("#kbHistoryToggle")
+                assert toggle.get_attribute("aria-expanded") == "false"
+                toggle.click()
+                assert toggle.get_attribute("aria-expanded") == "true"
+                toggle.click()
+                assert toggle.get_attribute("aria-expanded") == "false"
+
             # ───── Manager monitoring ─────
             # Need to be in manager mode for the nav item, but the view itself is accessible via switchView.
             page.locator(".role-btn[data-role=manager]").click()

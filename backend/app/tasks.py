@@ -314,11 +314,13 @@ def _run_pipeline(
     )
 
     # ── Step 9: AI analysis ──────────────────────────────────────────
+    company_context = dict(getattr(tenant, "company_context", None) or {})
     insights: Dict[str, Any] = asyncio.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
             tier=recommended_tier,
             triage_result=triage_result,
+            company_context=company_context,
         )
     )
     logger.info("AI analysis complete for interaction %s", interaction_id)
@@ -683,6 +685,55 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+@celery_app.task(name="rebuild_company_context")
+def rebuild_company_context(tenant_id: str, full: bool = False) -> Dict[str, Any]:
+    """Rebuild LINDA's per-tenant company-context brief from the KB.
+
+    Debounced via a Redis token key (see ``schedule_context_rebuild``) so a
+    rapid flurry of KB uploads collapses into a single rebuild. If ``full`` is
+    True, the builder streams every doc; otherwise it does an incremental
+    merge on the most recent doc (populated in Redis by the caller).
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.db import async_session
+    from backend.app.models import KBDocument
+    from backend.app.services.kb.context_builder import ContextBuilderService
+    from backend.app.services.kb.context_dispatch import claim_debounce
+
+    async def _runner() -> Dict[str, Any]:
+        tid = uuid.UUID(tenant_id)
+
+        # Honor the debounce: if someone bumped the timer forward while we
+        # were asleep in the Celery queue, bail out — a fresh task is
+        # already scheduled.
+        if not full and not await claim_debounce(tid):
+            return {"tenant_id": tenant_id, "skipped": "debounced"}
+
+        builder = ContextBuilderService()
+        async with async_session() as db:
+            if full:
+                brief = await builder.rebuild_all(db, tid)
+                return {"tenant_id": tenant_id, "mode": "full", "brief_keys": list(brief.keys())}
+
+            # Incremental: pick up the most recently updated doc for this
+            # tenant and merge it in. A burst of uploads coalesces into this
+            # single merge because the debounce key only fires once.
+            stmt = (
+                _select(KBDocument)
+                .where(KBDocument.tenant_id == tid)
+                .order_by(KBDocument.created_at.desc())
+                .limit(1)
+            )
+            row = (await db.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return {"tenant_id": tenant_id, "mode": "incremental", "skipped": "no_docs"}
+            brief = await builder.merge_document(db, tid, row)
+            return {"tenant_id": tenant_id, "mode": "incremental", "brief_keys": list(brief.keys())}
+
+    return asyncio.run(_runner())
 
 
 @celery_app.task(name="vector_health_daily")

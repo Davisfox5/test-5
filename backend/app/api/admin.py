@@ -19,11 +19,55 @@ from backend.app.auth import get_current_tenant
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import KBChunk, Tenant
+from backend.app.services.kb import ContextBuilderService, format_brief_for_prompt
+from backend.app.services.kb.context_dispatch import schedule_context_rebuild
 from backend.app.services.kb.vector_health import current_metrics, streak_days
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/admin/company-context")
+async def get_company_context(
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Return LINDA's current per-tenant company-context brief plus a
+    rendered preview of how it lands in the system prompt."""
+    brief = dict(tenant.company_context or {})
+    return {
+        "tenant_id": str(tenant.id),
+        "brief": brief,
+        "prompt_preview": format_brief_for_prompt(brief),
+    }
+
+
+@router.post("/admin/company-context/rebuild", status_code=202)
+async def rebuild_company_context(
+    mode: str = "full",
+    sync: bool = False,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Force a rebuild of the company-context brief.
+
+    * ``mode=full`` (default) — stream every KB doc through the merger.
+    * ``mode=debounce`` — just bump the debounce timer so an incremental
+      merge runs shortly after the last KB write.
+    * ``sync=true`` — run inline and return the new brief (blocks until done).
+      Use for admin-driven rebuilds that want immediate feedback; leave false
+      to offload to Celery.
+    """
+    if mode not in {"full", "debounce"}:
+        mode = "full"
+
+    if sync and mode == "full":
+        builder = ContextBuilderService()
+        brief = await builder.rebuild_all(db, tenant.id)
+        return {"tenant_id": str(tenant.id), "mode": mode, "brief": brief}
+
+    await schedule_context_rebuild(tenant.id, full=(mode == "full"))
+    return {"tenant_id": str(tenant.id), "mode": mode, "scheduled": True}
 
 
 @router.get("/admin/vector-health")

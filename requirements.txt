@@ -21,6 +21,10 @@ pyannote.audio>=3.1               # Self-hosted speaker diarization
 # === Audio Processing ===
 ffmpeg-python>=0.2                # Audio normalization
 
+# === Document Extraction (KB upload) ===
+pypdf>=4                          # PDF text extraction for /kb/upload
+python-docx>=1                    # DOCX text extraction for /kb/upload
+
 # === Database ===
 asyncpg>=0.29                     # Neon PostgreSQL async driver
 sqlalchemy[asyncio]>=2.0

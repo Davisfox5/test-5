@@ -67,7 +67,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
     words_since_coaching: int = 0
 
     # Tenant + contact context for tenant-scoped retrieval + pin-aware exclusions.
-    tenant_id, contact_id, question_keyterms = await _resolve_session_context(session_id)
+    tenant_id, contact_id, question_keyterms, company_context = await _resolve_session_context(session_id)
 
     # Rehydrate pinned KB cards for this contact so the agent sees them
     # immediately when the call connects.
@@ -174,6 +174,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         retrieval_service,
                         tenant_id,
                         contact_id,
+                        company_context,
                     )
                     last_coaching_time = time.time()
                     words_since_coaching = 0
@@ -205,6 +206,7 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                     retrieval_service,
                     tenant_id,
                     contact_id,
+                    company_context,
                 )
                 last_coaching_time = time.time()
                 words_since_coaching = 0
@@ -368,6 +370,7 @@ async def _run_coaching(
     retrieval_service: Optional[RetrievalService] = None,
     tenant_id: Optional[uuid.UUID] = None,
     contact_id: Optional[uuid.UUID] = None,
+    company_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fetch recent buffer, load coaching state, run incremental coaching.
 
@@ -416,6 +419,7 @@ async def _run_coaching(
             new_segments=new_segments,
             previous_state=previous_state,
             kb_hits=kb_hits_for_coach or None,
+            company_context=company_context,
         )
 
         # Send each hint to the agent.
@@ -510,16 +514,17 @@ def _last_caller_text(segments: List[dict]) -> str:
 
 async def _resolve_session_context(
     session_id: str,
-) -> tuple[Optional[uuid.UUID], Optional[uuid.UUID], List[str]]:
-    """Load tenant_id, contact_id, and tenant question keyterms for a session.
+) -> tuple[Optional[uuid.UUID], Optional[uuid.UUID], List[str], Dict[str, Any]]:
+    """Load tenant_id, contact_id, keyterms, and the LINDA company-context brief.
 
-    Tolerates unknown session ids (returns all-None) so development setups that
-    skip the LiveSession row still work — retrieval is just disabled.
+    Tolerates unknown session ids (returns empty defaults) so development setups
+    that skip the LiveSession row still work — retrieval and context injection
+    are just disabled.
     """
     try:
         uuid.UUID(session_id)
     except ValueError:
-        return None, None, []
+        return None, None, [], {}
 
     try:
         async with async_session() as db:
@@ -535,14 +540,15 @@ async def _resolve_session_context(
             )
             row = (await db.execute(stmt)).first()
             if row is None:
-                return None, None, []
+                return None, None, [], {}
             sess, interaction, tenant = row
             contact_id = interaction.contact_id if interaction else None
             keyterms = list(tenant.question_keyterms or [])
-            return sess.tenant_id, contact_id, keyterms
+            ctx = dict(tenant.company_context or {})
+            return sess.tenant_id, contact_id, keyterms, ctx
     except Exception:
         logger.exception("Failed to resolve session context for %s", session_id)
-        return None, None, []
+        return None, None, [], {}
 
 
 async def _load_pinned_cards(

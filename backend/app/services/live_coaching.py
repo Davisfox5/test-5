@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from backend.app.config import get_settings
+from backend.app.services.kb.context_builder import format_brief_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class LiveCoachingService:
         new_segments: List[dict],
         previous_state: dict,
         kb_hits: Optional[List[dict]] = None,
+        company_context: Optional[dict] = None,
     ) -> dict:
         """Generate coaching hints from new transcript segments and prior state.
 
@@ -56,6 +58,9 @@ class LiveCoachingService:
             new_segments: Recent transcript segments (each has ``text``, ``speaker``).
             previous_state: Compact JSON state from the last coaching round.
             kb_hits: Optional top-K RAG results from the knowledge base.
+            company_context: Optional LINDA-built brief assembled from the
+                tenant's KB. Injected into the system prompt so live coaching
+                is grounded in the tenant's own product/policy reality.
 
         Returns:
             Dict with ``hints`` and ``updated_state``.
@@ -83,11 +88,16 @@ class LiveCoachingService:
 
         user_message = "\n".join(user_parts)
 
+        system_prompt = COACHING_SYSTEM_PROMPT
+        context_text = format_brief_for_prompt(company_context or {})
+        if context_text:
+            system_prompt = f"{context_text}\n\n---\n\n{COACHING_SYSTEM_PROMPT}"
+
         try:
             response = await self.client.messages.create(
                 model=COACHING_MODEL,
                 max_tokens=300,
-                system=COACHING_SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
 

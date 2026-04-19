@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from backend.app.config import get_settings
+from backend.app.services.kb.context_builder import format_brief_for_prompt
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ class AIAnalysisService:
         transcript_segments: List[Dict[str, Any]],
         tier: str = "sonnet",
         triage_result: Optional[Dict[str, Any]] = None,
+        company_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -87,6 +89,10 @@ class AIAnalysisService:
             ``"haiku"`` for simple calls, ``"sonnet"`` for complex calls.
         triage_result:
             Optional output from :class:`TriageService` to give the model context.
+        company_context:
+            Optional LINDA-built brief assembled from the tenant's KB. When
+            present, injected as a second cacheable system block so the model
+            grounds observations in the tenant's own product/policy reality.
         """
         model = MODELS.get(tier, MODELS["sonnet"])
         formatted = _format_transcript(transcript_segments)
@@ -104,17 +110,32 @@ class AIAnalysisService:
         parts.append(f"## Transcript\n{formatted}")
         user_content = "\n".join(parts)
 
+        # Assemble the system prompt. The company-context block goes BEFORE
+        # the base instructions and gets its own cache_control so repeated
+        # calls within a tenant hit the prompt cache.
+        system_blocks: List[Dict[str, Any]] = []
+        context_text = format_brief_for_prompt(company_context or {})
+        if context_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": context_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": ANALYSIS_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+
         try:
             response = await self._client.messages.create(
                 model=model,
                 max_tokens=8192,
-                system=[
-                    {
-                        "type": "text",
-                        "text": ANALYSIS_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
+                system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
             )
 

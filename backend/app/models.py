@@ -49,6 +49,10 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Summarized brief of the tenant's product/policy/tone/objection knowledge,
+    # assembled from their KB by the ContextBuilder agent. Injected into
+    # LINDA's analysis and coaching system prompts.
+    company_context: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")

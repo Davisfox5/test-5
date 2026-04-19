@@ -15,7 +15,9 @@ from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Contact, KBChunk, KBDocument, PinnedKBCard, Tenant
 from backend.app.services.kb import RetrievalService, ingest_document, reindex_tenant
+from backend.app.services.kb.context_dispatch import schedule_context_rebuild
 from backend.app.services.kb.embedder import VoyageEmbedderError
+from backend.app.services.kb.extractors import ExtractionError, extract_text
 from backend.app.services.kb.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,7 @@ async def create_kb_doc(
             status_code=502,
             detail="Document saved, but embedding failed. Retry reindex when available.",
         )
+    await schedule_context_rebuild(tenant.id)
     return doc
 
 
@@ -158,6 +161,7 @@ async def update_kb_doc(
                 status_code=502,
                 detail="Document saved, but re-embedding failed. Retry reindex when available.",
             )
+        await schedule_context_rebuild(tenant.id)
 
     return doc
 
@@ -183,6 +187,10 @@ async def delete_kb_doc(
         logger.exception("Vector store delete_doc failed for %s — row delete continues", doc.id)
 
     await db.delete(doc)
+    # Schedule a *full* rebuild on delete — the incremental merge prompt can
+    # only add/update facts, not retract them. A full rebuild reflects the
+    # deletion by re-summarizing the remaining docs.
+    await schedule_context_rebuild(tenant.id, full=True)
 
 
 @router.post("/kb/upload", response_model=KBDocOut, status_code=201)
@@ -201,25 +209,10 @@ async def upload_kb_file(
     if len(content_bytes) > 50 * 1024 * 1024:  # 50MB limit
         raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
-    # Determine file type and extract text
-    lower_name = filename.lower()
-    if lower_name.endswith(".txt"):
-        try:
-            content = content_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            content = content_bytes.decode("latin-1")
-    elif lower_name.endswith(".pdf"):
-        # TODO: Integrate PDF text extraction (e.g., PyMuPDF / pdfplumber)
-        raise HTTPException(status_code=400, detail="PDF extraction not yet implemented — coming soon")
-    elif lower_name.endswith(".docx"):
-        # TODO: Integrate DOCX text extraction (e.g., python-docx)
-        raise HTTPException(status_code=400, detail="DOCX extraction not yet implemented — coming soon")
-    else:
-        # Try to read as plain text
-        try:
-            content = content_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail="Unsupported file type or encoding")
+    try:
+        content = extract_text(filename, content_bytes)
+    except ExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     doc = KBDocument(
         tenant_id=tenant.id,
@@ -240,6 +233,7 @@ async def upload_kb_file(
             status_code=502,
             detail="Document saved, but embedding failed. Retry reindex when available.",
         )
+    await schedule_context_rebuild(tenant.id)
     return doc
 
 
@@ -268,6 +262,7 @@ async def reindex_all_kb(
 ):
     """Re-embed every document for the tenant. Use after a backend swap."""
     total = await reindex_tenant(db, tenant.id, force=True)
+    await schedule_context_rebuild(tenant.id, full=True)
     return {"tenant_id": str(tenant.id), "chunks_written": total}
 
 
