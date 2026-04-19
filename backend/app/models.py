@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -911,6 +912,11 @@ class OutcomeEventIngestion(Base):
     """
 
     __tablename__ = "outcome_event_ingestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "event_id", name="uq_outcome_ingestion_event"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))

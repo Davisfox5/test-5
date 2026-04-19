@@ -3,6 +3,9 @@
 import os
 import sys
 
+# Auto-register DB fixtures for tests that need a real session.
+pytest_plugins = ["tests.db_fixtures"]
+
 # Add project root so ``backend.*`` imports work when pytest is invoked
 # from anywhere (e.g. ``pytest tests/``).
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
