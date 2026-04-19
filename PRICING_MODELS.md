@@ -197,19 +197,26 @@ a premium.
 \* Assumes realized usage averages ~2,000 min/seat/mo (not the 5K cap); blended GM
 drops proportionally as usage approaches the cap.
 
-### 4.3 Open pricing questions to resolve before launch
+### 4.3 Pricing questions — resolved in v2
 
-1. **Floor overage price** above 5K min/seat/mo — cost-plus dictates ≥$0.02/min to
-   preserve margin; Dubber and MiaRec include large pools and meter only on extreme
-   overage.
-2. **Annual-commit discount percentage** — 20% is market-standard (Otter, Avoma,
-   Fireflies); 25–30% would move against channel partners more aggressively.
-3. **Minimum seat counts** — competitor norm is 3–10 seats for mid-market,
-   25–50 for Enterprise. Current plan has no minimum.
-4. **Add-on SKUs vs. tier gating** — MiaRec gates at tier; Avoma uses stackable
-   add-ons ($29 CI, $39 Revenue). Add-ons are friendlier for product-led growth.
-5. **White-label partner pricing (per-seat wholesale)** — separate exercise; typical
-   is 50–70% of list to channel partner with partner setting end-customer price.
+All five open questions from the v1 draft have now been resolved by the business
+owner. Each is documented in a v2 section below:
+
+1. **Floor overage price** above 5K min/seat/mo — **Resolved: $0.02/min**, expected
+   to be rarely hit at realistic usage. See §6.1 and §8.2.
+2. **Annual-commit discount percentage** — **Resolved: 20% standard, 25% on 2-year
+   commits**, with an explicit posture of undercutting the competitor band at
+   every tier. See §6.2.
+3. **Minimum seat counts** — **Resolved: three seat bands** (1–10 / 11–25 / 25+)
+   with no self-serve floor on Starter/Pro, 3-seat min on Business, 10-seat min
+   on Enterprise. See §6.1 and §6.3.
+4. **Add-on SKUs vs. tier gating** — **Resolved: both**. Tiers gate features,
+   but individual higher-tier features are available as add-on SKUs priced
+   ~30–40% above bundled cost so 2+ add-ons push toward a tier upgrade. See §8.
+5. **White-label partner pricing (per-seat wholesale)** — **Resolved: full
+   channel program** with three partner tiers (Authorized Reseller 35% / Premier
+   45% / Elite 55–60%), three packaging options, deal registration, MDF, and
+   worked economics. See §9.
 
 ---
 
