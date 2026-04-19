@@ -391,7 +391,8 @@ async def run_chat_turn(
     await ctx.db.flush()
 
     max_loops = 5  # guard against runaway tool-use cycles
-    for _ in range(max_loops):
+    stopped_cleanly = False
+    for loop_idx in range(max_loops):
         assistant_text_parts: List[str] = []
         final_content: List[Dict[str, Any]] = []
 
@@ -432,6 +433,7 @@ async def run_chat_turn(
         await ctx.db.flush()
 
         if final.stop_reason != "tool_use":
+            stopped_cleanly = True
             break
 
         # Execute tool calls and append their results for the next loop
@@ -470,6 +472,20 @@ async def run_chat_turn(
             )
         )
         await ctx.db.flush()
+
+    if not stopped_cleanly:
+        logger.warning(
+            "linda_agent: tool-use loop guard tripped after %d cycles (conversation %s)",
+            max_loops,
+            ctx.conversation_id,
+        )
+        yield {
+            "type": "error",
+            "message": (
+                f"I hit my tool-use cycle limit ({max_loops}) before finishing. "
+                "Try rephrasing or asking me to focus on one thing at a time."
+            ),
+        }
 
     yield {"type": "done"}
 

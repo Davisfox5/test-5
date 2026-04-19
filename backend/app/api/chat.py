@@ -254,31 +254,34 @@ async def _execute_proposal(
 
     if proposal.kind == "email_draft":
         # Email send integration is out of scope for this commit — we stage the
-        # draft on the related ActionItem's email_draft field when possible.
+        # draft on the related ActionItem's email_draft field so the UI can
+        # surface it for send-from-Gmail on the action item page.
         interaction_id = payload.get("interaction_id")
-        if interaction_id:
-            try:
-                interaction_uuid = uuid.UUID(interaction_id)
-            except ValueError:
-                interaction_uuid = None
-            if interaction_uuid is not None:
-                item = ActionItem(
-                    interaction_id=interaction_uuid,
-                    tenant_id=tenant.id,
-                    title=payload.get("subject", "Follow-up email"),
-                    description="Email draft proposed by Linda.",
-                    priority="medium",
-                    status="pending",
-                    email_draft={
-                        "subject": payload.get("subject"),
-                        "body": payload.get("body"),
-                        "recipients": payload.get("recipients", []),
-                    },
-                )
-                db.add(item)
-                await db.flush()
-                return item.id
-        return None
+        try:
+            interaction_uuid = uuid.UUID(interaction_id) if interaction_id else None
+        except ValueError:
+            interaction_uuid = None
+        if interaction_uuid is None:
+            raise HTTPException(
+                status_code=422,
+                detail="email_draft proposal requires a valid interaction_id",
+            )
+        item = ActionItem(
+            interaction_id=interaction_uuid,
+            tenant_id=tenant.id,
+            title=payload.get("subject") or "Follow-up email",
+            description="Email draft proposed by Linda.",
+            priority="medium",
+            status="pending",
+            email_draft={
+                "subject": payload.get("subject"),
+                "body": payload.get("body"),
+                "recipients": payload.get("recipients", []),
+            },
+        )
+        db.add(item)
+        await db.flush()
+        return item.id
 
     if proposal.kind == "crm_update":
         # CRM push is wired via the Integration service; executing here would

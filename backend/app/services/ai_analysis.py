@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -79,8 +79,7 @@ class AIAnalysisService:
     """Run deep AI analysis on call transcripts."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = get_async_anthropic()
 
     async def analyze(
         self,

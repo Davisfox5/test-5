@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,7 @@ class TriageService:
     """Score call complexity with Claude Haiku to decide analysis tier."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = get_async_anthropic()
 
     async def score_complexity(
         self, transcript_text: str, metadata: Dict[str, Any]
