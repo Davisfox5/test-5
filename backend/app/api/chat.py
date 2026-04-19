@@ -96,6 +96,15 @@ async def _stream_chat(
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 
+@router.get("/chat/ping")
+async def chat_ping(
+    tenant: Tenant = Depends(get_current_user_or_tenant),
+) -> Dict[str, bool]:
+    """Lightweight liveness check — 404 if the tenant is white-label, 200 otherwise."""
+    _require_not_white_label(tenant)
+    return {"ok": True}
+
+
 @router.post("/chat")
 async def chat(
     payload: ChatRequest,

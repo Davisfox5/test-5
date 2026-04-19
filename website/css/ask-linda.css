@@ -1,0 +1,194 @@
+/*
+ * Ask Linda — floating chat widget styles.
+ * Mirrors the whisper-tray aesthetic (see demo.html) and reuses .insight-card
+ * for message bubbles so the widget feels native to the demo shell.
+ */
+
+:root {
+    --linda-grad: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+    --linda-chat-width: 380px;
+    --linda-chat-panel-shadow: 0 24px 64px rgba(15, 23, 42, 0.35);
+}
+
+.linda-chat-fab {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    width: 56px;
+    height: 56px;
+    border-radius: 999px;
+    background: var(--bg-card, #fff);
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.25));
+    box-shadow: 0 12px 32px rgba(99, 102, 241, 0.25);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    z-index: 90;
+    transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.linda-chat-fab:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(99, 102, 241, 0.35); }
+.linda-chat-fab:focus-visible { outline: 2px solid #8B5CF6; outline-offset: 3px; }
+.linda-chat-fab.is-open { transform: scale(0.92); }
+.linda-chat-fab-mark svg { width: 28px; height: 28px; display: block; }
+
+.linda-chat-panel {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 5.5rem;
+    width: var(--linda-chat-width);
+    max-width: calc(100vw - 3rem);
+    height: min(620px, calc(100vh - 7rem));
+    background: var(--bg-card, #fff);
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.25));
+    border-radius: 16px;
+    box-shadow: var(--linda-chat-panel-shadow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 89;
+    transform: translateY(16px) scale(0.98);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease, transform 160ms ease;
+}
+.linda-chat-panel[aria-hidden="false"] {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+
+.linda-chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border, rgba(148, 163, 184, 0.15));
+    background: var(--linda-grad);
+    color: #fff;
+}
+.linda-chat-title { font-weight: 700; letter-spacing: 0.02em; }
+.linda-chat-close {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+}
+.linda-chat-close:hover { background: rgba(255, 255, 255, 0.15); }
+
+.linda-chat-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    background: var(--bg-main, #0f172a);
+}
+
+.linda-chat-msg {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    padding: 0.75rem 0.9rem;
+    border-radius: 12px;
+    line-height: 1.45;
+    max-width: 92%;
+}
+.linda-chat-msg-user {
+    align-self: flex-end;
+    background: var(--linda-grad);
+    color: #fff;
+    border: 0;
+}
+.linda-chat-msg-assistant {
+    align-self: flex-start;
+    background: var(--bg-card, #fff);
+    color: var(--text-main, #0f172a);
+}
+.linda-chat-text { margin: 0; white-space: pre-wrap; }
+
+.linda-chat-avatar {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: var(--linda-grad);
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.75rem;
+    display: grid;
+    place-items: center;
+}
+
+.linda-chat-composer {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border-top: 1px solid var(--border, rgba(148, 163, 184, 0.15));
+    background: var(--bg-card, #fff);
+}
+.linda-chat-input {
+    flex: 1;
+    resize: none;
+    font: inherit;
+    padding: 0.55rem 0.7rem;
+    border-radius: 10px;
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+    background: var(--bg-main, #fff);
+    color: var(--text-main, #0f172a);
+}
+.linda-chat-input:focus-visible { outline: 2px solid #8B5CF6; outline-offset: 0; }
+.linda-chat-send { align-self: stretch; padding: 0 1.2rem; }
+
+/* Write-proposal card */
+.linda-proposal-card {
+    align-self: stretch;
+    border: 1px solid rgba(139, 92, 246, 0.45);
+    border-radius: 12px;
+    padding: 0.9rem;
+    background: rgba(139, 92, 246, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.linda-proposal-card[data-status="confirmed"] { border-color: #10B981; background: rgba(16, 185, 129, 0.08); }
+.linda-proposal-card[data-status="cancelled"] { border-color: rgba(148, 163, 184, 0.5); background: rgba(148, 163, 184, 0.08); opacity: 0.75; }
+.linda-proposal-card[data-status="expired"]   { border-color: #F59E0B; background: rgba(245, 158, 11, 0.08); opacity: 0.8; }
+.linda-proposal-card[data-status="error"]     { border-color: #EF4444; background: rgba(239, 68, 68, 0.08); }
+
+.linda-proposal-header { display: flex; justify-content: space-between; font-size: 0.8rem; }
+.linda-proposal-kind { font-weight: 700; color: var(--text-main, #0f172a); }
+.linda-proposal-status { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.7rem; opacity: 0.8; }
+
+.linda-proposal-preview { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 0.75rem; margin: 0; font-size: 0.85rem; }
+.linda-proposal-preview dt { text-transform: capitalize; opacity: 0.75; }
+.linda-proposal-preview dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
+
+.linda-proposal-actions { display: flex; gap: 0.5rem; }
+.linda-proposal-actions .btn-primary,
+.linda-proposal-actions .btn-ghost {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+}
+
+.linda-proposal-edit { display: flex; flex-direction: column; gap: 0.45rem; }
+.linda-proposal-field { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.8rem; }
+.linda-proposal-field span { text-transform: capitalize; opacity: 0.75; }
+.linda-proposal-field input,
+.linda-proposal-field textarea {
+    font: inherit;
+    padding: 0.4rem 0.55rem;
+    border-radius: 8px;
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+    background: var(--bg-main, #fff);
+    color: var(--text-main, #0f172a);
+}
+
+@media (max-width: 640px) {
+    .linda-chat-panel { right: 0.75rem; bottom: 5rem; width: calc(100vw - 1.5rem); }
+    .linda-chat-fab { right: 0.75rem; bottom: 0.75rem; }
+}
