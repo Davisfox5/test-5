@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from celery import Celery
@@ -77,6 +78,11 @@ celery_app.conf.update(
         "churn-model-weekly": {
             "task": "churn_train_all_tenants",
             "schedule": crontab(minute=0, hour=7, day_of_week=1),
+        },
+        # Audio-retention janitor: hourly sweep of expired audio objects.
+        "audio-retention-sweep": {
+            "task": "audio_retention_sweep",
+            "schedule": 3600.0,
         },
         # ── Email ingestion (from main) ───────────────────────────────
         # Poll every connected email integration every 2 minutes —
@@ -605,6 +611,49 @@ def _run_pipeline(
     from backend.app.services.feature_extractors import FeatureExtractor
 
     deterministic_features = FeatureExtractor().extract(segment_objects)
+
+    # ── Step 17a: Paralinguistic features (if audio is retained) ─────
+    # Runs *only* when the interaction has an audio_s3_key AND praat
+    # is installed.  The extractor degrades gracefully otherwise — we
+    # simply don't populate the paralinguistic block.  The audio itself
+    # is expired by the janitor per the tenant's retention policy, so
+    # missing audio later is expected and not a failure.
+    try:
+        from backend.app.services.audio_storage import AudioHandle, get_audio_store
+        from backend.app.services.paralinguistics import (
+            SpeakerAudioSegment,
+            get_paralinguistic_extractor,
+        )
+
+        if getattr(interaction, "audio_s3_key", None):
+            store = get_audio_store()
+            handle = AudioHandle(
+                s3_key=interaction.audio_s3_key,
+                tenant_id=str(tenant.id),
+                stored_at=interaction.created_at or datetime.utcnow(),
+                retention_hours=int(getattr(tenant, "audio_retention_hours", 24) or 24),
+                backend=store.backend,
+            )
+            audio_path = store.get_local_path(handle)
+            if audio_path:
+                para_segments = [
+                    SpeakerAudioSegment(
+                        speaker_id=s.speaker_id or "unknown",
+                        start=s.start,
+                        end=s.end,
+                    )
+                    for s in segment_objects
+                ]
+                para = get_paralinguistic_extractor().extract(
+                    para_segments, audio_path=audio_path
+                )
+                if para.available:
+                    deterministic_features["paralinguistic"] = para.as_dict()
+    except Exception:  # noqa: BLE001 — paralinguistics must never fail the pipeline
+        logger.exception(
+            "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
+        )
+
     features_row = (
         session.query(InteractionFeatures)
         .filter(InteractionFeatures.interaction_id == interaction.id)
@@ -1587,3 +1636,22 @@ def campaign_variant_winner_selection() -> Dict[str, Any]:
         return decide_active_campaigns(session)
     finally:
         session.close()
+
+
+@celery_app.task(name="audio_retention_sweep")
+def audio_retention_sweep() -> Dict[str, Any]:
+    """Delete audio objects past their tenant's retention window.
+
+    Tenant-agnostic — we scan the bucket and rely on the per-object
+    ``retention_hours`` + ``stored_at`` tags set at upload time.  This
+    means we honor per-tenant overrides even when the Tenant row's
+    ``audio_retention_hours`` has changed since upload.
+    """
+    from backend.app.services.audio_storage import get_audio_store
+
+    try:
+        deleted = get_audio_store().sweep_expired()
+        return {"deleted": deleted}
+    except Exception:  # noqa: BLE001
+        logger.exception("audio_retention_sweep failed")
+        return {"deleted": 0, "error": True}
