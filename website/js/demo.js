@@ -752,6 +752,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var sections = document.querySelectorAll('.view');
     var viewContainer = document.getElementById('viewContainer');
 
+    var _previousView = null;
+
     window.switchView = function(viewId) {
         sections.forEach(function(s) { s.classList.remove('active'); });
         navItems.forEach(function(n) { n.classList.remove('active'); });
@@ -763,6 +765,21 @@ document.addEventListener('DOMContentLoaded', function() {
         if (targetNav) targetNav.classList.add('active');
 
         if (viewContainer) viewContainer.scrollTop = 0;
+
+        // Live-call WebSocket lifecycle.  Opens only when connected; closes
+        // cleanly on any view-switch away so we don't leak connections.
+        if (_previousView === 'live-call' && viewId !== 'live-call') {
+            if (typeof window.closeLiveCall === 'function') window.closeLiveCall();
+        }
+        if (viewId === 'live-call' && _previousView !== 'live-call') {
+            if (typeof window.openLiveCall === 'function') {
+                // Session ID could be threaded through from a running call;
+                // for the demo we use a stable placeholder so the backend
+                // handler scopes Redis correctly.
+                window.openLiveCall('demo-' + Date.now());
+            }
+        }
+        _previousView = viewId;
 
         // Load API data when switching views (connected mode)
         if (API_CONNECTED) {

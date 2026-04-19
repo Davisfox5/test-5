@@ -737,6 +737,29 @@
 }
 .hint-card.warning { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); }
 .hint-card.info { background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2); }
+.hint-card.danger { background: rgba(244,63,94,0.10); border: 1px solid rgba(244,63,94,0.28); }
+.hint-card.success { background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.28); }
+
+/* Live-emitted alert cards fade in then out when auto-dismissed. */
+.hint-card.live-alert { transition: opacity 0.3s ease, transform 0.3s ease; animation: hintSlideIn 0.25s ease-out; }
+.hint-card.live-alert.dismissing { opacity: 0; transform: translateY(-4px); }
+@keyframes hintSlideIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Patience indicator light — tiny dot inline with its numeric reading. */
+.metric-value.patience-light::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--text-subtle);
+    vertical-align: baseline;
+}
+.metric-value.patience-light.good::before { background: var(--accent-emerald); }
+.metric-value.patience-light.warn::before { background: var(--accent-amber); }
+.metric-value.patience-light.bad::before  { background: var(--accent-rose); }
+
 .hint-icon { font-size: 1rem; flex-shrink: 0; margin-top: 2px; }
 .hint-card p { font-size: 0.8rem; line-height: 1.4; color: var(--text-main); }
 
