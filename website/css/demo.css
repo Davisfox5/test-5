@@ -266,6 +266,7 @@
 }
 
 .view-header h1 { font-size: 1.75rem; }
+.view-kicker { color: var(--text-dim); font-size: 0.9rem; margin: 0.25rem 0 0; }
 
 .date-picker {
     padding: 0.5rem 1rem;
