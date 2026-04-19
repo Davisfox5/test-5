@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
@@ -42,7 +43,7 @@ from fastapi.responses import Response
 from backend.app.auth import AuthPrincipal, get_current_principal, require_role
 from backend.app.config import get_settings
 from backend.app.db import async_session, get_db
-from backend.app.models import CallRecording, Interaction, LiveSession, Tenant
+from backend.app.models import CallRecording, Integration, Interaction, LiveSession, Tenant
 from backend.app.services import s3_audio
 from backend.app.services.telephony.twilio import (
     build_hold_twiml,
@@ -51,6 +52,60 @@ from backend.app.services.telephony.twilio import (
     decode_media_payload,
     validate_twilio_signature,
 )
+from backend.app.services.token_crypto import decrypt_token
+
+
+@dataclass
+class TwilioCreds:
+    """Resolved per-tenant Twilio credentials. ``source`` is ``"tenant"``
+    when the Integration row provided them or ``"env"`` for the
+    single-tenant dev fallback."""
+
+    account_sid: str
+    auth_token: str
+    source: str
+
+
+async def _twilio_creds(
+    tenant_id: uuid.UUID, db: AsyncSession
+) -> TwilioCreds:
+    """Resolve Twilio credentials for a tenant.
+
+    Order of precedence:
+
+    1. ``Integration(tenant_id, provider='twilio')`` — ``auth_token`` is
+       decrypted from ``access_token``, ``account_sid`` is read from
+       ``provider_config['account_sid']``.
+    2. Environment variables (``TWILIO_ACCOUNT_SID`` + ``TWILIO_AUTH_TOKEN``)
+       — kept for single-tenant dev deployments. Useful when a self-
+       hosted instance only runs one tenant.
+
+    Returns a ``TwilioCreds`` with empty strings when nothing is
+    configured. Callers decide whether empty creds are fatal (outbound
+    dial) or acceptable (webhook sig verify in dev).
+    """
+    stmt = (
+        select(Integration)
+        .where(Integration.tenant_id == tenant_id, Integration.provider == "twilio")
+        .order_by(Integration.created_at.desc())
+        .limit(1)
+    )
+    integ = (await db.execute(stmt)).scalar_one_or_none()
+    if integ is not None:
+        cfg = integ.provider_config or {}
+        account_sid = str(cfg.get("account_sid") or "")
+        auth_token = decrypt_token(integ.access_token) or ""
+        if account_sid and auth_token:
+            return TwilioCreds(
+                account_sid=account_sid, auth_token=auth_token, source="tenant"
+            )
+
+    settings = get_settings()
+    return TwilioCreds(
+        account_sid=settings.TWILIO_ACCOUNT_SID or "",
+        auth_token=settings.TWILIO_AUTH_TOKEN or "",
+        source="env",
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -74,22 +129,25 @@ async def twilio_voice_webhook(
     form = await request.form()
     form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
 
-    # Validate Twilio's HMAC-SHA1 signature when we have an auth token
-    # configured. Dev deployments that leave the token blank bypass this
-    # so local testing without Twilio still works; production should set it.
-    if settings.TWILIO_AUTH_TOKEN:
+    # Validate Twilio's HMAC-SHA1 signature using the **tenant's** auth
+    # token (falls back to env vars for single-tenant dev setups). Leave
+    # it blank in dev to bypass sig checks so local testing works.
+    creds = await _twilio_creds(tenant_id, db)
+    if creds.auth_token:
         signature = request.headers.get("X-Twilio-Signature", "")
         # Twilio signs the URL that *they* called — that's what the
         # request looks like from their side, including query string.
         request_url = str(request.url)
         if not validate_twilio_signature(
-            auth_token=settings.TWILIO_AUTH_TOKEN,
+            auth_token=creds.auth_token,
             request_url=request_url,
             params=form_dict,
             signature_header=signature,
         ):
             logger.warning(
-                "Twilio webhook signature mismatch (tenant=%s)", tenant_id
+                "Twilio webhook signature mismatch (tenant=%s, creds_source=%s)",
+                tenant_id,
+                creds.source,
             )
             raise HTTPException(status_code=403, detail="Invalid signature")
 
@@ -156,15 +214,15 @@ async def twilio_recording_callback(
     by signature, then mirror the WAV to our own S3 bucket so the audio
     stays under the tenant's control.
     """
-    settings = get_settings()
     form = await request.form()
     form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
 
-    if settings.TWILIO_AUTH_TOKEN:
+    creds = await _twilio_creds(tenant_id, db)
+    if creds.auth_token:
         signature = request.headers.get("X-Twilio-Signature", "")
         request_url = str(request.url)
         if not validate_twilio_signature(
-            auth_token=settings.TWILIO_AUTH_TOKEN,
+            auth_token=creds.auth_token,
             request_url=request_url,
             params=form_dict,
             signature_header=signature,
@@ -200,14 +258,16 @@ async def twilio_recording_callback(
         rec.error = "Twilio callback missing RecordingUrl"
         return {"status": "failed", "recording_id": str(rec.id)}
 
-    sid = settings.TWILIO_ACCOUNT_SID
-    token = settings.TWILIO_AUTH_TOKEN
     try:
         stored = await s3_audio.download_and_store_url(
             tenant_id=tenant_id,
             recording_id=rec.id,
             source_url=wav_url,
-            basic_auth=(sid, token) if sid and token else None,
+            basic_auth=(
+                (creds.account_sid, creds.auth_token)
+                if creds.account_sid and creds.auth_token
+                else None
+            ),
         )
         rec.s3_key = stored.s3_key
         rec.size_bytes = stored.size_bytes
@@ -303,20 +363,25 @@ class OutboundDialOut(BaseModel):
 async def place_outbound_call(
     body: OutboundDialIn,
     request: Request,
+    db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Place an outbound call via Twilio's REST API.
 
-    Requires the tenant to have ``TWILIO_ACCOUNT_SID`` + ``TWILIO_AUTH_TOKEN``
-    configured on the server (today these are env-scoped; per-tenant
-    Twilio credentials are a follow-on).
+    Credentials resolve per-tenant via
+    ``Integration(tenant_id, provider='twilio')`` first, with the
+    ``TWILIO_ACCOUNT_SID`` / ``TWILIO_AUTH_TOKEN`` env vars as a
+    single-tenant-dev fallback.
     """
-    settings = get_settings()
-    sid = settings.TWILIO_ACCOUNT_SID
-    token = settings.TWILIO_AUTH_TOKEN
-    if not (sid and token):
+    creds = await _twilio_creds(principal.tenant.id, db)
+    if not (creds.account_sid and creds.auth_token):
         raise HTTPException(
-            status_code=503, detail="Twilio credentials are not configured"
+            status_code=503,
+            detail=(
+                "Twilio credentials are not configured for this tenant. "
+                "Connect Twilio in Integrations or set TWILIO_ACCOUNT_SID "
+                "+ TWILIO_AUTH_TOKEN env vars."
+            ),
         )
 
     twiml_url = body.twiml_url
@@ -327,13 +392,13 @@ async def place_outbound_call(
     caller_from = body.from_ or ""
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Calls.json",
+            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls.json",
             data={
                 "To": body.to,
                 "From": caller_from,
                 "Url": twiml_url,
             },
-            auth=(sid, token),
+            auth=(creds.account_sid, creds.auth_token),
         )
     if resp.status_code >= 400:
         raise HTTPException(
@@ -477,18 +542,18 @@ class TransferIn(BaseModel):
 
 async def _twilio_update_call(
     call_sid: str,
+    creds: TwilioCreds,
     *,
     twiml: Optional[str] = None,
     url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Twilio REST: ``POST /Calls/{sid}.json``. Either ``Twiml`` (inline)
-    or ``Url`` (absolute URL to GET TwiML from) must be set."""
-    settings = get_settings()
-    sid = settings.TWILIO_ACCOUNT_SID
-    token = settings.TWILIO_AUTH_TOKEN
-    if not (sid and token):
+    or ``Url`` (absolute URL to GET TwiML from) must be set. Credentials
+    come from the caller (resolved via ``_twilio_creds`` for the tenant)."""
+    if not (creds.account_sid and creds.auth_token):
         raise HTTPException(
-            status_code=503, detail="Twilio credentials are not configured"
+            status_code=503,
+            detail="Twilio credentials are not configured for this tenant",
         )
     if not (twiml or url):
         raise ValueError("Pass either twiml or url to _twilio_update_call")
@@ -501,9 +566,9 @@ async def _twilio_update_call(
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Calls/{call_sid}.json",
+            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls/{call_sid}.json",
             data=data,
-            auth=(sid, token),
+            auth=(creds.account_sid, creds.auth_token),
         )
     if resp.status_code >= 400:
         raise HTTPException(
@@ -517,6 +582,7 @@ async def _twilio_update_call(
 async def hold_call(
     call_sid: str,
     body: HoldIn,
+    db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Put an in-progress call on hold.
@@ -525,11 +591,12 @@ async def hold_call(
     music. ``POST /telephony/calls/{sid}/resume`` re-enters the main flow
     by pointing the call back at our inbound voice webhook.
     """
+    creds = await _twilio_creds(principal.tenant.id, db)
     twiml = build_hold_twiml(
         hold_music_url=body.music_url
         or "https://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3"
     )
-    result = await _twilio_update_call(call_sid, twiml=twiml)
+    result = await _twilio_update_call(call_sid, creds, twiml=twiml)
     return {"status": result.get("status"), "call_sid": call_sid, "state": "hold"}
 
 
@@ -537,17 +604,19 @@ async def hold_call(
 async def resume_call(
     call_sid: str,
     request: Request,
+    db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Take a held call off hold by redirecting it back to our voice
     webhook. The webhook creates a fresh LiveSession and resumes the
     live transcription + coaching flow."""
+    creds = await _twilio_creds(principal.tenant.id, db)
     base = str(request.base_url).rstrip("/")
     voice_url = (
         f"{base}{get_settings().API_V1_PREFIX}/telephony/twilio/voice"
         f"?tenant_id={principal.tenant.id}"
     )
-    result = await _twilio_update_call(call_sid, url=voice_url)
+    result = await _twilio_update_call(call_sid, creds, url=voice_url)
     return {"status": result.get("status"), "call_sid": call_sid, "state": "active"}
 
 
@@ -555,6 +624,7 @@ async def resume_call(
 async def transfer_call(
     call_sid: str,
     body: TransferIn,
+    db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(
         require_role("manager")
     ),
@@ -567,8 +637,9 @@ async def transfer_call(
     agrees to take it (that flow can be layered on top of these
     primitives).
     """
+    creds = await _twilio_creds(principal.tenant.id, db)
     twiml = build_transfer_twiml(to_number=body.to, caller_id=body.caller_id)
-    result = await _twilio_update_call(call_sid, twiml=twiml)
+    result = await _twilio_update_call(call_sid, creds, twiml=twiml)
     return {
         "status": result.get("status"),
         "call_sid": call_sid,

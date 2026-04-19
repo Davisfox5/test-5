@@ -326,3 +326,102 @@ async def deactivate_user(
         )
     user.is_active = False
     return None
+
+
+# ── Seat reconciliation (admin-only) ─────────────────────────────────
+
+
+class SeatReconciliationOut(BaseModel):
+    pending: bool
+    seat_limit: int
+    admin_seat_limit: int
+    active_users: int
+    active_admins: int
+    suspended_users: List[UserOut]
+
+
+class ReactivateIn(BaseModel):
+    # When the tenant is already at cap, the admin must pick an
+    # existing active user to suspend in place of the one coming back.
+    # Forces the trade-off to be deliberate.
+    suspend_swap_user_id: Optional[uuid.UUID] = None
+
+
+@router.get(
+    "/admin/seat-reconciliation",
+    response_model=SeatReconciliationOut,
+)
+async def get_seat_reconciliation(
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_role("admin")),
+):
+    """Show the tenant's current seat headcount + anyone auto-suspended
+    by a tier downgrade. Drives the admin-UI banner."""
+    from backend.app.services.seat_reconciliation import SUSPENSION_REASON
+
+    total_stmt = (
+        select(func.count())
+        .select_from(User)
+        .where(User.tenant_id == principal.tenant.id, User.is_active.is_(True))
+    )
+    admin_stmt = (
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.tenant_id == principal.tenant.id,
+            User.is_active.is_(True),
+            User.role == "admin",
+        )
+    )
+    suspended_stmt = (
+        select(User)
+        .where(
+            User.tenant_id == principal.tenant.id,
+            User.suspension_reason == SUSPENSION_REASON,
+        )
+        .order_by(User.created_at.asc())
+    )
+    total = int((await db.execute(total_stmt)).scalar_one())
+    admins = int((await db.execute(admin_stmt)).scalar_one())
+    suspended = list((await db.execute(suspended_stmt)).scalars().all())
+
+    return SeatReconciliationOut(
+        pending=bool(principal.tenant.pending_seat_reconciliation),
+        seat_limit=int(principal.tenant.seat_limit or 1),
+        admin_seat_limit=int(principal.tenant.admin_seat_limit or 1),
+        active_users=total,
+        active_admins=admins,
+        suspended_users=[UserOut.model_validate(u) for u in suspended],
+    )
+
+
+@router.post("/users/{user_id}/reactivate", response_model=UserOut)
+async def reactivate_user_endpoint(
+    user_id: uuid.UUID,
+    body: ReactivateIn,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_role("admin")),
+):
+    """Reactivate a suspended user.
+
+    If the tenant is already at cap, the admin must set
+    ``suspend_swap_user_id`` on the body — the picked active user is
+    suspended to make room. This enforces a deliberate trade instead
+    of silently expanding the tenant past its subscription.
+    """
+    from backend.app.services.seat_reconciliation import reactivate_user
+
+    user = await db.get(User, user_id)
+    if user is None or user.tenant_id != principal.tenant.id:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        await reactivate_user(
+            db,
+            principal.tenant,
+            user,
+            suspend_swap_id=body.suspend_swap_user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return UserOut.model_validate(user)

@@ -47,6 +47,7 @@ from backend.app.services.stripe_billing import (
     price_id_to_tier,
     verify_stripe_signature,
 )
+from backend.app.services.seat_reconciliation import reconcile_seats
 from backend.app.services.subscription_tiers import apply_tier
 
 logger = logging.getLogger(__name__)
@@ -212,12 +213,19 @@ async def _apply_subscription_to_tenant(
 
     tenant.stripe_subscription_id = str(subscription_obj.get("id") or "")
     apply_tier(tenant, tier_key)
+    # Enforce the new caps — auto-suspend excess users with
+    # suspension_reason="tier_downgrade". Admin must reconcile via the
+    # seat-reconciliation UI before the banner clears.
+    reconcile = await reconcile_seats(db, tenant)
     return {
         "handled": True,
         "tenant_id": str(tenant.id),
         "tier": tier_key,
         "price_id": price_id,
         "subscription_id": tenant.stripe_subscription_id,
+        "suspended_user_count": len(reconcile.suspended_user_ids)
+        + len(reconcile.suspended_admin_ids),
+        "pending_seat_reconciliation": reconcile.pending,
     }
 
 
@@ -236,9 +244,13 @@ async def _cancel_subscription(
 
     tenant.stripe_subscription_id = None
     apply_tier(tenant, "solo")
+    reconcile = await reconcile_seats(db, tenant)
     return {
         "handled": True,
         "tenant_id": str(tenant.id),
         "tier": "solo",
         "reason": "canceled_or_expired",
+        "suspended_user_count": len(reconcile.suspended_user_ids)
+        + len(reconcile.suspended_admin_ids),
+        "pending_seat_reconciliation": reconcile.pending,
     }

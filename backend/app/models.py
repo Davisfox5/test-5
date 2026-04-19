@@ -63,6 +63,11 @@ class Tenant(Base):
     # the tenant. ``stripe_subscription_id`` is the current active sub.
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String)
+    # True while a tier downgrade has left the tenant with more users
+    # than its new plan allows. While set, admins see a reconciliation
+    # banner and the suspended users can't log in. Cleared automatically
+    # once active_users ≤ seat_limit AND active_admins ≤ admin_seat_limit.
+    pending_seat_reconciliation: Mapped[bool] = mapped_column(Boolean, default=False)
     # LINDA's per-tenant operating brief — everything the orchestrator and its
     # agents should know about this tenant. Assembled by the ContextBuilder
     # agent from KB docs, onboarding-interview answers, explicit overrides,
@@ -95,6 +100,13 @@ class User(Base):
     # JWT or haven't set a local password yet.
     password_hash: Mapped[Optional[str]] = mapped_column(String)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When non-NULL, this user was suspended for a system reason (not just
+    # manually deactivated). The seat-reconciliation flow sets this to
+    # ``"tier_downgrade"`` on users we auto-suspend when a Stripe
+    # downgrade drops the tenant below its current headcount. The admin
+    # clears it by reactivating the user (which frees a seat by
+    # suspending someone else — explicit swap).
+    suspension_reason: Mapped[Optional[str]] = mapped_column(String)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

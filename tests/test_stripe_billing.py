@@ -186,32 +186,60 @@ class FakeTenant:
 
 
 class FakeDB:
+    """Minimal async DB double that answers the two query shapes our
+    Stripe webhook + seat-reconciliation code path issue:
+
+    1. ``SELECT tenant WHERE stripe_customer_id = …`` → one match.
+    2. ``SELECT user WHERE tenant_id = … [AND is_active]`` → empty list.
+    3. ``SELECT count(*) …`` → 0.
+
+    Everything else returns an empty result so calls don't crash.
+    """
+
     def __init__(self, tenants):
         self.tenants = tenants
 
     async def execute(self, stmt):
-        # Parse the bound ``stripe_customer_id`` off the compiled query and
-        # match a tenant by it. Simpler: iterate and return the first
-        # one whose id appears in the statement's compiled params.
         try:
             params = stmt.compile().params
         except Exception:
             params = {}
-        target = None
+
+        # Tenant-by-customer lookup.
         for v in params.values():
             if isinstance(v, str) and v.startswith("cus_"):
-                target = v
-                break
-        match = next(
-            (t for t in self.tenants if t.stripe_customer_id == target),
-            None,
-        )
+                match = next(
+                    (t for t in self.tenants if t.stripe_customer_id == v),
+                    None,
+                )
+                return _FakeResult(single=match, list_=[], count=0)
 
-        class _R:
-            def scalar_one_or_none(_self):
-                return match
+        # All other queries (user listings, counts) resolve to empties —
+        # in these tests nobody has users seeded, so reconcile_seats has
+        # nothing to suspend.
+        return _FakeResult(single=None, list_=[], count=0)
 
-        return _R()
+
+class _FakeResult:
+    def __init__(self, single=None, list_=None, count=0):
+        self._single = single
+        self._list = list(list_ or [])
+        self._count = count
+
+    def scalar_one_or_none(self):
+        return self._single
+
+    def scalar_one(self):
+        return self._count
+
+    def scalars(self):
+        rows = self._list
+
+        class _S:
+            def all(self_inner):
+                return rows
+
+        return _S()
 
 
 @pytest.mark.asyncio

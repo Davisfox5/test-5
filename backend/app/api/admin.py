@@ -457,20 +457,25 @@ class TierChangeIn(BaseModel):
 @router.post("/admin/tenant-settings/tier", response_model=TenantSettingsOut)
 async def change_subscription_tier(
     body: TierChangeIn,
-    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ) -> Dict[str, Any]:
     """Change the tenant's subscription tier.
 
-    Applies the tier's seat limits + feature flag defaults. Does NOT
-    deactivate existing users if the new tier's seat_limit is below the
-    current active count — UI surfaces that mismatch so admins can
-    off-board intentionally.
+    Applies the tier's seat limits + feature flag defaults, then runs
+    seat reconciliation: if the new cap is below the current active
+    count, the newest excess users are auto-suspended with
+    ``suspension_reason="tier_downgrade"`` and the tenant is flagged
+    ``pending_seat_reconciliation``. The acting admin is *protected*
+    from suspension so they never kick themselves out mid-downgrade.
 
-    Eventually this endpoint will be driven by a billing webhook (Stripe
-    subscription.updated). For now it's admin-only and manual.
+    Admins then pick who stays active via ``/admin/seat-reconciliation``
+    and ``POST /users/{id}/reactivate``. Suspended users can't log in.
     """
+    from backend.app.services.seat_reconciliation import reconcile_seats
     from backend.app.services.subscription_tiers import SUBSCRIPTION_TIERS, apply_tier
 
+    tenant = principal.tenant
     if body.tier not in SUBSCRIPTION_TIERS:
         raise HTTPException(
             status_code=400,
@@ -480,4 +485,5 @@ async def change_subscription_tier(
             ),
         )
     apply_tier(tenant, body.tier)
+    await reconcile_seats(db, tenant, protect_user_id=principal.user_id)
     return _tenant_settings_payload(tenant)
