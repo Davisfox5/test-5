@@ -60,6 +60,7 @@ from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
+from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
@@ -75,6 +76,7 @@ app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-ba
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["admin"])
 app.include_router(crm_router, prefix=settings.API_V1_PREFIX, tags=["crm"])
+app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
@@ -82,7 +84,6 @@ from backend.app.api.websocket import router as websocket_router  # noqa: E402
 app.include_router(websocket_router, tags=["websocket"])
 
 # Routers to be added as built:
-# app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 # app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
 
 # ── Static Files (minimal demo UI) ───────────────────────

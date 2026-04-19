@@ -1,14 +1,35 @@
-"""OAuth integration endpoints — Google Workspace & Microsoft."""
+"""OAuth integration endpoints.
+
+Supports: Google Workspace, Microsoft, HubSpot, Salesforce, Pipedrive.
+
+Flow:
+
+1. ``GET /oauth/{provider}/authorize`` — generates a CSRF-safe ``state``
+   token, stashes ``{tenant_id, user_id?}`` in Redis under that token,
+   and redirects the browser to the provider's consent screen.
+2. ``GET /oauth/{provider}/callback`` — validates the returned ``state``
+   against Redis, exchanges the code for tokens, encrypts them with the
+   Fernet wrapper, and upserts an ``Integration`` row on that tenant.
+3. ``GET /oauth/status`` lists connected integrations.
+4. ``POST /oauth/{provider}/revoke`` deletes the row.
+
+Adding a new provider = adding one entry to ``CRM_PROVIDERS`` (auth URL,
+token URL, scopes, extras). Google/Microsoft still use their SDKs.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import uuid
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import httpx
+import redis.asyncio as aioredis
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -18,9 +39,13 @@ from backend.app.auth import get_current_tenant
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import Integration, Tenant
+from backend.app.services.token_crypto import encrypt_token
 
 router = APIRouter()
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
+
 
 # ── Provider Configuration ──────────────────────────────
 
@@ -39,7 +64,53 @@ MICROSOFT_SCOPES = [
     "offline_access",
 ]
 
-SUPPORTED_PROVIDERS = {"google", "microsoft"}
+
+def _provider_setting(attr: str) -> str:
+    return getattr(settings, attr, "") or ""
+
+
+# CRM provider table. Each adapter's oauth flow reads from this.
+# ``scope_sep`` is how the provider wants scopes joined in the auth URL.
+CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "hubspot": {
+        "authorize_url": "https://app.hubspot.com/oauth/authorize",
+        "token_url": "https://api.hubapi.com/oauth/v1/token",
+        # HubSpot scopes are hub-specific; tenants typically want these for
+        # contact/company/deal visibility.
+        "scopes": [
+            "crm.objects.companies.read",
+            "crm.objects.contacts.read",
+            "crm.schemas.companies.read",
+            "crm.schemas.contacts.read",
+            "oauth",
+        ],
+        "scope_sep": " ",
+        "client_id_key": "HUBSPOT_CLIENT_ID",
+        "client_secret_key": "HUBSPOT_CLIENT_SECRET",
+    },
+    "salesforce": {
+        # Salesforce auth URL uses the login domain; test orgs use
+        # https://test.salesforce.com. Override via provider_config on the
+        # Integration row if needed.
+        "authorize_url": "https://login.salesforce.com/services/oauth2/authorize",
+        "token_url": "https://login.salesforce.com/services/oauth2/token",
+        "scopes": ["api", "refresh_token", "offline_access"],
+        "scope_sep": " ",
+        "client_id_key": "SALESFORCE_CLIENT_ID",
+        "client_secret_key": "SALESFORCE_CLIENT_SECRET",
+    },
+    "pipedrive": {
+        "authorize_url": "https://oauth.pipedrive.com/oauth/authorize",
+        "token_url": "https://oauth.pipedrive.com/oauth/token",
+        "scopes": ["base", "contacts:read", "deals:read", "users:read"],
+        "scope_sep": " ",
+        "client_id_key": "PIPEDRIVE_CLIENT_ID",
+        "client_secret_key": "PIPEDRIVE_CLIENT_SECRET",
+    },
+}
+
+
+SUPPORTED_PROVIDERS = {"google", "microsoft"} | set(CRM_PROVIDERS.keys())
 
 
 # ── Pydantic Schemas ────────────────────────────────────
@@ -72,8 +143,103 @@ def _validate_provider(provider: str) -> None:
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported provider '{provider}'. Must be one of: {', '.join(SUPPORTED_PROVIDERS)}",
+            detail=(
+                f"Unsupported provider '{provider}'. Must be one of: "
+                + ", ".join(sorted(SUPPORTED_PROVIDERS))
+            ),
         )
+
+
+def _get_redis() -> aioredis.Redis:
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+_STATE_TTL_SECONDS = 600  # 10 minutes for user to complete the flow
+
+
+async def _stash_state(state: str, payload: Dict[str, Any]) -> None:
+    """Store the CSRF state + its context for verification on callback."""
+    r = _get_redis()
+    try:
+        await r.setex(
+            f"oauth_state:{state}", _STATE_TTL_SECONDS, json.dumps(payload, default=str)
+        )
+    finally:
+        await r.aclose()
+
+
+async def _pop_state(state: str) -> Optional[Dict[str, Any]]:
+    """Atomically read + delete the state payload. None if expired/missing."""
+    r = _get_redis()
+    try:
+        raw = await r.get(f"oauth_state:{state}")
+        if not raw:
+            return None
+        await r.delete(f"oauth_state:{state}")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    finally:
+        await r.aclose()
+
+
+def _expires_at_from_seconds(expires_in: Optional[int]) -> Optional[datetime]:
+    if not expires_in:
+        return None
+    try:
+        return datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _upsert_integration(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: Optional[uuid.UUID],
+    provider: str,
+    access_token: Optional[str],
+    refresh_token: Optional[str],
+    scopes: List[str],
+    expires_at: Optional[datetime],
+    provider_config: Optional[Dict[str, Any]] = None,
+) -> Integration:
+    """Upsert the Integration row for a tenant+provider. Tokens are
+    encrypted at this boundary — callers hand us plaintext."""
+    stmt = select(Integration).where(
+        Integration.tenant_id == tenant_id,
+        Integration.provider == provider,
+    )
+    existing = (await db.execute(stmt)).scalar_one_or_none()
+    enc_access = encrypt_token(access_token)
+    enc_refresh = encrypt_token(refresh_token)
+
+    if existing is None:
+        row = Integration(
+            tenant_id=tenant_id,
+            user_id=user_id or tenant_id,  # user_id is required; fall back to tenant
+            provider=provider,
+            access_token=enc_access,
+            refresh_token=enc_refresh,
+            scopes=scopes,
+            expires_at=expires_at,
+            provider_config=provider_config or {},
+        )
+        db.add(row)
+        await db.flush()
+        return row
+
+    existing.access_token = enc_access
+    if enc_refresh:
+        existing.refresh_token = enc_refresh
+    existing.scopes = scopes
+    existing.expires_at = expires_at
+    if provider_config:
+        merged = dict(existing.provider_config or {})
+        merged.update(provider_config)
+        existing.provider_config = merged
+    return existing
 
 
 # ── Endpoints ───────────────────────────────────────────
@@ -91,12 +257,9 @@ async def oauth_authorize(
     state = secrets.token_urlsafe(32)
     redirect_uri = _build_redirect_uri(request, provider)
 
-    # TODO: Store state token in Redis for CSRF protection
-    # redis = await get_redis()
-    # await redis.setex(f"oauth_state:{state}", 600, json.dumps({
-    #     "tenant_id": str(tenant.id),
-    #     "provider": provider,
-    # }))
+    # CSRF protection + tenant context: the state token keys a Redis entry
+    # carrying the tenant id, so the callback knows who to attribute.
+    await _stash_state(state, {"tenant_id": str(tenant.id), "provider": provider})
 
     if provider == "google":
         from google_auth_oauthlib.flow import Flow
@@ -121,7 +284,7 @@ async def oauth_authorize(
         )
         return RedirectResponse(url=auth_url)
 
-    elif provider == "microsoft":
+    if provider == "microsoft":
         import msal
 
         app = msal.ConfidentialClientApplication(
@@ -136,29 +299,52 @@ async def oauth_authorize(
         )
         return RedirectResponse(url=auth_url)
 
+    # CRM providers — generic code-flow URL builder.
+    spec = CRM_PROVIDERS[provider]
+    client_id = _provider_setting(spec["client_id_key"])
+    if not client_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{spec['client_id_key']} is not configured on this server",
+        )
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": spec["scope_sep"].join(spec["scopes"]),
+        "state": state,
+    }
+    auth_url = f"{spec['authorize_url']}?{urlencode(params)}"
+    return RedirectResponse(url=auth_url)
+
 
 @router.get("/oauth/{provider}/callback")
 async def oauth_callback(
     provider: str,
     request: Request,
-    code: str,
-    state: str,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Handle OAuth callback — exchange code for tokens and store them."""
     _validate_provider(provider)
 
-    # TODO: Validate state token from Redis for CSRF protection
-    # redis = await get_redis()
-    # stored = await redis.get(f"oauth_state:{state}")
-    # if not stored:
-    #     raise HTTPException(status_code=400, detail="Invalid or expired state token")
-    # state_data = json.loads(stored)
-    # tenant_id = state_data["tenant_id"]
-    # await redis.delete(f"oauth_state:{state}")
+    if error:
+        raise HTTPException(
+            status_code=400, detail=f"Provider returned error: {error}"
+        )
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state")
 
-    # Placeholder tenant_id — in production, extract from validated state token
-    tenant_id: Optional[str] = None  # Will come from state validation above
+    state_payload = await _pop_state(state)
+    if state_payload is None:
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired state token"
+        )
+    tenant_id = uuid.UUID(state_payload["tenant_id"])
+    user_id_raw = state_payload.get("user_id")
+    user_id = uuid.UUID(user_id_raw) if user_id_raw else None
 
     redirect_uri = _build_redirect_uri(request, provider)
 
@@ -178,15 +364,20 @@ async def oauth_callback(
             redirect_uri=redirect_uri,
         )
         flow.fetch_token(code=code)
-        credentials = flow.credentials
+        creds = flow.credentials
+        await _upsert_integration(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            provider=provider,
+            access_token=creds.token,
+            refresh_token=creds.refresh_token,
+            scopes=list(creds.scopes) if creds.scopes else GOOGLE_SCOPES,
+            expires_at=creds.expiry,
+        )
+        return {"status": "connected", "provider": provider}
 
-        # TODO: Encrypt tokens with AES-256 before storing
-        access_token = credentials.token
-        refresh_token = credentials.refresh_token
-        scopes = list(credentials.scopes) if credentials.scopes else GOOGLE_SCOPES
-        expires_at = credentials.expiry
-
-    elif provider == "microsoft":
+    if provider == "microsoft":
         import msal
 
         app = msal.ConfidentialClientApplication(
@@ -195,35 +386,72 @@ async def oauth_callback(
             client_credential=settings.MICROSOFT_CLIENT_SECRET,
         )
         result = app.acquire_token_by_authorization_code(
-            code,
-            scopes=MICROSOFT_SCOPES,
-            redirect_uri=redirect_uri,
+            code, scopes=MICROSOFT_SCOPES, redirect_uri=redirect_uri
         )
         if "error" in result:
             raise HTTPException(
                 status_code=400,
                 detail=f"Token exchange failed: {result.get('error_description', result['error'])}",
             )
+        await _upsert_integration(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            provider=provider,
+            access_token=result.get("access_token"),
+            refresh_token=result.get("refresh_token"),
+            scopes=MICROSOFT_SCOPES,
+            expires_at=_expires_at_from_seconds(result.get("expires_in")),
+        )
+        return {"status": "connected", "provider": provider}
 
-        # TODO: Encrypt tokens with AES-256 before storing
-        access_token = result.get("access_token")
-        refresh_token = result.get("refresh_token")
-        scopes = MICROSOFT_SCOPES
-        expires_at = None  # Microsoft tokens typically expire in 1 hour
+    # ── Generic CRM exchange ──────────────────────────────
+    spec = CRM_PROVIDERS[provider]
+    client_id = _provider_setting(spec["client_id_key"])
+    client_secret = _provider_setting(spec["client_secret_key"])
+    if not (client_id and client_secret):
+        raise HTTPException(
+            status_code=500,
+            detail=f"{provider} client credentials are not configured",
+        )
 
-    # Upsert integration record
-    # NOTE: tenant_id and user_id should come from validated state in production
-    integration = Integration(
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            spec["token_url"],
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider} token exchange failed: {resp.status_code} {resp.text[:300]}",
+        )
+    body = resp.json()
+
+    # Provider-specific extras we need to carry on provider_config.
+    provider_config: Dict[str, Any] = {}
+    if provider == "salesforce" and body.get("instance_url"):
+        provider_config["instance_url"] = body["instance_url"].rstrip("/")
+    if provider == "pipedrive" and body.get("api_domain"):
+        provider_config["api_domain"] = body["api_domain"].rstrip("/")
+
+    await _upsert_integration(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
         provider=provider,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        scopes=scopes,
-        expires_at=expires_at,
-        # tenant_id and user_id will be set from state token validation
+        access_token=body.get("access_token"),
+        refresh_token=body.get("refresh_token"),
+        scopes=spec["scopes"],
+        expires_at=_expires_at_from_seconds(body.get("expires_in")),
+        provider_config=provider_config,
     )
-    db.add(integration)
-    await db.flush()
-
     return {"status": "connected", "provider": provider}
 
 
@@ -240,7 +468,6 @@ async def oauth_status(
     )
     result = await db.execute(stmt)
     integrations = result.scalars().all()
-
     return IntegrationStatusResponse(
         integrations=[IntegrationOut.model_validate(i) for i in integrations],
     )
@@ -254,15 +481,14 @@ async def oauth_revoke(
 ):
     """Delete the integration record for a provider."""
     _validate_provider(provider)
-
     stmt = select(Integration).where(
         Integration.tenant_id == tenant.id,
         Integration.provider == provider,
     )
     result = await db.execute(stmt)
     integration = result.scalar_one_or_none()
-
     if integration is None:
-        raise HTTPException(status_code=404, detail=f"No {provider} integration found")
-
+        raise HTTPException(
+            status_code=404, detail=f"No {provider} integration found"
+        )
     await db.delete(integration)

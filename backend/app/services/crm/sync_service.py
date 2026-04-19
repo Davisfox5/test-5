@@ -35,6 +35,7 @@ from backend.app.services.crm.base import (
     CrmError,
 )
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
+from backend.app.services.token_crypto import decrypt_token, encrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -195,17 +196,24 @@ async def _build_adapter(
     if integ is None:
         raise CrmAuthError(f"No {provider} integration for tenant {tenant_id}")
 
+    # Decrypt tokens before handing them to the adapter. ``decrypt_token`` is
+    # tolerant of legacy plaintext rows — they pass through with a warning,
+    # and the next refresh will rewrite in the encrypted form.
+    access_token_plain = decrypt_token(integ.access_token) or ""
+    refresh_token_plain = decrypt_token(integ.refresh_token)
+
     # Token-refresh callback: persist the new tokens + expiry back to the
-    # Integration row so the next sync doesn't start stale.
+    # Integration row so the next sync doesn't start stale. Values are
+    # encrypted again before they hit the database.
     async def on_refresh(
         access_token: str,
         refresh_token: Optional[str],
         expires_in: Optional[int],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        integ.access_token = access_token
+        integ.access_token = encrypt_token(access_token)
         if refresh_token:
-            integ.refresh_token = refresh_token
+            integ.refresh_token = encrypt_token(refresh_token)
         if expires_in:
             from datetime import timedelta as _td
 
@@ -219,8 +227,8 @@ async def _build_adapter(
         from backend.app.services.crm.hubspot import HubSpotAdapter
 
         return HubSpotAdapter(
-            access_token=integ.access_token or "",
-            refresh_token=integ.refresh_token,
+            access_token=access_token_plain,
+            refresh_token=refresh_token_plain,
             on_token_refresh=on_refresh,
         )
     if provider == "salesforce":
@@ -228,15 +236,21 @@ async def _build_adapter(
 
         cfg = integ.provider_config or {}
         return SalesforceAdapter(
-            access_token=integ.access_token or "",
+            access_token=access_token_plain,
             instance_url=cfg.get("instance_url", ""),
-            refresh_token=integ.refresh_token,
+            refresh_token=refresh_token_plain,
             on_token_refresh=on_refresh,
         )
     if provider == "pipedrive":
         from backend.app.services.crm.pipedrive import PipedriveAdapter
 
-        return PipedriveAdapter(access_token=integ.access_token or "")
+        cfg = integ.provider_config or {}
+        return PipedriveAdapter(
+            access_token=access_token_plain,
+            refresh_token=refresh_token_plain,
+            api_domain=cfg.get("api_domain", ""),
+            on_token_refresh=on_refresh,
+        )
     raise ValueError(f"Unhandled provider: {provider}")
 
 
