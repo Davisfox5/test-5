@@ -70,7 +70,7 @@ def fetch_gmail_since_history(
                     continue
                 labels = set(raw.get("labelIds", []))
                 direction = "outbound" if "SENT" in labels else "inbound"
-                yield _normalize_gmail(raw, agent_email, direction)
+                yield _normalize_gmail(raw, agent_email, direction, service=service)
         page_token = resp.get("nextPageToken")
         if not page_token:
             return
@@ -110,7 +110,7 @@ def fetch_graph_message(
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        "Prefer": 'outlook.body-content-type="text"',
+        "Prefer": 'outlook.body-content-type="html"',
     }
     try:
         with httpx.Client(timeout=15, headers=headers) as client:
@@ -122,7 +122,7 @@ def fetch_graph_message(
         return None
 
     direction = direction_hint or _infer_graph_direction(raw, agent_email)
-    return _normalize_graph(raw, agent_email, direction)
+    return _normalize_graph(raw, agent_email, direction, access_token=access_token)
 
 
 def _infer_graph_direction(raw: dict, agent_email: Optional[str]) -> str:

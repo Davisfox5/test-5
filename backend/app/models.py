@@ -194,6 +194,7 @@ class Interaction(Base):
     from_address: Mapped[Optional[str]] = mapped_column(String)
     to_addresses: Mapped[list] = mapped_column(JSONB, default=list)
     cc_addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    bcc_addresses: Mapped[list] = mapped_column(JSONB, default=list)
     subject: Mapped[Optional[str]] = mapped_column(String)
     message_id: Mapped[Optional[str]] = mapped_column(String, unique=True)  # RFC-822
     in_reply_to: Mapped[Optional[str]] = mapped_column(String)
@@ -202,6 +203,7 @@ class Interaction(Base):
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
     classification: Mapped[Optional[str]] = mapped_column(String)  # sales|support|it|other
     classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    body_html: Mapped[Optional[str]] = mapped_column(Text)  # sanitized, optional
 
     # Processing
     status: Mapped[str] = mapped_column(String, default="processing")
@@ -409,6 +411,34 @@ class TenantInsight(Base):
     period_start: Mapped[Optional[date]] = mapped_column(Date)
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# INTERACTION ATTACHMENTS
+#
+# One row per file on an email (inbound or outbound).  The actual bytes
+# live in S3 when ``AWS_S3_BUCKET`` is configured — we only keep
+# metadata + s3_key in Postgres.  If S3 isn't configured the row is
+# still created with ``s3_key=NULL`` so the UI can at least surface
+# "customer attached invoice.pdf".
+# ──────────────────────────────────────────────────────────
+
+
+class InteractionAttachment(Base):
+    __tablename__ = "interaction_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    interaction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interactions.id", ondelete="CASCADE"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    filename: Mapped[Optional[str]] = mapped_column(String)
+    content_type: Mapped[Optional[str]] = mapped_column(String)
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    s3_key: Mapped[Optional[str]] = mapped_column(String)
+    provider_attachment_id: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound
+    inline: Mapped[bool] = mapped_column(Boolean, default=False)
+    content_id: Mapped[Optional[str]] = mapped_column(String)  # CID for inline HTML refs
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

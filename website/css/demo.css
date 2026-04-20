@@ -2587,3 +2587,58 @@ span.channel-icon-svg svg { width: 14px; height: 14px; }
     .conv-layout { grid-template-columns: 1fr; }
     .conv-sidebar { position: static; }
 }
+
+/* ============================================================ */
+/* CONVERSATIONS — HTML body + attachments + reply picker        */
+/* ============================================================ */
+.conv-html-body {
+    width: 100%;
+    min-height: 220px;
+    max-height: 500px;
+    border: 0;
+    border-radius: 8px;
+    background: #fff;
+    color-scheme: light;
+}
+
+.conv-attachments {
+    list-style: none;
+    padding: 0;
+    margin: 0.75rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+}
+.conv-attachments li::before {
+    content: "📎 ";
+    opacity: 0.7;
+}
+.conv-attachments a { color: var(--accent-indigo, #6366F1); text-decoration: none; }
+.conv-attachments a:hover { text-decoration: underline; }
+.muted { color: var(--text-muted, #888); }
+
+.conv-attach-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0.25rem 0 0.5rem;
+    max-height: 160px;
+    overflow-y: auto;
+}
+.conv-attach-option {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+.btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+    color: var(--text-main);
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--accent-indigo, #6366F1); }
