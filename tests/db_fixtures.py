@@ -145,6 +145,7 @@ async def test_app(test_session_factory, test_tenant):
     from backend.app.auth import get_current_tenant
     from backend.app.db import get_db
     from backend.app.api.outcomes import router as outcomes_router
+    from backend.app.api.ws_tickets import router as ws_tickets_router
 
     async def _override_get_db():
         async with test_session_factory() as session:
@@ -169,6 +170,7 @@ async def test_app(test_session_factory, test_tenant):
 
     app = FastAPI()
     app.include_router(outcomes_router, prefix="/api/v1", tags=["outcomes"])
+    app.include_router(ws_tickets_router, prefix="/api/v1", tags=["ws-tickets"])
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_current_tenant] = _override_get_tenant
     try:

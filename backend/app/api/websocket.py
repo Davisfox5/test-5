@@ -19,6 +19,12 @@ from backend.app.services.live_coaching_features import (
     LiveFeatureWindow,
     LiveTurn,
 )
+from backend.app.services.ws_tickets import (
+    RateLimitedError,
+    WebSocketAuthError,
+    consume_ticket,
+    enforce_new_connection_quota,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +49,57 @@ def _word_count(text: str) -> int:
 
 @router.websocket("/ws/live/{session_id}")
 async def live_transcription(websocket: WebSocket, session_id: str):
-    """Agent connects here to stream audio and receive transcripts + coaching."""
+    """Agent connects here to stream audio and receive transcripts + coaching.
 
-    await websocket.accept()
-    logger.info("Agent WebSocket connected for session %s", session_id)
+    Authentication: the client must first call ``POST /ws/tickets`` with
+    its Bearer token to get a single-use ticket bound to ``(tenant_id,
+    session_id, role="agent")``, then open this WebSocket with
+    ``?ticket=<ticket>``.  The handler validates the ticket *before*
+    accepting the connection; an absent, expired, already-consumed, or
+    mismatched ticket closes the socket with code 4401.
+    """
 
     settings = get_settings()
     redis: Optional[aioredis.Redis] = None
     dg_connection = None
+
+    # ── Auth handshake ───────────────────────────────────────
+    ticket_param = websocket.query_params.get("ticket") if websocket.query_params else None
+    auth_redis = _get_redis()
+    try:
+        try:
+            ticket = await consume_ticket(
+                auth_redis,
+                ticket_param,
+                expected_session_id=session_id,
+                expected_role="agent",
+            )
+            await enforce_new_connection_quota(auth_redis, f"tenant:{ticket.tenant_id}")
+        except RateLimitedError:
+            logger.warning(
+                "ws/live rate-limited for session %s (ticket=%s)",
+                session_id, bool(ticket_param),
+            )
+            await websocket.close(code=4429, reason="rate_limited")
+            return
+        except WebSocketAuthError as exc:
+            logger.info(
+                "ws/live auth refused for %s: %s", session_id, exc.reason,
+            )
+            await websocket.close(code=4401, reason="unauthorized")
+            return
+    finally:
+        try:
+            await auth_redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    await websocket.accept()
+    logger.info(
+        "Agent WebSocket connected for session %s (tenant=%s)",
+        session_id, ticket.tenant_id,
+    )
+
     coaching_service = LiveCoachingService()
 
     # Tracking state for coaching triggers.
@@ -274,13 +323,50 @@ async def live_transcription(websocket: WebSocket, session_id: str):
 
 @router.websocket("/ws/monitor/{session_id}")
 async def monitor_session(websocket: WebSocket, session_id: str):
-    """Manager connects here to observe a live session and send whispers."""
+    """Manager connects here to observe a live session and send whispers.
 
-    await websocket.accept()
-    logger.info("Monitor WebSocket connected for session %s", session_id)
+    Authentication: same ticket handshake as ``/ws/live``, but the
+    ticket must have been issued for ``role="monitor"``.  The ticket
+    endpoint in turn requires the requesting user to hold
+    ``manager`` or ``admin``, so by the time we see a monitor ticket
+    here it has already been role-checked.
+    """
 
     redis: Optional[aioredis.Redis] = None
     pubsub: Optional[aioredis.client.PubSub] = None
+
+    # ── Auth handshake (monitor role required) ──────────────
+    ticket_param = websocket.query_params.get("ticket") if websocket.query_params else None
+    auth_redis = _get_redis()
+    try:
+        try:
+            ticket = await consume_ticket(
+                auth_redis,
+                ticket_param,
+                expected_session_id=session_id,
+                expected_role="monitor",
+            )
+            await enforce_new_connection_quota(auth_redis, f"tenant:{ticket.tenant_id}")
+        except RateLimitedError:
+            await websocket.close(code=4429, reason="rate_limited")
+            return
+        except WebSocketAuthError as exc:
+            logger.info(
+                "ws/monitor auth refused for %s: %s", session_id, exc.reason,
+            )
+            await websocket.close(code=4401, reason="unauthorized")
+            return
+    finally:
+        try:
+            await auth_redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    await websocket.accept()
+    logger.info(
+        "Monitor WebSocket connected for session %s (tenant=%s)",
+        session_id, ticket.tenant_id,
+    )
 
     try:
         redis = _get_redis()

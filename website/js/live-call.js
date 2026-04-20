@@ -40,19 +40,39 @@
 
     // ── Public API ──────────────────────────────────────────────────
 
-    window.openLiveCall = function (sessionId) {
+    window.openLiveCall = async function (sessionId) {
         if (typeof window.API_CONNECTED !== "undefined" && !window.API_CONNECTED) {
             return; // static demo mode — don't open a socket.
         }
         if (socket && socket.readyState !== WebSocket.CLOSED) {
             return; // already open.
         }
+
+        // Step 1 — request a single-use ticket over HTTPS.  The ticket
+        // endpoint binds it to our tenant, this session, role=agent.
+        var ticketResp = null;
+        try {
+            ticketResp = await window.apiFetch("/ws/tickets", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ role: "agent", session_id: sessionId }),
+            });
+        } catch (err) {
+            console.warn("live-call: ticket request failed", err);
+            return;
+        }
+        if (!ticketResp || !ticketResp.ticket) {
+            console.warn("live-call: could not obtain a WS ticket");
+            return;
+        }
+
+        // Step 2 — open the WebSocket with the ticket in the query string.
         try {
             var proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-            // Base demo host is served from FastAPI; if running the demo
-            // off a static host, allow an override via data-api-root.
             var host = window.location.host;
-            var url = proto + "//" + host + "/ws/live/" + encodeURIComponent(sessionId);
+            var url = proto + "//" + host + "/ws/live/"
+                + encodeURIComponent(ticketResp.session_id)
+                + "?ticket=" + encodeURIComponent(ticketResp.ticket);
             socket = new WebSocket(url);
         } catch (err) {
             console.warn("live-call: WebSocket construction failed", err);
@@ -60,7 +80,12 @@
         }
 
         socket.addEventListener("message", onMessage);
-        socket.addEventListener("close", function () { socket = null; });
+        socket.addEventListener("close", function (ev) {
+            socket = null;
+            if (ev && (ev.code === 4401 || ev.code === 4429)) {
+                console.warn("live-call: closed by server (code=" + ev.code + ")");
+            }
+        });
         socket.addEventListener("error", function (e) {
             console.warn("live-call: WebSocket error", e);
         });
