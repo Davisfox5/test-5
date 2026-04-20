@@ -72,6 +72,12 @@ celery_app.conf.update(
             "task": "crm_sync_daily",
             "schedule": crontab(minute=0, hour=3),
         },
+        # Nightly sweep: delete call recordings older than each tenant's
+        # ``recording_retention_days`` setting.
+        "recording-retention-daily": {
+            "task": "recording_retention_daily",
+            "schedule": crontab(minute=30, hour=3),
+        },
     },
 )
 
@@ -1132,5 +1138,26 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await deliver_one(db, uuid.UUID(delivery_id))
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="recording_retention_daily")
+def recording_retention_daily() -> Dict[str, Any]:
+    """Nightly retention sweep across every tenant with a retention
+    setting. Deletes aged ``CallRecording`` rows' S3 objects and flips
+    the rows to ``status='deleted'``."""
+    from backend.app.db import async_session
+    from backend.app.services.recording_retention import run_retention_sweep
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await run_retention_sweep(db)
+            return {
+                "tenants_processed": summary.tenants_processed,
+                "recordings_deleted": summary.recordings_deleted,
+                "s3_errors": summary.s3_errors,
+                "per_tenant": summary.per_tenant,
+            }
 
     return asyncio.run(_runner())

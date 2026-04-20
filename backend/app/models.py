@@ -42,6 +42,11 @@ class Tenant(Base):
     pii_redaction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     pii_redaction_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     audio_storage_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Days to keep ``CallRecording`` audio before the nightly cleanup
+    # deletes the S3 object + row. 0 means "keep forever" (not
+    # recommended outside of short-lived test tenants). Regulated
+    # industries typically set 2555 (7 years).
+    recording_retention_days: Mapped[int] = mapped_column(Integer, default=0)
     enrichment_pdl_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     enrichment_apollo_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     keyterm_boost_list: Mapped[list] = mapped_column(JSONB, default=list)

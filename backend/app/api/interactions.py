@@ -184,8 +184,52 @@ async def upload_voice_interaction(
     db.add(interaction)
     await db.flush()
 
-    # TODO: Save audio to temp storage or S3, then dispatch Celery task
-    # transcribe_and_analyze.delay(str(interaction.id), audio_path, engine)
+    # Stash the audio in S3 under a tenant-scoped key so it can be
+    # streamed into the Deepgram/Whisper transcription worker without
+    # holding the bytes in memory through the Celery round-trip. Key
+    # layout mirrors the recording archive:
+    #   uploads/{tenant_id}/{interaction_id}.{ext}
+    import asyncio as _asyncio
+    from backend.app.services import s3_audio
+
+    content_type = file.content_type or "audio/wav"
+    upload_key = f"uploads/{tenant.id}/{interaction.id}.{s3_audio._content_type_extension(content_type)}"
+
+    try:
+        stored = await _asyncio.to_thread(
+            s3_audio.upload_bytes,
+            tenant_id=tenant.id,
+            recording_id=interaction.id,
+            data=audio_bytes,
+            content_type=content_type,
+        )
+        interaction.audio_s3_key = stored.s3_key
+    except s3_audio.S3NotConfigured:
+        # Without S3 we can't run the batch pipeline for uploads — mark
+        # the row so admins see the gap rather than a silent never-
+        # processed interaction.
+        interaction.status = "failed"
+        interaction.insights = {"error": "audio_storage_not_configured"}
+        return interaction
+    except Exception as exc:
+        interaction.status = "failed"
+        interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
+        return interaction
+
+    # Dispatch the batch pipeline. ``process_voice_interaction`` already
+    # handles both the "transcript already populated" path (live calls)
+    # and the "audio_s3_key present" path we're setting up here.
+    try:
+        from backend.app.tasks import process_voice_interaction
+
+        process_voice_interaction.delay(str(interaction.id))
+    except Exception:
+        # Celery not available (local dev, tests) — the row is saved and
+        # the admin can trigger analysis manually. Don't fail the upload.
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Celery dispatch failed for uploaded interaction %s", interaction.id, exc_info=True,
+        )
 
     return interaction
 

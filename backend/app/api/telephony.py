@@ -46,6 +46,7 @@ from backend.app.db import async_session, get_db
 from backend.app.models import CallRecording, Integration, Interaction, LiveSession, Tenant
 from backend.app.services import s3_audio
 from backend.app.services.telephony.twilio import (
+    build_conference_twiml,
     build_hold_twiml,
     build_transfer_twiml,
     build_voice_twiml,
@@ -762,6 +763,68 @@ async def signalwire_media_stream(websocket: WebSocket, session_id: str):
 # ── Telnyx Call Control ───────────────────────────────────────────────
 
 
+# Redis keyspace for Telnyx call_control_id → LiveSession.id pins. The
+# map lets ``call.hangup`` find the right session even when the tenant
+# has overlapping calls. 12-hour TTL covers generous call durations
+# without letting stale entries accumulate forever.
+_TELNYX_SESSION_KEY_PREFIX = "telephony:telnyx:call"
+_TELNYX_SESSION_TTL_SECONDS = 12 * 3600
+
+
+async def _telnyx_remember_session(
+    call_control_id: str, session_id: uuid.UUID
+) -> None:
+    import redis.asyncio as aioredis
+
+    try:
+        r = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        try:
+            await r.set(
+                f"{_TELNYX_SESSION_KEY_PREFIX}:{call_control_id}",
+                str(session_id),
+                ex=_TELNYX_SESSION_TTL_SECONDS,
+            )
+        finally:
+            await r.aclose()
+    except Exception:
+        # Losing the pin is non-fatal — call.hangup falls back to the
+        # most-recent-active heuristic. Just log + continue.
+        logger.debug("Telnyx session map write failed", exc_info=True)
+
+
+async def _telnyx_lookup_session(call_control_id: str) -> Optional[uuid.UUID]:
+    import redis.asyncio as aioredis
+
+    try:
+        r = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        try:
+            raw = await r.get(f"{_TELNYX_SESSION_KEY_PREFIX}:{call_control_id}")
+        finally:
+            await r.aclose()
+        if not raw:
+            return None
+        try:
+            return uuid.UUID(raw)
+        except ValueError:
+            return None
+    except Exception:
+        logger.debug("Telnyx session map read failed", exc_info=True)
+        return None
+
+
+async def _telnyx_forget_session(call_control_id: str) -> None:
+    import redis.asyncio as aioredis
+
+    try:
+        r = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        try:
+            await r.delete(f"{_TELNYX_SESSION_KEY_PREFIX}:{call_control_id}")
+        finally:
+            await r.aclose()
+    except Exception:
+        logger.debug("Telnyx session map delete failed", exc_info=True)
+
+
 async def _telnyx_api_key_for_tenant(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[str]:
     """Decrypt the tenant's Telnyx API key from Integration, if present."""
     from backend.app.models import Integration
@@ -882,6 +945,14 @@ async def telnyx_voice_webhook(
         db.add(session)
         await db.flush()
 
+        # Pin call_control_id → session_id in Redis so ``call.hangup``
+        # can find the right session deterministically, even when the
+        # tenant has multiple concurrent Telnyx calls. Previously we
+        # fell back to "most recent active session", which broke for
+        # busy tenants with overlapping calls. 12h TTL — if a call
+        # genuinely runs longer than that, the cleanup sweep handles it.
+        await _telnyx_remember_session(call_control_id, session.id)
+
         # Answer the call, then start streaming to us.
         await _telnyx_post(api_key, call_control_answer_url(call_control_id))
         http_base = str(request.base_url).rstrip("/")
@@ -897,21 +968,27 @@ async def telnyx_voice_webhook(
         return {"status": "streaming_started", "session_id": str(session.id)}
 
     if event_type == "call.hangup" and call_control_id:
-        # Best-effort: locate the LiveSession by recent tenant + source
-        # and dispatch batch analysis. Telnyx doesn't give us the session
-        # id on this event, so we fall back to "most recent active session
-        # for the tenant on telnyx".
-        stmt = (
-            select(LiveSession)
-            .where(
-                LiveSession.tenant_id == tenant_id,
-                LiveSession.source == "telnyx",
-                LiveSession.ended_at.is_(None),
+        # Look up the session we mapped at call.initiated. Deterministic
+        # even when many Telnyx calls are in flight concurrently.
+        session_id = await _telnyx_lookup_session(call_control_id)
+        sess = None
+        if session_id is not None:
+            sess = await db.get(LiveSession, session_id)
+        # Fall back to the "most recent active" heuristic only if we
+        # have no map entry (e.g., it expired or this API instance
+        # didn't handle the matching call.initiated).
+        if sess is None:
+            stmt = (
+                select(LiveSession)
+                .where(
+                    LiveSession.tenant_id == tenant_id,
+                    LiveSession.source == "telnyx",
+                    LiveSession.ended_at.is_(None),
+                )
+                .order_by(LiveSession.started_at.desc())
+                .limit(1)
             )
-            .order_by(LiveSession.started_at.desc())
-            .limit(1)
-        )
-        sess = (await db.execute(stmt)).scalar_one_or_none()
+            sess = (await db.execute(stmt)).scalar_one_or_none()
         if sess is not None:
             try:
                 from backend.app.api.websocket import _dispatch_batch_analysis
@@ -925,6 +1002,10 @@ async def telnyx_voice_webhook(
                     await redis.aclose()
             except Exception:
                 logger.exception("Telnyx hangup dispatch failed")
+
+        # Drop the session-map entry once the hangup is handled so Redis
+        # doesn't accumulate stale pins for completed calls.
+        await _telnyx_forget_session(call_control_id)
         return {"status": "hangup_handled"}
 
     # Unhandled events get a polite 200 so Telnyx doesn't retry forever.
@@ -998,3 +1079,127 @@ async def link_twilio_credentials(
         "account_sid": body.account_sid,
         "saved": True,
     }
+
+
+# ── Warm transfer ─────────────────────────────────────────────────────
+
+
+class WarmTransferIn(BaseModel):
+    to: str = Field(..., description="E.164 number for the transfer target")
+    caller_id: Optional[str] = Field(
+        default=None,
+        description="Caller ID shown to the target; defaults to the tenant's configured number",
+    )
+    conference_name: Optional[str] = Field(
+        default=None,
+        description="Override the auto-generated conference name (useful for tests)",
+    )
+
+
+@router.post("/telephony/calls/{call_sid}/warm-transfer")
+async def warm_transfer_call(
+    call_sid: str,
+    body: WarmTransferIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_role("manager")),
+):
+    """Start a warm transfer.
+
+    Warm transfer means the caller and the transfer target end up in the
+    same conference, with the agent free to join (to brief the target),
+    stay (three-way), or drop out (letting the other two continue). This
+    is distinct from cold transfer (``/transfer``), where the agent
+    bridges them and hangs up in one step.
+
+    How it works:
+
+    1. The existing ``call_sid`` is redirected into a fresh conference
+       via ``_twilio_update_call``. The caller lands there and hears
+       hold music until someone else joins (``startConferenceOnEnter=
+       false`` on their leg).
+    2. We place an **outbound call** to ``to`` whose answer-TwiML is
+       the same conference, with ``startConferenceOnEnter=true`` so the
+       conference begins speaking once the target picks up.
+
+    The agent can dial into the conference too (via a third call or by
+    merging their leg) to brief the target before dropping. That third
+    call is composable on top — we don't build it here because the
+    calling UI usually has the agent's own line already.
+    """
+    creds = await _twilio_creds(principal.tenant.id, db)
+    if not (creds.account_sid and creds.auth_token):
+        raise HTTPException(
+            status_code=503,
+            detail="Twilio credentials are not configured for this tenant",
+        )
+
+    conference_name = body.conference_name or f"cs-wt-{call_sid}"
+
+    # Step 1: move the existing caller into the conference. They arrive
+    # with start_on_enter=False so they don't hear silence — Twilio plays
+    # the default "waiting" hold music until a second party joins.
+    caller_twiml = build_conference_twiml(
+        conference_name=conference_name,
+        start_on_enter=False,
+        end_on_exit=False,
+    )
+    await _twilio_update_call(call_sid, creds, twiml=caller_twiml)
+
+    # Step 2: outbound-dial the transfer target. When they pick up,
+    # Twilio fetches TwiML from our new endpoint which returns the
+    # same conference with start_on_enter=True.
+    base = str(request.base_url).rstrip("/")
+    target_twiml_url = (
+        f"{base}/api/v1/telephony/twilio/conference-join"
+        f"?conference_name={conference_name}&start_on_enter=true"
+    )
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls.json",
+            data={
+                "To": body.to,
+                "From": body.caller_id or "",
+                "Url": target_twiml_url,
+            },
+            auth=(creds.account_sid, creds.auth_token),
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Twilio rejected the warm-transfer target dial: "
+                f"{resp.status_code} {resp.text[:300]}"
+            ),
+        )
+    target = resp.json()
+    return {
+        "status": "warm_transfer_started",
+        "call_sid": call_sid,
+        "target_call_sid": target.get("sid"),
+        "conference_name": conference_name,
+    }
+
+
+@router.api_route(
+    "/telephony/twilio/conference-join",
+    methods=["GET", "POST"],
+)
+async def twilio_conference_join(
+    conference_name: str,
+    start_on_enter: bool = True,
+):
+    """TwiML-only endpoint: returns a ``<Conference>`` join.
+
+    Twilio calls this after the warm-transfer target answers. No auth —
+    it's invoked by Twilio during call flow, and the conference name
+    itself is the access token (random per transfer, bounded by Twilio
+    conference lifetime).
+    """
+    twiml = build_conference_twiml(
+        conference_name=conference_name,
+        start_on_enter=bool(start_on_enter),
+        end_on_exit=False,
+    )
+    return Response(content=twiml, media_type="application/xml")

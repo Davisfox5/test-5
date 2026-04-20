@@ -96,6 +96,44 @@ def build_hold_twiml(
     )
 
 
+def build_conference_twiml(
+    *,
+    conference_name: str,
+    start_on_enter: bool = True,
+    end_on_exit: bool = False,
+    wait_url: Optional[str] = None,
+) -> str:
+    """TwiML that drops the current call into a named conference.
+
+    Used by warm transfer: the caller is placed into the conference with
+    ``start_on_enter=False`` + ``end_on_exit=False`` so they hear hold
+    music until someone else joins. The agent + transfer target get the
+    same TwiML but with ``start_on_enter=True`` so the bridge kicks off
+    once they land.
+
+    ``wait_url`` is a Twilio "waiting TwiML" URL (hold music before the
+    conference starts); omitting it uses Twilio's default.
+    """
+    if not conference_name:
+        raise ValueError("conference_name is required")
+    safe_name = _xml_escape(conference_name)
+    attrs = [
+        f'startConferenceOnEnter="{str(bool(start_on_enter)).lower()}"',
+        f'endConferenceOnExit="{str(bool(end_on_exit)).lower()}"',
+    ]
+    if wait_url:
+        attrs.append(f'waitUrl="{_xml_escape(wait_url, {chr(34): "&quot;"})}"')
+    attrs_str = " ".join(attrs)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f'  <Dial>\n'
+        f"    <Conference {attrs_str}>{safe_name}</Conference>\n"
+        "  </Dial>\n"
+        "</Response>"
+    )
+
+
 def build_transfer_twiml(*, to_number: str, caller_id: Optional[str] = None) -> str:
     """TwiML that dials ``to_number`` — used when an agent hits the
     transfer button. Once the callee answers Twilio bridges the two legs.

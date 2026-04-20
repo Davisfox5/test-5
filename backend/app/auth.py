@@ -300,33 +300,6 @@ def require_role(minimum: str) -> Callable[..., AuthPrincipal]:
     return _dep
 
 
-# ── Transitional Clerk stub (unchanged behaviour) ──────────────────────
-
-
-async def _resolve_clerk_user(request: Request, db: AsyncSession) -> Optional[Tenant]:
-    """Legacy Clerk stub kept for older callers. New code should not use this."""
-    token = _extract_bearer_token(request)
-    if token is None or not token.startswith("clerk_"):
-        return None
-    clerk_user_id = token  # placeholder — replace with real JWT verification
-    stmt = (
-        select(User)
-        .options(selectinload(User.tenant))
-        .where(User.clerk_user_id == clerk_user_id)
-    )
-    result = await db.execute(stmt)
-    user: Optional[User] = result.scalar_one_or_none()
-    if user is None:
-        return None
-    return user.tenant
-
-
-async def get_current_user_or_tenant(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> Tenant:
-    """Try Clerk JWT first, fall back to the unified principal resolver."""
-    tenant = await _resolve_clerk_user(request, db)
-    if tenant is not None:
-        return tenant
-    return await get_current_tenant(request, db)
+# Clerk stub removed. Native session JWTs + per-tenant API keys cover
+# every auth path we need. ``User.clerk_user_id`` is still on the model
+# for future Clerk integration, but nothing consumes it today.
