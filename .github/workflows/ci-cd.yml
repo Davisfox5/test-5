@@ -1,19 +1,18 @@
-name: "CI-CD Pipeline"
+name: "CI"
 
 concurrency:
-  group: selfheal-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: write
 
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  build-test-deploy:
+  test:
     runs-on: ubuntu-latest
 
     env:
@@ -25,8 +24,7 @@ jobs:
       AZURE_SECRET: ${{ secrets.AZURE_SECRET }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
-      # Stub envs so backend modules can be imported in tests without
-      # talking to real services.
+      # Stub envs so backend modules import without talking to real services.
       DATABASE_URL: "postgresql://stub:stub@stub:5432/stub"
       ANTHROPIC_API_KEY: "sk-ant-stub"
       JWT_SECRET: "stub"
@@ -34,47 +32,21 @@ jobs:
 
     steps:
       - name: "Check out code"
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: "Set up Python"
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: "Install dependencies"
         run: |
-          pip install --upgrade pip
-          # Backend deps drive the test suite — anything imported by tests
-          # must be in requirements.txt or this build fails.
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Test-only tooling not in requirements.txt
           pip install pytest pytest-asyncio
-          # Self-healing orchestrator still pins openai 0.28.
-          pip install "openai==0.28.*"
 
-      - name: "Run tests & capture logs"
-        run: |
-          # Skip the Playwright E2E test in CI — it needs a browser and a
-          # running server.  Run it locally or in a dedicated E2E job.
-          pytest --maxfail=1 --disable-warnings -q \
-            --ignore=tests/sandbox_demo_ui_test.py \
-            2>&1 | tee test_output.log
-          exit_code=${PIPESTATUS[0]}
-          if [ $exit_code -ne 0 ]; then
-            echo "[pytest logs]" > fail_logs.txt
-            cat test_output.log >> fail_logs.txt
-            exit $exit_code
-          fi
-
-      # ── Self-healing ──────────────────────────────────────
-      # Disabled.  It was force-pushing GPT-generated "fixes" to main and
-      # mangling otherwise-fine code whenever tests failed for an environmental
-      # reason (e.g. missing dep).  Re-enable behind a manual workflow_dispatch
-      # if needed; if you do, keep the push targeted at a selfheal branch
-      # (NOT a force-push to main).
-      - name: "Self-Healing (disabled — see comment)"
-        if: ${{ failure() && false }}
-        run: |
-          echo "Self-Heal disabled.  See .github/workflows/ci-cd.yml comment."
+      - name: "Run tests"
+        run: pytest -q --ignore=tests/sandbox_demo_ui_test.py

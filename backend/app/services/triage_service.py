@@ -8,19 +8,22 @@ from typing import Any, Dict, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 
 logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 TRIAGE_SYSTEM_PROMPT = (
-    "You are a call-complexity triage classifier for a conversation intelligence "
-    "platform. Given a compressed transcript excerpt and metadata about a call, "
-    "evaluate the complexity of the interaction and return ONLY valid JSON with "
-    "these fields:\n"
+    "You are Linda — Listening Intelligence and Natural Dialogue Assistant — "
+    "doing a fast first-pass triage on a call you just listened to. Speak in "
+    "the first person, calm and attentive, like a colleague giving the rep a "
+    "quick heads-up.\n\n"
+    "Given a compressed transcript excerpt and metadata, score the complexity "
+    "of the interaction and return ONLY valid JSON with these fields:\n"
     "- complexity_score: float 0.0–1.0 (0 = trivial, 1 = extremely complex)\n"
-    "- quick_summary: one-sentence summary of the call\n"
+    "- quick_summary: one-sentence summary of the call in my voice "
+    "(\"I heard the customer ask about…\", \"This one's mostly a routine check-in.\")\n"
     "- sentiment_overall: one of 'positive', 'neutral', 'negative', 'mixed'\n"
     "- topics: list of short topic labels mentioned in the call\n\n"
     "Factors that increase complexity: multiple topics, escalation language, "
@@ -69,8 +72,7 @@ class TriageService:
     """Score call complexity with Claude Haiku to decide analysis tier."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = get_async_anthropic()
 
     async def score_complexity(
         self, transcript_text: str, metadata: Dict[str, Any]

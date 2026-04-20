@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models — every table in the CallSight schema."""
+"""SQLAlchemy ORM models — every table in the LINDA schema."""
 
 import uuid
 from datetime import date, datetime
@@ -55,7 +55,7 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
-    # Outcomes webhook HMAC secret verified on X-Callsight-Signature.
+    # Outcomes webhook HMAC secret verified on X-Linda-Signature.
     outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
     # How many hours of call audio to retain after processing.
     audio_retention_hours: Mapped[int] = mapped_column(Integer, default=24, server_default="24")
@@ -70,6 +70,11 @@ class Tenant(Base):
     pending_seat_reconciliation: Mapped[bool] = mapped_column(Boolean, default=False)
     # Per-tenant operating brief consumed by orchestrator + agents.
     tenant_context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    is_white_label: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # ── Plan + trial (Tier 1/2/3 customer-facing) ──────────
+    # plan_tier: sandbox | starter | growth | enterprise
+    plan_tier: Mapped[str] = mapped_column(String, nullable=False, default="sandbox", server_default="sandbox")
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -965,6 +970,7 @@ class CorrectionEvent(Base):
 
 # ──────────────────────────────────────────────────────────
 # CONVERSATIONS (threading across email / voice / chat)
+# Also used by Ask Linda for chat conversations + write proposals.
 # ──────────────────────────────────────────────────────────
 
 
@@ -984,6 +990,18 @@ class Conversation(Base):
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# ASK LINDA — chat conversations, messages, write proposals
+# Separate namespace from the email/voice Conversation above.
+# ──────────────────────────────────────────────────────────
+
+
+class LindaChatConversation(Base):
+    __tablename__ = "linda_chat_conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
 
 
 # ──────────────────────────────────────────────────────────
@@ -1312,3 +1330,59 @@ class DroppedOutcomeEvent(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    title: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LindaChatMessage(Base):
+    """Every turn in a Linda chat — user message, assistant reply, or tool result."""
+
+    __tablename__ = "linda_chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("linda_chat_conversations.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    role: Mapped[str] = mapped_column(String, nullable=False)  # user | assistant | tool
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class WriteProposal(Base):
+    """A draft write Linda proposed. Only dispatches after explicit user confirm."""
+
+    __tablename__ = "write_proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("linda_chat_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
+    resulting_entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ──────────────────────────────────────────────────────────
+# PUBLIC DEMO — email capture (pre-signup leads)
+# ──────────────────────────────────────────────────────────
+
+
+class DemoEmailCapture(Base):
+    """Emails collected from the public demo's 60-second gate. Pre-tenant."""
+
+    __tablename__ = "demo_email_captures"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source: Mapped[Optional[str]] = mapped_column(String)
+    utm: Mapped[dict] = mapped_column(JSONB, default=dict)
+    converted_tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

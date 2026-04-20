@@ -10,7 +10,7 @@ Hardened contract over the v1 endpoint:
   accepted (for backfill scripts and manual curl) but are rejected on
   retry by a hash fingerprint in the dead-letter log.
 - **HMAC verification** — tenants with ``outcomes_hmac_secret`` set must
-  include a valid ``X-Callsight-Signature: sha256=<hex>`` header.
+  include a valid ``X-Linda-Signature: sha256=<hex>`` header.
   Tenants without a secret accept unsigned calls (for gradual rollout).
 - **Semantic floors** — ``occurred_at`` cannot be > 1 day in the future;
   if an ``interaction_id`` is referenced it must belong to the caller's
@@ -107,7 +107,7 @@ def _verify_hmac(secret: Optional[str], body: bytes, signature_header: Optional[
     """Return True when the signature is valid, OR when the tenant has no
     secret configured (opt-in rollout).
 
-    Expected header: ``X-Callsight-Signature: sha256=<hex>``.
+    Expected header: ``X-Linda-Signature: sha256=<hex>``.
     """
     if not secret:
         return True
@@ -257,7 +257,7 @@ def _autogen_event_id(event: OutcomeEvent) -> str:
 async def ingest_outcome(
     request: Request,
     payload: OutcomeEvent,
-    signature: Optional[str] = Header(None, alias="X-Callsight-Signature"),
+    signature: Optional[str] = Header(None, alias="X-Linda-Signature"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -278,7 +278,7 @@ async def ingest_outcome(
 async def ingest_outcomes_batch(
     request: Request,
     payload: OutcomeBatch,
-    signature: Optional[str] = Header(None, alias="X-Callsight-Signature"),
+    signature: Optional[str] = Header(None, alias="X-Linda-Signature"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):

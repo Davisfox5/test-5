@@ -1,4 +1,4 @@
-# CallSight AI — Call Transcription & AI Insights Platform
+# LINDA — Call Transcription & AI Insights Platform
 
 ## Architecture & Implementation Plan
 
@@ -69,7 +69,7 @@ A white-label SaaS platform that ingests audio from customer calls (phone, VoIP,
 ## 2. Project Structure
 
 ```
-callsight/
+linda/
 ├── docker-compose.yml              # Local dev orchestration
 ├── docker-compose.prod.yml         # Production overrides
 ├── Makefile                        # Common dev commands
@@ -462,7 +462,7 @@ Return valid JSON only."""
   },
   "domain": {
     "custom": "calls.acme.com",
-    "default": "acme.callsight.app"
+    "default": "acme.linda.app"
   },
   "features": {
     "real_time_transcription": true,

@@ -1,0 +1,95 @@
+/*
+ * LINDA — design tokens.
+ *
+ * Shared between the public demo (website/*.html) and the Tier 2/3 SPA
+ * (apps/app). The SPA imports this file from globals.css and mirrors
+ * the same scale in its Tailwind preset, so Tailwind utilities, demo
+ * stylesheets, and the Ask-Linda widget all resolve to the same values.
+ *
+ * The [data-theme="light"] block at the bottom overrides the dark
+ * defaults, matching the existing demo's theme toggle. Don't redefine
+ * these tokens elsewhere — extend them here and let every consumer
+ * pick up the new value through the cascade.
+ */
+
+:root {
+    /* ── Palette — dark (default) ─────────────────────── */
+    --bg-main:        #0B0F19;
+    --bg-secondary:   #131A2A;
+    --bg-card:        #1A2234;
+    --bg-card-hover:  #22304A;
+
+    --text-main:      #F1F5F9;
+    --text-muted:     #A8B3C7;
+    --text-subtle:    #7A8699;
+
+    /* ── Brand ────────────────────────────────────────── */
+    --primary:        #6366F1;   /* indigo-500 */
+    --primary-hover:  #4F46E5;
+    --primary-soft:   rgba(99, 102, 241, 0.14);
+    --primary-ring:   rgba(99, 102, 241, 0.45);
+    --secondary:      #8B5CF6;   /* violet-500 */
+
+    --brand-grad:     linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+
+    /* ── Status accents ───────────────────────────────── */
+    --accent-emerald: #10B981;
+    --accent-rose:    #F43F5E;
+    --accent-amber:   #F59E0B;
+    --accent-cyan:    #06B6D4;
+
+    /* ── Borders ──────────────────────────────────────── */
+    --border:         rgba(255, 255, 255, 0.10);
+    --border-light:   rgba(255, 255, 255, 0.18);
+    --border-strong:  rgba(255, 255, 255, 0.28);
+
+    /* ── Shadows ──────────────────────────────────────── */
+    --shadow-sm:      0 1px 2px  rgba(0, 0, 0, 0.25);
+    --shadow-md:      0 4px 12px rgba(0, 0, 0, 0.30);
+    --shadow-lg:      0 12px 28px rgba(0, 0, 0, 0.40);
+    --shadow-xl:      0 24px 48px rgba(0, 0, 0, 0.50);
+
+    /* ── Radii ────────────────────────────────────────── */
+    --radius-sm:      6px;
+    --radius-md:      10px;
+    --radius-lg:      14px;
+    --radius-xl:      20px;
+
+    /* ── Motion ───────────────────────────────────────── */
+    --ease-out:       cubic-bezier(0.16, 1, 0.3, 1);
+    --dur-fast:       120ms;
+    --dur-med:        220ms;
+
+    /* ── Layout ───────────────────────────────────────── */
+    --container:      1200px;
+    --spacing-section: 6rem;
+
+    /* ── Type ─────────────────────────────────────────── */
+    --font-sans:      'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono:      'JetBrains Mono', ui-monospace, monospace;
+}
+
+[data-theme="light"] {
+    --bg-main:        #F7F8FB;
+    --bg-secondary:   #EEF1F7;
+    --bg-card:        #FFFFFF;
+    --bg-card-hover:  #F4F6FB;
+
+    --text-main:      #0F172A;
+    --text-muted:     #475569;
+    --text-subtle:    #64748B;
+
+    --primary:        #4F46E5;
+    --primary-hover:  #4338CA;
+    --primary-soft:   rgba(79, 70, 229, 0.10);
+    --primary-ring:   rgba(79, 70, 229, 0.35);
+
+    --border:         rgba(15, 23, 42, 0.10);
+    --border-light:   rgba(15, 23, 42, 0.16);
+    --border-strong:  rgba(15, 23, 42, 0.28);
+
+    --shadow-sm:      0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-md:      0 4px 12px rgba(15, 23, 42, 0.08);
+    --shadow-lg:      0 12px 28px rgba(15, 23, 42, 0.12);
+    --shadow-xl:      0 24px 48px rgba(15, 23, 42, 0.16);
+}

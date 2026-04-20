@@ -186,7 +186,7 @@ async def test_webhook(
         "event": "webhook.test",
         "webhook_id": str(webhook.id),
         "tenant_id": str(webhook.tenant_id),
-        "message": "This is a test ping from CallSight AI.",
+        "message": "This is a test ping from LINDA.",
     }
 
     import json
@@ -199,8 +199,8 @@ async def test_webhook(
                 webhook.url,
                 json=test_payload,
                 headers={
-                    "X-CallSight-Signature": f"sha256={signature}",
-                    "X-CallSight-Event": "webhook.test",
+                    "X-Linda-Signature": f"sha256={signature}",
+                    "X-Linda-Event": "webhook.test",
                     "Content-Type": "application/json",
                 },
             )

@@ -1,0 +1,35 @@
+@import "../styles/tokens.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+    background: var(--bg-main);
+    color: var(--text-main);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+}
+
+a { color: inherit; }
+
+/* Shared button primitives — small, sufficient for the shell until a
+   proper component library lands. */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.55rem 1rem;
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    transition: background var(--dur-fast) var(--ease-out),
+                transform var(--dur-fast) var(--ease-out);
+    cursor: pointer;
+    border: 1px solid transparent;
+    font: inherit;
+}
+.btn-primary { background: var(--brand-grad); color: #fff; }
+.btn-primary:hover { transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--text-main); border-color: var(--border); }
+.btn-ghost:hover { background: var(--bg-card-hover); }

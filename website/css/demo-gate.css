@@ -1,0 +1,90 @@
+/* Public demo gate — 60s countdown + email capture modal */
+
+.demo-gate {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(6px);
+    display: grid;
+    place-items: center;
+    z-index: 1000;
+    animation: demo-gate-in 180ms ease-out;
+}
+.demo-gate.demo-gate-dismissing { animation: demo-gate-out 180ms ease-in both; }
+
+@keyframes demo-gate-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes demo-gate-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+.demo-gate-card {
+    width: min(480px, calc(100vw - 2rem));
+    background: var(--bg-card, #fff);
+    color: var(--text-main, #0f172a);
+    border-radius: 16px;
+    box-shadow: 0 32px 80px rgba(15, 23, 42, 0.4);
+    padding: 2rem;
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.2));
+}
+
+.demo-gate-title {
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.demo-gate-copy {
+    margin: 0 0 1.25rem;
+    color: var(--text-dim, #475569);
+    line-height: 1.5;
+}
+
+.demo-gate-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.demo-gate-input {
+    font: inherit;
+    padding: 0.7rem 0.9rem;
+    border-radius: 10px;
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.4));
+    background: var(--bg-main, #fff);
+    color: var(--text-main, #0f172a);
+}
+.demo-gate-input:focus-visible {
+    outline: 2px solid #8B5CF6;
+    outline-offset: 0;
+    border-color: transparent;
+}
+
+.demo-gate-submit { padding: 0.7rem 1rem; font-size: 1rem; }
+.demo-gate-submit:disabled { opacity: 0.6; cursor: wait; }
+
+.demo-gate-error {
+    margin: 0.25rem 0 0;
+    color: #EF4444;
+    font-size: 0.85rem;
+    min-height: 1.2em;
+}
+
+.demo-gate-success { display: block; }
+.demo-gate-success[hidden] { display: none; }
+
+.demo-gate-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+}
+.demo-gate-actions .btn-primary,
+.demo-gate-actions .btn-ghost { flex: 1 1 auto; text-align: center; }

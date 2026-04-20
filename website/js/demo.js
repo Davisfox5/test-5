@@ -1,7 +1,27 @@
+// ======== MIGRATION: one-time rename of legacy callsight-* localStorage keys ========
+(function migrateLegacyStorageKeys() {
+    try {
+        var legacyPrefix = 'callsight-';
+        var newPrefix = 'linda-';
+        var legacy = [];
+        for (var i = 0; i < localStorage.length; i++) {
+            var k = localStorage.key(i);
+            if (k && k.indexOf(legacyPrefix) === 0) legacy.push(k);
+        }
+        legacy.forEach(function(k) {
+            var newKey = newPrefix + k.slice(legacyPrefix.length);
+            if (localStorage.getItem(newKey) === null) {
+                localStorage.setItem(newKey, localStorage.getItem(k));
+            }
+            localStorage.removeItem(k);
+        });
+    } catch (e) { /* ignore */ }
+})();
+
 // ======== THEME (runs before DOMContentLoaded to avoid flash) ========
 (function initTheme() {
     try {
-        var stored = localStorage.getItem('callsight-theme');
+        var stored = localStorage.getItem('linda-theme');
         var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
         var theme = stored || (prefersLight ? 'light' : 'dark');
         if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
@@ -10,7 +30,7 @@
 
 // ======== API CONFIGURATION ========
 let API_CONNECTED = false;
-let API_KEY = localStorage.getItem('callsight-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
+let API_KEY = localStorage.getItem('linda-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
 
 // Channel icon SVG templates for dynamic row building.
 // SMS/WhatsApp icons removed while those channels are stubbed — the
@@ -854,7 +874,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // ======== NAV GROUP COLLAPSE/EXPAND ========
     var navGroups = document.querySelectorAll('.nav-group');
-    var savedGroups = JSON.parse(localStorage.getItem('callsight-nav-groups') || '{}');
+    var savedGroups = JSON.parse(localStorage.getItem('linda-nav-groups') || '{}');
 
     navGroups.forEach(function(group) {
         var key = group.getAttribute('data-group');
@@ -873,7 +893,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 navGroups.forEach(function(g) {
                     states[g.getAttribute('data-group')] = g.classList.contains('collapsed') ? 'collapsed' : 'expanded';
                 });
-                localStorage.setItem('callsight-nav-groups', JSON.stringify(states));
+                localStorage.setItem('linda-nav-groups', JSON.stringify(states));
             });
         }
     });
@@ -884,7 +904,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var userRole = document.querySelector('.user-role');
 
     // Restore saved role
-    if (localStorage.getItem('callsight-role') === 'manager') {
+    if (localStorage.getItem('linda-role') === 'manager') {
         appLayout.classList.add('manager-mode');
         if (roleToggle) roleToggle.querySelector('[data-role="manager"]').classList.add('active');
         if (roleToggle) roleToggle.querySelector('[data-role="agent"]').classList.remove('active');
@@ -904,7 +924,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     appLayout.classList.remove('manager-mode');
                     if (userRole) userRole.textContent = 'Sales Agent';
                 }
-                localStorage.setItem('callsight-role', role);
+                localStorage.setItem('linda-role', role);
             });
         });
     }
@@ -1009,7 +1029,7 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 document.documentElement.removeAttribute('data-theme');
             }
-            try { localStorage.setItem('callsight-theme', next); } catch (e) {}
+            try { localStorage.setItem('linda-theme', next); } catch (e) {}
         });
     }
 
@@ -1019,7 +1039,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (sidebar) {
         // Restore saved state
         try {
-            if (localStorage.getItem('callsight-sidebar') === 'collapsed') {
+            if (localStorage.getItem('linda-sidebar') === 'collapsed') {
                 sidebar.classList.add('collapsed');
                 if (sidebarBtn) {
                     sidebarBtn.setAttribute('aria-pressed', 'true');
@@ -1035,7 +1055,7 @@ document.addEventListener('DOMContentLoaded', function() {
             sidebarBtn.setAttribute('aria-pressed', String(collapsed));
             sidebarBtn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
             if (collapsed) addCollapsedAriaLabels();
-            try { localStorage.setItem('callsight-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
+            try { localStorage.setItem('linda-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
         });
     }
 

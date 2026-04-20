@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     # ── Core ──────────────────────────────────────────────
-    APP_NAME: str = "CallSight AI"
+    APP_NAME: str = "LINDA"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: list[str] = ["*"]

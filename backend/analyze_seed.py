@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """
-CallSight AI — Analyze all seeded interactions with the real AI pipeline.
+LINDA — Analyze all seeded interactions with the real AI pipeline.
 
 Runs triage, analysis, scorecard scoring, and snippet extraction on every
-interaction with status='transcribed' in the callsight-demo tenant.
+interaction with status='transcribed' in the linda-demo tenant.
 
 Usage:
     python -m backend.analyze_seed      # from project root
     python backend/analyze_seed.py      # also works
+
+Persona rollout note
+--------------------
+The ANALYSIS_SYSTEM_PROMPT / TRIAGE_SYSTEM_PROMPT in
+``backend/app/services/ai_analysis.py`` and ``triage_service.py`` have been
+rewritten so Claude now emits narrative fields (summary, coaching notes,
+notable_snippets descriptions, follow-up drafts) in Linda's first-person
+voice. Existing seeded ``interactions.insights`` blobs were produced by the
+previous prompts and still read in the old third-person voice.
+
+Re-run this script after deploying the updated prompts to refresh every
+seeded interaction in Linda's voice. Worth revisiting the prompt wording
+after we've seen real outputs from a live test run — the voice guardrails
+may need tightening once we see how the model behaves on real transcripts.
 """
 
 import asyncio
@@ -109,10 +123,10 @@ async def analyze_all() -> None:
         cur = conn.cursor()
 
         # Get tenant id
-        cur.execute("SELECT id FROM tenants WHERE slug = 'callsight-demo'")
+        cur.execute("SELECT id FROM tenants WHERE slug = 'linda-demo'")
         row = cur.fetchone()
         if not row:
-            print("ERROR: Tenant 'callsight-demo' not found. Run backend/seed.py first.")
+            print("ERROR: Tenant 'linda-demo' not found. Run backend/seed.py first.")
             return
         tenant_id = str(row[0])
 

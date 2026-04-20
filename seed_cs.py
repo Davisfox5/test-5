@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CallSight AI — Customer Service Call Transcript Seed Script
+LINDA — Customer Service Call Transcript Seed Script
 Appends 17 realistic CS call transcripts to the existing Flex database.
 Schema, tenant, and users are assumed to already exist (run seed_sales.py first).
 """
@@ -45,7 +45,7 @@ CS_CALLS = [
 
     {
         "title": "Sentiment Export Feature — Horizon Telecom",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Rosa Ingram",
         "customer_company": "Horizon Telecom",
         "customer_title": "Operations Analyst",
@@ -54,7 +54,7 @@ CS_CALLS = [
         "days_ago": 5,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Aisha Thompson", "sentiment": "positive",
-             "text": "Thanks for calling CallSight support, this is Aisha. How can I help you today?"},
+             "text": "Thanks for calling Linda support, this is Aisha. How can I help you today?"},
             {"speaker_id": "customer", "speaker_name": "Rosa Ingram",    "sentiment": "neutral",
              "text": "I mean, hi, I'm trying to export sentiment data for our monthly report and I cannot for the life of me find where that option is. I've looked all through so the dashboard."},
             {"speaker_id": "agent",    "speaker_name": "Aisha Thompson", "sentiment": "positive",
@@ -78,7 +78,7 @@ CS_CALLS = [
 
     {
         "title": "Salesforce Sync Failure — BrightPath Financial",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Owen Cartwright",
         "customer_company": "BrightPath Financial",
         "customer_title": "Sales Operations Manager",
@@ -87,7 +87,7 @@ CS_CALLS = [
         "days_ago": 8,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",        "sentiment": "positive",
-             "text": "CallSight support, Derek speaking. What can I help you with?"},
+             "text": "Linda support, Derek speaking. What can I help you with?"},
             {"speaker_id": "customer", "speaker_name": "Owen Cartwright",  "sentiment": "negative",
              "text": "Hi Derek. Our Salesforce integration has stopped syncing. Our reps are logging calls manually again because nothing is pushing through, and they are not happy about it. This has been broken for two days."},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",        "sentiment": "positive",
@@ -103,7 +103,7 @@ CS_CALLS = [
             {"speaker_id": "customer", "speaker_name": "Owen Cartwright",  "sentiment": "neutral",
              "text": "I can get our admin on a call. What exactly does she need to do?"},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",        "sentiment": "positive",
-             "text": "She needs to go to Connected Apps in Salesforce setup, find the CallSight integration, and check that the OAuth scopes include API access and refresh token. From what I remember, then from our side you'll need to go to Settings, Integrations, Salesforce, and click Re-authorize. That will issue a fresh token with the correct permissions. The whole thing takes about five minutes."},
+             "text": "She needs to go to Connected Apps in Salesforce setup, find the Linda integration, and check that the OAuth scopes include API access and refresh token. From what I remember, then from our side you'll need to go to Settings, Integrations, Salesforce, and click Re-authorize. That will issue a fresh token with the correct permissions. The whole thing takes about five minutes."},
             {"speaker_id": "customer", "speaker_name": "Owen Cartwright",  "sentiment": "positive",
              "text": "Okay, I'm so texting her right now. Can you stay on the line while we do this?"},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",        "sentiment": "positive",
@@ -119,7 +119,7 @@ CS_CALLS = [
 
     {
         "title": "New Team Member Onboarding — MediConnect Solutions",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Claire Nguyen",
         "customer_company": "MediConnect Solutions",
         "customer_title": "Patient Services Manager",
@@ -154,7 +154,7 @@ CS_CALLS = [
 
     {
         "title": "Custom Branding Configuration — ProServe BPO",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Terrence Ball",
         "customer_company": "ProServe BPO",
         "customer_title": "Product Owner",
@@ -185,7 +185,7 @@ CS_CALLS = [
 
     {
         "title": "Action Items Not Auto-Assigning — CoreTech Systems",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Paul Whitfield",
         "customer_company": "CoreTech Systems",
         "customer_title": "VP of Customer Success",
@@ -220,7 +220,7 @@ CS_CALLS = [
 
     {
         "title": "Overage Billing Question — Horizon Telecom",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Marcus Quinn",
         "customer_company": "Horizon Telecom",
         "customer_title": "Finance Director",
@@ -229,13 +229,13 @@ CS_CALLS = [
         "days_ago": 19,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",    "sentiment": "positive",
-             "text": "CallSight support, Derek speaking."},
+             "text": "Linda support, Derek speaking."},
             {"speaker_id": "customer", "speaker_name": "Marcus Quinn", "sentiment": "neutral",
              "text": "Hi Derek, Marcus Quinn from Horizon Telecom. I'm looking at our invoice for  — hold on one sec — okay, I'm back —  last month and there's an overage charge I wasn't expecting. I need to understand what triggered it... does that make sense?"},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",    "sentiment": "positive",
              "text": "Of course. Let me pull up your account usage for last month. Can you give me a moment? Okay — I can see the overage. It looks like your call volume was about 23 percent above your contracted monthly limit. The spike appears to have happened in the last week of the month. Do you recall anything unusual operationally during that period?"},
             {"speaker_id": "customer", "speaker_name": "Marcus Quinn", "sentiment": "neutral",
-             "text": "We ran a big promotional campaign that drove a lot of inbound calls. I guess we didn't think about how that would hit our CallSight usage as well."},
+             "text": "We ran a big promotional campaign that drove a lot of inbound calls. I guess we didn't think about how that would hit our Linda usage as well."},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",    "sentiment": "positive",
              "text": "Makes sense. That explains it perfectly. The overage rate that was applied is in your contract as our standard rate, but I wanna make sure that's visible to you going forward. I think we can set up a usage alert so you're notified when you reach, say, 80 percent of your monthly limit. That would give you enough time to contact us about a temporary increase before the overage kicks in."},
             {"speaker_id": "customer", "speaker_name": "Marcus Quinn", "sentiment": "positive",
@@ -251,7 +251,7 @@ CS_CALLS = [
 
     {
         "title": "Adding New Users to Account — BrightPath Financial",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Sandra Yip",
         "customer_company": "BrightPath Financial",
         "customer_title": "IT Administrator",
@@ -260,7 +260,7 @@ CS_CALLS = [
         "days_ago": 22,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Aisha Thompson", "sentiment": "positive",
-             "text": "Hi, you've reached Aisha at CallSight. How can I help you?"},
+             "text": "Hi, you've reached Aisha at Linda. How can I help you?"},
             {"speaker_id": "customer", "speaker_name": "Sandra Yip",     "sentiment": "neutral",
              "text": "Um, hi Aisha, Sandra from BrightPath. We're onboarding a new batch of financial advisors next week and I need to add 14 new user accounts. I wanna make sure I'm doing it in bulk correctly because last time I added them one by one and it took forever."},
             {"speaker_id": "agent",    "speaker_name": "Aisha Thompson", "sentiment": "positive",
@@ -280,7 +280,7 @@ CS_CALLS = [
 
     {
         "title": "Missing Transcript Investigation — MediConnect Solutions",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "James Orwell",
         "customer_company": "MediConnect Solutions",
         "customer_title": "Quality Assurance Lead",
@@ -289,7 +289,7 @@ CS_CALLS = [
         "days_ago": 27,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",    "sentiment": "positive",
-             "text": "CallSight support, Derek here."},
+             "text": "Linda support, Derek here."},
             {"speaker_id": "customer", "speaker_name": "James Orwell", "sentiment": "neutral",
              "text": "Well, derek, I've a specific call from last Tuesday I mean that I need the transcript for, and it's showing in our system as complete but when I click into it there's no transcript available. Just a spinning loader that never resolves."},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",    "sentiment": "positive",
@@ -315,7 +315,7 @@ CS_CALLS = [
 
     {
         "title": "Slack Integration Setup — ProServe BPO",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Terrence Ball",
         "customer_company": "ProServe BPO",
         "customer_title": "Product Owner",
@@ -348,7 +348,7 @@ CS_CALLS = [
 
     {
         "title": "Coaching Score Explanation — CoreTech Systems",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Angela Merritt",
         "customer_company": "CoreTech Systems",
         "customer_title": "Team Lead",
@@ -381,7 +381,7 @@ CS_CALLS = [
 
     {
         "title": "CSV Data Export Request — Horizon Telecom",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Rosa Ingram",
         "customer_company": "Horizon Telecom",
         "customer_title": "Operations Analyst",
@@ -406,7 +406,7 @@ CS_CALLS = [
 
     {
         "title": "Admin Access for New Manager — BrightPath Financial",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Owen Cartwright",
         "customer_company": "BrightPath Financial",
         "customer_title": "Sales Operations Manager",
@@ -435,7 +435,7 @@ CS_CALLS = [
 
     {
         "title": "AI Summary Feedback — MediConnect Solutions",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Claire Nguyen",
         "customer_company": "MediConnect Solutions",
         "customer_title": "Patient Services Manager",
@@ -464,7 +464,7 @@ CS_CALLS = [
 
     {
         "title": "Quarterly Business Review — ProServe BPO",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Terrence Ball",
         "customer_company": "ProServe BPO",
         "customer_title": "Product Owner",
@@ -503,7 +503,7 @@ CS_CALLS = [
 
     {
         "title": "Feature Request — Advanced Filtering — CoreTech Systems",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Paul Whitfield",
         "customer_company": "CoreTech Systems",
         "customer_title": "VP of Customer Success",
@@ -530,7 +530,7 @@ CS_CALLS = [
 
     {
         "title": "Password Reset & Account Lockout",
-        "agent": "derek.liu@callsight.ai",
+        "agent": "derek.liu@linda-ai.co",
         "customer_name": "Beth Sorenson",
         "customer_company": "Horizon Telecom",
         "customer_title": "Customer Success Specialist",
@@ -539,7 +539,7 @@ CS_CALLS = [
         "days_ago": 60,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",     "sentiment": "positive",
-             "text": "CallSight support, Derek here."},
+             "text": "Linda support, Derek here."},
             {"speaker_id": "customer", "speaker_name": "Beth Sorenson", "sentiment": "negative",
              "text": "Hi, I'm locked out of my account. As far as I know, i tried to reset my password three times and now it's saying my account is locked. I've a team meeting in 20 minutes where I need to pull up call data."},
             {"speaker_id": "agent",    "speaker_name": "Derek Liu",     "sentiment": "positive",
@@ -557,7 +557,7 @@ CS_CALLS = [
 
     {
         "title": "Frustrated Client — Multiple Ongoing Issues — BrightPath Financial",
-        "agent": "aisha.thompson@callsight.ai",
+        "agent": "aisha.thompson@linda-ai.co",
         "customer_name": "Owen Cartwright",
         "customer_company": "BrightPath Financial",
         "customer_title": "Sales Operations Manager",
@@ -596,7 +596,7 @@ CS_CALLS = [
 
 def fetch_tenant_and_users(conn):
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM tenants WHERE slug = 'callsight-demo'")
+        cur.execute("SELECT id FROM tenants WHERE slug = 'linda-demo'")
         tenant_id = cur.fetchone()[0]
         cur.execute("SELECT email, id FROM users WHERE tenant_id = %s", (tenant_id,))
         user_map = {row[0]: row[1] for row in cur.fetchall()}
@@ -616,8 +616,8 @@ def insert_cs_calls(conn, tenant_id, user_map):
                 {"name": c["customer_name"], "company": c["customer_company"],
                  "title": c["customer_title"], "role": "customer"},
                 {"name": next(a["full_name"] for a in [
-                    {"email": "aisha.thompson@callsight.ai", "full_name": "Aisha Thompson"},
-                    {"email": "derek.liu@callsight.ai",      "full_name": "Derek Liu"},
+                    {"email": "aisha.thompson@linda-ai.co", "full_name": "Aisha Thompson"},
+                    {"email": "derek.liu@linda-ai.co",      "full_name": "Derek Liu"},
                 ] if a["email"] == c["agent"]), "role": "agent"},
             ]
 

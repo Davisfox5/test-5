@@ -13,7 +13,7 @@ webhook" to "production integration surface":
 - ``dropped_outcome_events`` — dead-letter log for payloads that fail
   semantic validation, so integrators can debug without losing data.
 - ``Tenant.outcomes_hmac_secret`` — per-tenant shared secret for
-  verifying ``X-Callsight-Signature`` headers.
+  verifying ``X-Linda-Signature`` headers.
 - ``Tenant.audio_retention_hours`` — controls how long processed
   audio is retained.  Ships with a default of 24h so the S3 lifecycle
   rule's grace period is never zero.

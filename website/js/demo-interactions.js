@@ -1,5 +1,5 @@
 /**
- * CallSight AI — Sandbox Demo Interactions
+ * LINDA — Sandbox Demo Interactions
  * Wires up every interactive control in demo.html so buttons and
  * inputs do exactly what they say, even when the backend is absent.
  */
@@ -947,7 +947,7 @@
             openModal({
                 title: row ? 'Edit Webhook' : 'Add Webhook',
                 body:
-                    '<label>Endpoint URL<input type="url" id="whUrl" value="' + esc(existingUrl) + '" placeholder="https://hooks.yoursite.com/callsight"></label>' +
+                    '<label>Endpoint URL<input type="url" id="whUrl" value="' + esc(existingUrl) + '" placeholder="https://hooks.yoursite.com/linda"></label>' +
                     '<label>Events (comma-separated)<input type="text" id="whEvents" value="' + esc(existingEvents || 'call.completed, transcript.ready') + '"></label>' +
                     '<label style="flex-direction:row;align-items:center;gap:.5rem"><input type="checkbox" id="whActive" checked> Active</label>',
                 actions: [
@@ -1157,7 +1157,7 @@
     });
 
     // Expose helpers for debugging / potential reuse
-    window.CallsightDemo = {
+    window.LindaDemo = {
         showToast: showToast,
         openModal: openModal,
         closeModal: closeGenericModal,

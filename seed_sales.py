@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CallSight AI — Sales Call Transcript Seed Script
+LINDA — Sales Call Transcript Seed Script
 Creates schema and populates 18 realistic sales call transcripts.
 No AI analysis is run here — transcripts only.
 """
@@ -150,13 +150,13 @@ CREATE INDEX idx_segs_transcript ON transcript_segments(transcript_id, seq_order
 # ── Agent definitions ─────────────────────────────────────────────────────────
 
 AGENTS = [
-    {"full_name": "Marcus Webb",   "email": "marcus.webb@callsight.ai",   "role": "manager",  "department": "Sales"},
-    {"full_name": "Priya Sharma",  "email": "priya.sharma@callsight.ai",  "role": "member",   "department": "Sales"},
-    {"full_name": "Jordan Cole",   "email": "jordan.cole@callsight.ai",   "role": "member",   "department": "Sales"},
-    {"full_name": "Aisha Thompson","email": "aisha.thompson@callsight.ai","role": "manager",  "department": "Customer Success"},
-    {"full_name": "Derek Liu",     "email": "derek.liu@callsight.ai",     "role": "member",   "department": "Customer Success"},
-    {"full_name": "Sam Patel",     "email": "sam.patel@callsight.ai",     "role": "member",   "department": "IT Support"},
-    {"full_name": "Casey Rivera",  "email": "casey.rivera@callsight.ai",  "role": "member",   "department": "IT Support"},
+    {"full_name": "Marcus Webb",   "email": "marcus.webb@linda-ai.co",   "role": "manager",  "department": "Sales"},
+    {"full_name": "Priya Sharma",  "email": "priya.sharma@linda-ai.co",  "role": "member",   "department": "Sales"},
+    {"full_name": "Jordan Cole",   "email": "jordan.cole@linda-ai.co",   "role": "member",   "department": "Sales"},
+    {"full_name": "Aisha Thompson","email": "aisha.thompson@linda-ai.co","role": "manager",  "department": "Customer Success"},
+    {"full_name": "Derek Liu",     "email": "derek.liu@linda-ai.co",     "role": "member",   "department": "Customer Success"},
+    {"full_name": "Sam Patel",     "email": "sam.patel@linda-ai.co",     "role": "member",   "department": "IT Support"},
+    {"full_name": "Casey Rivera",  "email": "casey.rivera@linda-ai.co",  "role": "member",   "department": "IT Support"},
 ]
 
 # ── Sales call data ───────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ SALES_CALLS = [
 
     {
         "title": "Discovery — Apex Communications",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Kevin Okafor",
         "customer_company": "Apex Communications",
         "customer_title": "VP of Product",
@@ -178,7 +178,7 @@ SALES_CALLS = [
             {"speaker_id": "customer", "speaker_name": "Kevin Okafor", "sentiment": "positive",
              "text": "I mean, yeah, we've been fielding a lot of requests from enterprise customers asking for call analytics. Right now we're delivering the pipes but they want the intelligence layer so on top of it. We've been evaluating a few options."},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",  "sentiment": "positive",
-             "text": "That's the exact fit for what we built. CallSight is designed to be embedded into platforms like yours — you white-label it completely, your customers see your brand, and you're offering AI call intelligence without having to build or maintain any of the underlying infrastructure. What does your current uh analytics offering look like?"},
+             "text": "That's the exact fit for what we built. Linda is designed to be embedded into platforms like yours — you white-label it completely, your customers see your brand, and you're offering AI call intelligence without having to build or maintain any of the underlying infrastructure. What does your current uh analytics offering look like?"},
             {"speaker_id": "customer", "speaker_name": "Kevin Okafor", "sentiment": "neutral",
              "text": "Honestly, pretty thin. We have basic CDRs — call duration, volume, some routing data. Nothing on transcription, sentiment, any of the AI layer. We tried to build something internal about six months ago and it stalled out after the first sprint."},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",  "sentiment": "positive",
@@ -190,7 +190,7 @@ SALES_CALLS = [
             {"speaker_id": "customer", "speaker_name": "Kevin Okafor", "sentiment": "positive",
              "text": "Alright, so, our CEO is going to want I mean to see that it looks native. That's a hard requirement — it  — sorry, can you hear me okay? —  cannot look like a third-party integration. If it has someone else's name anywhere on it, it's a non-starter."},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",  "sentiment": "positive",
-             "text": "Right, right. Completely understood, and that's exactly how it works. Zero CallSight branding visible to your end users. Your domain, your color system, your logo. And on the API side, the endpoints are fully documented — your team can call them directly from within your existing platform. I'd suggest we get your product and engineering teams on a deeper technical session this week or next. Would that work?"},
+             "text": "Right, right. Completely understood, and that's exactly how it works. Zero Linda branding visible to your end users. Your domain, your color system, your logo. And on the API side, the endpoints are fully documented — your team can call them directly from within your existing platform. I'd suggest we get your product and engineering teams on a deeper technical session this week or next. Would that work?"},
             {"speaker_id": "customer", "speaker_name": "Kevin Okafor", "sentiment": "positive",
              "text": "Yeah, let's do it. I'll pull in our Head of Platform Engineering. He's the one who'll ultimately have to sign off on the integration approach anyway."},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",  "sentiment": "positive",
@@ -200,7 +200,7 @@ SALES_CALLS = [
 
     {
         "title": "Product Demo — Riverside Financial Group",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Sandra Bello",
         "customer_company": "Riverside Financial Group",
         "customer_title": "VP of Sales Operations",
@@ -241,7 +241,7 @@ SALES_CALLS = [
 
     {
         "title": "Cold Outreach — NovaCare Health Systems",
-        "agent": "jordan.cole@callsight.ai",
+        "agent": "jordan.cole@linda-ai.co",
         "customer_name": "Tom Haverford",
         "customer_company": "NovaCare Health Systems",
         "customer_title": "IT Director",
@@ -250,7 +250,7 @@ SALES_CALLS = [
         "days_ago": 14,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",    "sentiment": "positive",
-             "text": "Tom, thanks for picking up. Jordan Cole from CallSight AI — we build call transcription and AI analysis tools for healthcare organizations. I know this is out of nowhere, but I wanted to see if you had two minutes."},
+             "text": "Tom, thanks for picking up. Jordan Cole from LINDA — we build call transcription and AI analysis tools for healthcare organizations. I know this is out of nowhere, but I wanted to see if you had two minutes."},
             {"speaker_id": "customer", "speaker_name": "Tom Haverford",  "sentiment": "neutral",
              "text": "Sure, go ahead. Two minutes."},
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",    "sentiment": "positive",
@@ -272,7 +272,7 @@ SALES_CALLS = [
 
     {
         "title": "Proposal Review — Summit BPO Partners",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Rachel Chen",
         "customer_company": "Summit BPO Partners",
         "customer_title": "COO",
@@ -307,7 +307,7 @@ SALES_CALLS = [
 
     {
         "title": "Objection Handling — TechFlow CRM",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Brian Walsh",
         "customer_company": "TechFlow CRM",
         "customer_title": "CTO",
@@ -342,7 +342,7 @@ SALES_CALLS = [
 
     {
         "title": "White-Label Discovery — PinnacleConnect",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Diane Foster",
         "customer_company": "PinnacleConnect",
         "customer_title": "Head of Product",
@@ -377,7 +377,7 @@ SALES_CALLS = [
 
     {
         "title": "Competitive Evaluation Follow-Up — Meridian Insurance",
-        "agent": "jordan.cole@callsight.ai",
+        "agent": "jordan.cole@linda-ai.co",
         "customer_name": "Greg Santos",
         "customer_company": "Meridian Insurance",
         "customer_title": "VP of Operations",
@@ -410,7 +410,7 @@ SALES_CALLS = [
 
     {
         "title": "Executive Briefing — Coastal Lending Group",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Maria Vasquez",
         "customer_company": "Coastal Lending Group",
         "customer_title": "Director of Sales",
@@ -445,7 +445,7 @@ SALES_CALLS = [
 
     {
         "title": "Large Deal Discovery — Global Support Hub",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Andre Williams",
         "customer_company": "Global Support Hub",
         "customer_title": "VP of Customer Experience",
@@ -482,7 +482,7 @@ SALES_CALLS = [
 
     {
         "title": "Cold Outreach — Vantage Real Estate Group",
-        "agent": "jordan.cole@callsight.ai",
+        "agent": "jordan.cole@linda-ai.co",
         "customer_name": "Linda Park",
         "customer_company": "Vantage Real Estate Group",
         "customer_title": "Sales Director",
@@ -491,7 +491,7 @@ SALES_CALLS = [
         "days_ago": 30,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",  "sentiment": "positive",
-             "text": "Hi Linda, this is Jordan Cole from CallSight AI. I'll keep it short — we work with sales-driven organizations to automatically capture and analyze what's happening on their calls. Given the volume of buyer conversations your agents are having, I thought it might be worth a quick conversation."},
+             "text": "Hi Linda, this is Jordan Cole from LINDA. I'll keep it short — we work with sales-driven organizations to automatically capture and analyze what's happening on their calls. Given the volume of buyer conversations your agents are having, I thought it might be worth a quick conversation."},
             {"speaker_id": "customer", "speaker_name": "Linda Park",   "sentiment": "neutral",
              "text": "So, i'm familiar with these kinds of tools but we haven't really looked at them seriously. What specifically do you do that's different?"},
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",  "sentiment": "positive",
@@ -509,7 +509,7 @@ SALES_CALLS = [
 
     {
         "title": "Technical Deep Dive — Apex Communications (Follow-Up)",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Kevin Okafor",
         "customer_company": "Apex Communications",
         "customer_title": "VP of Product",
@@ -544,7 +544,7 @@ SALES_CALLS = [
 
     {
         "title": "Contract Finalization — Summit BPO Partners",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Rachel Chen",
         "customer_company": "Summit BPO Partners",
         "customer_title": "COO",
@@ -573,7 +573,7 @@ SALES_CALLS = [
 
     {
         "title": "Re-Engagement Call — TechFlow CRM",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Brian Walsh",
         "customer_company": "TechFlow CRM",
         "customer_title": "CTO",
@@ -598,7 +598,7 @@ SALES_CALLS = [
 
     {
         "title": "Partner Program Pitch — RegionTel",
-        "agent": "marcus.webb@callsight.ai",
+        "agent": "marcus.webb@linda-ai.co",
         "customer_name": "Frank Dominguez",
         "customer_company": "RegionTel",
         "customer_title": "VP of Partnerships",
@@ -611,7 +611,7 @@ SALES_CALLS = [
             {"speaker_id": "customer", "speaker_name": "Frank Dominguez","sentiment": "positive",
              "text": "You did your homework. Yes, we're fielding that request constantly, particularly from our healthcare and financial services clients. We've looked at a couple of solutions but they all wanted us to resell their branded product. We're not a reseller — we're a platform."},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",    "sentiment": "positive",
-             "text": "Gotcha. Exactly the distinction that matters. We're not asking you to resell CallSight. We're asking you to offer your own call intelligence product, powered by our infrastructure. Your brand, your packaging, your pricing to your clients. We're invisible in the stack."},
+             "text": "Gotcha. Exactly the distinction that matters. We're not asking you to resell Linda. We're asking you to offer your own call intelligence product, powered by our infrastructure. Your brand, your packaging, your pricing to your clients. We're invisible in the stack."},
             {"speaker_id": "customer", "speaker_name": "Frank Dominguez","sentiment": "positive",
              "text": "That changes the conversation significantly. What does the economics model look like for a partner?"},
             {"speaker_id": "agent",    "speaker_name": "Marcus Webb",    "sentiment": "positive",
@@ -629,7 +629,7 @@ SALES_CALLS = [
 
     {
         "title": "Compliance-Focused Discovery — CareNetwork Health",
-        "agent": "jordan.cole@callsight.ai",
+        "agent": "jordan.cole@linda-ai.co",
         "customer_name": "Stephanie Moss",
         "customer_company": "CareNetwork Health",
         "customer_title": "Chief Compliance Officer",
@@ -658,7 +658,7 @@ SALES_CALLS = [
 
     {
         "title": "Enthusiastic Demo — CloudServe SaaS",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Jason Kim",
         "customer_company": "CloudServe SaaS",
         "customer_title": "VP of Revenue",
@@ -671,7 +671,7 @@ SALES_CALLS = [
             {"speaker_id": "customer", "speaker_name": "Jason Kim",    "sentiment": "positive",
              "text": "Okay, so, honestly it's been chaos in the best way. We went from 8 reps to 34 and coaching just hasn't scaled. My VP of Sales is doing one-on-ones with 34 people trying to manually review calls and she's burning out. We need to automate the intelligence layer."},
             {"speaker_id": "agent",    "speaker_name": "Priya Sharma", "sentiment": "positive",
-             "text": "Mhm. That's a textbook scaling problem and exactly what we're designed for [laughs] . Let me show you what your VP of Sales' life looks like with CallSight."},
+             "text": "Mhm. That's a textbook scaling problem and exactly what we're designed for [laughs] . Let me show you what your VP of Sales' life looks like with Linda."},
             {"speaker_id": "customer", "speaker_name": "Jason Kim",    "sentiment": "positive",
              "text": "Please. She told me to come to this demo and 'fix the problem' so I'm motivated."},
             {"speaker_id": "agent",    "speaker_name": "Priya Sharma", "sentiment": "positive",
@@ -695,7 +695,7 @@ SALES_CALLS = [
 
     {
         "title": "Low-Interest Cold Call — Nationwide Adjusters",
-        "agent": "jordan.cole@callsight.ai",
+        "agent": "jordan.cole@linda-ai.co",
         "customer_name": "Phil Turner",
         "customer_company": "Nationwide Adjusters",
         "customer_title": "Operations Manager",
@@ -704,7 +704,7 @@ SALES_CALLS = [
         "days_ago": 38,
         "segments": [
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",  "sentiment": "positive",
-             "text": "Hi Phil, Jordan Cole from CallSight AI. We build call analytics software for operations teams handling high call volume. Is this a bad time?"},
+             "text": "Hi Phil, Jordan Cole from LINDA. We build call analytics software for operations teams handling high call volume. Is this a bad time?"},
             {"speaker_id": "customer", "speaker_name": "Phil Turner",  "sentiment": "negative",
              "text": "Depends on what you're selling. We get I mean a lot of these calls."},
             {"speaker_id": "agent",    "speaker_name": "Jordan Cole",  "sentiment": "neutral",
@@ -722,7 +722,7 @@ SALES_CALLS = [
 
     {
         "title": "Staffing Industry Discovery — TalentBridge Staffing",
-        "agent": "priya.sharma@callsight.ai",
+        "agent": "priya.sharma@linda-ai.co",
         "customer_name": "Nadia Osei",
         "customer_company": "TalentBridge Staffing",
         "customer_title": "VP of Business Development",
@@ -766,7 +766,7 @@ def insert_tenant(conn):
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO tenants (id, name, slug, plan) VALUES (%s, %s, %s, %s)",
-            (tid, "CallSight Demo", "callsight-demo", "enterprise")
+            (tid, "Linda Demo", "linda-demo", "enterprise")
         )
     conn.commit()
     print(f"✓ Tenant inserted: {tid}")

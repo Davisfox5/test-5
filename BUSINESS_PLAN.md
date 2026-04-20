@@ -1,10 +1,10 @@
-# CallSight AI — Business & Marketing Plan
+# LINDA — Business & Marketing Plan
 
 ## 1. Executive Summary
 
-CallSight AI is a white-label B2B SaaS platform that automatically transcribes customer calls and uses AI to generate actionable follow-ups, coaching insights, and sentiment analysis. Sold to companies running sales and customer-support operations, the platform is designed to be resold under their own brand to their end customers or used internally to drive team performance.
+LINDA is a white-label B2B SaaS platform that automatically transcribes customer calls and uses AI to generate actionable follow-ups, coaching insights, and sentiment analysis. Sold to companies running sales and customer-support operations, the platform is designed to be resold under their own brand to their end customers or used internally to drive team performance.
 
-The conversation intelligence market is projected to exceed $40B by 2030. CallSight targets the underserved mid-market segment — companies with 10–500 reps — that are priced out of enterprise solutions like Gong and Chorus but need more than basic call recording. Our white-label model creates a second revenue stream by enabling telephony providers, CRM vendors, and BPOs to embed call intelligence as a native feature.
+The conversation intelligence market is projected to exceed $40B by 2030. LINDA targets the underserved mid-market segment — companies with 10–500 reps — that are priced out of enterprise solutions like Gong and Chorus but need more than basic call recording. Our white-label model creates a second revenue stream by enabling telephony providers, CRM vendors, and BPOs to embed call intelligence as a native feature.
 
 ---
 
@@ -18,7 +18,7 @@ The conversation intelligence market is projected to exceed $40B by 2030. CallSi
 | Customers repeat themselves across calls | Support orgs | Agents re-read ticket history manually |
 | Telephony/CRM platforms lack built-in intelligence | SaaS vendors | Buy/build separate tooling, poor UX |
 
-**Core insight:** The value isn't in the transcript — it's in what happens *after* the call. Most platforms stop at transcription. CallSight closes the loop by turning conversations into assigned, tracked action items that flow directly into existing workflows.
+**Core insight:** The value isn't in the transcript — it's in what happens *after* the call. Most platforms stop at transcription. LINDA closes the loop by turning conversations into assigned, tracked action items that flow directly into existing workflows.
 
 ---
 
@@ -64,7 +64,7 @@ Our real competitors are not consumer transcription tools — they are enterpris
                             │
  LEGACY/INCUMBENT ──────────┼──────────── AI-NATIVE/MODERN
                             │
-     Genesys · Talkdesk     │     ★ CallSight AI ★
+     Genesys · Talkdesk     │     ★ LINDA ★
      AWS Contact Lens       │        Symbl.ai
      Google CCAI · Nuance   │
                             │
@@ -254,7 +254,7 @@ These are full contact center platforms that are adding AI features natively, po
 
 ### 4.3 Competitive Differentiation Matrix
 
-| Capability | CallSight | NICE/Verint/CallMiner | Observe.AI/Cresta/Balto | Symbl.ai | Deepgram/AssemblyAI | AWS/Google/MSFT |
+| Capability | LINDA | NICE/Verint/CallMiner | Observe.AI/Cresta/Balto | Symbl.ai | Deepgram/AssemblyAI | AWS/Google/MSFT |
 |-----------|-----------|----------------------|------------------------|----------|--------------------|-----------------|
 | White-label / rebrandable | **Yes** | No | No | Partial (API only) | No (API only) | No |
 | Multi-tenant architecture | **Yes** | No | No | No | No | No |
@@ -283,7 +283,7 @@ The market has a clear gap:
 - **API providers** (Deepgram, AssemblyAI, Symbl.ai) sell building blocks — customers must build the product themselves.
 - **Hyperscalers** (AWS, Google, Microsoft) lock customers into their cloud ecosystem.
 
-**CallSight occupies the only position that combines a turnkey product (dashboard + workflows + integrations) with true white-label multi-tenancy and API-first embeddability.** No existing player serves this niche.
+**LINDA occupies the only position that combines a turnkey product (dashboard + workflows + integrations) with true white-label multi-tenancy and API-first embeddability.** No existing player serves this niche.
 
 ---
 
@@ -437,7 +437,7 @@ Inbound lead (free signup / demo request)
 **Key sales assets:**
 - **ROI calculator:** Input team size + call volume → projected time savings and revenue impact
 - **Live demo environment:** Pre-loaded with sample calls showing full AI analysis
-- **Competitive battle cards:** Gong vs. CallSight, Fireflies vs. CallSight
+- **Competitive battle cards:** Gong vs. LINDA, Fireflies vs. LINDA
 - **Security whitepaper:** SOC 2, encryption, data residency details
 
 ### 8.2 White-Label Sales Motion

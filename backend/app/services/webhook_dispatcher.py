@@ -14,7 +14,7 @@ Retry policy: 5 attempts with exponential backoff (10s, 1m, 5m, 30m, 2h).
 After the 5th failure the row is marked ``dead_letter`` and the webhook's
 ``consecutive_failures`` counter is incremented for the admin UI.
 
-Signature: ``X-CallSight-Signature: sha256=<hex>`` over the literal
+Signature: ``X-Linda-Signature: sha256=<hex>`` over the literal
 request body. Recipients verify by recomputing ``HMAC_SHA256(secret,
 body)``.
 
@@ -161,10 +161,10 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
 
     headers = {
         "Content-Type": "application/json",
-        "X-CallSight-Event": delivery.event,
-        "X-CallSight-Signature": f"sha256={signature}",
-        "X-CallSight-Delivery": str(delivery.id),
-        "X-CallSight-Attempt": str(delivery.attempt_count + 1),
+        "X-Linda-Event": delivery.event,
+        "X-Linda-Signature": f"sha256={signature}",
+        "X-Linda-Delivery": str(delivery.id),
+        "X-Linda-Attempt": str(delivery.attempt_count + 1),
     }
 
     now = datetime.now(timezone.utc)
@@ -278,6 +278,7 @@ class WebhookDispatcher:
         payload: dict,
         db: AsyncSession,
     ) -> None:
+        """Enqueue a delivery for every active webhook subscribed to ``event``."""
         await emit_event(db, uuid.UUID(str(tenant_id)), event, payload)
 
     def sign_payload(self, payload: str, secret: str) -> str:
