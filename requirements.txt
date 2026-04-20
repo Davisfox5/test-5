@@ -21,6 +21,10 @@ pyannote.audio>=3.1               # Self-hosted speaker diarization
 # === Audio Processing ===
 ffmpeg-python>=0.2                # Audio normalization
 
+# === Document Extraction (KB upload) ===
+pypdf>=4                          # PDF text extraction for /kb/upload
+python-docx>=1                    # DOCX text extraction for /kb/upload
+
 # === Database ===
 asyncpg>=0.29                     # Neon PostgreSQL async driver
 sqlalchemy[asyncio]>=2.0
@@ -42,6 +46,8 @@ elasticsearch[async]>=8           # Transcript search across all interactions
 # === Auth ===
 clerk-backend-api>=1              # Managed auth (transitional)
 python-jose[cryptography]>=3.3   # JWT validation
+bcrypt>=4                         # Password hashing for per-user login
+email-validator>=2                # Pydantic EmailStr validator
 
 # === Token encryption at rest (Fernet) ===
 cryptography>=42

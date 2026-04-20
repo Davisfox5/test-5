@@ -47,103 +47,101 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
-        # ── Scoring / orchestrator cadences (this branch) ────────────
-        # Orchestrator daily consolidation: 04:00 UTC every day.
+        # ── Scoring / orchestrator cadences ──────────────────────────
         "orchestrator-daily": {
             "task": "orchestrator_daily_all_tenants",
             "schedule": crontab(minute=0, hour=4),
         },
-        # Orchestrator weekly reflection: 05:00 UTC every Monday.
         "orchestrator-weekly": {
             "task": "orchestrator_weekly_all_tenants",
             "schedule": crontab(minute=0, hour=5, day_of_week=1),
         },
-        # Proxy-outcome backfill from local signals: 03:30 UTC every day.
         "outcomes-backfill-daily": {
             "task": "outcomes_backfill_all_tenants",
             "schedule": crontab(minute=30, hour=3),
         },
-        # Calibration refit: 06:00 UTC every Monday (after weekly reflection).
         "calibration-weekly": {
             "task": "calibration_fit_all_tenants",
             "schedule": crontab(minute=0, hour=6, day_of_week=1),
         },
-        # IRT rubric calibration: 06:30 UTC every Monday.
         "irt-calibration-weekly": {
             "task": "irt_fit_all_tenants",
             "schedule": crontab(minute=30, hour=6, day_of_week=1),
         },
-        # Churn model training: 07:00 UTC every Monday.  Gates on data
-        # volume internally, so safe to schedule unconditionally.
         "churn-model-weekly": {
             "task": "churn_train_all_tenants",
             "schedule": crontab(minute=0, hour=7, day_of_week=1),
         },
-        # Audio-retention janitor: hourly sweep of expired audio objects.
         "audio-retention-sweep": {
             "task": "audio_retention_sweep",
             "schedule": 3600.0,
         },
-        # ── Email ingestion (from main) ───────────────────────────────
-        # Poll every connected email integration every 2 minutes —
-        # safety net behind Gmail Pub/Sub / Graph webhooks.
+        # ── Email ingestion ───────────────────────────────────────────
         "email-ingest-poll": {
             "task": "email_ingest_poll",
             "schedule": 120.0,
         },
-        # Re-register Gmail watches + Graph subscriptions every 12h.
-        # Gmail watches expire in ~7 days; Graph message subs in ~3 days.
         "email-push-renew": {
             "task": "email_push_renew_subscriptions",
             "schedule": 43200.0,
         },
-        # ── Continuous AI improvement (from main) ─────────────────────
-        # Drain the feedback Redis stream into feedback_events every 30s.
+        # ── Continuous AI improvement ─────────────────────────────────
         "consume-feedback-stream": {
             "task": "consume_feedback_stream",
             "schedule": 30.0,
         },
-        # Refresh per-tenant few-shot pools nightly at 03:00 UTC.
         "refresh-few-shot-pools": {
             "task": "refresh_few_shot_pools",
             "schedule": crontab(minute=0, hour=3),
         },
-        # WER aggregation Sundays 02:00 UTC.
         "compute-wer-weekly": {
             "task": "compute_wer_weekly",
             "schedule": crontab(minute=0, hour=2, day_of_week=0),
         },
-        # Vocabulary candidate discovery weekly, Sundays 03:00 UTC.
         "discover-vocabulary-candidates": {
             "task": "discover_vocabulary_candidates",
             "schedule": crontab(minute=0, hour=3, day_of_week=0),
         },
-        # Vocabulary digest email/Slack weekly, Mondays 09:00 UTC.
         "vocabulary-digest-weekly": {
             "task": "vocabulary_digest_weekly",
             "schedule": crontab(minute=0, hour=9, day_of_week=1),
         },
-        # Cross-tenant aggregate metrics — Mondays 00:30 UTC, after
-        # tenant_insights_weekly has finished.
         "cross-tenant-aggregate-metrics": {
             "task": "cross_tenant_aggregate_metrics",
             "schedule": crontab(minute=30, hour=0, day_of_week=1),
         },
-        # Quality regression watchdog runs hourly; the task itself bails
-        # quickly when no rollouts are active.
         "quality-regression-check": {
             "task": "quality_regression_check",
             "schedule": 3600.0,
         },
-        # Biweekly variant winner selection (Tue/Fri 04:00 UTC).
         "variant-winner-selection": {
             "task": "variant_winner_selection",
             "schedule": crontab(minute=0, hour=4, day_of_week="2,5"),
         },
-        # Campaign variant winner selection (same cadence as variant).
         "campaign-variant-winner-selection": {
             "task": "campaign_variant_winner_selection",
             "schedule": crontab(minute=15, hour=4, day_of_week="2,5"),
+        },
+        # ── KB / CRM / telephony cadences ─────────────────────────────
+        "vector-health-daily": {
+            "task": "vector_health_daily",
+            "schedule": crontab(minute=30, hour=0),
+        },
+        "tenant-brief-refiner-weekly": {
+            "task": "tenant_brief_refiner_weekly",
+            "schedule": crontab(minute=45, hour=1, day_of_week=1),
+        },
+        "infer-from-sources-weekly": {
+            "task": "infer_from_sources_weekly",
+            "schedule": crontab(minute=15, hour=2, day_of_week=1),
+        },
+        "crm-sync-daily": {
+            "task": "crm_sync_daily",
+            "schedule": crontab(minute=0, hour=3),
+        },
+        "recording-retention-daily": {
+            "task": "recording_retention_daily",
+            "schedule": crontab(minute=30, hour=3),
         },
     },
 )
@@ -407,9 +405,7 @@ def _run_pipeline(
     )
 
     # ── Step 9: AI analysis ──────────────────────────────────────────
-    # Resolve the active prompt variant for this tenant (A/B-routed by
-    # hash(tenant_id, surface)).  Falls back to the producer's hardcoded
-    # constant when no variants are seeded yet.
+    # Prompt-variant routing + personalization blocks.
     from backend.app.services.ai_analysis import ANALYSIS_SYSTEM_PROMPT
     from backend.app.services.personalization_service import (
         build_analysis_context_block,
@@ -435,6 +431,24 @@ def _run_pipeline(
     )
     overrides = get_parameter_overrides(session, tenant, surface="analysis")
 
+    # Tenant + per-customer brief assembled by LINDA agents (complements the
+    # prompt-variant tenant_block above — kept as structured dicts so the
+    # analyzer can render them in its own cacheable system slots).
+    tenant_context = dict(getattr(tenant, "tenant_context", None) or {})
+    customer_brief: Dict[str, Any] = {}
+    if interaction.contact_id:
+        from backend.app.models import Customer as _Customer
+
+        _contact = (
+            session.query(Contact)
+            .filter(Contact.id == interaction.contact_id)
+            .first()
+        )
+        if _contact and _contact.customer_id:
+            _customer = session.query(_Customer).filter(_Customer.id == _contact.customer_id).first()
+            if _customer:
+                customer_brief = dict(_customer.customer_brief or {})
+
     insights: Dict[str, Any] = asyncio.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
@@ -444,6 +458,8 @@ def _run_pipeline(
             tenant_context_block=tenant_block,
             rag_context_block=rag_block,
             max_tokens_override=overrides.get("max_tokens"),
+            tenant_context=tenant_context,
+            customer_brief=customer_brief,
         )
     )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
@@ -451,6 +467,100 @@ def _run_pipeline(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
         interaction_id, variant.name, variant.status,
     )
+
+    # ── Step 9b: Outcome inference ──────────────────────────────────
+    # Squeeze the analysis JSON into a normalised outcome label and,
+    # where warranted, emit CustomerOutcomeEvent rows that downstream
+    # agents (TenantBriefRefiner, CustomerBriefBuilder) will read.
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    from backend.app.models import CustomerOutcomeEvent
+    from backend.app.services.kb.outcome_inference import infer_outcome
+
+    inferred = infer_outcome(insights)
+    interaction.outcome_type = inferred.outcome_type
+    interaction.outcome_value = inferred.outcome_value
+    interaction.outcome_confidence = inferred.outcome_confidence
+    interaction.outcome_source = "ai_inferred"
+    interaction.outcome_notes = inferred.outcome_notes
+    interaction.outcome_captured_at = _dt.now(_tz.utc)
+
+    cust_id_for_rebuild: Optional[uuid.UUID] = None
+    if interaction.contact_id:
+        contact_row = (
+            session.query(Contact)
+            .filter(Contact.id == interaction.contact_id)
+            .first()
+        )
+        cust_id_for_rebuild = (
+            contact_row.customer_id if contact_row is not None else None
+        )
+        if cust_id_for_rebuild:
+            from backend.app.services.webhook_events import (
+                CUSTOMER_OUTCOME_EVENT_MAP,
+            )
+
+            customer_events_for_webhooks: List[Dict[str, Any]] = []
+            for ev in inferred.customer_events:
+                session.add(
+                    CustomerOutcomeEvent(
+                        tenant_id=tenant.id,
+                        customer_id=cust_id_for_rebuild,
+                        interaction_id=interaction.id,
+                        event_type=ev["event_type"],
+                        magnitude=ev.get("magnitude"),
+                        signal_strength=ev.get("signal_strength"),
+                        reason=ev.get("reason"),
+                        source=ev.get("source", "ai_inferred"),
+                    )
+                )
+                wh_event = CUSTOMER_OUTCOME_EVENT_MAP.get(ev["event_type"])
+                if wh_event:
+                    customer_events_for_webhooks.append(
+                        {
+                            "webhook_event": wh_event,
+                            "customer_id": str(cust_id_for_rebuild),
+                            "interaction_id": str(interaction.id),
+                            "event_type": ev["event_type"],
+                            "reason": ev.get("reason"),
+                            "signal_strength": ev.get("signal_strength"),
+                            "source": ev.get("source", "ai_inferred"),
+                        }
+                    )
+
+            # Fan out lifecycle events to subscribed webhooks.
+            if customer_events_for_webhooks:
+                from backend.app.db import async_session
+                from backend.app.services.webhook_dispatcher import emit_event
+
+                async def _emit_lifecycle() -> None:
+                    async with async_session() as db:
+                        for ev in customer_events_for_webhooks:
+                            await emit_event(
+                                db,
+                                tenant.id,
+                                ev["webhook_event"],
+                                {k: v for k, v in ev.items() if k != "webhook_event"},
+                            )
+
+                try:
+                    asyncio.run(_emit_lifecycle())
+                except Exception:
+                    logger.exception("Customer lifecycle webhook emission failed")
+
+    # Kick a debounced customer-brief rebuild so LINDA has a fresh dossier
+    # for the next call with this customer. Best-effort; if Redis/Celery are
+    # unavailable in this env we'll catch up on the next interaction.
+    if cust_id_for_rebuild is not None:
+        try:
+            from backend.app.services.kb.context_dispatch import (
+                schedule_customer_brief_rebuild,
+            )
+
+            asyncio.run(schedule_customer_brief_rebuild(tenant.id, cust_id_for_rebuild))
+        except Exception:
+            logger.debug("schedule_customer_brief_rebuild failed", exc_info=True)
 
     # ── Step 10: Scorecard scoring ───────────────────────────────────
     scorecard_results: List[Dict[str, Any]] = []
@@ -613,11 +723,6 @@ def _run_pipeline(
     deterministic_features = FeatureExtractor().extract(segment_objects)
 
     # ── Step 17a: Paralinguistic features (if audio is retained) ─────
-    # Runs *only* when the interaction has an audio_s3_key AND praat
-    # is installed.  The extractor degrades gracefully otherwise — we
-    # simply don't populate the paralinguistic block.  The audio itself
-    # is expired by the janitor per the tenant's retention policy, so
-    # missing audio later is expected and not a failure.
     try:
         from backend.app.services.audio_storage import AudioHandle, get_audio_store
         from backend.app.services.paralinguistics import (
@@ -649,7 +754,7 @@ def _run_pipeline(
                 )
                 if para.available:
                     deterministic_features["paralinguistic"] = para.as_dict()
-    except Exception:  # noqa: BLE001 — paralinguistics must never fail the pipeline
+    except Exception:
         logger.exception(
             "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
         )
@@ -665,6 +770,15 @@ def _run_pipeline(
             tenant_id=tenant.id,
         )
         session.add(features_row)
+
+    # ── Step 17c: Fire outbound webhooks ───────────────────────────────
+    _emit_webhooks_for_interaction(
+        tenant_id=tenant.id,
+        interaction_id=uuid.UUID(interaction_id),
+        insights=insights,
+        outcome_type=interaction.outcome_type,
+        outcome_confidence=interaction.outcome_confidence,
+    )
 
     # ── Step 17b: Weak-supervision labels (orthogonal to the LLM guess) ─
     # Cheap regex LFs produce {cancel_intent, commitment, objection_resolved}
@@ -834,6 +948,54 @@ def _enqueue_delta_report(
             interaction_id=interaction.id,
             scopes=scopes,
             delta=delta,
+        )
+
+
+def _emit_webhooks_for_interaction(
+    tenant_id,
+    interaction_id,
+    insights: Dict[str, Any],
+    outcome_type: Optional[str],
+    outcome_confidence: Optional[float],
+) -> None:
+    """Fan out webhook events for a freshly analyzed interaction.
+
+    Called from inside the sync Celery task, so we hop into an async
+    session via ``asyncio.run``. Never blocks on HTTP — ``emit_event``
+    writes delivery rows and enqueues the delivery task.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.webhook_dispatcher import emit_event
+
+    summary = {
+        "interaction_id": str(interaction_id),
+        "summary": (insights or {}).get("summary", "")[:600],
+        "sentiment_overall": (insights or {}).get("sentiment_overall"),
+        "sentiment_score": (insights or {}).get("sentiment_score"),
+        "churn_risk_signal": (insights or {}).get("churn_risk_signal"),
+        "upsell_signal": (insights or {}).get("upsell_signal"),
+    }
+
+    async def _runner() -> None:
+        async with async_session() as db:
+            await emit_event(db, tenant_id, "interaction.analyzed", summary)
+            if outcome_type:
+                await emit_event(
+                    db,
+                    tenant_id,
+                    "interaction.outcome_inferred",
+                    {
+                        **summary,
+                        "outcome_type": outcome_type,
+                        "outcome_confidence": outcome_confidence,
+                    },
+                )
+
+    try:
+        asyncio.run(_runner())
+    except Exception:
+        logger.exception(
+            "Webhook emission failed for interaction %s", interaction_id
         )
 
 
@@ -1655,3 +1817,287 @@ def audio_retention_sweep() -> Dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.exception("audio_retention_sweep failed")
         return {"deleted": 0, "error": True}
+
+
+@celery_app.task(name="rebuild_tenant_context")
+def rebuild_tenant_context(tenant_id: str, full: bool = False) -> Dict[str, Any]:
+    """Rebuild LINDA's per-tenant company-context brief from the KB.
+
+    Debounced via a Redis token key (see ``schedule_context_rebuild``) so a
+    rapid flurry of KB uploads collapses into a single rebuild. If ``full`` is
+    True, the builder streams every doc; otherwise it does an incremental
+    merge on the most recent doc (populated in Redis by the caller).
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.db import async_session
+    from backend.app.models import KBDocument
+    from backend.app.services.kb.context_builder import ContextBuilderService
+    from backend.app.services.kb.context_dispatch import claim_debounce
+
+    async def _runner() -> Dict[str, Any]:
+        tid = uuid.UUID(tenant_id)
+
+        # Honor the debounce: if someone bumped the timer forward while we
+        # were asleep in the Celery queue, bail out — a fresh task is
+        # already scheduled.
+        if not full and not await claim_debounce(tid):
+            return {"tenant_id": tenant_id, "skipped": "debounced"}
+
+        builder = ContextBuilderService()
+        async with async_session() as db:
+            if full:
+                brief = await builder.rebuild_all(db, tid)
+                return {"tenant_id": tenant_id, "mode": "full", "brief_keys": list(brief.keys())}
+
+            # Incremental: pick up the most recently updated doc for this
+            # tenant and merge it in. A burst of uploads coalesces into this
+            # single merge because the debounce key only fires once.
+            stmt = (
+                _select(KBDocument)
+                .where(KBDocument.tenant_id == tid)
+                .order_by(KBDocument.created_at.desc())
+                .limit(1)
+            )
+            row = (await db.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return {"tenant_id": tenant_id, "mode": "incremental", "skipped": "no_docs"}
+            brief = await builder.merge_document(db, tid, row)
+            return {"tenant_id": tenant_id, "mode": "incremental", "brief_keys": list(brief.keys())}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="rebuild_customer_brief")
+def rebuild_customer_brief(tenant_id: str, customer_id: str) -> Dict[str, Any]:
+    """Rebuild one customer's brief (debounced via Redis). Fired on
+    interaction close, outcome log, and admin demand."""
+    from backend.app.db import async_session
+    from backend.app.services.kb.context_dispatch import claim_customer_debounce
+    from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
+
+    async def _runner() -> Dict[str, Any]:
+        cid = uuid.UUID(customer_id)
+        if not await claim_customer_debounce(cid):
+            return {"customer_id": customer_id, "skipped": "debounced"}
+        builder = CustomerBriefBuilder()
+        async with async_session() as db:
+            brief = await builder.build(db, uuid.UUID(tenant_id), cid)
+            return {
+                "customer_id": customer_id,
+                "status": brief.get("current_status"),
+                "source_interaction_count": brief.get("source_interaction_count"),
+            }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="tenant_brief_refiner_weekly")
+def tenant_brief_refiner_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run the TenantBriefRefiner for one tenant (if tenant_id given) or all
+    tenants. Invoked by Celery beat once a week, and also as a fan-out from
+    admin-triggered refines."""
+    from backend.app.db import async_session
+    from backend.app.models import Tenant as _Tenant
+    from backend.app.services.kb.tenant_brief_refiner import TenantBriefRefiner
+    from sqlalchemy import select as _select
+
+    async def _runner() -> Dict[str, Any]:
+        refiner = TenantBriefRefiner()
+        async with async_session() as db:
+            if tenant_id:
+                tids = [uuid.UUID(tenant_id)]
+            else:
+                rows = await db.execute(_select(_Tenant.id))
+                tids = [uuid.UUID(str(r[0])) for r in rows.all()]
+
+            results: List[Dict[str, Any]] = []
+            for tid in tids:
+                try:
+                    pb = await refiner.refine(db, tid)
+                    results.append({"tenant_id": str(tid), "sample_size": pb.get("sample_size")})
+                except Exception:
+                    logger.exception("TenantBriefRefiner failed for tenant %s", tid)
+                    results.append({"tenant_id": str(tid), "error": True})
+        return {"tenants_processed": len(results), "results": results}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="infer_from_sources_weekly")
+def infer_from_sources_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run the Infer-From-Sources agent for one tenant or all tenants.
+
+    Emits TenantBriefSuggestion rows for the tenant admin to review.
+    Never auto-writes to the tenant brief.
+    """
+    from backend.app.db import async_session
+    from backend.app.models import Tenant as _Tenant
+    from backend.app.services.kb.infer_from_sources import InferFromSources
+    from sqlalchemy import select as _select
+
+    async def _runner() -> Dict[str, Any]:
+        agent = InferFromSources()
+        async with async_session() as db:
+            if tenant_id:
+                tids = [uuid.UUID(tenant_id)]
+            else:
+                rows = await db.execute(_select(_Tenant.id))
+                tids = [uuid.UUID(str(r[0])) for r in rows.all()]
+
+            results: List[Dict[str, Any]] = []
+            for tid in tids:
+                try:
+                    new_rows = await agent.run(db, tid)
+                    results.append(
+                        {
+                            "tenant_id": str(tid),
+                            "new_suggestions": len(new_rows),
+                        }
+                    )
+                except Exception:
+                    logger.exception(
+                        "InferFromSources failed for tenant %s", tid
+                    )
+                    results.append({"tenant_id": str(tid), "error": True})
+            return {"tenants_processed": len(results), "results": results}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="vector_health_daily")
+def vector_health_daily() -> Dict[str, Any]:
+    """Daily sustained-threshold check for the vector store.
+
+    Uses the async engine via ``asyncio.run`` since the check touches Redis
+    async APIs and is cheap to boot a loop for.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.kb.vector_health_check import run_vector_health_check
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await run_vector_health_check(db)
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="crm_sync_tenant")
+def crm_sync_tenant(tenant_id: str, provider: str) -> Dict[str, Any]:
+    """Run a single CRM sync for ``(tenant_id, provider)``."""
+    from backend.app.db import async_session
+    from backend.app.services.crm.sync_service import sync_crm_for_tenant
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await sync_crm_for_tenant(
+                db, uuid.UUID(tenant_id), provider
+            )
+            return {
+                "provider": summary.provider,
+                "status": summary.status,
+                "customers_upserted": summary.customers_upserted,
+                "contacts_upserted": summary.contacts_upserted,
+                "briefs_rebuilt": summary.briefs_rebuilt,
+                "error": summary.error,
+            }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="crm_sync_daily")
+def crm_sync_daily() -> Dict[str, Any]:
+    """Nightly fan-out: for every Integration on a CRM provider, run a sync.
+
+    Tenants without CRM integrations are silently skipped. A provider that
+    returns ``not implemented`` (e.g. the Pipedrive stub) is counted as
+    skipped rather than failed.
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.db import async_session
+    from backend.app.models import Integration
+    from backend.app.services.crm.sync_service import (
+        SUPPORTED_PROVIDERS,
+        sync_crm_for_tenant,
+    )
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            stmt = _select(
+                Integration.tenant_id, Integration.provider
+            ).where(Integration.provider.in_(list(SUPPORTED_PROVIDERS)))
+            rows = await db.execute(stmt)
+            pairs = {
+                (uuid.UUID(str(t)), p) for (t, p) in rows.all()
+            }
+
+            results: List[Dict[str, Any]] = []
+            for tenant_id, provider in pairs:
+                try:
+                    summary = await sync_crm_for_tenant(db, tenant_id, provider)
+                    results.append(
+                        {
+                            "tenant_id": str(tenant_id),
+                            "provider": provider,
+                            "status": summary.status,
+                            "customers": summary.customers_upserted,
+                            "contacts": summary.contacts_upserted,
+                        }
+                    )
+                except Exception:
+                    logger.exception(
+                        "CRM sync failed for tenant=%s provider=%s",
+                        tenant_id,
+                        provider,
+                    )
+                    results.append(
+                        {
+                            "tenant_id": str(tenant_id),
+                            "provider": provider,
+                            "status": "failed",
+                        }
+                    )
+        return {"runs": results, "count": len(results)}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="webhook_deliver")
+def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
+    """Attempt one HTTP delivery for a WebhookDelivery row.
+
+    The dispatcher re-enqueues retries via ``apply_async(countdown=...)``
+    when it schedules the next attempt, so this task stays stateless.
+    Tolerates the delivery row being gone (e.g., webhook deleted in the
+    meantime) by returning status=missing.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.webhook_dispatcher import deliver_one
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await deliver_one(db, uuid.UUID(delivery_id))
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="recording_retention_daily")
+def recording_retention_daily() -> Dict[str, Any]:
+    """Nightly retention sweep across every tenant with a retention
+    setting. Deletes aged ``CallRecording`` rows' S3 objects and flips
+    the rows to ``status='deleted'``."""
+    from backend.app.db import async_session
+    from backend.app.services.recording_retention import run_retention_sweep
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await run_retention_sweep(db)
+            return {
+                "tenants_processed": summary.tenants_processed,
+                "recordings_deleted": summary.recordings_deleted,
+                "s3_errors": summary.s3_errors,
+                "per_tenant": summary.per_tenant,
+            }
+
+    return asyncio.run(_runner())

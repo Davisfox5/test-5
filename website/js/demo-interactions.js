@@ -998,7 +998,7 @@
                     title: 'New Contact',
                     body:
                         '<label>Full name<input type="text" id="cName" placeholder="Jane Doe"></label>' +
-                        '<label>Company<input type="text" id="cCompany" placeholder="Acme Corp"></label>' +
+                        '<label>Company<input type="text" id="cCustomer" placeholder="Acme Corp"></label>' +
                         '<label>Phone<input type="text" id="cPhone" placeholder="+1 (555) 123-4567"></label>' +
                         '<label>Email<input type="email" id="cEmail" placeholder="jane@acme.com"></label>',
                     actions: [
@@ -1009,7 +1009,7 @@
                             onClick: function (overlay) {
                                 var name = (overlay.querySelector('#cName') || {}).value;
                                 if (!name) { showToast('Name required', 'error'); return false; }
-                                var company = (overlay.querySelector('#cCompany') || {}).value || '—';
+                                var company = (overlay.querySelector('#cCustomer') || {}).value || '—';
                                 var phone = (overlay.querySelector('#cPhone') || {}).value || '—';
                                 var email = (overlay.querySelector('#cEmail') || {}).value || '—';
                                 var tbody = document.querySelector('#contacts .data-table tbody');

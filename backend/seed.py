@@ -4,7 +4,7 @@ CallSight AI — Seed script for the new interactions schema.
 
 Reads conversation data from the three legacy seed files (seed_sales.py,
 seed_it.py, seed_cs.py) and inserts everything into the new schema:
-tenants, users, companies, contacts, interactions, scorecard_templates,
+tenants, users, customers, contacts, interactions, scorecard_templates,
 and api_keys.
 
 Usage:
@@ -149,41 +149,43 @@ def seed() -> None:
         for call in CS_CALLS:
             all_calls.append(("cs", call))
 
-        company_map: Dict[str, str] = {}  # company_name -> company_id
-        contact_map: Dict[str, str] = {}  # customer_name -> contact_id
+        customer_map: Dict[str, str] = {}  # customer business name -> customer_id
+        contact_map: Dict[str, str] = {}  # contact person name -> contact_id
 
         for call_type, call in all_calls:
-            company_name = call.get("customer_company", "")
-            customer_name = call.get("customer_name", "")
+            # In the seed JSON: "customer_company" is the customer's business
+            # (the Customer row); "customer_name" is the contact person.
+            customer_biz_name = call.get("customer_company", "")
+            contact_person_name = call.get("customer_name", "")
 
-            # Create company if not seen
-            if company_name and company_name not in company_map:
-                company_id = new_id()
+            # Create customer if not seen
+            if customer_biz_name and customer_biz_name not in customer_map:
+                customer_id = new_id()
                 cur.execute(
                     """
-                    INSERT INTO companies (id, tenant_id, name, metadata)
+                    INSERT INTO customers (id, tenant_id, name, metadata)
                     VALUES (%s, %s, %s, '{}'::jsonb)
                     RETURNING id
                     """,
-                    (company_id, tenant_id, company_name),
+                    (customer_id, tenant_id, customer_biz_name),
                 )
-                company_map[company_name] = str(cur.fetchone()[0])
+                customer_map[customer_biz_name] = str(cur.fetchone()[0])
 
             # Create contact if not seen
-            if customer_name and customer_name not in contact_map:
+            if contact_person_name and contact_person_name not in contact_map:
                 contact_id = new_id()
-                comp_id = company_map.get(company_name)
+                cust_id = customer_map.get(customer_biz_name)
                 cur.execute(
                     """
-                    INSERT INTO contacts (id, tenant_id, name, company_id, interaction_count, sentiment_trend, metadata)
+                    INSERT INTO contacts (id, tenant_id, name, customer_id, interaction_count, sentiment_trend, metadata)
                     VALUES (%s, %s, %s, %s, 0, '[]'::jsonb, '{}'::jsonb)
                     RETURNING id
                     """,
-                    (contact_id, tenant_id, customer_name, comp_id),
+                    (contact_id, tenant_id, contact_person_name, cust_id),
                 )
-                contact_map[customer_name] = str(cur.fetchone()[0])
+                contact_map[contact_person_name] = str(cur.fetchone()[0])
 
-        print(f"Companies: {len(company_map)}")
+        print(f"Customers: {len(customer_map)}")
         print(f"Contacts: {len(contact_map)}")
 
         # ── 4. Scorecard Templates ──────────────────────────────────────
@@ -286,7 +288,7 @@ def seed() -> None:
         print("=" * 60)
         print(f"Created {interaction_count} interactions, "
               f"{len(contact_map)} contacts, "
-              f"{len(company_map)} companies.")
+              f"{len(customer_map)} customers.")
         print(f"API Key: {plaintext_key}")
         print("=" * 60)
 

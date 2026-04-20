@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     CLERK_SECRET_KEY: str = ""
     CLERK_PUBLISHABLE_KEY: str = ""
 
+    # ── Session JWTs (native per-user login) ─────────────
+    # HMAC secret for signing browser session tokens. Must be ≥32 chars in
+    # production. In DEBUG we fall back to an ephemeral value.
+    SESSION_JWT_SECRET: str = ""
+    SESSION_JWT_TTL_HOURS: int = 12
+
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
 
@@ -38,9 +44,30 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     DEFAULT_TRANSCRIPTION_ENGINE: Literal["deepgram", "whisper"] = "deepgram"
 
-    # ── Vector DB (Qdrant) ───────────────────────────────
+    # ── Vector DB ────────────────────────────────────────
+    # Which backend serves KB retrieval. "pgvector" is the default and requires
+    # no extra infrastructure. Flip to "qdrant" after running a reindex once the
+    # pgvector health signals start firing.
+    VECTOR_BACKEND: Literal["pgvector", "qdrant"] = "pgvector"
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
+
+    # ── Embeddings (Voyage AI) ───────────────────────────
+    VOYAGE_API_KEY: str = ""
+    VOYAGE_EMBED_MODEL: str = "voyage-3"
+    # Must match the model's output dim (voyage-3 = 1024, voyage-3-large = 2048)
+    VOYAGE_EMBED_DIM: int = 1024
+    KB_CHUNK_TOKENS: int = 500
+    KB_CHUNK_OVERLAP_TOKENS: int = 80
+
+    # ── Vector health monitoring ─────────────────────────
+    # Thresholds for the dev-only /admin/vector-health signal.
+    VECTOR_HEALTH_P95_MS: int = 150
+    VECTOR_HEALTH_SIZE_MILESTONES: list[int] = [1_000_000, 3_000_000, 5_000_000]
+    VECTOR_HEALTH_ALERT_DAYS: int = 7
+    # Optional: when set, auto-create a GitHub issue on sustained threshold breach.
+    GITHUB_ALERT_REPO: str = ""  # e.g., "davisfox5/test-5"
+    GITHUB_ALERT_TOKEN: str = ""
 
     # ── Full-Text Search (Elasticsearch) ─────────────────
     ELASTICSEARCH_URL: str = "http://localhost:9200"
@@ -79,7 +106,16 @@ class Settings(BaseSettings):
     PDL_API_KEY: str = ""
     APOLLO_API_KEY: str = ""
 
-    # ── AWS (S3 audio storage) ───────────────────────────
+    # ── Stripe (billing) ─────────────────────────────────
+    STRIPE_API_KEY: str = ""
+    # ``whsec_...`` signing secret from the Stripe webhook endpoint.
+    STRIPE_WEBHOOK_SECRET: str = ""
+    # Price IDs that map 1:1 to SUBSCRIPTION_TIERS keys. Leave blank for
+    # tiers you don't sell yet.
+    STRIPE_PRICE_SOLO: str = ""
+    STRIPE_PRICE_TEAM: str = ""
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_ENTERPRISE: str = ""
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_S3_BUCKET: str = ""

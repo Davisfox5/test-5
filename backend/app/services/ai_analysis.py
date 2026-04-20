@@ -12,6 +12,10 @@ import anthropic
 
 from backend.app.config import get_settings
 from backend.app.services import metrics as _metrics
+from backend.app.services.kb.context_builder import format_brief_for_prompt
+from backend.app.services.kb.customer_brief_builder import (
+    format_customer_brief_for_prompt,
+)
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -83,6 +87,8 @@ class AIAnalysisService:
         tenant_context_block: Optional[str] = None,
         rag_context_block: Optional[str] = None,
         max_tokens_override: Optional[int] = None,
+        tenant_context: Optional[Dict[str, Any]] = None,
+        customer_brief: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -95,17 +101,19 @@ class AIAnalysisService:
         triage_result:
             Optional output from :class:`TriageService` to give the model context.
         system_prompt_override:
-            If provided, used in place of :data:`ANALYSIS_SYSTEM_PROMPT`.  This
-            is how the prompt-variant service hot-swaps the active prompt.  The
-            base cache hit is preserved when this is None.
+            If provided, used in place of ``ANALYSIS_SYSTEM_PROMPT`` (prompt-variant swap).
         tenant_context_block:
-            Optional per-tenant block (vocabulary, persona, acronyms) appended to
-            the **user message** so the system prompt cache key stays stable
-            across tenants.
+            Pre-formatted tenant block appended to the user message. Takes
+            precedence over ``tenant_context`` when provided.
         rag_context_block:
             Optional knowledge-base excerpts retrieved for this specific call.
         max_tokens_override:
             Per-tenant parameter override for ``max_tokens``.
+        tenant_context:
+            Raw tenant brief dict; auto-formatted and injected as a cacheable
+            system block when ``tenant_context_block`` is not provided.
+        customer_brief:
+            Raw customer brief dict; auto-formatted as a system block.
         """
         model = MODELS.get(tier, MODELS["sonnet"])
         formatted = _format_transcript(transcript_segments)
@@ -129,18 +137,48 @@ class AIAnalysisService:
         user_content = "\n".join(parts)
 
         raw_text = ""
+
+        # Assemble system blocks. Tenant context first (most stable for prompt
+        # caching), customer brief second, analyst instructions last. If a
+        # system_prompt_override is provided (prompt-variant path), it replaces
+        # the analyst instructions block.
+        system_blocks: List[Dict[str, Any]] = []
+        tenant_text = (
+            None
+            if tenant_context_block  # already appended to user message above
+            else format_brief_for_prompt(tenant_context or {})
+        )
+        if tenant_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": tenant_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        customer_text = format_customer_brief_for_prompt(customer_brief or {})
+        if customer_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": customer_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+
         try:
             t0 = time.perf_counter()
             response = await self._client.messages.create(
                 model=model,
                 max_tokens=max_tokens_override or 8192,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
+                system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
             )
             _metrics.LLM_LATENCY.labels(surface="analysis", model=model).observe(

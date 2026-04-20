@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import Tenant, Webhook
+from backend.app.models import Tenant, Webhook, WebhookDelivery
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
+from backend.app.services.webhook_events import WEBHOOK_EVENTS
 
 router = APIRouter()
 
@@ -212,3 +213,63 @@ async def test_webhook(
             status="failed",
             error=str(exc),
         )
+
+
+# ── Event catalog + delivery log ─────────────────────────────────────
+
+
+@router.get("/webhooks/events")
+async def list_webhook_events() -> dict:
+    """Return the catalog of supported event names + descriptions.
+
+    Used by the admin UI to render the "which events should this webhook
+    receive?" picker. ``*`` is a wildcard that receives everything.
+    """
+    return {
+        "events": [
+            {"name": name, "description": desc}
+            for name, desc in WEBHOOK_EVENTS.items()
+        ]
+    }
+
+
+class WebhookDeliveryOut(BaseModel):
+    id: uuid.UUID
+    webhook_id: uuid.UUID
+    event: str
+    status: str
+    attempt_count: int
+    last_status_code: Optional[int] = None
+    last_error: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get(
+    "/webhooks/{webhook_id}/deliveries",
+    response_model=List[WebhookDeliveryOut],
+)
+async def list_deliveries(
+    webhook_id: uuid.UUID,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Recent deliveries for one webhook, newest first. Useful when a tenant
+    is debugging receiver-side issues ("why didn't my endpoint hear about
+    this?")."""
+    # Enforce tenant scope on the webhook row first.
+    wh = await db.get(Webhook, webhook_id)
+    if wh is None or wh.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    stmt = (
+        select(WebhookDelivery)
+        .where(WebhookDelivery.webhook_id == webhook_id)
+        .order_by(WebhookDelivery.created_at.desc())
+        .limit(min(max(limit, 1), 200))
+    )
+    return list((await db.execute(stmt)).scalars().all())

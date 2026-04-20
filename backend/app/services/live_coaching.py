@@ -9,6 +9,10 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from backend.app.config import get_settings
+from backend.app.services.kb.context_builder import format_brief_for_prompt
+from backend.app.services.kb.customer_brief_builder import (
+    format_customer_brief_for_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +34,21 @@ COACHING_SYSTEM_PROMPT = (
     '  "updated_state": {\n'
     '    "previous_summary": "...",\n'
     '    "sentiment_trend": "improving|stable|declining",\n'
+    '    "sentiment_score": 0.0-10.0,\n'
     '    "topics_so_far": ["..."],\n'
-    '    "compliance_status": {"disclosed_recording": true/false, ...}\n'
+    '    "compliance_status": {"disclosed_recording": true/false, ...},\n'
+    '    "brief_signals": {\n'
+    '      "churn": false,\n'
+    '      "upsell": false,\n'
+    '      "escalation": false,\n'
+    '      "advocate": false\n'
+    "    }\n"
     "  }\n"
-    "}"
+    "}\n\n"
+    "``sentiment_score`` uses the same 0-10 scale as post-call analysis "
+    "(10 = most positive). Set ``brief_signals.*`` to true only when you see "
+    "strong evidence in the new dialogue that a key lifecycle signal just "
+    "fired — these are used to pop live alerts on the agent's customer brief."
 )
 
 
@@ -49,6 +64,8 @@ class LiveCoachingService:
         new_segments: List[dict],
         previous_state: dict,
         kb_hits: Optional[List[dict]] = None,
+        tenant_context: Optional[dict] = None,
+        customer_brief: Optional[dict] = None,
     ) -> dict:
         """Generate coaching hints from new transcript segments and prior state.
 
@@ -56,6 +73,9 @@ class LiveCoachingService:
             new_segments: Recent transcript segments (each has ``text``, ``speaker``).
             previous_state: Compact JSON state from the last coaching round.
             kb_hits: Optional top-K RAG results from the knowledge base.
+            tenant_context: Optional LINDA-built brief assembled from the
+                tenant's KB. Injected into the system prompt so live coaching
+                is grounded in the tenant's own product/policy reality.
 
         Returns:
             Dict with ``hints`` and ``updated_state``.
@@ -83,11 +103,28 @@ class LiveCoachingService:
 
         user_message = "\n".join(user_parts)
 
+        # Stack tenant context → customer brief → analyst instructions.
+        prefix_parts: List[str] = []
+        tenant_text = format_brief_for_prompt(tenant_context or {})
+        if tenant_text:
+            prefix_parts.append(tenant_text)
+        customer_text = format_customer_brief_for_prompt(customer_brief or {})
+        if customer_text:
+            prefix_parts.append(customer_text)
+        if prefix_parts:
+            system_prompt = (
+                "\n\n---\n\n".join(prefix_parts)
+                + "\n\n---\n\n"
+                + COACHING_SYSTEM_PROMPT
+            )
+        else:
+            system_prompt = COACHING_SYSTEM_PROMPT
+
         try:
             response = await self.client.messages.create(
                 model=COACHING_MODEL,
                 max_tokens=300,
-                system=COACHING_SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
 

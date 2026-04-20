@@ -261,6 +261,9 @@ async function loadInteractions(channel) {
  */
 async function loadInteractionDetail(interactionId) {
     switchView('interaction-detail');
+    // Broadcast the id so admin-surfaces.js can unhide the follow-up
+    // email button (and future contextual actions).
+    window.currentInteractionId = interactionId;
 
     var data = await apiFetch('/interactions/' + interactionId);
     if (!data) return;
@@ -805,6 +808,14 @@ document.addEventListener('DOMContentLoaded', function() {
             else if (viewId === 'call-library') loadLibrary();
             else if (viewId === 'conversations' && typeof loadConversations === 'function') loadConversations();
         }
+
+        // Notify any listeners (e.g. linda-insights) that the view changed so
+        // they can refetch their data.
+        try {
+            window.dispatchEvent(
+                new CustomEvent('callsight:viewChanged', { detail: { view: viewId } })
+            );
+        } catch (e) { /* older browsers: ignore */ }
     };
 
     // Make loadInteractionDetail globally accessible

@@ -71,6 +71,13 @@ from backend.app.api.feedback import router as feedback_router  # noqa: E402
 from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
 from backend.app.api.experiments import router as experiments_router  # noqa: E402
 from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
+from backend.app.api.admin import router as admin_router  # noqa: E402
+from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
+from backend.app.api.crm import router as crm_router  # noqa: E402
+from backend.app.api.emails import router as emails_router  # noqa: E402
+from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
+from backend.app.api.stripe_webhook import router as stripe_router  # noqa: E402
+from backend.app.api.telephony import router as telephony_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -82,6 +89,9 @@ app.include_router(contacts_router, prefix=settings.API_V1_PREFIX, tags=["contac
 app.include_router(scorecards_router, prefix=settings.API_V1_PREFIX, tags=["scorecards"])
 app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analytics"])
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
+from fastapi import Depends as _Depends  # noqa: E402
+from backend.app.auth import require_role as _require_role  # noqa: E402
+
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(profiles_router, prefix=settings.API_V1_PREFIX, tags=["profiles"])
 app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcomes"])
@@ -90,12 +100,38 @@ app.include_router(quality_router, prefix=settings.API_V1_PREFIX, tags=["quality
 app.include_router(ws_tickets_router, prefix=settings.API_V1_PREFIX, tags=["ws-tickets"])
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
-app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
 app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
 app.include_router(feedback_router, prefix=settings.API_V1_PREFIX, tags=["feedback"])
 app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["evaluation"])
 app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])
 app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
+
+# Every /admin/* endpoint requires an admin principal.
+app.include_router(
+    admin_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["admin"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
+app.include_router(
+    crm_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["crm"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(emails_router, prefix=settings.API_V1_PREFIX, tags=["emails"])
+app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
+# Telephony ingress (Twilio voice webhook + Media Streams WS + outbound dial).
+app.include_router(telephony_router, prefix=settings.API_V1_PREFIX, tags=["telephony"])
+# Stripe: webhook unauthenticated (Stripe signature); admin `link` gated per-endpoint.
+app.include_router(stripe_router, prefix=settings.API_V1_PREFIX, tags=["billing"])
+app.include_router(
+    webhooks_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["webhooks"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 
