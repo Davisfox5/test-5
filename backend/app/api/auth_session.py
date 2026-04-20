@@ -109,15 +109,31 @@ async def login(
 ):
     """Email + password → session JWT.
 
-    Does not leak whether an email exists: invalid credentials always
-    return a generic 401.
+    Info-leak posture:
+
+    * Unknown email → generic 401 "Invalid credentials".
+    * Wrong password → generic 401 "Invalid credentials".
+    * Correct password BUT user is inactive/suspended → 403 with a
+      specific message. An attacker who correctly guessed both halves of
+      the credential already owns the account; telling them "suspended"
+      doesn't help them further, while it meaningfully helps the
+      legitimate user understand what happened.
     """
     stmt = select(User).where(User.email == body.email.lower())
     user = (await db.execute(stmt)).scalar_one_or_none()
-    if user is None or not user.is_active:
+    if user is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.is_active:
+        reason = user.suspension_reason or "deactivated"
+        detail = (
+            "Account suspended by a subscription downgrade. "
+            "Contact your administrator to be reactivated."
+            if reason == "tier_downgrade"
+            else "Account is not active. Contact your administrator."
+        )
+        raise HTTPException(status_code=403, detail=detail)
 
     user.last_login_at = datetime.now(timezone.utc)
     token = issue_session_token(user)

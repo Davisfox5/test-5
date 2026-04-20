@@ -941,3 +941,60 @@ async def telnyx_media_stream(websocket: WebSocket, session_id: str):
     verbatim — our decode helper is format-neutral.
     """
     await twilio_media_stream(websocket, session_id)
+
+
+# ── Admin: manual per-tenant Twilio credentials ───────────────────────
+
+
+class TwilioCredsIn(BaseModel):
+    account_sid: str = Field(..., pattern=r"^AC[a-zA-Z0-9]+$")
+    auth_token: str = Field(..., min_length=8)
+
+
+@router.post("/admin/integrations/twilio")
+async def link_twilio_credentials(
+    body: TwilioCredsIn,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_role("admin")),
+):
+    """Save the tenant's Twilio account SID + auth token.
+
+    Upserts an ``Integration(provider='twilio')`` row. The auth token is
+    encrypted at rest via Fernet; the SID sits in ``provider_config``
+    alongside any other telephony bits we may add later.
+    """
+    from backend.app.services.token_crypto import encrypt_token
+    from backend.app.models import Integration
+
+    stmt = (
+        select(Integration)
+        .where(
+            Integration.tenant_id == principal.tenant.id,
+            Integration.provider == "twilio",
+        )
+        .limit(1)
+    )
+    existing = (await db.execute(stmt)).scalar_one_or_none()
+    if existing is None:
+        integ = Integration(
+            tenant_id=principal.tenant.id,
+            user_id=principal.user_id or principal.tenant.id,
+            provider="twilio",
+            access_token=encrypt_token(body.auth_token),
+            refresh_token=None,
+            scopes=[],
+            provider_config={"account_sid": body.account_sid},
+        )
+        db.add(integ)
+        await db.flush()
+    else:
+        existing.access_token = encrypt_token(body.auth_token)
+        cfg = dict(existing.provider_config or {})
+        cfg["account_sid"] = body.account_sid
+        existing.provider_config = cfg
+
+    return {
+        "provider": "twilio",
+        "account_sid": body.account_sid,
+        "saved": True,
+    }

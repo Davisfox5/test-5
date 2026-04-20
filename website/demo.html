@@ -348,6 +348,39 @@
                             <a href="#" class="back-link" data-back="interactions">← Back to Interactions</a>
                         </div>
                         <h1><!-- Populated by JS --></h1>
+                        <div class="interaction-actions">
+                            <button type="button" class="li-primary-btn" id="followUpEmailBtn" hidden>Send follow-up email</button>
+                        </div>
+                    </div>
+
+                    <!-- Follow-up email composer — hidden by default,
+                         shown when the agent clicks "Send follow-up email"
+                         on an analyzed interaction. Pre-filled with the
+                         AI draft and the contact's email, editable before
+                         sending via the connected Gmail/Outlook. -->
+                    <div class="followup-composer-overlay" id="followupOverlay" hidden aria-modal="true" role="dialog">
+                        <form class="followup-composer" id="followupForm">
+                            <header class="followup-head">
+                                <h2>Follow-up email</h2>
+                                <button type="button" class="seat-modal-close" id="followupClose" aria-label="Close">×</button>
+                            </header>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">To</span>
+                                <input type="email" id="followupTo" required>
+                            </label>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Subject</span>
+                                <input type="text" id="followupSubject" required>
+                            </label>
+                            <label class="tenant-kv-field followup-body-field">
+                                <span class="tenant-kv-label">Body</span>
+                                <textarea id="followupBody" rows="12" required></textarea>
+                            </label>
+                            <div class="followup-actions">
+                                <span class="followup-status" id="followupStatus"></span>
+                                <button type="submit" class="li-primary-btn" id="followupSend">Send</button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="call-player-grid">
@@ -1479,6 +1512,17 @@
                         <p class="view-subtitle">What LINDA has learned about your tenant, and the changes it wants to make.</p>
                     </div>
 
+                    <!-- Seat reconciliation banner — shown when a Stripe downgrade
+                         left us with more active users than the new plan allows.
+                         The admin must explicitly pick who to keep active. -->
+                    <aside class="seat-reconcile-banner" id="seatBanner" hidden>
+                        <div class="seat-banner-copy">
+                            <strong id="seatBannerHeadline">Seat reconciliation needed</strong>
+                            <p id="seatBannerBody"></p>
+                        </div>
+                        <button type="button" class="li-primary-btn" id="seatBannerReview">Review suspended users</button>
+                    </aside>
+
                     <div class="linda-insights-grid">
                         <section class="insight-card" id="liOnboardingCard">
                             <header class="li-card-head">
@@ -1551,6 +1595,29 @@
                 <section class="view" id="integrations">
                     <div class="view-header">
                         <h1>Integrations</h1>
+                    </div>
+
+                    <!-- Per-tenant Twilio credentials. Paste your account
+                         SID + auth token from the Twilio console. We
+                         encrypt the auth token at rest; the SID is
+                         stored in provider_config. -->
+                    <div class="integrations-section" id="twilioCredsSection">
+                        <h3>Twilio</h3>
+                        <p class="settings-desc">Connect your own Twilio account so calls, recordings, and spend controls belong to you.</p>
+                        <form class="twilio-creds-form" id="twilioCredsForm">
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Account SID</span>
+                                <input type="text" id="twilioSid" class="tenant-kv-input" placeholder="AC…" autocomplete="off">
+                            </label>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Auth token</span>
+                                <input type="password" id="twilioToken" class="tenant-kv-input" placeholder="(never displayed after save)" autocomplete="off">
+                            </label>
+                            <div class="twilio-creds-actions">
+                                <span class="twilio-creds-status" id="twilioCredsStatus"></span>
+                                <button type="submit" class="li-primary-btn" id="twilioCredsSave">Save credentials</button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="integrations-section">
@@ -1697,6 +1764,39 @@
                                     <input type="text" id="tenantQuestionKeyterms" class="tenant-kv-input" placeholder="how much, can you, what about">
                                 </div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Billing: tier picker + Stripe customer-id link. All
+                         Stripe-driven subscription changes flow through the
+                         webhook, but an admin still needs to pin the
+                         ``stripe_customer_id`` once so the webhook knows
+                         which tenant to apply changes to. -->
+                    <div class="settings-sections">
+                        <div class="settings-section billing-section" id="billingPanel">
+                            <div class="billing-head">
+                                <h3>Billing &amp; subscription</h3>
+                                <span class="billing-tier-pill" id="billingTierPill">—</span>
+                            </div>
+                            <p class="settings-desc">Your subscription tier controls seat limits and feature flags. Changes sync automatically from Stripe.</p>
+
+                            <div class="billing-row">
+                                <label class="tenant-kv-field">
+                                    <span class="tenant-kv-label">Subscription tier</span>
+                                    <select id="billingTierSelect" class="tenant-kv-select"></select>
+                                </label>
+                                <button type="button" class="li-secondary-btn" id="billingTierApply">Apply tier</button>
+                            </div>
+                            <p class="billing-caps" id="billingCaps"></p>
+
+                            <div class="billing-row">
+                                <label class="tenant-kv-field billing-stripe-field">
+                                    <span class="tenant-kv-label">Stripe customer ID</span>
+                                    <input type="text" id="billingStripeId" class="tenant-kv-input" placeholder="cus_…">
+                                </label>
+                                <button type="button" class="li-primary-btn" id="billingStripeLink">Link</button>
+                            </div>
+                            <p class="billing-status" id="billingStatus"></p>
                         </div>
                     </div>
 
@@ -1868,6 +1968,26 @@
     <!-- Tooltip (singleton) -->
     <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
+    <!-- Seat reconciliation modal — opened from the banner. Lists every
+         user currently suspended with ``tier_downgrade`` and lets the
+         admin reactivate them one by one. When the tenant is at cap
+         a swap picker appears so the admin names who to suspend in
+         their place. -->
+    <div class="seat-modal-overlay" id="seatModalOverlay" hidden aria-modal="true" role="dialog">
+        <div class="seat-modal">
+            <header class="seat-modal-head">
+                <h2>Seat reconciliation</h2>
+                <button type="button" class="seat-modal-close" id="seatModalClose" aria-label="Close">×</button>
+            </header>
+            <p class="seat-modal-sub" id="seatModalSub">Loading…</p>
+            <ul class="seat-modal-list" id="seatSuspendedList"></ul>
+            <p class="seat-modal-foot">
+                Tip: reactivating someone when you're already at cap requires
+                choosing another active user to suspend in their place.
+            </p>
+        </div>
+    </div>
+
     <!-- Login overlay — shown when /auth/me returns 401 (no valid session).
          Tenant-wide API keys still work; this is the per-user door. -->
     <div class="login-overlay" id="loginOverlay" hidden aria-modal="true" role="dialog">
@@ -1899,5 +2019,6 @@
     <script src="js/linda-insights.js"></script>
     <script src="js/tenant-settings.js"></script>
     <script src="js/onboarding.js"></script>
+    <script src="js/admin-surfaces.js"></script>
 </body>
 </html>

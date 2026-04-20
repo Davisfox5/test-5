@@ -295,3 +295,73 @@ async def test_login_same_error_for_bad_email_and_bad_password():
             await login(body, request, db)
         assert exc.value.status_code == 401
         assert exc.value.detail == "Invalid credentials"
+
+
+@pytest.mark.asyncio
+async def test_login_suspended_user_with_correct_password_gets_specific_403():
+    """When credentials are correct but the user is suspended, we tell
+    them why — they've already proven they own the account, so the
+    'why can't I sign in?' answer isn't additional attacker leakage."""
+    from backend.app.api.auth_session import LoginIn, login
+
+    class FakeResult:
+        def __init__(self, u): self.u = u
+        def scalar_one_or_none(self): return self.u
+
+    suspended = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="sarah@acme.com",
+        password_hash=hash_password("the-right-password"),
+        is_active=False,
+        suspension_reason="tier_downgrade",
+        last_login_at=None,
+        name=None,
+        role="agent",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    class SuspendedDB:
+        async def execute(self, stmt): return FakeResult(suspended)
+
+    body = LoginIn(email="sarah@acme.com", password="the-right-password")
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(HTTPException) as exc:
+        await login(body, request, SuspendedDB())
+    assert exc.value.status_code == 403
+    assert "downgrade" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_login_suspended_user_with_wrong_password_still_401():
+    """Don't leak that a suspended account exists — wrong password always
+    returns the generic 401 regardless of is_active."""
+    from backend.app.api.auth_session import LoginIn, login
+
+    class FakeResult:
+        def __init__(self, u): self.u = u
+        def scalar_one_or_none(self): return self.u
+
+    suspended = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="sarah@acme.com",
+        password_hash=hash_password("correct-password"),
+        is_active=False,
+        suspension_reason="tier_downgrade",
+        last_login_at=None,
+        name=None,
+        role="agent",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    class SuspendedDB:
+        async def execute(self, stmt): return FakeResult(suspended)
+
+    body = LoginIn(email="sarah@acme.com", password="not-the-right-one")
+    request = Request({"type": "http", "headers": []})
+    with pytest.raises(HTTPException) as exc:
+        await login(body, request, SuspendedDB())
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid credentials"

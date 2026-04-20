@@ -260,6 +260,9 @@ async function loadInteractions(channel) {
  */
 async function loadInteractionDetail(interactionId) {
     switchView('interaction-detail');
+    // Broadcast the id so admin-surfaces.js can unhide the follow-up
+    // email button (and future contextual actions).
+    window.currentInteractionId = interactionId;
 
     var data = await apiFetch('/interactions/' + interactionId);
     if (!data) return;
