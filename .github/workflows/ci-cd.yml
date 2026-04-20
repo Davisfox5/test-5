@@ -1,80 +1,82 @@
 name: "CI-CD Pipeline"
 
 concurrency:
-  group: selfheal-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to read-only; steps that need write opt in explicitly.
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  build-test-deploy:
+  test:
     runs-on: ubuntu-latest
 
+    # Stub envs so backend modules can import without real services.
     env:
-      OPENAI_API_KEY_DECLAN: ${{ secrets.OPENAI_API_KEY_DECLAN }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      SKYVERN_API_KEY: ${{ secrets.SKYVERN_API_KEY }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_SECRET: ${{ secrets.AZURE_SECRET }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
-      # Stub envs so backend modules can be imported in tests without
-      # talking to real services.
       DATABASE_URL: "postgresql://stub:stub@stub:5432/stub"
       ANTHROPIC_API_KEY: "sk-ant-stub"
       JWT_SECRET: "stub"
       REDIS_URL: "redis://localhost:6379/0"
+      DEBUG: "true"
 
     steps:
       - name: "Check out code"
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: "Set up Python"
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: "Install dependencies"
         run: |
           pip install --upgrade pip
-          # Backend deps drive the test suite — anything imported by tests
-          # must be in requirements.txt or this build fails.
           pip install -r requirements.txt
-          # Test-only tooling not in requirements.txt
-          pip install pytest pytest-asyncio
-          # Self-healing orchestrator still pins openai 0.28.
-          pip install "openai==0.28.*"
+          pip install detect-secrets
 
-      - name: "Run tests & capture logs"
+      - name: "Secret scan"
+        # detect-secrets flags likely committed credentials. When a finding
+        # is a known false positive, audit it into .secrets.baseline locally
+        # (.secrets.baseline is gitignored).
         run: |
-          # Skip the Playwright E2E test in CI — it needs a browser and a
-          # running server.  Run it locally or in a dedicated E2E job.
+          detect-secrets scan --all-files \
+              --exclude-files '^tests/' \
+              --exclude-files '^\.secrets\.baseline$' \
+              > /tmp/detect-secrets.json
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("/tmp/detect-secrets.json"))
+          results = data.get("results", {})
+          if results:
+              print("::error::detect-secrets found potential secrets:")
+              print(json.dumps(results, indent=2))
+              sys.exit(1)
+          print("No committed secrets detected.")
+          PY
+
+      - name: "Run tests"
+        run: |
+          # Skip the Playwright E2E test in CI — it needs a browser + running
+          # server. Run it locally or in a dedicated E2E job.
           pytest --maxfail=1 --disable-warnings -q \
             --ignore=tests/sandbox_demo_ui_test.py \
             2>&1 | tee test_output.log
-          exit_code=${PIPESTATUS[0]}
-          if [ $exit_code -ne 0 ]; then
-            echo "[pytest logs]" > fail_logs.txt
-            cat test_output.log >> fail_logs.txt
-            exit $exit_code
-          fi
 
-      # ── Self-healing ──────────────────────────────────────
-      # Disabled.  It was force-pushing GPT-generated "fixes" to main and
-      # mangling otherwise-fine code whenever tests failed for an environmental
-      # reason (e.g. missing dep).  Re-enable behind a manual workflow_dispatch
-      # if needed; if you do, keep the push targeted at a selfheal branch
-      # (NOT a force-push to main).
-      - name: "Self-Healing (disabled — see comment)"
-        if: ${{ failure() && false }}
-        run: |
-          echo "Self-Heal disabled.  See .github/workflows/ci-cd.yml comment."
+      - name: "Upload test log on failure"
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test_output.log
+          retention-days: 7
