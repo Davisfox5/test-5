@@ -326,6 +326,140 @@ def main() -> int:
             with step("Live call view: loads with transcript entries"):
                 assert page.locator("#live-call .transcript-entry").count() > 0
 
+            with step("Customer brief card replaces old Caller Info card"):
+                # New element present, old one gone.
+                assert page.locator("#liveCustomerBrief").count() == 1
+                assert page.locator("#live-call .insight-card:has(h3:has-text('Caller Info'))").count() == 0
+                assert page.locator("#cbStatusBadge").count() == 1
+                assert page.locator("#cbNoteForm").count() == 1
+
+            with step("Brief alert: brief_alert event pops a toast in the brief panel"):
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'brief_alert',
+                        kind: 'churn',
+                        message: 'Customer just flagged a concern.',
+                    })"""
+                )
+                page.wait_for_selector("#cbAlertLane .cb-alert[data-kind='churn']", timeout=1000)
+                alert = page.locator("#cbAlertLane .cb-alert").first
+                assert "Customer just flagged a concern." in alert.inner_text()
+
+            with step("Brief alert: dismiss button removes the toast"):
+                page.locator("#cbAlertLane .cb-alert .cb-alert-dismiss").first.click()
+                page.wait_for_selector(
+                    "#cbAlertLane .cb-alert",
+                    state="detached",
+                    timeout=1000,
+                )
+                assert page.locator("#cbAlertLane .cb-alert").count() == 0
+
+            with step("Sentiment: sentiment_update is ignored in historical mode"):
+                # Default mode is historical — the update should not update the score tile.
+                before = page.locator("#cbSentimentScore").inner_text()
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'sentiment_update',
+                        score: 8.4,
+                        trend: 'improving',
+                    })"""
+                )
+                after = page.locator("#cbSentimentScore").inner_text()
+                assert before == after
+
+            with step("Sentiment: after tenant opts in, live updates land"):
+                page.evaluate("() => window.customerBrief.setFeatures({ live_sentiment: true })")
+                page.evaluate(
+                    """() => window.customerBrief.handleEvent({
+                        type: 'sentiment_update',
+                        score: 8.4,
+                        trend: 'improving',
+                    })"""
+                )
+                score = page.locator("#cbSentimentScore").inner_text()
+                assert score.strip().startswith("8.4")
+                mode = page.locator("#cbSentimentMode")
+                assert mode.get_attribute("data-mode") == "live"
+
+            with step("KB Answers: empty-state renders before any events"):
+                assert page.locator("#liveKbAnswers .kb-empty").count() == 1
+                assert page.locator("#kbHistoryToggle").count() == 1
+
+            with step("KB Answers: kb_answer event renders a card"):
+                page.evaluate(
+                    """() => window.kbCards.handleEvent({
+                        type: 'kb_answer',
+                        chunk_id: 'c-001',
+                        doc_id: 'd-001',
+                        doc_title: 'Pricing Playbook',
+                        source_url: 'https://example.com/pricing',
+                        snippet: 'Pro tier is $99/month with an annual discount of 20%.',
+                        confidence: 0.87,
+                        source: 'regex',
+                    })"""
+                )
+                page.wait_for_selector("#liveKbAnswers .kb-card", timeout=1000)
+                card = page.locator("#liveKbAnswers .kb-card").first
+                assert "Pricing Playbook" in card.inner_text()
+                assert "Pro tier is $99/month" in card.inner_text()
+                assert page.locator("#liveKbAnswers .kb-empty").count() == 0
+
+            with step("KB Answers: dedupe keeps a single card for repeat events"):
+                # Fire the same chunk again — should not add a second card.
+                page.evaluate(
+                    """() => window.kbCards.handleEvent({
+                        type: 'kb_answer',
+                        chunk_id: 'c-001',
+                        doc_id: 'd-001',
+                        doc_title: 'Pricing Playbook',
+                        snippet: 'Pro tier is $99/month with an annual discount of 20%.',
+                        confidence: 0.9,
+                    })"""
+                )
+                assert page.locator("#liveKbAnswers .kb-card").count() == 1
+
+            with step("KB Answers: dismiss removes the card"):
+                page.locator("#liveKbAnswers .kb-card .kb-dismiss-btn").first.click()
+                page.wait_for_selector(
+                    "#liveKbAnswers .kb-card",
+                    state="detached",
+                    timeout=1000,
+                )
+                assert page.locator("#liveKbAnswers .kb-card").count() == 0
+
+            with step("KB Answers: history drawer toggles open/closed"):
+                toggle = page.locator("#kbHistoryToggle")
+                assert toggle.get_attribute("aria-expanded") == "false"
+                toggle.click()
+                assert toggle.get_attribute("aria-expanded") == "true"
+                toggle.click()
+                assert toggle.get_attribute("aria-expanded") == "false"
+
+            # ───── Onboarding interview view ─────
+            with step("Onboarding: view renders with chat shell + checklist"):
+                switch_view(page, "onboarding")
+                assert page.locator("#onboarding.view.active").count() == 1
+                assert page.locator("#obMessages").count() == 1
+                assert page.locator("#obComposer").count() == 1
+                # 5 checklist items (goals, kpis, strategies, org, personal_touches).
+                assert page.locator("#obChecklist li").count() == 5
+                # Without an API token, input should be disabled.
+                assert page.locator("#obInput").is_disabled()
+
+            # ───── LINDA Insights view ─────
+            with step("LINDA Insights: nav + view switch"):
+                switch_view(page, "linda-insights")
+                assert page.locator("#linda-insights.view.active").count() == 1
+                # Three cards present: onboarding, suggestions, playbook.
+                assert page.locator("#liOnboardingCard").count() == 1
+                assert page.locator("#liSuggestionsCard").count() == 1
+                assert page.locator("#liPlaybookCard").count() == 1
+                # Onboarding checklist has 5 sections rendered (or empty —
+                # without API connectivity the checklist is still empty,
+                # but the card + buttons should all render).
+                assert page.locator("#liOnboardingStart").count() == 1
+                assert page.locator("#liInferNow").count() == 1
+
             # ───── Manager monitoring ─────
             # Need to be in manager mode for the nav item, but the view itself is accessible via switchView.
             page.locator(".role-btn[data-role=manager]").click()
@@ -376,7 +510,7 @@ def main() -> int:
                 page.locator("#contacts button:has-text('Add Contact')").click()
                 page.wait_for_selector("#genericModal.active", timeout=1000)
                 page.locator("#cName").fill("Test Lead")
-                page.locator("#cCompany").fill("Testco")
+                page.locator("#cCustomer").fill("Testco")
                 page.locator("#cPhone").fill("+1 (555) 000-0000")
                 page.locator("#cEmail").fill("lead@testco.com")
                 page.locator("#genericModal .generic-modal-actions button:has-text('Create')").click()
@@ -465,6 +599,49 @@ def main() -> int:
 
             # ───── Preferences: radios, select, toggles, keys, webhooks ─────
             switch_view(page, "preferences")
+
+            with step("Tenant settings panel renders in Preferences"):
+                assert page.locator("#tenantSettingsPanel").count() == 1
+                # Panel visible even without API connectivity (status shows error).
+                status = page.locator("#tenantSettingsStatus")
+                assert status.count() == 1
+                # Keyterm inputs + language input + engine/automation selects present.
+                assert page.locator("#tenantTranscriptionEngine").count() == 1
+                assert page.locator("#tenantAutomationLevel").count() == 1
+                assert page.locator("#tenantDefaultLanguage").count() == 1
+                assert page.locator("#tenantKeytermBoost").count() == 1
+                assert page.locator("#tenantQuestionKeyterms").count() == 1
+
+            with step("Tenant settings: feature flag rows render from server spec"):
+                # Inject a fake payload via the controller so we can exercise
+                # the render path without the backend.
+                page.evaluate(
+                    """() => {
+                        window.tenantSettings.settings = {
+                            tenant_id: 't1',
+                            transcription_engine: 'deepgram',
+                            automation_level: 'approval',
+                            pii_redaction_enabled: true,
+                            audio_storage_enabled: false,
+                            translation_enabled: false,
+                            default_language: 'en',
+                            keyterm_boost_list: ['acme'],
+                            question_keyterms: ['how much'],
+                            features_enabled: { live_sentiment: true, live_kb_retrieval: true },
+                            feature_flag_spec: [
+                                { key: 'live_sentiment', default: false, label: 'Live sentiment updates', help: 'Paid tier.' },
+                                { key: 'live_kb_retrieval', default: true, label: 'Live KB retrieval', help: 'KB cards during calls.' }
+                            ]
+                        };
+                        window.tenantSettings.render();
+                    }"""
+                )
+                rows = page.locator("#featureFlagList .feature-flag-row")
+                assert rows.count() == 2
+                # First row's toggle reflects `live_sentiment: true`.
+                assert page.locator(
+                    "#featureFlagList input[data-flag='live_sentiment']"
+                ).is_checked()
 
             with step("Preferences: automation radio switches active"):
                 page.locator("#preferences input[name=automation][value=manual]").check()
