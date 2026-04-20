@@ -1301,12 +1301,16 @@ function seededRandom(seed) {
 }
 
 // ======== CONVERSATIONS ========
-// Standalone module so the diff is contained. Talks to /api/v1/conversations
-// endpoints; falls back to an empty-state row when the API is unreachable
-// or the tenant hasn't connected an inbox yet.
+// Standalone module. Talks to /api/v1/conversations endpoints; when
+// the API is unreachable (demo mode) the list shows an empty-state row.
 
 var _currentConversationId = null;
 var _currentConversationProviderIntegrationId = null;
+var _currentReplyDefaults = null;
+// Attachments from the current thread the user can re-attach on reply.
+var _currentConversationAttachments = [];
+// Attachments the user has toggled on in the picker (by id).
+var _selectedReattachIds = new Set();
 
 async function loadConversations(filter) {
     var body = document.getElementById('conversationsTableBody');
@@ -1347,8 +1351,51 @@ async function loadConversations(filter) {
     });
 }
 
+// Strip scripts/event handlers before dropping HTML into an iframe.
+// We render in a sandboxed iframe anyway, but scrubbing here keeps the
+// DOM clean and avoids loading external images silently.
+function _scrubEmailHtml(html) {
+    if (!html) return '';
+    return String(html)
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/ on[a-z]+="[^"]*"/gi, '')
+        .replace(/ on[a-z]+='[^']*'/gi, '');
+}
+
+function _renderMessageBody(m) {
+    if (m.body_html) {
+        var safe = _scrubEmailHtml(m.body_html);
+        // Sandboxed iframe with srcdoc — no JS, no top navigation,
+        // images allowed but lazy-loaded.
+        var quoted = safe.replace(/"/g, '&quot;');
+        return '<iframe class="conv-html-body" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy" srcdoc="' + quoted + '"></iframe>';
+    }
+    return '<pre class="conv-body">' + escapeHtml((m.raw_text || '').slice(0, 8000)) + '</pre>';
+}
+
+function _renderAttachments(atts) {
+    if (!atts || !atts.length) return '';
+    var rows = atts.map(function(a) {
+        var size = a.size_bytes ? ' · ' + _formatBytes(a.size_bytes) : '';
+        var link = a.has_bytes
+            ? '<a href="/api/v1/attachments/' + a.id + '/download" target="_blank" rel="noopener">' + escapeHtml(a.filename || 'attachment') + '</a>'
+            : '<span class="muted">' + escapeHtml(a.filename || 'attachment') + ' <em>(bytes unavailable)</em></span>';
+        return '<li>' + link + size + '</li>';
+    }).join('');
+    return '<ul class="conv-attachments">' + rows + '</ul>';
+}
+
+function _formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 async function openConversation(conversationId) {
     _currentConversationId = conversationId;
+    _currentReplyDefaults = null;
+    _selectedReattachIds = new Set();
     window.switchView('conversation-detail');
     var data = await apiFetch('/conversations/' + conversationId);
     if (!data) return;
@@ -1359,7 +1406,9 @@ async function openConversation(conversationId) {
 
     var threadEl = document.getElementById('conversationThread');
     threadEl.innerHTML = '';
+    var allAttachments = [];
     (data.messages || []).forEach(function(m) {
+        (m.attachments || []).forEach(function(a) { allAttachments.push(a); });
         var div = document.createElement('div');
         div.className = 'conv-message ' + (m.direction === 'inbound' ? 'inbound' : 'outbound');
         div.innerHTML =
@@ -1369,9 +1418,11 @@ async function openConversation(conversationId) {
                 '<span class="conv-when">' + formatRelativeDate(m.created_at) + '</span>' +
             '</div>' +
             '<div class="conv-subject">' + escapeHtml(m.subject || '') + '</div>' +
-            '<pre class="conv-body">' + escapeHtml((m.raw_text || '').slice(0, 8000)) + '</pre>';
+            _renderMessageBody(m) +
+            _renderAttachments(m.attachments || []);
         threadEl.appendChild(div);
     });
+    _currentConversationAttachments = allAttachments.filter(function(a) { return a.has_bytes; });
 
     var insightsEl = document.getElementById('conversationInsights');
     var insights = data.insights || {};
@@ -1383,6 +1434,12 @@ async function openConversation(conversationId) {
     // Reset draft panel
     document.getElementById('conversationDraftOutput').hidden = true;
     document.getElementById('conversationDraftInstructions').value = '';
+    document.getElementById('conversationDraftTo').value = '';
+    document.getElementById('conversationDraftCc').value = '';
+    document.getElementById('conversationDraftBcc').value = '';
+
+    // Prefetch reply defaults so the Reply-All button can fire instantly.
+    _currentReplyDefaults = await apiFetch('/conversations/' + conversationId + '/reply-defaults');
 
     // Look up the first email-capable integration so Send has a target.
     var integrations = await apiFetch('/oauth/status');
@@ -1394,6 +1451,44 @@ async function openConversation(conversationId) {
     } else {
         _currentConversationProviderIntegrationId = null;
     }
+}
+
+function _populateAttachmentPicker() {
+    var host = document.getElementById('conversationAttachPicker');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!_currentConversationAttachments.length) {
+        host.innerHTML = '<span class="muted">No attachments in this thread.</span>';
+        return;
+    }
+    _currentConversationAttachments.forEach(function(a) {
+        var id = 'reattach_' + a.id;
+        var wrap = document.createElement('label');
+        wrap.className = 'conv-attach-option';
+        wrap.innerHTML =
+            '<input type="checkbox" value="' + a.id + '" ' + (_selectedReattachIds.has(a.id) ? 'checked' : '') + '> ' +
+            escapeHtml(a.filename || 'attachment') + ' <span class="muted">' + _formatBytes(a.size_bytes || 0) + '</span>';
+        wrap.querySelector('input').addEventListener('change', function(e) {
+            if (e.target.checked) _selectedReattachIds.add(a.id);
+            else _selectedReattachIds.delete(a.id);
+        });
+        host.appendChild(wrap);
+    });
+}
+
+function _prefillRecipientsFromDefaults(mode) {
+    if (!_currentReplyDefaults) return;
+    var toEl = document.getElementById('conversationDraftTo');
+    var ccEl = document.getElementById('conversationDraftCc');
+    var subjEl = document.getElementById('conversationDraftSubject');
+    if (mode === 'reply_all') {
+        toEl.value = (_currentReplyDefaults.reply_all_to || []).join(', ');
+        ccEl.value = (_currentReplyDefaults.reply_all_cc || []).join(', ');
+    } else {
+        toEl.value = (_currentReplyDefaults.reply_to || []).join(', ');
+        ccEl.value = '';
+    }
+    if (!subjEl.value) subjEl.value = _currentReplyDefaults.subject || '';
 }
 
 async function draftConversationReply() {
@@ -1414,10 +1509,28 @@ async function draftConversationReply() {
         document.getElementById('conversationDraftBody').value = resp.body || '';
         document.getElementById('conversationDraftRationale').textContent = resp.rationale || '';
         document.getElementById('conversationDraftFlag').hidden = !resp.requires_human_review;
+        _prefillRecipientsFromDefaults('reply');
+        _populateAttachmentPicker();
     } finally {
         btn.disabled = false;
         btn.textContent = 'Generate draft';
     }
+}
+
+function prepareReplyAll() {
+    if (!_currentConversationId) return;
+    document.getElementById('conversationDraftOutput').hidden = false;
+    var bodyEl = document.getElementById('conversationDraftBody');
+    if (!bodyEl.value) bodyEl.value = '';
+    _prefillRecipientsFromDefaults('reply_all');
+    if (!document.getElementById('conversationDraftSubject').value && _currentReplyDefaults) {
+        document.getElementById('conversationDraftSubject').value = _currentReplyDefaults.subject || '';
+    }
+    _populateAttachmentPicker();
+}
+
+function _splitAddresses(raw) {
+    return (raw || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 }
 
 async function sendConversationReply() {
@@ -1426,14 +1539,16 @@ async function sendConversationReply() {
         alert('Connect Gmail or Outlook first (Integrations view).');
         return;
     }
+    var to = _splitAddresses(document.getElementById('conversationDraftTo').value);
+    var cc = _splitAddresses(document.getElementById('conversationDraftCc').value);
+    var bcc = _splitAddresses(document.getElementById('conversationDraftBcc').value);
     var subject = document.getElementById('conversationDraftSubject').value;
     var body = document.getElementById('conversationDraftBody').value;
-    // Derive recipient from the most recent inbound message's from-address.
-    var inboundFrom = null;
-    document.querySelectorAll('#conversationThread .conv-message.inbound .conv-from').forEach(function(el) {
-        inboundFrom = el.textContent.trim();
+    if (!to.length) { alert('Add at least one recipient.'); return; }
+
+    var attachments = Array.from(_selectedReattachIds).map(function(id) {
+        return { attachment_id: id };
     });
-    if (!inboundFrom) { alert('No inbound message to reply to.'); return; }
 
     var btn = document.getElementById('conversationSendBtn');
     btn.disabled = true;
@@ -1445,9 +1560,11 @@ async function sendConversationReply() {
             body: JSON.stringify({
                 subject: subject,
                 body: body,
-                to: [inboundFrom],
-                cc: [],
-                integration_id: _currentConversationProviderIntegrationId
+                to: to,
+                cc: cc,
+                bcc: bcc,
+                integration_id: _currentConversationProviderIntegrationId,
+                attachments: attachments
             })
         });
         if (resp) {
@@ -1461,19 +1578,14 @@ async function sendConversationReply() {
     }
 }
 
-function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, function(c) {
-        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-}
-
 // Wire UI events once the DOM is ready.
 document.addEventListener('DOMContentLoaded', function() {
     var draftBtn = document.getElementById('conversationDraftBtn');
     if (draftBtn) draftBtn.addEventListener('click', draftConversationReply);
     var sendBtn = document.getElementById('conversationSendBtn');
     if (sendBtn) sendBtn.addEventListener('click', sendConversationReply);
+    var replyAllBtn = document.getElementById('conversationReplyAllBtn');
+    if (replyAllBtn) replyAllBtn.addEventListener('click', prepareReplyAll);
     document.querySelectorAll('[data-conv-filter]').forEach(function(btn) {
         btn.addEventListener('click', function() {
             document.querySelectorAll('[data-conv-filter]').forEach(function(b) { b.classList.remove('active'); });

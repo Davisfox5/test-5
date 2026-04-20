@@ -32,15 +32,32 @@ from backend.app.models import (
     Contact,
     Conversation,
     Interaction,
+    InteractionAttachment,
     Tenant,
     User,
 )
+from backend.app.services.attachment_store import get_store
 from backend.app.services.email_classifier import (
     EmailClassifier,
     EmailForClassification,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NormalizedAttachment:
+    """Provider-agnostic attachment metadata.  ``data`` is lazy — set by
+    the fetcher after a second API call so we don't buy bytes for rows
+    we're about to filter out as internal."""
+
+    filename: str
+    content_type: Optional[str]
+    size_bytes: Optional[int]
+    provider_attachment_id: Optional[str] = None
+    content_id: Optional[str] = None  # CID for inline references
+    inline: bool = False
+    data: Optional[bytes] = None  # populated on demand — see fetchers
 
 
 @dataclass
@@ -56,11 +73,17 @@ class NormalizedEmail:
     from_address: str = ""
     to_addresses: List[str] = field(default_factory=list)
     cc_addresses: List[str] = field(default_factory=list)
+    bcc_addresses: List[str] = field(default_factory=list)
     body_text: str = ""
+    body_html: Optional[str] = None
     headers: Dict[str, str] = field(default_factory=dict)
     received_at: Optional[datetime] = None
     direction: str = "inbound"  # inbound|outbound — based on folder/label
     agent_email: Optional[str] = None  # email of the authenticated mailbox
+    attachments: List[NormalizedAttachment] = field(default_factory=list)
+    # Callback to fetch bytes on demand; the ingest path only calls this
+    # after the classifier says the email is external.
+    attachment_fetcher: Optional[callable] = None  # type: ignore[assignment]
 
 
 def _tenant_domains(tenant: Tenant) -> List[str]:
@@ -258,6 +281,8 @@ async def ingest_email(
         conversation_id=conversation.id,
         campaign_id=campaign_id,
         channel="email",
+        bcc_addresses=list(email.bcc_addresses),
+        body_html=email.body_html,
         source=email.provider,
         direction=email.direction,
         title=email.subject,
@@ -277,6 +302,47 @@ async def ingest_email(
         status="processing",
     )
     session.add(interaction)
+    session.flush()
+
+    # Persist attachments.  Bytes go to S3 if the store is configured;
+    # we always write the row so the UI can show "customer attached X".
+    store = get_store()
+    for att in email.attachments or []:
+        data = att.data
+        if data is None and email.attachment_fetcher is not None:
+            try:
+                data = email.attachment_fetcher(att)
+            except Exception:
+                logger.exception(
+                    "Attachment fetcher raised (non-fatal) msg=%s filename=%s",
+                    email.message_id, att.filename,
+                )
+                data = None
+
+        s3_key: Optional[str] = None
+        size_bytes = att.size_bytes
+        if data is not None:
+            size_bytes = len(data)
+            s3_key = store.put(
+                tenant_id=tenant.id,
+                interaction_id=interaction.id,
+                filename=att.filename,
+                content_type=att.content_type,
+                data=data,
+            )
+
+        session.add(InteractionAttachment(
+            interaction_id=interaction.id,
+            tenant_id=tenant.id,
+            filename=att.filename,
+            content_type=att.content_type,
+            size_bytes=size_bytes,
+            s3_key=s3_key,
+            provider_attachment_id=att.provider_attachment_id,
+            direction=email.direction,
+            inline=att.inline,
+            content_id=att.content_id,
+        ))
     session.flush()
 
     # Enqueue analysis — Celery is optional in dev/test environments.

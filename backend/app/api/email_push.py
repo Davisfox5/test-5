@@ -38,6 +38,43 @@ from fastapi import Depends
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import EmailSyncCursor, Integration
+from backend.app.services.rate_limit import get_limiter
+
+# Rate limits:
+#   Gmail Pub/Sub delivers one notification per mailbox-change, retry on
+#   non-2xx.  Legitimate volume for a busy tenant rarely exceeds a few
+#   per second.  We cap at 300/minute per source IP — enough headroom
+#   for Google's push infrastructure, tight enough to blunt abuse.
+#   Graph batches up to 1000 notifications per POST so we let it breathe
+#   a bit more on payload size but limit request rate similarly.
+_GMAIL_RATE = (300, 60)
+_GRAPH_RATE = (300, 60)
+
+
+def _client_key(request: Request, prefix: str) -> str:
+    # Trust the immediate remote addr; production will sit behind a
+    # load balancer that should set X-Forwarded-For which Starlette
+    # surfaces through request.client when configured.
+    client_host = request.client.host if request.client else "unknown"
+    return f"{prefix}:{client_host}"
+
+
+def _enforce_rate(request: Request, prefix: str, limit_window: tuple[int, int]) -> None:
+    limit, window = limit_window
+    allowed, remaining, reset_in = get_limiter().check(
+        key=_client_key(request, prefix), limit=limit, window_seconds=window
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded",
+            headers={
+                "Retry-After": str(max(1, reset_in)),
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(reset_in),
+            },
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +98,7 @@ class _PubsubEnvelope(BaseModel):
 
 @router.post("/email-push/gmail", status_code=204)
 async def gmail_push(
+    request: Request,
     envelope: _PubsubEnvelope,
     token: str = Query("", description="Shared secret from Pub/Sub push URL"),
     db: AsyncSession = Depends(get_db),
@@ -71,6 +109,7 @@ async def gmail_push(
     the tenant + cursor lookup synchronously (fast), then dispatch a
     Celery task that diffs the Gmail history and ingests.
     """
+    _enforce_rate(request, "gmail-push", _GMAIL_RATE)
     expected = _settings.GMAIL_PUSH_TOKEN
     if expected and token != expected:
         raise HTTPException(status_code=401, detail="Bad push token")
@@ -132,9 +171,12 @@ async def graph_webhook(
     echoed back in plain text within 10s.  On real deliveries the body
     is JSON — we verify ``clientState`` matches ours before enqueuing.
     """
+    # Validation handshake is cheap and must complete inside 10 seconds
+    # — intentionally not rate-limited.  Real deliveries are.
     if validationToken is not None:
-        # First-handshake: echo the token verbatim as text/plain.
         return Response(content=validationToken, media_type="text/plain")
+
+    _enforce_rate(request, "graph-push", _GRAPH_RATE)
 
     try:
         body = await request.json()

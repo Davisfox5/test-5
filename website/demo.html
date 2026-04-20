@@ -391,12 +391,23 @@
                             <div class="conv-panel">
                                 <h3>AI Draft Reply</h3>
                                 <textarea id="conversationDraftInstructions" rows="2" placeholder="Optional: extra instructions to the drafting agent"></textarea>
-                                <button class="btn btn-primary" id="conversationDraftBtn" type="button">Generate draft</button>
+                                <div class="conv-draft-actions" style="margin-bottom:0.5rem;">
+                                    <button class="btn btn-primary" id="conversationDraftBtn" type="button">Generate draft</button>
+                                    <button class="btn btn-ghost" id="conversationReplyAllBtn" type="button">Reply all</button>
+                                </div>
                                 <div class="conv-draft" id="conversationDraftOutput" hidden>
+                                    <label>To</label>
+                                    <input type="text" id="conversationDraftTo" placeholder="comma-separated">
+                                    <label>Cc</label>
+                                    <input type="text" id="conversationDraftCc" placeholder="comma-separated (optional)">
+                                    <label>Bcc</label>
+                                    <input type="text" id="conversationDraftBcc" placeholder="comma-separated (optional)">
                                     <label>Subject</label>
                                     <input type="text" id="conversationDraftSubject">
                                     <label>Body</label>
-                                    <textarea id="conversationDraftBody" rows="12"></textarea>
+                                    <textarea id="conversationDraftBody" rows="10"></textarea>
+                                    <label>Re-attach from this thread</label>
+                                    <div id="conversationAttachPicker" class="conv-attach-picker"></div>
                                     <p class="conv-draft-rationale" id="conversationDraftRationale"></p>
                                     <div class="conv-draft-actions">
                                         <button class="btn btn-secondary" id="conversationSendBtn" type="button">Send reply</button>
