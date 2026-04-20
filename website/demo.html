@@ -450,6 +450,40 @@
                         </div>
 
                         <div class="insights-column">
+                            <!-- Post-call aggregate scores (sentiment, churn risk, health).
+                                 Populated from /interactions/{id}/scores + /profiles/clients/{id}.
+                                 Each card shows {value, confidence, top_factors[3], recommendations[3]}. -->
+                            <div class="insight-card score-card" data-scores="sentiment" hidden>
+                                <div class="score-card-header">
+                                    <h3>Sentiment</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="churn_risk" hidden>
+                                <div class="score-card-header">
+                                    <h3>Churn Risk</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-caveat" data-scores-caveat hidden></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="health" hidden>
+                                <div class="score-card-header">
+                                    <h3>Account Health</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
                             <div class="insight-card">
                                 <h3>AI Summary</h3>
                                 <p><!-- Populated by JS --></p>
