@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -48,6 +49,12 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Outcomes webhook HMAC secret — per-tenant shared secret verified on
+    # ``X-Callsight-Signature``.  Nullable until the tenant rotates / sets it.
+    outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
+    # How many hours of call audio to retain after processing.  Default 24h;
+    # tenants that want replay / re-transcription opt-in with a larger value.
+    audio_retention_hours: Mapped[int] = mapped_column(Integer, default=24, server_default="24")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -68,6 +75,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, default="agent")
+    manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -420,11 +430,9 @@ class TenantInsight(Base):
 # ──────────────────────────────────────────────────────────
 # INTERACTION ATTACHMENTS
 #
-# One row per file on an email (inbound or outbound).  The actual bytes
-# live in S3 when ``AWS_S3_BUCKET`` is configured — we only keep
-# metadata + s3_key in Postgres.  If S3 isn't configured the row is
-# still created with ``s3_key=NULL`` so the UI can at least surface
-# "customer attached invoice.pdf".
+# One row per file on an email (inbound or outbound). The actual bytes
+# live in S3 when AWS_S3_BUCKET is configured — we only keep metadata +
+# s3_key in Postgres.
 # ──────────────────────────────────────────────────────────
 
 
@@ -439,10 +447,184 @@ class InteractionAttachment(Base):
     size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     s3_key: Mapped[Optional[str]] = mapped_column(String)
     provider_attachment_id: Mapped[Optional[str]] = mapped_column(String)
-    direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound
+    direction: Mapped[Optional[str]] = mapped_column(String)
     inline: Mapped[bool] = mapped_column(Boolean, default=False)
-    content_id: Mapped[Optional[str]] = mapped_column(String)  # CID for inline HTML refs
+    content_id: Mapped[Optional[str]] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────
+# SCORING & ORCHESTRATOR (see docs/SCORING_ARCHITECTURE.md)
+# ──────────────────────────────────────────────────────────
+
+
+class InteractionFeatures(Base):
+    """Canonical per-interaction feature store.
+
+    Everything computed from the transcript — deterministic metrics,
+    parsed LLM output, proxy-outcome events — lives here.  Scoring and
+    orchestrator code reads only from this row, never from the raw
+    ``interactions.insights`` blob.
+    """
+
+    __tablename__ = "interaction_features"
+
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interactions.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    deterministic: Mapped[dict] = mapped_column(JSONB, default=dict)
+    llm_structured: Mapped[dict] = mapped_column(JSONB, default=dict)
+    embeddings_ref: Mapped[Optional[str]] = mapped_column(Text)
+    proxy_outcomes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    scorer_versions: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaReport(Base):
+    """Per-interaction structured delta consumed by the orchestrator."""
+
+    __tablename__ = "delta_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    scopes: Mapped[list] = mapped_column(JSONB, default=list)
+    delta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ClientProfile(Base):
+    __tablename__ = "client_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("contacts.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ManagerProfile(Base):
+    __tablename__ = "manager_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    manager_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class BusinessProfile(Base):
+    """Tenant-level rollup profile (the 'business' is the tenant firm)."""
+
+    __tablename__ = "business_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    business_tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    top_factors: Mapped[list] = mapped_column(JSONB, default=list)
+    source_event: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScorerVersion(Base):
+    """A named calibration/weight snapshot for one scorer.
+
+    Note: ``ScorerVersion`` (this file) versions *output-side* calibration
+    — the Platt / Cox / IRT weights that turn raw LLM outputs and
+    deterministic features into calibrated scores.  It is distinct from
+    ``PromptVariant`` below, which versions *input-side* prompts sent to
+    Claude.  Both coexist: ``Interaction.prompt_variant_id`` records which
+    prompt produced the insights blob; ``InteractionFeatures.scorer_versions``
+    records which scoring weights applied on top.
+    """
+
+    __tablename__ = "scorer_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    scorer_name: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    parameters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    calibration: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ece: Mapped[Optional[float]] = mapped_column(Float)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CorrectionEvent(Base):
+    """Active-learning correction submitted by a user.
+
+    Distinct from ``FeedbackEvent`` below: a ``CorrectionEvent`` is a
+    targeted replacement of a specific scorer's output (e.g. user marks
+    "this churn_risk is wrong — it should be low").  ``FeedbackEvent``
+    is the generic implicit/explicit signal stream ingested from the
+    product surfaces (thumbs, copy-edit, retry, accept).
+    """
+
+    __tablename__ = "correction_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[Optional[str]] = mapped_column(String)
+    original: Mapped[dict] = mapped_column(JSONB, default=dict)
+    correction: Mapped[dict] = mapped_column(JSONB, default=dict)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────
@@ -458,21 +640,18 @@ class Conversation(Base):
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
     channel: Mapped[str] = mapped_column(String, nullable=False)
     subject: Mapped[Optional[str]] = mapped_column(String)
-    thread_key: Mapped[Optional[str]] = mapped_column(String, index=True)  # RFC-822 root id or hash
-    classification: Mapped[Optional[str]] = mapped_column(String)  # sales|support|it|other
-    status: Mapped[str] = mapped_column(String, default="open")  # open|waiting_customer|waiting_agent|closed
+    thread_key: Mapped[Optional[str]] = mapped_column(String, index=True)
+    classification: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open")
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
-    # Active classifier/reply-drafter variant for the thread — same variant for
-    # the whole conversation so the user's experience is consistent within an
-    # A/B test window.
     prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ──────────────────────────────────────────────────────────
-# EMAIL INGESTION CURSOR (per-integration sync state)
+# EMAIL INGESTION CURSOR
 # ──────────────────────────────────────────────────────────
 
 
@@ -484,19 +663,14 @@ class EmailSyncCursor(Base):
         ForeignKey("integrations.id", ondelete="CASCADE"), unique=True
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
-    provider: Mapped[str] = mapped_column(String, nullable=False)  # google|microsoft
-    history_id: Mapped[Optional[str]] = mapped_column(String)       # Gmail historyId
-    delta_link: Mapped[Optional[str]] = mapped_column(Text)         # Graph deltaLink
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    history_id: Mapped[Optional[str]] = mapped_column(String)
+    delta_link: Mapped[Optional[str]] = mapped_column(Text)
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # ──────────────────────────────────────────────────────────
 # MARKETING CAMPAIGNS
-#
-# We don't generate campaigns — we monitor them.  External ESPs (Mailchimp,
-# HubSpot, Klaviyo, SendGrid, etc.) push metadata + engagement events in,
-# and we attribute replies / downstream interactions back so AI analysis
-# can correlate campaign framing with customer sentiment.
 # ──────────────────────────────────────────────────────────
 
 
@@ -506,22 +680,20 @@ class Campaign(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     name: Mapped[str] = mapped_column(String, nullable=False)
-    channel: Mapped[str] = mapped_column(String, nullable=False)  # email|sms|push|other
-    provider: Mapped[Optional[str]] = mapped_column(String)  # mailchimp|hubspot|klaviyo|sendgrid|custom
-    external_id: Mapped[Optional[str]] = mapped_column(String)  # ESP's campaign id
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[Optional[str]] = mapped_column(String)
+    external_id: Mapped[Optional[str]] = mapped_column(String)
     subject: Mapped[Optional[str]] = mapped_column(String)
-    variant: Mapped[Optional[str]] = mapped_column(String)  # A/B label
+    variant: Mapped[Optional[str]] = mapped_column(String)
     sent_count: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
-    insights: Mapped[dict] = mapped_column(JSONB, default=dict)  # rollup: sentiment, reply rate, churn delta
+    insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CampaignRecipient(Base):
-    """Which contacts received which campaign message (needed for attribution)."""
-
     __tablename__ = "campaign_recipients"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -529,14 +701,12 @@ class CampaignRecipient(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
     email_address: Mapped[Optional[str]] = mapped_column(String)
-    external_message_id: Mapped[Optional[str]] = mapped_column(String)  # ESP/per-send id
+    external_message_id: Mapped[Optional[str]] = mapped_column(String)
     rfc822_message_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class CampaignEvent(Base):
-    """Engagement event from the ESP — open/click/bounce/unsubscribe/reply/convert."""
-
     __tablename__ = "campaign_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -544,26 +714,17 @@ class CampaignEvent(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     recipient_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaign_recipients.id"))
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
-    event_type: Mapped[str] = mapped_column(String, nullable=False)  # open|click|bounce|unsubscribe|reply|convert
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
 
 # ──────────────────────────────────────────────────────────
 # CONTINUOUS AI IMPROVEMENT
-#
-# Layer 1 — feedback capture (FeedbackEvent, TranscriptCorrection).
-# Layer 2 — quality scoring (InsightQualityScore, EvaluationReferenceSet).
-# Layer 3 — prompt versioning + experiments (PromptVariant, Experiment).
-# Layer 4 — per-tenant personalisation (TenantPromptConfig).
-# Layer 5 — ASR improvement (VocabularyCandidate, WerMetric).
-# Layer 6/7 — orchestration metrics (CrossTenantAnalytic).
 # ──────────────────────────────────────────────────────────
 
 
 class FeedbackEvent(Base):
-    """User feedback signal on any AI surface — both implicit + explicit."""
-
     __tablename__ = "feedback_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -577,9 +738,8 @@ class FeedbackEvent(Base):
     action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("action_items.id"))
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     surface: Mapped[str] = mapped_column(String, nullable=False)
-    # 'analysis' | 'email_classifier' | 'email_reply' | 'live_coaching'
     event_type: Mapped[str] = mapped_column(String, nullable=False)
-    signal_type: Mapped[str] = mapped_column(String, nullable=False)  # 'implicit' | 'explicit'
+    signal_type: Mapped[str] = mapped_column(String, nullable=False)
     insight_dimension: Mapped[Optional[str]] = mapped_column(String)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     session_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
@@ -589,8 +749,6 @@ class FeedbackEvent(Base):
 
 
 class TranscriptCorrection(Base):
-    """Manual transcript edit — feeds vocabulary discovery and WER."""
-
     __tablename__ = "transcript_corrections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -610,8 +768,6 @@ class TranscriptCorrection(Base):
 
 
 class InsightQualityScore(Base):
-    """Per-dimension quality score from the LLM judge or human reviewer."""
-
     __tablename__ = "insight_quality_scores"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -635,9 +791,11 @@ class InsightQualityScore(Base):
 
 
 class PromptVariant(Base):
-    """Versioned LLM prompt template, A/B-routable across the production surfaces.
+    """Versioned LLM prompt template, A/B-routable across production surfaces.
 
-    Status lifecycle: draft → shadow → canary → active → (rolled_back | retired).
+    See the note on ``ScorerVersion`` for how these two versioning systems
+    relate: prompt variants govern the *input* to Claude, scorer versions
+    govern the *output*-side calibration.
     """
 
     __tablename__ = "prompt_variants"
@@ -660,8 +818,6 @@ class PromptVariant(Base):
 
 
 class TenantPromptConfig(Base):
-    """Per-tenant prompt-time customisation — vocab, persona, few-shot, RAG, params."""
-
     __tablename__ = "tenant_prompt_configs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -680,8 +836,6 @@ class TenantPromptConfig(Base):
 
 
 class VocabularyCandidate(Base):
-    """Candidate term discovered from corrections / low-confidence segments."""
-
     __tablename__ = "vocabulary_candidates"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -698,8 +852,6 @@ class VocabularyCandidate(Base):
 
 
 class EvaluationReferenceSet(Base):
-    """Frozen, versioned snapshot of reference interactions for evaluation."""
-
     __tablename__ = "evaluation_reference_sets"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -716,8 +868,6 @@ class EvaluationReferenceSet(Base):
 
 
 class Experiment(Base):
-    """A/B test, prompt-optimisation run, or other experiment record."""
-
     __tablename__ = "experiments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -741,8 +891,6 @@ class Experiment(Base):
 
 
 class WerMetric(Base):
-    """Weekly word-error-rate aggregate per (tenant, engine, channel)."""
-
     __tablename__ = "wer_metrics"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -759,11 +907,7 @@ class WerMetric(Base):
 
 
 class CrossTenantAnalytic(Base):
-    """Cross-tenant aggregate metric — no ``tenant_id`` column by design.
-
-    Tenants opted out via ``Tenant.features_enabled.data_use_for_improvement = false``
-    are excluded from these aggregates upstream by the rollup job.
-    """
+    """Cross-tenant aggregate metric — no ``tenant_id`` column by design."""
 
     __tablename__ = "cross_tenant_analytics"
 
@@ -778,5 +922,57 @@ class CrossTenantAnalytic(Base):
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# OUTCOME EVENT INGESTION (idempotency + dead-letter)
+# ──────────────────────────────────────────────────────────
+
+
+class OutcomeEventIngestion(Base):
+    """Idempotency record for externally-posted outcome events.
+
+    Uniquely keyed on ``(tenant_id, event_id)`` — a repeated webhook
+    delivery with the same ``event_id`` is 200-accepted but does not
+    re-apply the event to ``InteractionFeatures.proxy_outcomes``.
+    """
+
+    __tablename__ = "outcome_event_ingestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "event_id", name="uq_outcome_ingestion_event"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    event_id: Mapped[str] = mapped_column(String, nullable=False)
+    outcome_type: Mapped[str] = mapped_column(String, nullable=False)
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DroppedOutcomeEvent(Base):
+    """Dead-letter log for outcome payloads that failed validation.
+
+    Captured reasons include: ``unknown_outcome_type``, ``future_timestamp``,
+    ``hmac_signature_invalid``, ``interaction_not_found``, ``schema_error``.
+    """
+
+    __tablename__ = "dropped_outcome_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id"))
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    headers_snapshot: Mapped[Optional[str]] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -461,6 +461,40 @@
                         </div>
 
                         <div class="insights-column">
+                            <!-- Post-call aggregate scores (sentiment, churn risk, health).
+                                 Populated from /interactions/{id}/scores + /profiles/clients/{id}.
+                                 Each card shows {value, confidence, top_factors[3], recommendations[3]}. -->
+                            <div class="insight-card score-card" data-scores="sentiment" hidden>
+                                <div class="score-card-header">
+                                    <h3>Sentiment</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="churn_risk" hidden>
+                                <div class="score-card-header">
+                                    <h3>Churn Risk</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-caveat" data-scores-caveat hidden></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="health" hidden>
+                                <div class="score-card-header">
+                                    <h3>Account Health</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
                             <div class="insight-card">
                                 <h3>AI Summary</h3>
                                 <p><!-- Populated by JS --></p>
@@ -555,7 +589,7 @@
                         <div class="live-left">
                             <div class="live-transcript-panel">
                                 <h3>Live Transcript</h3>
-                                <div class="live-transcript-scroll">
+                                <div class="live-transcript-scroll" data-live="transcript">
                                     <div class="transcript-entry">
                                         <span class="entry-time">00:00</span>
                                         <span class="entry-speaker agent">Sarah M. (Agent)</span>
@@ -605,7 +639,7 @@
                         <div class="live-right">
                             <div class="insight-card coaching-card">
                                 <h3>AI Coaching Hints</h3>
-                                <div class="coaching-hint-cards">
+                                <div class="coaching-hint-cards" data-live="alerts">
                                     <div class="hint-card warning">
                                         <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.8.8 1 1.8 1 2.3h6c0-.5.2-1.5 1-2.3A7 7 0 0 0 12 2z"/></svg></span>
                                         <p>Customer seems hesitant about pricing -- try reframing the value proposition. Emphasize ROI: avg. clients see 23% improvement in close rates.</p>
@@ -668,21 +702,25 @@
                     </div>
 
                     <!-- Live Metrics Bottom Bar -->
-                    <div class="call-metrics-bar">
-                        <div class="metric-item">
+                    <div class="call-metrics-bar" data-live="metrics-strip">
+                        <div class="metric-item" data-metric="talk-listen">
                             <span class="metric-label">Talk / Listen <span class="info-hint" tabindex="0" data-tip="Ratio of time the agent spoke vs. listened. Target: 40-60% talk for discovery calls.">?</span></span>
                             <div class="talk-listen-bar">
                                 <div class="talk-portion" style="width:58%">58%</div>
                                 <div class="listen-portion" style="width:42%">42%</div>
                             </div>
                         </div>
-                        <div class="metric-item">
-                            <span class="metric-label">Questions</span>
-                            <span class="metric-value">3</span>
+                        <div class="metric-item" data-metric="patience">
+                            <span class="metric-label">Patience <span class="info-hint" tabindex="0" data-tip="Median pause before you respond after the customer stops speaking. Target 0.6-1.0s.">?</span></span>
+                            <span class="metric-value patience-light neutral" data-live-value="patience">&mdash;</span>
                         </div>
-                        <div class="metric-item">
-                            <span class="metric-label">Sentiment</span>
-                            <span class="metric-value sentiment-positive">Positive</span>
+                        <div class="metric-item" data-metric="fillers">
+                            <span class="metric-label">Fillers / min</span>
+                            <span class="metric-value" data-live-value="fillers">&mdash;</span>
+                        </div>
+                        <div class="metric-item" data-metric="interactivity">
+                            <span class="metric-label">Turns / min</span>
+                            <span class="metric-value" data-live-value="interactivity">&mdash;</span>
                         </div>
                     </div>
 
@@ -1740,6 +1778,7 @@
     <!-- Tooltip (singleton) -->
     <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
+    <script src="js/live-call.js"></script>
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
     <script src="js/feedback.js"></script>

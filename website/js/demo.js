@@ -269,6 +269,21 @@ async function loadInteractionDetail(interactionId) {
     var titleEl = document.querySelector('#interaction-detail .view-header h1');
     if (titleEl) titleEl.textContent = data.title || 'Interaction Detail';
 
+    // Post-call aggregate scores (sentiment, churn risk, health).  Fetched
+    // in parallel with the rest of the detail payload; renders score +
+    // top factors + recommendations via the public ScoreResult projection.
+    apiFetch('/interactions/' + interactionId + '/scores').then(function(s) {
+        if (!s) return;
+        renderPostCallScore('sentiment', s.sentiment, { scaleMax: 100 });
+        renderPostCallScore('churn_risk', s.churn_risk, { scaleMax: 100, invert: true });
+        renderPostCallScore('health', s.health_indicators, { scaleMax: 100 });
+    });
+    if (data.contact_id) {
+        apiFetch('/profiles/clients/' + data.contact_id).then(function(p) {
+            if (p) mergeClientProfileIntoScores(p);
+        });
+    }
+
     // AI Summary
     var summaryEl = document.querySelector('#interaction-detail .insight-card p');
     if (summaryEl && data.insights && data.insights.summary) {
@@ -752,6 +767,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var sections = document.querySelectorAll('.view');
     var viewContainer = document.getElementById('viewContainer');
 
+    var _previousView = null;
+
     window.switchView = function(viewId) {
         sections.forEach(function(s) { s.classList.remove('active'); });
         navItems.forEach(function(n) { n.classList.remove('active'); });
@@ -763,6 +780,21 @@ document.addEventListener('DOMContentLoaded', function() {
         if (targetNav) targetNav.classList.add('active');
 
         if (viewContainer) viewContainer.scrollTop = 0;
+
+        // Live-call WebSocket lifecycle.  Opens only when connected; closes
+        // cleanly on any view-switch away so we don't leak connections.
+        if (_previousView === 'live-call' && viewId !== 'live-call') {
+            if (typeof window.closeLiveCall === 'function') window.closeLiveCall();
+        }
+        if (viewId === 'live-call' && _previousView !== 'live-call') {
+            if (typeof window.openLiveCall === 'function') {
+                // Session ID could be threaded through from a running call;
+                // for the demo we use a stable placeholder so the backend
+                // handler scopes Redis correctly.
+                window.openLiveCall('demo-' + Date.now());
+            }
+        }
+        _previousView = viewId;
 
         // Load API data when switching views (connected mode)
         if (API_CONNECTED) {
@@ -1597,3 +1629,127 @@ document.addEventListener('DOMContentLoaded', function() {
 
 window.loadConversations = loadConversations;
 window.openConversation = openConversation;
+
+
+// ── Post-call aggregate score rendering ─────────────────────────────────
+
+/**
+ * Render one score card (sentiment / churn_risk / health) from the
+ * public ScoreResult projection returned by /interactions/{id}/scores.
+ *
+ * @param {string} kind  — selector key: 'sentiment' | 'churn_risk' | 'health'
+ * @param {object} payload — {value, confidence, top_factors[], recommendations[], scorer_version}
+ * @param {object} opts — {scaleMax: 100, invert: false}
+ */
+function renderPostCallScore(kind, payload, opts) {
+    if (!payload) return;
+    opts = opts || {};
+    var card = document.querySelector('[data-scores="' + kind + '"]');
+    if (!card) return;
+
+    card.hidden = false;
+
+    var valueEl = card.querySelector('[data-scores-value]');
+    if (valueEl) {
+        var val = payload.value != null ? Math.round(payload.value) : null;
+        valueEl.textContent = val == null ? '—' : val;
+        valueEl.classList.remove('good', 'warn', 'bad');
+        // Colour the badge based on the 0..scaleMax range.  For churn_risk
+        // we invert: higher value = worse.
+        var normalized = val == null ? 50 : (val / (opts.scaleMax || 100)) * 100;
+        if (opts.invert) normalized = 100 - normalized;
+        if (normalized >= 70)      valueEl.classList.add('good');
+        else if (normalized >= 40) valueEl.classList.add('warn');
+        else                        valueEl.classList.add('bad');
+    }
+
+    var confEl = card.querySelector('[data-scores-confidence]');
+    if (confEl) {
+        if (payload.confidence == null) {
+            confEl.textContent = '';
+        } else {
+            confEl.textContent = 'Confidence ' + Math.round(payload.confidence * 100) + '%';
+        }
+    }
+
+    var caveatEl = card.querySelector('[data-scores-caveat]');
+    if (caveatEl) {
+        // Churn model "learning" caveat — present in scorer_version == 'churn_cox' + status flag.
+        // The /interactions/{id}/scores projection doesn't currently return
+        // the churn Cox status, but if it's ever added via
+        // ``payload.caveat``, render it here.
+        var caveat = payload.caveat || null;
+        if (caveat) {
+            caveatEl.hidden = false;
+            caveatEl.textContent = caveat;
+        } else {
+            caveatEl.hidden = true;
+        }
+    }
+
+    var factorsEl = card.querySelector('[data-scores-factors]');
+    if (factorsEl) {
+        factorsEl.innerHTML = '';
+        (payload.top_factors || []).forEach(function(f) {
+            var row = document.createElement('div');
+            row.className = 'score-factor ' + (f.direction === '+' ? 'positive' : 'negative');
+            row.innerHTML =
+                '<span class="score-factor-dir">' + (f.direction === '+' ? '+' : '−') + '</span>' +
+                '<span class="score-factor-label">' + escapeHtml(f.label || '') + '</span>' +
+                (f.why ? ' <span class="score-factor-why">' + escapeHtml(f.why) + '</span>' : '') +
+                '<span class="score-factor-mag">' + (f.magnitude_pct != null ? Math.round(f.magnitude_pct) + '%' : '') + '</span>';
+            factorsEl.appendChild(row);
+        });
+    }
+
+    var recsEl = card.querySelector('[data-scores-recs]');
+    if (recsEl) {
+        recsEl.innerHTML = '';
+        (payload.recommendations || []).forEach(function(r) {
+            var row = document.createElement('div');
+            row.className = 'score-rec';
+            row.innerHTML =
+                '<span class="score-rec-priority ' + escapeHtml(r.priority || 'low') + '">' + escapeHtml(r.priority || '') + '</span>' +
+                '<span class="score-rec-action">' + escapeHtml(r.action || '') + '</span>' +
+                (r.expected_impact ? ' <span class="score-factor-mag">' + escapeHtml(r.expected_impact) + '</span>' : '');
+            recsEl.appendChild(row);
+        });
+    }
+}
+
+/**
+ * Pull richer context off the ClientProfile into the churn + health cards:
+ * narrative summary goes into the confidence line, client-level top_factors
+ * supplement the per-call factors when those are thin.  Idempotent.
+ */
+function mergeClientProfileIntoScores(profile) {
+    if (!profile) return;
+    // Promote the account-level summary onto the health card's confidence
+    // line so the single post-call view carries both interaction + account
+    // context without a second view switch.
+    var healthCard = document.querySelector('[data-scores="health"]');
+    if (healthCard && profile.summary) {
+        var confEl = healthCard.querySelector('[data-scores-confidence]');
+        if (confEl) {
+            confEl.textContent = profile.summary;
+        }
+    }
+    // If the churn card got no top_factors back from /scores but the
+    // ClientProfile has them, use those instead.
+    var churnCard = document.querySelector('[data-scores="churn_risk"]');
+    if (churnCard) {
+        var factorsEl = churnCard.querySelector('[data-scores-factors]');
+        if (factorsEl && !factorsEl.children.length && (profile.top_factors || []).length) {
+            (profile.top_factors || []).slice(0, 3).forEach(function(f) {
+                var row = document.createElement('div');
+                row.className = 'score-factor ' + (f.direction === '+' ? 'positive' : 'negative');
+                row.innerHTML =
+                    '<span class="score-factor-dir">' + (f.direction === '+' ? '+' : '−') + '</span>' +
+                    '<span class="score-factor-label">' + escapeHtml(f.label || '') + '</span>' +
+                    (f.why ? ' <span class="score-factor-why">' + escapeHtml(f.why) + '</span>' : '') +
+                    '<span class="score-factor-mag">' + (f.magnitude_pct != null ? Math.round(f.magnitude_pct) + '%' : '') + '</span>';
+                factorsEl.appendChild(row);
+            });
+        }
+    }
+}

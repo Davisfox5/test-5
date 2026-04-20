@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from celery import Celery
@@ -46,6 +47,44 @@ celery_app.conf.update(
             "task": "tenant_insights_weekly",
             "schedule": crontab(minute=15, hour=0, day_of_week=1),
         },
+        # ── Scoring / orchestrator cadences (this branch) ────────────
+        # Orchestrator daily consolidation: 04:00 UTC every day.
+        "orchestrator-daily": {
+            "task": "orchestrator_daily_all_tenants",
+            "schedule": crontab(minute=0, hour=4),
+        },
+        # Orchestrator weekly reflection: 05:00 UTC every Monday.
+        "orchestrator-weekly": {
+            "task": "orchestrator_weekly_all_tenants",
+            "schedule": crontab(minute=0, hour=5, day_of_week=1),
+        },
+        # Proxy-outcome backfill from local signals: 03:30 UTC every day.
+        "outcomes-backfill-daily": {
+            "task": "outcomes_backfill_all_tenants",
+            "schedule": crontab(minute=30, hour=3),
+        },
+        # Calibration refit: 06:00 UTC every Monday (after weekly reflection).
+        "calibration-weekly": {
+            "task": "calibration_fit_all_tenants",
+            "schedule": crontab(minute=0, hour=6, day_of_week=1),
+        },
+        # IRT rubric calibration: 06:30 UTC every Monday.
+        "irt-calibration-weekly": {
+            "task": "irt_fit_all_tenants",
+            "schedule": crontab(minute=30, hour=6, day_of_week=1),
+        },
+        # Churn model training: 07:00 UTC every Monday.  Gates on data
+        # volume internally, so safe to schedule unconditionally.
+        "churn-model-weekly": {
+            "task": "churn_train_all_tenants",
+            "schedule": crontab(minute=0, hour=7, day_of_week=1),
+        },
+        # Audio-retention janitor: hourly sweep of expired audio objects.
+        "audio-retention-sweep": {
+            "task": "audio_retention_sweep",
+            "schedule": 3600.0,
+        },
+        # ── Email ingestion (from main) ───────────────────────────────
         # Poll every connected email integration every 2 minutes —
         # safety net behind Gmail Pub/Sub / Graph webhooks.
         "email-ingest-poll": {
@@ -58,7 +97,7 @@ celery_app.conf.update(
             "task": "email_push_renew_subscriptions",
             "schedule": 43200.0,
         },
-        # ── Continuous AI improvement ─────────────────────────────────
+        # ── Continuous AI improvement (from main) ─────────────────────
         # Drain the feedback Redis stream into feedback_events every 30s.
         "consume-feedback-stream": {
             "task": "consume_feedback_stream",
@@ -567,7 +606,120 @@ def _run_pipeline(
         )
         session.add(snippet_row)
 
-    # ── Step 17: Fire outbound webhooks ──────────────────────────────
+    # ── Step 17: Write InteractionFeatures (canonical feature store) ─
+    from backend.app.models import InteractionFeatures
+    from backend.app.services.feature_extractors import FeatureExtractor
+
+    deterministic_features = FeatureExtractor().extract(segment_objects)
+
+    # ── Step 17a: Paralinguistic features (if audio is retained) ─────
+    # Runs *only* when the interaction has an audio_s3_key AND praat
+    # is installed.  The extractor degrades gracefully otherwise — we
+    # simply don't populate the paralinguistic block.  The audio itself
+    # is expired by the janitor per the tenant's retention policy, so
+    # missing audio later is expected and not a failure.
+    try:
+        from backend.app.services.audio_storage import AudioHandle, get_audio_store
+        from backend.app.services.paralinguistics import (
+            SpeakerAudioSegment,
+            get_paralinguistic_extractor,
+        )
+
+        if getattr(interaction, "audio_s3_key", None):
+            store = get_audio_store()
+            handle = AudioHandle(
+                s3_key=interaction.audio_s3_key,
+                tenant_id=str(tenant.id),
+                stored_at=interaction.created_at or datetime.utcnow(),
+                retention_hours=int(getattr(tenant, "audio_retention_hours", 24) or 24),
+                backend=store.backend,
+            )
+            audio_path = store.get_local_path(handle)
+            if audio_path:
+                para_segments = [
+                    SpeakerAudioSegment(
+                        speaker_id=s.speaker_id or "unknown",
+                        start=s.start,
+                        end=s.end,
+                    )
+                    for s in segment_objects
+                ]
+                para = get_paralinguistic_extractor().extract(
+                    para_segments, audio_path=audio_path
+                )
+                if para.available:
+                    deterministic_features["paralinguistic"] = para.as_dict()
+    except Exception:  # noqa: BLE001 — paralinguistics must never fail the pipeline
+        logger.exception(
+            "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
+        )
+
+    features_row = (
+        session.query(InteractionFeatures)
+        .filter(InteractionFeatures.interaction_id == interaction.id)
+        .first()
+    )
+    if features_row is None:
+        features_row = InteractionFeatures(
+            interaction_id=interaction.id,
+            tenant_id=tenant.id,
+        )
+        session.add(features_row)
+
+    # ── Step 17b: Weak-supervision labels (orthogonal to the LLM guess) ─
+    # Cheap regex LFs produce {cancel_intent, commitment, objection_resolved}
+    # labels stored alongside the LLM structured blob.  The orchestrator
+    # and calibrator treat these as an independent signal, improving
+    # calibration quality without replacing any existing field.
+    from backend.app.services.weak_supervision import label_interaction
+
+    enriched_insights: Dict[str, Any] = dict(insights or {})
+    try:
+        ws_labels = label_interaction(
+            transcript=compressed_text,
+            turns=segments_dicts,
+            llm_churn_signal=enriched_insights.get("churn_risk_signal"),
+        )
+        enriched_insights["weak_supervision"] = {
+            key: {
+                "label": agg.label,
+                "probability": agg.probability,
+                "support": agg.support,
+                "lf_votes": agg.lf_votes,
+            }
+            for key, agg in ws_labels.items()
+        }
+    except Exception:  # noqa: BLE001 — WS must never fail the pipeline
+        logger.exception(
+            "Weak-supervision labeling failed for interaction %s (non-fatal)",
+            interaction_id,
+        )
+
+    features_row.deterministic = deterministic_features
+    features_row.llm_structured = enriched_insights
+    features_row.scorer_versions = {
+        "analysis_tier": recommended_tier,
+        "complexity_score": complexity_score,
+    }
+
+    # ── Step 18: Enqueue delta report → orchestrator ─────────────────
+    try:
+        _enqueue_delta_report(
+            session=session,
+            tenant=tenant,
+            interaction=interaction,
+            features={
+                "deterministic": deterministic_features,
+                "llm_structured": enriched_insights,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Delta report generation failed for %s (non-fatal)",
+            interaction_id,
+        )
+
+    # ── Step 19: Fire outbound webhooks ──────────────────────────────
     from backend.app.services.webhook_dispatcher import dispatch_sync
 
     analyzed_payload = {
@@ -633,6 +785,56 @@ def _run_pipeline(
                 evaluate_reply.apply_async(args=[interaction_id], countdown=900)
     except Exception:
         logger.exception("Failed to enqueue evaluator tasks (non-fatal)")
+
+
+def _enqueue_delta_report(
+    *,
+    session: Session,
+    tenant: Any,
+    interaction: Any,
+    features: Dict[str, Any],
+) -> None:
+    """Build and persist a ``DeltaReport`` scoped to every touched entity.
+
+    The LLM call here is a small Sonnet invocation producing ≤1k tokens of
+    structured JSON.  Failure is logged but never fatal — the orchestrator
+    can still run without a delta, it just has less evidence.
+    """
+    from backend.app.services.orchestrator import (
+        DeltaReportWriter,
+        EntityScope,
+        ENTITY_AGENT,
+        ENTITY_BUSINESS,
+        ENTITY_CLIENT,
+        ENTITY_MANAGER,
+        get_orchestrator,
+    )
+    from backend.app.models import User
+
+    scopes: List[EntityScope] = [
+        EntityScope(entity_type=ENTITY_BUSINESS, entity_id=str(tenant.id)),
+    ]
+    if interaction.contact_id:
+        scopes.append(EntityScope(entity_type=ENTITY_CLIENT, entity_id=str(interaction.contact_id)))
+    if interaction.agent_id:
+        scopes.append(EntityScope(entity_type=ENTITY_AGENT, entity_id=str(interaction.agent_id)))
+        agent = session.query(User).filter(User.id == interaction.agent_id).first()
+        manager_id = getattr(agent, "manager_id", None) if agent else None
+        if manager_id:
+            scopes.append(EntityScope(entity_type=ENTITY_MANAGER, entity_id=str(manager_id)))
+
+    writer = DeltaReportWriter()
+    delta = asyncio.run(
+        writer.write(tenant=tenant, interaction=interaction, features=features, scopes=scopes)
+    )
+    if delta:
+        get_orchestrator().record_delta(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            scopes=scopes,
+            delta=delta,
+        )
 
 
 # ── Celery Tasks ─────────────────────────────────────────────────────────
@@ -1122,6 +1324,160 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         session.close()
 
 
+# ── Orchestrator Celery tasks ────────────────────────────────────────────
+
+
+@celery_app.task(name="orchestrator_daily_all_tenants")
+def orchestrator_daily_all_tenants() -> Dict[str, Any]:
+    """Daily consolidation of delta reports into profile versions.
+
+    Iterates every tenant and runs :meth:`Orchestrator.run_daily`.  One
+    tenant failing does not block the others.
+    """
+    from backend.app.models import Tenant
+    from backend.app.services.orchestrator import get_orchestrator
+
+    session = _get_sync_session()
+    orch = get_orchestrator()
+    totals: Dict[str, int] = {}
+    processed = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                counts = orch.run_daily(session, tenant.id)
+                for k, v in counts.items():
+                    totals[k] = totals.get(k, 0) + v
+                processed += 1
+            except Exception:  # noqa: BLE001 — per-tenant isolation
+                logger.exception(
+                    "Daily orchestrator failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": processed, "profile_updates": totals}
+
+
+@celery_app.task(name="orchestrator_weekly_all_tenants")
+def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
+    """Weekly self-improvement reflection across all tenants."""
+    from backend.app.models import Tenant
+    from backend.app.services.orchestrator import get_orchestrator
+
+    session = _get_sync_session()
+    orch = get_orchestrator()
+    results: Dict[str, Any] = {}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results[str(tenant.id)] = orch.run_weekly(session, tenant.id)
+            except Exception:
+                logger.exception(
+                    "Weekly orchestrator failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": len(results)}
+
+
+# ── Outcomes backfill & calibration ──────────────────────────────────────
+
+
+@celery_app.task(name="outcomes_backfill_all_tenants")
+def outcomes_backfill_all_tenants() -> Dict[str, Any]:
+    """Backfill proxy outcomes from internal signals across all tenants."""
+    from backend.app.models import Tenant
+    from backend.app.services.outcomes_backfill import run_all
+
+    session = _get_sync_session()
+    totals: Dict[str, int] = {}
+    tenants_done = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                counts = run_all(session, tenant.id)
+                for k, v in counts.items():
+                    totals[k] = totals.get(k, 0) + v
+                tenants_done += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Outcome backfill failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"tenants_processed": tenants_done, "writes": totals}
+
+
+@celery_app.task(name="calibration_fit_all_tenants")
+def calibration_fit_all_tenants() -> Dict[str, Any]:
+    """Refit Platt scaling for every configured scorer, per tenant."""
+    from backend.app.models import Tenant
+    from backend.app.services.calibration import fit_all_scorers
+
+    session = _get_sync_session()
+    activated = 0
+    skipped = 0
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results = fit_all_scorers(session, tenant.id)
+                for r in results:
+                    if r.activated:
+                        activated += 1
+                    else:
+                        skipped += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Calibration failed for tenant %s", tenant.id
+                )
+    finally:
+        session.close()
+    return {"activated": activated, "skipped": skipped}
+
+
+@celery_app.task(name="irt_fit_all_tenants")
+def irt_fit_all_tenants() -> Dict[str, Any]:
+    """Weekly IRT fit across every tenant's scorecard templates."""
+    from backend.app.models import Tenant
+    from backend.app.services.irt import fit_all_templates_for_tenant
+
+    session = _get_sync_session()
+    summary: Dict[str, int] = {"templates_fit": 0, "items_fit": 0, "items_retired": 0}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                results = fit_all_templates_for_tenant(session, tenant.id)
+                summary["templates_fit"] += len(results)
+                for r in results:
+                    summary["items_fit"] += r.n_items_fitted
+                    summary["items_retired"] += len(r.retired_items)
+            except Exception:  # noqa: BLE001
+                logger.exception("IRT fit failed for tenant %s", tenant.id)
+    finally:
+        session.close()
+    return summary
+
+
+@celery_app.task(name="churn_train_all_tenants")
+def churn_train_all_tenants() -> Dict[str, Any]:
+    """Weekly Cox churn-model training; silently no-ops when data is thin."""
+    from backend.app.models import Tenant
+    from backend.app.services.churn_model import train_for_tenant
+
+    session = _get_sync_session()
+    summary = {"trained": 0, "insufficient_data": 0}
+    try:
+        for tenant in session.query(Tenant).all():
+            try:
+                result = train_for_tenant(session, tenant.id)
+                if result.status == "ok":
+                    summary["trained"] += 1
+                else:
+                    summary["insufficient_data"] += 1
+            except Exception:  # noqa: BLE001
+                logger.exception("Churn training failed for tenant %s", tenant.id)
+    finally:
+        session.close()
+    return summary
 # ── Continuous AI improvement tasks ──────────────────────────────────────
 
 
@@ -1280,3 +1636,22 @@ def campaign_variant_winner_selection() -> Dict[str, Any]:
         return decide_active_campaigns(session)
     finally:
         session.close()
+
+
+@celery_app.task(name="audio_retention_sweep")
+def audio_retention_sweep() -> Dict[str, Any]:
+    """Delete audio objects past their tenant's retention window.
+
+    Tenant-agnostic — we scan the bucket and rely on the per-object
+    ``retention_hours`` + ``stored_at`` tags set at upload time.  This
+    means we honor per-tenant overrides even when the Tenant row's
+    ``audio_retention_hours`` has changed since upload.
+    """
+    from backend.app.services.audio_storage import get_audio_store
+
+    try:
+        deleted = get_audio_store().sweep_expired()
+        return {"deleted": deleted}
+    except Exception:  # noqa: BLE001
+        logger.exception("audio_retention_sweep failed")
+        return {"deleted": 0, "error": True}

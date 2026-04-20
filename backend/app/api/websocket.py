@@ -14,6 +14,17 @@ import redis.asyncio as aioredis
 
 from backend.app.config import get_settings
 from backend.app.services.live_coaching import LiveCoachingService
+from backend.app.services.live_coaching_features import (
+    LFTriggerScanner,
+    LiveFeatureWindow,
+    LiveTurn,
+)
+from backend.app.services.ws_tickets import (
+    RateLimitedError,
+    WebSocketAuthError,
+    consume_ticket,
+    enforce_new_connection_quota,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +49,71 @@ def _word_count(text: str) -> int:
 
 @router.websocket("/ws/live/{session_id}")
 async def live_transcription(websocket: WebSocket, session_id: str):
-    """Agent connects here to stream audio and receive transcripts + coaching."""
+    """Agent connects here to stream audio and receive transcripts + coaching.
 
-    await websocket.accept()
-    logger.info("Agent WebSocket connected for session %s", session_id)
+    Authentication: the client must first call ``POST /ws/tickets`` with
+    its Bearer token to get a single-use ticket bound to ``(tenant_id,
+    session_id, role="agent")``, then open this WebSocket with
+    ``?ticket=<ticket>``.  The handler validates the ticket *before*
+    accepting the connection; an absent, expired, already-consumed, or
+    mismatched ticket closes the socket with code 4401.
+    """
 
     settings = get_settings()
     redis: Optional[aioredis.Redis] = None
     dg_connection = None
+
+    # ── Auth handshake ───────────────────────────────────────
+    ticket_param = websocket.query_params.get("ticket") if websocket.query_params else None
+    auth_redis = _get_redis()
+    try:
+        try:
+            ticket = await consume_ticket(
+                auth_redis,
+                ticket_param,
+                expected_session_id=session_id,
+                expected_role="agent",
+            )
+            await enforce_new_connection_quota(auth_redis, f"tenant:{ticket.tenant_id}")
+        except RateLimitedError:
+            logger.warning(
+                "ws/live rate-limited for session %s (ticket=%s)",
+                session_id, bool(ticket_param),
+            )
+            await websocket.close(code=4429, reason="rate_limited")
+            return
+        except WebSocketAuthError as exc:
+            logger.info(
+                "ws/live auth refused for %s: %s", session_id, exc.reason,
+            )
+            await websocket.close(code=4401, reason="unauthorized")
+            return
+    finally:
+        try:
+            await auth_redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    await websocket.accept()
+    logger.info(
+        "Agent WebSocket connected for session %s (tenant=%s)",
+        session_id, ticket.tenant_id,
+    )
+
     coaching_service = LiveCoachingService()
 
     # Tracking state for coaching triggers.
     last_coaching_time: float = time.time()
     words_since_coaching: int = 0
+
+    # Deterministic-feature state (per-connection, no external deps).
+    feature_window = LiveFeatureWindow(window_sec=60.0)
+    lf_scanner = LFTriggerScanner(cooldown_sec=30.0)
+    # Throttle: snapshot every N finals or every MIN_SEC since last emit.
+    last_features_emit_at: float = 0.0
+    finals_since_features_emit: int = 0
+    FEATURES_MIN_INTERVAL_SEC = 5.0
+    FEATURES_EVERY_N_FINALS = 3
 
     try:
         redis = _get_redis()
@@ -116,6 +179,51 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                     await redis.rpush(f"live:{session_id}:buffer", segment)
 
                 words_since_coaching += _word_count(text)
+
+                # ── Deterministic live features (zero-LLM path) ───
+                # Convention: Deepgram speaker index 0 == agent.  Anything
+                # else (incl. None) is treated as customer.  Estimated turn
+                # duration is a rough heuristic — Deepgram's final event
+                # does not carry per-turn duration.
+                word_count = _word_count(text)
+                est_duration = max(0.3, word_count * 0.4)
+                turn = LiveTurn(
+                    speaker_id=str(speaker) if speaker is not None else "customer",
+                    text=text,
+                    start=ts,
+                    end=ts + est_duration,
+                    is_agent=(speaker == 0),
+                )
+                feature_window.push(turn)
+
+                try:
+                    alerts = lf_scanner.push(turn, feature_window)
+                except Exception:  # noqa: BLE001 — alerts must never kill the loop
+                    logger.exception("LF scanner raised for session %s", session_id)
+                    alerts = []
+                for alert in alerts:
+                    alert_payload = {"type": "alert", **alert.to_wire()}
+                    await _safe_send(websocket, alert_payload)
+                    if redis is not None:
+                        await redis.publish(
+                            f"live:{session_id}:events",
+                            json.dumps(alert_payload),
+                        )
+
+                # Features snapshot — throttled so the DOM doesn't churn.
+                finals_since_features_emit += 1
+                features_elapsed = ts - last_features_emit_at
+                if (
+                    finals_since_features_emit >= FEATURES_EVERY_N_FINALS
+                    and features_elapsed >= FEATURES_MIN_INTERVAL_SEC
+                ):
+                    snapshot_payload = {
+                        "type": "features",
+                        **feature_window.snapshot().to_wire(),
+                    }
+                    await _safe_send(websocket, snapshot_payload)
+                    last_features_emit_at = ts
+                    finals_since_features_emit = 0
 
                 # ── Coaching trigger ─────────────────────────────
                 elapsed = ts - last_coaching_time
@@ -215,13 +323,50 @@ async def live_transcription(websocket: WebSocket, session_id: str):
 
 @router.websocket("/ws/monitor/{session_id}")
 async def monitor_session(websocket: WebSocket, session_id: str):
-    """Manager connects here to observe a live session and send whispers."""
+    """Manager connects here to observe a live session and send whispers.
 
-    await websocket.accept()
-    logger.info("Monitor WebSocket connected for session %s", session_id)
+    Authentication: same ticket handshake as ``/ws/live``, but the
+    ticket must have been issued for ``role="monitor"``.  The ticket
+    endpoint in turn requires the requesting user to hold
+    ``manager`` or ``admin``, so by the time we see a monitor ticket
+    here it has already been role-checked.
+    """
 
     redis: Optional[aioredis.Redis] = None
     pubsub: Optional[aioredis.client.PubSub] = None
+
+    # ── Auth handshake (monitor role required) ──────────────
+    ticket_param = websocket.query_params.get("ticket") if websocket.query_params else None
+    auth_redis = _get_redis()
+    try:
+        try:
+            ticket = await consume_ticket(
+                auth_redis,
+                ticket_param,
+                expected_session_id=session_id,
+                expected_role="monitor",
+            )
+            await enforce_new_connection_quota(auth_redis, f"tenant:{ticket.tenant_id}")
+        except RateLimitedError:
+            await websocket.close(code=4429, reason="rate_limited")
+            return
+        except WebSocketAuthError as exc:
+            logger.info(
+                "ws/monitor auth refused for %s: %s", session_id, exc.reason,
+            )
+            await websocket.close(code=4401, reason="unauthorized")
+            return
+    finally:
+        try:
+            await auth_redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    await websocket.accept()
+    logger.info(
+        "Monitor WebSocket connected for session %s (tenant=%s)",
+        session_id, ticket.tenant_id,
+    )
 
     try:
         redis = _get_redis()
