@@ -75,6 +75,7 @@ spacy>=3.7                        # NLP model for PII detection
 # === Config ===
 python-dotenv>=1.0
 pydantic-settings>=2.0
+pydantic[email]>=2.6              # email-validator is required by several router schemas
 
 # === Testing ===
 pytest>=8
