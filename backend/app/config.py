@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     # the subscription owner is us.
     GRAPH_CLIENT_STATE: str = ""
 
+    # When True, the ingest poller hits every provider regardless of
+    # whether Pub/Sub / Graph push is configured globally. Intended for
+    # local dev + integration tests where setting up push is onerous.
+    EMAIL_POLL_FORCE_ALL: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

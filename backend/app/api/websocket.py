@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# TTL (seconds) on live:{session_id}:{buffer,coaching_state,recent_kb_chunk_ids}.
+# Normally these keys are deleted on clean websocket shutdown; the TTL is a
+# safety net for crashed or half-closed connections. 24h comfortably exceeds
+# any real call length while still bounding Redis leak from bugs.
+_LIVE_BUFFER_TTL_SECONDS = 24 * 60 * 60
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -205,14 +211,22 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         json.dumps(payload),
                     )
 
-                # Append to session buffer in Redis.
+                # Append to session buffer in Redis. Guard with an EXPIRE
+                # so a crashed / half-closed WebSocket can't leak the
+                # whole transcript into Redis forever — the normal
+                # _dispatch_batch_analysis path deletes the key on
+                # clean shutdown; this is the safety net.
                 segment = json.dumps({
                     "text": text,
                     "speaker": speaker,
                     "timestamp": ts,
                 })
                 if redis is not None:
-                    await redis.rpush(f"live:{session_id}:buffer", segment)
+                    buffer_key = f"live:{session_id}:buffer"
+                    pipe = redis.pipeline(transaction=False)
+                    pipe.rpush(buffer_key, segment)
+                    pipe.expire(buffer_key, _LIVE_BUFFER_TTL_SECONDS)
+                    await pipe.execute()
 
                 words_since_coaching += _word_count(text)
 
@@ -531,16 +545,18 @@ async def _run_coaching(
         return
 
     try:
-        # Load the recent transcript segments from the buffer.
-        raw_segments = await redis.lrange(f"live:{session_id}:buffer", 0, -1)
-        segments: List[dict] = []
+        # Load only the last 20 transcript segments — everything older is
+        # discarded below anyway. Using the negative slice avoids shipping
+        # a multi-MB buffer across the wire on long calls.
+        raw_segments = await redis.lrange(f"live:{session_id}:buffer", -20, -1)
+        new_segments: List[dict] = []
         for raw in raw_segments:
             try:
-                segments.append(json.loads(raw))
+                new_segments.append(json.loads(raw))
             except json.JSONDecodeError:
                 continue
 
-        if not segments:
+        if not new_segments:
             return
 
         # Load previous coaching state.
@@ -551,9 +567,6 @@ async def _run_coaching(
                 previous_state = json.loads(state_raw)
             except json.JSONDecodeError:
                 previous_state = {}
-
-        # Use only the most recent segments as "new" (last 20 segments or so).
-        new_segments = segments[-20:]
 
         # Optionally enrich with KB hits drawn from the most recent caller turn.
         kb_hits_for_coach: List[dict] = []
@@ -588,11 +601,13 @@ async def _run_coaching(
                 json.dumps(coaching_payload),
             )
 
-        # Persist updated coaching state.
+        # Persist updated coaching state with the same safety-net TTL as
+        # the transcript buffer (see _LIVE_BUFFER_TTL_SECONDS).
         updated_state = result.get("updated_state", previous_state)
         await redis.set(
             f"live:{session_id}:coaching_state",
             json.dumps(updated_state, default=str),
+            ex=_LIVE_BUFFER_TTL_SECONDS,
         )
 
         # ── Tier-aware live sentiment update ─────────────────────────

@@ -147,13 +147,41 @@ def poll_integration(session: Session, integration: Integration) -> int:
 
 
 def poll_all(session: Session) -> dict:
-    """Poll every email-capable integration in the database."""
+    """Poll every email-capable integration *that doesn't have push configured*.
+
+    Real-time delivery comes from Gmail Pub/Sub + Microsoft Graph push
+    webhooks. When those are configured globally (``GMAIL_PUBSUB_TOPIC`` /
+    ``GRAPH_CLIENT_STATE``) we skip the corresponding provider here — the
+    poll is only a safety net for environments that can't receive
+    webhooks (local dev, air-gapped installs, pre-verification tenants).
+
+    To force a full poll regardless of push config (smoke tests), pass
+    ``settings.EMAIL_POLL_FORCE_ALL = True`` in the env.
+    """
+    from backend.app.config import get_settings
+
+    settings = get_settings()
+    force_all = bool(getattr(settings, "EMAIL_POLL_FORCE_ALL", False))
+
+    providers: list[str] = []
+    if force_all or not getattr(settings, "GMAIL_PUBSUB_TOPIC", ""):
+        providers.append("google")
+    if force_all or not getattr(settings, "GRAPH_CLIENT_STATE", ""):
+        providers.append("microsoft")
+
+    if not providers:
+        return {
+            "integrations": 0,
+            "emails_ingested": 0,
+            "skipped_reason": "push_configured_for_all_providers",
+        }
+
     integrations = (
         session.query(Integration)
-        .filter(Integration.provider.in_(["google", "microsoft"]))
+        .filter(Integration.provider.in_(providers))
         .all()
     )
-    summary = {"integrations": 0, "emails_ingested": 0}
+    summary = {"integrations": 0, "emails_ingested": 0, "polled_providers": providers}
     for integ in integrations:
         try:
             count = poll_integration(session, integ)

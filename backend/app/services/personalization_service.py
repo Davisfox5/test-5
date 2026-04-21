@@ -56,12 +56,27 @@ def _get_or_create_config(session: Session, tenant_id: Any) -> TenantPromptConfi
 
 
 def get_config(session: Session, tenant: Tenant) -> Optional[TenantPromptConfig]:
-    """Read-only fetch — returns None if no row exists yet (no DB write)."""
-    return (
+    """Read-only fetch — returns None if no row exists yet (no DB write).
+
+    Memoized on the SQLAlchemy session for the duration of a single
+    pipeline pass. Before the cache, ``_run_pipeline`` did three separate
+    reads of the same row (one per context-block builder + one in
+    ``get_parameter_overrides``); now only the first actually hits the DB.
+    The cache is invalidated at commit/rollback by SQLAlchemy's session
+    lifecycle — we stash the value in ``session.info``, which is cleared
+    when the session is returned to the pool.
+    """
+    cache = session.info.setdefault("_prompt_config_cache", {})
+    key = getattr(tenant, "id", None)
+    if key in cache:
+        return cache[key]
+    config = (
         session.query(TenantPromptConfig)
         .filter(TenantPromptConfig.tenant_id == tenant.id)
         .one_or_none()
     )
+    cache[key] = config
+    return config
 
 
 # ── Context block builders (called by ai_analysis worker) ────────────────

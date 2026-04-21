@@ -102,6 +102,91 @@ def _serialize(variant: Optional[PromptVariant]) -> Optional[Dict[str, Any]]:
     }
 
 
+_STATUSES = ("shadow", "canary", "active")
+
+
+def _select_all_statuses_stmt(
+    surface: str, tier: Optional[str], channel: Optional[str]
+):
+    """Fetch all shadow/canary/active candidates in one round trip.
+
+    The caller buckets by ``.status`` in Python. Ordering matches
+    :func:`_select_stmt` so the first row per status is still "most
+    specific match wins". Cost: 1 query instead of 3 on a cold cache.
+    """
+    return (
+        select(PromptVariant)
+        .where(
+            PromptVariant.target_surface == surface,
+            PromptVariant.status.in_(_STATUSES),
+        )
+        .order_by(
+            PromptVariant.status,
+            (PromptVariant.target_tier == tier).desc(),
+            (PromptVariant.target_channel == channel).desc(),
+            PromptVariant.created_at.desc(),
+        )
+    )
+
+
+def _pick_best_per_status(
+    rows: List[PromptVariant],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Keep the first row (best match) per status. Others are discarded."""
+    best: Dict[str, Optional[Dict[str, Any]]] = {s: None for s in _STATUSES}
+    for row in rows:
+        if best.get(row.status) is None:
+            best[row.status] = _serialize(row)
+    return best
+
+
+def _cache_store(
+    surface: str,
+    tier: Optional[str],
+    channel: Optional[str],
+    status: str,
+    payload: Optional[Dict[str, Any]],
+) -> None:
+    """Write a serialized variant to both L1 and L2 caches."""
+    _L1[(surface, tier, channel, status)] = (
+        time.time() + _CACHE_TTL_SECONDS,
+        payload,
+    )
+    r = _redis()
+    if r is not None:
+        try:
+            r.setex(
+                _cache_key(surface, tier, channel, status),
+                _CACHE_TTL_SECONDS,
+                json.dumps(payload) if payload else "null",
+            )
+        except Exception:
+            logger.exception("Variant cache write failed in Redis (non-fatal)")
+
+
+def _cache_read(
+    surface: str, tier: Optional[str], channel: Optional[str], status: str
+) -> tuple[bool, Optional[Dict[str, Any]]]:
+    """Return (hit, payload) — (False, None) when cache misses."""
+    cached = _L1.get((surface, tier, channel, status))
+    if cached is not None and cached[0] > time.time():
+        return True, cached[1]
+    r = _redis()
+    if r is not None:
+        try:
+            raw = r.get(_cache_key(surface, tier, channel, status))
+            if raw is not None:
+                payload = json.loads(raw) if raw != "null" else None
+                _L1[(surface, tier, channel, status)] = (
+                    time.time() + _CACHE_TTL_SECONDS,
+                    payload,
+                )
+                return True, payload
+        except Exception:
+            logger.exception("Variant cache read failed in Redis (non-fatal)")
+    return False, None
+
+
 def _select_stmt(surface: str, tier: Optional[str], channel: Optional[str], status: str):
     """Most specific match wins: tier+channel match > tier match > generic."""
     return (
@@ -195,6 +280,71 @@ def _load_variant_sync(
     return payload
 
 
+# ── Batched three-status loader ──────────────────────────────────────────
+
+
+async def _load_all_variants_async(
+    db: AsyncSession,
+    surface: str,
+    tier: Optional[str],
+    channel: Optional[str],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Return the best shadow/canary/active variant per status, in one query.
+
+    Cache-fills from L1 + L2 first; only falls through to DB when at least
+    one status has no cache entry.
+    """
+    result: Dict[str, Optional[Dict[str, Any]]] = {}
+    missing: List[str] = []
+    for status in _STATUSES:
+        hit, payload = _cache_read(surface, tier, channel, status)
+        if hit:
+            result[status] = payload
+        else:
+            missing.append(status)
+    if not missing:
+        return result
+
+    rows = (
+        await db.execute(_select_all_statuses_stmt(surface, tier, channel))
+    ).scalars().all()
+    fresh = _pick_best_per_status(rows)
+    for status in _STATUSES:
+        if status in missing:
+            result[status] = fresh[status]
+            _cache_store(surface, tier, channel, status, fresh[status])
+    return result
+
+
+def _load_all_variants_sync(
+    db: Session,
+    surface: str,
+    tier: Optional[str],
+    channel: Optional[str],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Sync analogue of :func:`_load_all_variants_async`."""
+    result: Dict[str, Optional[Dict[str, Any]]] = {}
+    missing: List[str] = []
+    for status in _STATUSES:
+        hit, payload = _cache_read(surface, tier, channel, status)
+        if hit:
+            result[status] = payload
+        else:
+            missing.append(status)
+    if not missing:
+        return result
+
+    rows = list(
+        db.execute(_select_all_statuses_stmt(surface, tier, channel)).scalars().all()
+    )
+    fresh = _pick_best_per_status(rows)
+    for status in _STATUSES:
+        if status in missing:
+            result[status] = fresh[status]
+            _cache_store(surface, tier, channel, status, fresh[status])
+    return result
+
+
 # ── Routing (A/B bucket) ─────────────────────────────────────────────────
 
 
@@ -251,11 +401,7 @@ async def select_variant_async(
     - else                    → active
     Falls through to ``fallback_template`` if no row exists for any status.
     """
-    variants = {
-        "shadow": await _load_variant_async(db, surface, tier, channel, "shadow"),
-        "canary": await _load_variant_async(db, surface, tier, channel, "canary"),
-        "active": await _load_variant_async(db, surface, tier, channel, "active"),
-    }
+    variants = await _load_all_variants_async(db, surface, tier, channel)
 
     pinned = _maybe_pin(tenant, surface, variants)
     if pinned is not None:
@@ -302,11 +448,7 @@ def select_variant_sync(
     fallback_template: Optional[str] = None,
 ) -> VariantSelection:
     """Sync analogue of :func:`select_variant_async` for Celery workers."""
-    variants = {
-        "shadow": _load_variant_sync(db, surface, tier, channel, "shadow"),
-        "canary": _load_variant_sync(db, surface, tier, channel, "canary"),
-        "active": _load_variant_sync(db, surface, tier, channel, "active"),
-    }
+    variants = _load_all_variants_sync(db, surface, tier, channel)
 
     pinned = _maybe_pin(tenant, surface, variants)
     if pinned is not None:

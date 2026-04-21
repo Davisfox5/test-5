@@ -1101,6 +1101,25 @@ class FeedbackEvent(Base):
     )
 
 
+class FeedbackDailyRollup(Base):
+    """Daily per-(surface, event_type) count of feedback_events.
+
+    Populated by the retention sweep before raw feedback_events rows are
+    dropped. Calibration / winner-selection read these counts when the
+    raw table window (180d) isn't long enough.
+    """
+
+    __tablename__ = "feedback_daily_rollup"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    surface: Mapped[str] = mapped_column(String, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class TranscriptCorrection(Base):
     __tablename__ = "transcript_corrections"
 

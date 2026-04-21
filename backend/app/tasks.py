@@ -72,23 +72,39 @@ celery_app.conf.update(
             "task": "churn_train_all_tenants",
             "schedule": crontab(minute=0, hour=7, day_of_week=1),
         },
+        # Audio retention runs daily — tenants that care about < 24h audio
+        # windows are rare; daily amortizes the S3 list-delete against 23
+        # near-noop hourly sweeps.
         "audio-retention-sweep": {
             "task": "audio_retention_sweep",
-            "schedule": 3600.0,
+            "schedule": crontab(minute=15, hour=4),
         },
         # ── Email ingestion ───────────────────────────────────────────
+        # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
+        # poll is a safety net for integrations whose push subscription
+        # hasn't been set up yet — see email_ingest_poll() for the filter.
         "email-ingest-poll": {
             "task": "email_ingest_poll",
-            "schedule": 120.0,
+            "schedule": 900.0,  # 15 minutes
         },
         "email-push-renew": {
             "task": "email_push_renew_subscriptions",
             "schedule": 43200.0,
         },
         # ── Continuous AI improvement ─────────────────────────────────
+        # Drain the feedback Redis stream every minute. Previously ran every
+        # 30s; the stream is rarely hot and each run costs a task schedule +
+        # Redis RTT.
         "consume-feedback-stream": {
             "task": "consume_feedback_stream",
-            "schedule": 30.0,
+            "schedule": 60.0,
+        },
+        # Daily sweep of webhook_deliveries + feedback_events. Raw rows
+        # age out; feedback_events roll up into feedback_daily_rollup so
+        # calibration never loses historical volume.
+        "event-retention-daily": {
+            "task": "event_retention_sweep",
+            "schedule": crontab(minute=45, hour=4),
         },
         "refresh-few-shot-pools": {
             "task": "refresh_few_shot_pools",
@@ -167,6 +183,63 @@ _SyncSessionFactory = sessionmaker(bind=_sync_engine, expire_on_commit=False)
 def _get_sync_session() -> Session:
     """Return a new synchronous SQLAlchemy session."""
     return _SyncSessionFactory()
+
+
+# ── Per-task event loop reuse ─────────────────────────────────────────────
+#
+# ``_run_pipeline`` hits ~8 async entrypoints (triage, analysis, webhook
+# emit, scorecards, search-index, …). Each previously called ``asyncio.run``
+# directly, which spins up a fresh event loop, re-initializes httpx pools,
+# and tears everything down. Running them all inside one loop per task lets
+# the anthropic + httpx clients reuse their connection pool for the whole
+# run. Typical savings per pipeline: 100–300 ms plus reconnect RTT.
+#
+# We keep the loop scoped to the task invocation (Celery may run tasks on
+# a thread pool; a module-level loop would cross threads).
+
+
+class _TaskEventLoop:
+    """Context manager owning a single event loop for a Celery task.
+
+    Usage::
+
+        with _TaskEventLoop() as loop:
+            a = loop.run(_some_coroutine())
+            b = loop.run(_another_coroutine())
+    """
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def __enter__(self) -> "_TaskEventLoop":
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._loop is None:
+            return
+        try:
+            # Cancel anything still pending so the loop closes cleanly.
+            pending = asyncio.all_tasks(self._loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+        finally:
+            try:
+                self._loop.close()
+            except Exception:
+                pass
+            asyncio.set_event_loop(None)
+            self._loop = None
+
+    def run(self, coro):
+        assert self._loop is not None, "_TaskEventLoop used outside of `with`"
+        return self._loop.run_until_complete(coro)
 
 
 # Keep Contact.sentiment_trend bounded so the JSONB column doesn't grow
@@ -343,7 +416,27 @@ def _run_pipeline(
     """Shared pipeline logic for both voice and text interactions.
 
     Runs steps 5–16 of the batch pipeline (everything after transcription).
+
+    All async subcalls (triage, analysis, scorecard, webhook emit, search
+    indexing, delta reports, brief rebuild…) run inside a single event
+    loop owned by :class:`_TaskEventLoop` so the anthropic + httpx
+    clients can reuse their connection pool across steps. See the class
+    docstring for why this matters.
     """
+    with _TaskEventLoop() as _loop:
+        _run_pipeline_impl(
+            session, interaction_id, segments_dicts, tenant, interaction, _loop
+        )
+
+
+def _run_pipeline_impl(
+    session: Session,
+    interaction_id: str,
+    segments_dicts: List[Dict[str, Any]],
+    tenant: Any,
+    interaction: Any,
+    _loop: "_TaskEventLoop",
+) -> None:
     from backend.app.models import (
         ActionItem,
         Contact,
@@ -394,7 +487,7 @@ def _run_pipeline(
         "duration": interaction.duration_seconds,
         "caller_info": interaction.caller_phone or "",
     }
-    triage_result: Dict[str, Any] = asyncio.run(
+    triage_result: Dict[str, Any] = _loop.run(
         _get_triage_service().score_complexity(compressed_text, metadata)
     )
     complexity_score = float(triage_result.get("complexity_score", 0.5))
@@ -449,7 +542,7 @@ def _run_pipeline(
             if _customer:
                 customer_brief = dict(_customer.customer_brief or {})
 
-    insights: Dict[str, Any] = asyncio.run(
+    insights: Dict[str, Any] = _loop.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
             tier=overrides.get("force_tier") or recommended_tier,
@@ -545,7 +638,7 @@ def _run_pipeline(
                             )
 
                 try:
-                    asyncio.run(_emit_lifecycle())
+                    _loop.run(_emit_lifecycle())
                 except Exception:
                     logger.exception("Customer lifecycle webhook emission failed")
 
@@ -558,34 +651,43 @@ def _run_pipeline(
                 schedule_customer_brief_rebuild,
             )
 
-            asyncio.run(schedule_customer_brief_rebuild(tenant.id, cust_id_for_rebuild))
+            _loop.run(schedule_customer_brief_rebuild(tenant.id, cust_id_for_rebuild))
         except Exception:
             logger.debug("schedule_customer_brief_rebuild failed", exc_info=True)
 
     # ── Step 10: Scorecard scoring ───────────────────────────────────
-    scorecard_results: List[Dict[str, Any]] = []
+    # All active templates are scored in a single batched Haiku call — one
+    # call per interaction instead of one per template. Transcript + insights
+    # are shipped once; the model returns per-template results. If the
+    # batched response parses poorly, score_many falls back to per-template
+    # calls transparently so a flaky template doesn't take out siblings.
     templates = (
         session.query(ScorecardTemplate)
         .filter(ScorecardTemplate.tenant_id == tenant.id)
         .all()
     )
-    transcript_for_scoring = _segments_for_llm(segments_dicts)
+    applicable_templates: List[Dict[str, Any]] = []
     for template in templates:
-        # Check channel filter — skip if template doesn't apply.
         channel_filter = template.channel_filter
         if channel_filter and interaction.channel not in channel_filter:
             continue
-        template_dict = {
-            "name": template.name,
-            "criteria": template.criteria,
-        }
-        score_result = asyncio.run(
-            _get_scorecard_service().score(
-                transcript_for_scoring, template_dict, insights
+        applicable_templates.append(
+            {
+                "id": str(template.id),
+                "name": template.name,
+                "criteria": template.criteria,
+            }
+        )
+
+    transcript_for_scoring = _segments_for_llm(segments_dicts)
+    if applicable_templates:
+        scorecard_results = _loop.run(
+            _get_scorecard_service().score_many(
+                transcript_for_scoring, applicable_templates, insights
             )
         )
-        score_result["template_id"] = str(template.id)
-        scorecard_results.append(score_result)
+    else:
+        scorecard_results = []
     logger.info(
         "Scored %d scorecard templates for interaction %s",
         len(scorecard_results), interaction_id,
@@ -617,7 +719,7 @@ def _run_pipeline(
         ),
     }
     try:
-        asyncio.run(
+        _loop.run(
             _get_search_service().index_interaction(
                 interaction_id, tenant_id, search_data
             )
@@ -826,6 +928,7 @@ def _run_pipeline(
                 "deterministic": deterministic_features,
                 "llm_structured": enriched_insights,
             },
+            _loop=_loop,
         )
     except Exception:
         logger.exception(
@@ -907,6 +1010,7 @@ def _enqueue_delta_report(
     tenant: Any,
     interaction: Any,
     features: Dict[str, Any],
+    _loop: "Optional[_TaskEventLoop]" = None,
 ) -> None:
     """Build and persist a ``DeltaReport`` scoped to every touched entity.
 
@@ -938,9 +1042,10 @@ def _enqueue_delta_report(
             scopes.append(EntityScope(entity_type=ENTITY_MANAGER, entity_id=str(manager_id)))
 
     writer = DeltaReportWriter()
-    delta = asyncio.run(
-        writer.write(tenant=tenant, interaction=interaction, features=features, scopes=scopes)
+    _coro = writer.write(
+        tenant=tenant, interaction=interaction, features=features, scopes=scopes
     )
+    delta = _loop.run(_coro) if _loop is not None else asyncio.run(_coro)
     if delta:
         get_orchestrator().record_delta(
             session,
@@ -2099,5 +2204,25 @@ def recording_retention_daily() -> Dict[str, Any]:
                 "s3_errors": summary.s3_errors,
                 "per_tenant": summary.per_tenant,
             }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="event_retention_sweep")
+def event_retention_sweep() -> Dict[str, Any]:
+    """Daily retention sweep for high-volume event tables.
+
+    Drops ``webhook_deliveries`` older than 90 days (sent / dead-letter
+    only — pending retries are preserved regardless of age). Rolls
+    ``feedback_events`` older than 180 days into
+    ``feedback_daily_rollup`` and deletes the raw rows so calibration
+    can still see historical volume without paying raw-row storage.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.event_retention import run_event_retention_sweep
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await run_event_retention_sweep(db)
 
     return asyncio.run(_runner())
