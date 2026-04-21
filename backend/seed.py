@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import secrets
-import sys
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -39,11 +38,12 @@ if os.path.exists(_env_path):
 DB_URL = os.environ["DATABASE_URL"]
 
 # ── Import data from legacy seed files ──────────────────────────────────────
+# The seed_{sales,it,cs}.py modules are plain data blobs (no imports of
+# ours), so they live under ``backend/scripts/`` as a lightweight package.
 
-sys.path.insert(0, _PROJECT_ROOT)
-from seed_sales import SALES_CALLS, AGENTS  # noqa: E402
-from seed_it import IT_CALLS  # noqa: E402
-from seed_cs import CS_CALLS  # noqa: E402
+from backend.scripts.seed_sales import SALES_CALLS, AGENTS  # noqa: E402
+from backend.scripts.seed_it import IT_CALLS  # noqa: E402
+from backend.scripts.seed_cs import CS_CALLS  # noqa: E402
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 

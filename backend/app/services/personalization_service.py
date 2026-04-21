@@ -132,9 +132,9 @@ def build_rag_context_block(
 ) -> Optional[str]:
     """Retrieve top-k KB chunks for this call's topics and format as context.
 
-    Reuses the existing :func:`backend.app.services.kb_retrieval.retrieve` —
-    same Voyage embeddings, same per-tenant Qdrant collection.  Falls back to
-    None on any failure so the analysis pipeline isn't blocked by a dead RAG.
+    Reuses the existing :func:`backend.app.services.kb_document_retrieval.retrieve`
+    — same Voyage embeddings, same per-tenant Qdrant collection. Falls back
+    to None on any failure so the analysis pipeline isn't blocked by a dead RAG.
     """
     config = get_config(session, tenant)
     rag_config = (config.rag_config if config else {}) or {}
@@ -152,7 +152,7 @@ def build_rag_context_block(
     top_k = int(rag_config.get("top_k", 3))
 
     try:
-        # kb_retrieval.retrieve is async; we need a sync entrypoint here
+        # kb_document_retrieval.retrieve is async; we need a sync entrypoint here
         # because the analysis worker runs synchronously inside Celery.
         # Use the sync keyword-fallback path — it's tenant-scoped and
         # requires no event loop.  When Voyage is unavailable this is also
@@ -180,7 +180,7 @@ def build_rag_context_block(
         if not rows:
             return None
 
-        # Quick TF rescore in Python (mirrors kb_retrieval._keyword_ranker)
+        # Quick TF rescore in Python (mirrors kb_document_retrieval._keyword_ranker)
         scored: List[tuple] = []
         for doc in rows:
             haystack = [

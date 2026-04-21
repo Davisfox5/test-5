@@ -12,7 +12,7 @@ import random
 import psycopg2
 from datetime import datetime, timedelta
 # Load .env manually since dotenv may not be installed
-env_path = os.path.join(os.path.dirname(__file__), ".env")
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
 if os.path.exists(env_path):
     with open(env_path) as f:
         for line in f:
@@ -21,7 +21,7 @@ if os.path.exists(env_path):
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-DB_URL = os.environ["DATABASE_URL"]
+DB_URL = os.environ.get("DATABASE_URL", "")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

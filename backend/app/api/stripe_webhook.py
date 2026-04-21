@@ -48,7 +48,7 @@ from backend.app.services.stripe_billing import (
     verify_stripe_signature,
 )
 from backend.app.services.seat_reconciliation import reconcile_seats
-from backend.app.services.subscription_tiers import apply_tier
+from backend.app.plans import apply_tier
 
 logger = logging.getLogger(__name__)
 
@@ -243,12 +243,12 @@ async def _cancel_subscription(
         return {"handled": False, "reason": "unknown_customer"}
 
     tenant.stripe_subscription_id = None
-    apply_tier(tenant, "solo")
+    apply_tier(tenant, "sandbox")
     reconcile = await reconcile_seats(db, tenant)
     return {
         "handled": True,
         "tenant_id": str(tenant.id),
-        "tier": "solo",
+        "tier": "sandbox",
         "reason": "canceled_or_expired",
         "suspended_user_count": len(reconcile.suspended_user_ids)
         + len(reconcile.suspended_admin_ids),

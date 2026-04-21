@@ -38,7 +38,7 @@ from fastapi import Depends
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import EmailSyncCursor, Integration
-from backend.app.services.rate_limit import get_limiter
+from backend.app.services.push_rate_limiter import get_limiter
 
 # Rate limits:
 #   Gmail Pub/Sub delivers one notification per mailbox-change, retry on

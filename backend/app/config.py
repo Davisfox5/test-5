@@ -110,12 +110,17 @@ class Settings(BaseSettings):
     STRIPE_API_KEY: str = ""
     # ``whsec_...`` signing secret from the Stripe webhook endpoint.
     STRIPE_WEBHOOK_SECRET: str = ""
-    # Price IDs that map 1:1 to SUBSCRIPTION_TIERS keys. Leave blank for
-    # tiers you don't sell yet.
-    STRIPE_PRICE_SOLO: str = ""
-    STRIPE_PRICE_TEAM: str = ""
-    STRIPE_PRICE_PRO: str = ""
+    # Price IDs that map 1:1 to plans.PLANS keys. Leave blank for tiers
+    # you don't sell yet. Legacy STRIPE_PRICE_{SOLO,TEAM,PRO} env vars
+    # are still honored as aliases for SANDBOX/STARTER/GROWTH at lookup
+    # time (see stripe_billing.price_id_to_tier).
+    STRIPE_PRICE_SANDBOX: str = ""
+    STRIPE_PRICE_STARTER: str = ""
+    STRIPE_PRICE_GROWTH: str = ""
     STRIPE_PRICE_ENTERPRISE: str = ""
+    STRIPE_PRICE_SOLO: str = ""  # legacy alias → sandbox
+    STRIPE_PRICE_TEAM: str = ""  # legacy alias → starter
+    STRIPE_PRICE_PRO: str = ""  # legacy alias → growth
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_S3_BUCKET: str = ""

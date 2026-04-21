@@ -356,7 +356,7 @@ class TenantSettingsPatch(BaseModel):
 
 
 def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
-    from backend.app.services.subscription_tiers import list_tiers
+    from backend.app.plans import list_tiers, normalize_tier_key
 
     features = dict(tenant.features_enabled or {})
     # Fill defaults for known flags so the UI always has something to render.
@@ -374,9 +374,9 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
         "question_keyterms": list(tenant.question_keyterms or []),
         "features_enabled": features,
         "feature_flag_spec": _FEATURE_FLAG_SPEC,
-        # Subscription surface. Seats are controlled by the tier; the UI
+        # Plan surface. Seats are controlled by the tier; the UI
         # shows the tier picker + the current limits as read-only.
-        "subscription_tier": getattr(tenant, "subscription_tier", "solo") or "solo",
+        "plan_tier": normalize_tier_key(getattr(tenant, "plan_tier", None)),
         "seat_limit": tenant.seat_limit,
         "admin_seat_limit": tenant.admin_seat_limit,
         "tier_catalog": list_tiers(),
@@ -455,12 +455,12 @@ class TierChangeIn(BaseModel):
 
 
 @router.post("/admin/tenant-settings/tier", response_model=TenantSettingsOut)
-async def change_subscription_tier(
+async def change_plan_tier(
     body: TierChangeIn,
     db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(get_current_principal),
 ) -> Dict[str, Any]:
-    """Change the tenant's subscription tier.
+    """Change the tenant's plan tier.
 
     Applies the tier's seat limits + feature flag defaults, then runs
     seat reconciliation: if the new cap is below the current active
@@ -472,18 +472,25 @@ async def change_subscription_tier(
     Admins then pick who stays active via ``/admin/seat-reconciliation``
     and ``POST /users/{id}/reactivate``. Suspended users can't log in.
     """
+    from backend.app.plans import PLANS, apply_tier, normalize_tier_key
     from backend.app.services.seat_reconciliation import reconcile_seats
-    from backend.app.services.subscription_tiers import SUBSCRIPTION_TIERS, apply_tier
 
     tenant = principal.tenant
-    if body.tier not in SUBSCRIPTION_TIERS:
+    normalized = normalize_tier_key(body.tier)
+    # Accept legacy keys (solo/team/pro) transparently but reject outright
+    # unknown inputs so typos don't silently downgrade to the default.
+    if body.tier not in PLANS and normalized != body.tier and body.tier not in (
+        "solo",
+        "team",
+        "pro",
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Unknown tier: {body.tier}. Supported: "
-                + ", ".join(SUBSCRIPTION_TIERS.keys())
+                + ", ".join(PLANS.keys())
             ),
         )
-    apply_tier(tenant, body.tier)
+    apply_tier(tenant, normalized)
     await reconcile_seats(db, tenant, protect_user_id=principal.user_id)
     return _tenant_settings_payload(tenant)

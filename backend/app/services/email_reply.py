@@ -146,9 +146,9 @@ async def _kb_excerpts(db: AsyncSession, tenant_id, query: str, k: int = 5) -> L
     """Pull grounding docs via the retrieval service.
 
     Uses Qdrant + embeddings when configured, and a tenant-scoped
-    keyword ranker otherwise.  See services/kb_retrieval.py.
+    keyword ranker otherwise. See services/kb_document_retrieval.py.
     """
-    from backend.app.services.kb_retrieval import retrieve
+    from backend.app.services.kb_document_retrieval import retrieve
 
     ranked = await retrieve(db, tenant_id, query, k=k)
     return [doc for doc, _score in ranked]

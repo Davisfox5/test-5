@@ -200,7 +200,7 @@ async def send_follow_up(
             to=body.to, subject=body.subject, body=body.body, cc=body.cc
         )
         record.status = "sent"
-        record.provider_message_id = result.message_id
+        record.provider_message_id = result.provider_message_id or result.message_id
         record.sent_at = datetime.now(timezone.utc)
     except EmailAuthError as exc:
         record.status = "failed"

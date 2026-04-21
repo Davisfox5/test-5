@@ -209,7 +209,7 @@ async def test_outcomes_accepts_signed_when_secret_set(
         content=body,
         headers={
             "Content-Type": "application/json",
-            "X-Callsight-Signature": _signature(secret, body),
+            "X-Linda-Signature": _signature(secret, body),
         },
     )
     assert resp.status_code == 202, resp.text

@@ -34,12 +34,14 @@ from backend.app.models import (
 )
 from backend.app.services import feedback_service
 from backend.app.services.attachment_store import get_store
-from backend.app.services.email_reply import ReplyDrafter
-from backend.app.services.email_send import (
+from backend.app.services.email import (
+    EmailAuthError,
+    EmailSendError,
+    GmailSender,
     OutboundAttachment,
-    send_via_gmail,
-    send_via_graph,
+    OutlookSender,
 )
+from backend.app.services.email_reply import ReplyDrafter
 
 router = APIRouter()
 
@@ -433,25 +435,31 @@ async def send_reply(
 
     access_token = await get_provider_token(db, integration)
 
-    send_kwargs = dict(
-        access_token=access_token,
-        from_address=from_address,
-        to=list(body.to),
-        cc=list(body.cc),
-        bcc=list(body.bcc),
-        subject=body.subject,
-        body=body.body,
-        body_html=body.body_html,
-        in_reply_to=in_reply_to,
-        references=references,
-        attachments=outbound_atts or None,
-    )
     if integration.provider == "google":
-        result = send_via_gmail(**send_kwargs)
+        sender = GmailSender(access_token=access_token, from_address=from_address)
     elif integration.provider == "microsoft":
-        result = send_via_graph(**send_kwargs)
+        sender = OutlookSender(access_token=access_token, from_address=from_address)
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {integration.provider}")
+
+    try:
+        send_result = await sender.send(
+            to=list(body.to),
+            cc=list(body.cc),
+            bcc=list(body.bcc),
+            subject=body.subject,
+            body=body.body,
+            body_html=body.body_html,
+            in_reply_to=in_reply_to,
+            references=references,
+            attachments=outbound_atts or None,
+        )
+    except EmailAuthError as exc:
+        raise HTTPException(status_code=401, detail=f"Re-auth required: {exc}") from exc
+    except EmailSendError as exc:
+        raise HTTPException(status_code=502, detail=f"Send failed: {exc}") from exc
+    finally:
+        await sender.close()
 
     outbound = Interaction(
         tenant_id=tenant.id,
@@ -459,7 +467,7 @@ async def send_reply(
         contact_id=conv.contact_id,
         conversation_id=conv.id,
         channel="email",
-        source=result["provider"],
+        source=send_result.provider,
         direction="outbound",
         title=body.subject,
         subject=body.subject,
@@ -470,10 +478,10 @@ async def send_reply(
         to_addresses=list(body.to),
         cc_addresses=list(body.cc),
         bcc_addresses=list(body.bcc),
-        message_id=result.get("message_id") or None,
+        message_id=send_result.message_id,
         in_reply_to=in_reply_to,
         references=references,
-        provider_message_id=result.get("provider_message_id") or None,
+        provider_message_id=send_result.provider_message_id,
         is_internal=False,
         classification=conv.classification,
         status="processing",
@@ -523,7 +531,7 @@ async def send_reply(
         pass
 
     conv.status = "waiting_customer"
-    return {"status": "sent", "interaction_id": str(outbound.id), "provider": result["provider"]}
+    return {"status": "sent", "interaction_id": str(outbound.id), "provider": send_result.provider}
 
 
 def _maybe_upload(store, tenant_id, interaction_id, mat: OutboundAttachment) -> Optional[str]:

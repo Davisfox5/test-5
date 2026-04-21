@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_user_or_tenant
+from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import ActionItem, Tenant, User, WriteProposal
 from backend.app.services.linda_agent import (
@@ -22,7 +22,7 @@ from backend.app.services.linda_agent import (
     get_or_create_conversation,
     run_chat_turn,
 )
-from backend.app.services.rate_limiter import LindaRateLimiter
+from backend.app.services.chat_rate_limiter import LindaRateLimiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -98,7 +98,7 @@ async def _stream_chat(
 
 @router.get("/chat/ping")
 async def chat_ping(
-    tenant: Tenant = Depends(get_current_user_or_tenant),
+    tenant: Tenant = Depends(get_current_tenant),
 ) -> Dict[str, bool]:
     """Lightweight liveness check — 404 if the tenant is white-label, 200 otherwise."""
     _require_not_white_label(tenant)
@@ -109,7 +109,7 @@ async def chat_ping(
 async def chat(
     payload: ChatRequest,
     request: Request,
-    tenant: Tenant = Depends(get_current_user_or_tenant),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Ask Linda. Streams SSE events: text deltas, tool_use, tool_result, proposal, done."""
@@ -142,7 +142,7 @@ async def chat(
 @router.post("/chat/proposals/{proposal_id}/confirm", response_model=ProposalOut)
 async def confirm_proposal(
     proposal_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_user_or_tenant),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> ProposalOut:
     _require_not_white_label(tenant)
@@ -177,7 +177,7 @@ async def confirm_proposal(
 @router.post("/chat/proposals/{proposal_id}/cancel", response_model=ProposalOut)
 async def cancel_proposal(
     proposal_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_user_or_tenant),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> ProposalOut:
     _require_not_white_label(tenant)

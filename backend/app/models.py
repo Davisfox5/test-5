@@ -59,11 +59,10 @@ class Tenant(Base):
     outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
     # How many hours of call audio to retain after processing.
     audio_retention_hours: Mapped[int] = mapped_column(Integer, default=24, server_default="24")
-    # Subscription seat limits (admin floor 1). Total seat_limit includes the admin(s).
+    # Seat caps (admin floor 1). Total seat_limit includes the admin(s). Set
+    # by apply_tier() whenever plan_tier changes.
     seat_limit: Mapped[int] = mapped_column(Integer, default=1)
     admin_seat_limit: Mapped[int] = mapped_column(Integer, default=1)
-    # Tier key from backend.app.services.subscription_tiers.SUBSCRIPTION_TIERS.
-    subscription_tier: Mapped[str] = mapped_column(String, default="solo")
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String)
     # True while a tier downgrade has left the tenant over-headcount.

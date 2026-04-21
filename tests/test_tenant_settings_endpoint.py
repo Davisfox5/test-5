@@ -29,9 +29,9 @@ def _fake_tenant(**overrides):
         keyterm_boost_list=[],
         question_keyterms=[],
         features_enabled={"live_sentiment": True},
-        # Subscription surface the payload now exposes.
-        subscription_tier="solo",
-        seat_limit=1,
+        # Plan surface the payload now exposes.
+        plan_tier="sandbox",
+        seat_limit=3,
         admin_seat_limit=1,
     )
     defaults.update(overrides)

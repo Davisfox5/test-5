@@ -114,7 +114,7 @@ WER_GAUGE = Gauge(
 
 RAG_RETRIEVAL_LATENCY = Histogram(
     "callsight_rag_retrieval_latency_seconds",
-    "RAG retrieval latency from kb_retrieval.",
+    "RAG retrieval latency from kb_document_retrieval.",
     ["tenant", "surface"],
 )
 

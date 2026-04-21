@@ -7,8 +7,8 @@ available. Errors surface as ``EmailAuthError`` (re-authenticate) or
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import List, Optional, Protocol, runtime_checkable
 
 
 class EmailError(RuntimeError):
@@ -25,9 +25,20 @@ class EmailSendError(EmailError):
 
 
 @dataclass
+class OutboundAttachment:
+    """File to attach to an outgoing email."""
+
+    filename: str
+    content_type: Optional[str]
+    data: bytes
+
+
+@dataclass
 class SendResult:
     provider: str
     message_id: Optional[str]
+    # Provider-assigned id for the row we just created (Gmail only).
+    provider_message_id: Optional[str] = None
     # Raw provider response body (trimmed) for the audit log.
     raw_snippet: str = ""
 
@@ -39,10 +50,15 @@ class EmailSender(Protocol):
     async def send(
         self,
         *,
-        to: str,
+        to: List[str],
         subject: str,
         body: str,
-        cc: Optional[str] = None,
+        cc: Optional[List[str]] = None,
+        bcc: Optional[List[str]] = None,
+        body_html: Optional[str] = None,
+        attachments: Optional[List[OutboundAttachment]] = None,
+        in_reply_to: Optional[str] = None,
+        references: Optional[List[str]] = None,
     ) -> SendResult: ...
 
     async def close(self) -> None: ...

@@ -6,8 +6,9 @@ Microsoft Identity platform's v2 token endpoint.
 
 from __future__ import annotations
 
+import base64
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, List, Optional, Union
 
 import httpx
 
@@ -15,8 +16,17 @@ from backend.app.config import get_settings
 from backend.app.services.email.base import (
     EmailAuthError,
     EmailSendError,
+    OutboundAttachment,
     SendResult,
 )
+
+
+def _as_list(v: Union[str, List[str], None]) -> List[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v]
+    return list(v)
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +64,49 @@ class OutlookSender:
     async def send(
         self,
         *,
-        to: str,
+        to: Union[str, List[str]],
         subject: str,
         body: str,
-        cc: Optional[str] = None,
+        cc: Union[str, List[str], None] = None,
+        bcc: Optional[List[str]] = None,
+        body_html: Optional[str] = None,
+        attachments: Optional[List[OutboundAttachment]] = None,
+        in_reply_to: Optional[str] = None,
+        references: Optional[List[str]] = None,
     ) -> SendResult:
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {"contentType": "Text", "content": body},
-                "toRecipients": [{"emailAddress": {"address": to}}],
+        # Graph's /me/sendMail does not take custom headers, so In-Reply-To
+        # and References can't be set here. For true threading use /reply
+        # when the provider message id is known — noted for future work.
+        to_list = _as_list(to)
+        cc_list = _as_list(cc)
+        message: dict[str, Any] = {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML" if body_html else "Text",
+                "content": body_html or body,
             },
-            "saveToSentItems": True,
+            "toRecipients": [{"emailAddress": {"address": a}} for a in to_list],
         }
-        if cc:
-            payload["message"]["ccRecipients"] = [
-                {"emailAddress": {"address": cc}}
+        if cc_list:
+            message["ccRecipients"] = [
+                {"emailAddress": {"address": a}} for a in cc_list
             ]
+        if bcc:
+            message["bccRecipients"] = [
+                {"emailAddress": {"address": a}} for a in bcc
+            ]
+        if attachments:
+            message["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": att.filename,
+                    "contentType": att.content_type or "application/octet-stream",
+                    "contentBytes": base64.b64encode(att.data).decode("ascii"),
+                }
+                for att in attachments
+            ]
+
+        payload = {"message": message, "saveToSentItems": True}
 
         resp = await self._post_send(payload)
         if resp.status_code == 401 and self._refresh_token:

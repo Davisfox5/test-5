@@ -101,37 +101,43 @@ def _parse_signature_header(header: str) -> Optional[tuple[int, list[str]]]:
 # ── Price → tier mapping ─────────────────────────────────────────────
 
 
-def price_id_to_tier(price_id: str) -> Optional[str]:
-    """Translate a Stripe price_id into one of our tier keys.
+def _price_tier_pairs() -> Dict[str, str]:
+    """Return the current env price_id → plan tier key mapping.
 
-    Driven by the ``STRIPE_PRICE_{SOLO,TEAM,PRO,ENTERPRISE}`` env
-    settings so a deployment can remap tiers without a code change.
-    Returns ``None`` for unknown or blank price_ids.
+    Prefers the new ``STRIPE_PRICE_{SANDBOX,STARTER,GROWTH,ENTERPRISE}``
+    env vars. Legacy ``STRIPE_PRICE_{SOLO,TEAM,PRO}`` vars are honored
+    as aliases so an existing deployment can roll the rename at its own
+    pace; when both new and legacy are set the new var wins.
+    """
+    settings = get_settings()
+    pairs: Dict[str, str] = {}
+    # Legacy first, then new — so new entries overwrite when both exist.
+    for price_id, tier in [
+        (settings.STRIPE_PRICE_SOLO, "sandbox"),
+        (settings.STRIPE_PRICE_TEAM, "starter"),
+        (settings.STRIPE_PRICE_PRO, "growth"),
+        (settings.STRIPE_PRICE_SANDBOX, "sandbox"),
+        (settings.STRIPE_PRICE_STARTER, "starter"),
+        (settings.STRIPE_PRICE_GROWTH, "growth"),
+        (settings.STRIPE_PRICE_ENTERPRISE, "enterprise"),
+    ]:
+        if price_id:
+            pairs[price_id] = tier
+    return pairs
+
+
+def price_id_to_tier(price_id: str) -> Optional[str]:
+    """Translate a Stripe price_id into one of our plan tier keys.
+
+    Driven by the ``STRIPE_PRICE_*`` env settings so a deployment can
+    remap tiers without a code change. Returns ``None`` for unknown or
+    blank price_ids.
     """
     if not price_id:
         return None
-    settings = get_settings()
-    # Order matters for readability only — each key must be unique in practice.
-    mapping: Dict[str, str] = {
-        settings.STRIPE_PRICE_SOLO: "solo",
-        settings.STRIPE_PRICE_TEAM: "team",
-        settings.STRIPE_PRICE_PRO: "pro",
-        settings.STRIPE_PRICE_ENTERPRISE: "enterprise",
-    }
-    # Drop the empty-string entry that unconfigured prices leave behind
-    # so we never accidentally match "".
-    mapping.pop("", None)
-    return mapping.get(price_id)
+    return _price_tier_pairs().get(price_id)
 
 
 def price_tier_map_for_api() -> Dict[str, str]:
     """Return the configured mapping for the admin UI."""
-    settings = get_settings()
-    pairs = {
-        settings.STRIPE_PRICE_SOLO: "solo",
-        settings.STRIPE_PRICE_TEAM: "team",
-        settings.STRIPE_PRICE_PRO: "pro",
-        settings.STRIPE_PRICE_ENTERPRISE: "enterprise",
-    }
-    pairs.pop("", None)
-    return pairs
+    return _price_tier_pairs()

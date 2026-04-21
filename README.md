@@ -13,7 +13,8 @@ afterward.
   interactive demo dashboard (`demo.html`)
 - `tests/` — pytest suite
 - `docs/` — architecture, business plan, pricing models, scoring spec
-- `seed_cs.py`, `seed_it.py`, `seed_sales.py`, `backend/seed.py` — demo data
+- `backend/scripts/seed_{cs,it,sales}.py` (data blobs) + `backend/seed.py`
+  (runner) — demo data
 - `backend/analyze_seed.py` — re-runs the real AI pipeline over seeded
   interactions to refresh insights
 

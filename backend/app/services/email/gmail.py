@@ -1,4 +1,4 @@
-"""Gmail sender — sends a follow-up via the user's stored OAuth token.
+"""Gmail sender — sends email via the user's stored OAuth token.
 
 Uses ``users/me/messages/send`` with a base64url-encoded RFC 822 message.
 On 401 we run the refresh_token grant once and retry; a second 401 raises
@@ -8,10 +8,11 @@ On 401 we run the refresh_token grant once and retry; a second 401 raises
 from __future__ import annotations
 
 import base64
+import html as html_mod
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import Callable, Optional
+import re
+from email.message import EmailMessage
+from typing import Callable, List, Optional, Union
 
 import httpx
 
@@ -19,6 +20,7 @@ from backend.app.config import get_settings
 from backend.app.services.email.base import (
     EmailAuthError,
     EmailSendError,
+    OutboundAttachment,
     SendResult,
 )
 
@@ -26,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 _SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_text(html: str) -> str:
+    cleaned = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+    cleaned = _HTML_TAG_RE.sub(" ", cleaned)
+    cleaned = html_mod.unescape(cleaned)
+    return "\n".join(line.strip() for line in cleaned.splitlines() if line.strip())
+
+
+def _as_list(v: Union[str, List[str], None]) -> List[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v]
+    return list(v)
 
 
 class GmailSender:
@@ -52,18 +71,29 @@ class GmailSender:
     async def send(
         self,
         *,
-        to: str,
+        to: Union[str, List[str]],
         subject: str,
         body: str,
-        cc: Optional[str] = None,
+        cc: Union[str, List[str], None] = None,
+        bcc: Optional[List[str]] = None,
+        body_html: Optional[str] = None,
+        attachments: Optional[List[OutboundAttachment]] = None,
+        in_reply_to: Optional[str] = None,
+        references: Optional[List[str]] = None,
     ) -> SendResult:
-        raw = _build_raw_message(
+        mime = _build_mime(
             from_address=self._from,
-            to=to,
+            to=_as_list(to),
+            cc=_as_list(cc),
+            bcc=_as_list(bcc),
             subject=subject,
-            body=body,
-            cc=cc,
+            body_text=body,
+            body_html=body_html,
+            in_reply_to=in_reply_to,
+            references=references,
+            attachments=attachments,
         )
+        raw = base64.urlsafe_b64encode(mime.as_bytes()).decode("ascii").rstrip("=")
 
         resp = await self._post_send(raw)
         if resp.status_code == 401 and self._refresh_token:
@@ -78,7 +108,8 @@ class GmailSender:
         data = resp.json() or {}
         return SendResult(
             provider=self.provider,
-            message_id=data.get("id"),
+            message_id=mime["Message-ID"] or None,
+            provider_message_id=data.get("id"),
             raw_snippet=str(data)[:300],
         )
 
@@ -130,18 +161,41 @@ class GmailSender:
                 logger.exception("on_token_refresh callback failed")
 
 
-def _build_raw_message(
-    *, from_address: str, to: str, subject: str, body: str, cc: Optional[str] = None
-) -> str:
-    """Build a base64url-encoded RFC 822 message suitable for Gmail API."""
-    # ``MIMEMultipart`` even for plain text keeps the API happy with
-    # multipart-like senders; a single MIMEText part is fine.
-    msg = MIMEMultipart("alternative")
+def _build_mime(
+    *,
+    from_address: str,
+    to: List[str],
+    cc: List[str],
+    bcc: List[str],
+    subject: str,
+    body_text: str,
+    body_html: Optional[str],
+    in_reply_to: Optional[str],
+    references: Optional[List[str]],
+    attachments: Optional[List[OutboundAttachment]],
+) -> EmailMessage:
+    msg = EmailMessage()
     msg["From"] = from_address
-    msg["To"] = to
+    msg["To"] = ", ".join(to)
     if cc:
-        msg["Cc"] = cc
+        msg["Cc"] = ", ".join(cc)
+    if bcc:
+        msg["Bcc"] = ", ".join(bcc)
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-    raw_bytes = msg.as_bytes()
-    return base64.urlsafe_b64encode(raw_bytes).decode("ascii").rstrip("=")
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = " ".join(references)
+
+    msg.set_content(body_text or (_html_to_text(body_html) if body_html else ""))
+    if body_html:
+        msg.add_alternative(body_html, subtype="html")
+
+    for att in attachments or []:
+        maintype, _, subtype = (att.content_type or "application/octet-stream").partition("/")
+        if not subtype:
+            maintype, subtype = "application", "octet-stream"
+        msg.add_attachment(
+            att.data, maintype=maintype, subtype=subtype, filename=att.filename
+        )
+    return msg

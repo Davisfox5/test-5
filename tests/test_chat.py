@@ -188,7 +188,7 @@ def test_unknown_tool_returns_error():
 
 
 def test_rate_limiter_allows_under_limit_and_blocks_over():
-    from backend.app.services.rate_limiter import LindaRateLimiter
+    from backend.app.services.chat_rate_limiter import LindaRateLimiter
 
     limiter = LindaRateLimiter(limit=3, window_seconds=60)
 

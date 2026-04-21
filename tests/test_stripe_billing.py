@@ -125,14 +125,28 @@ def test_signature_tolerance_is_configurable():
 # ── price_id_to_tier ─────────────────────────────────────────────────
 
 
+def _prices_settings(**overrides):
+    defaults = dict(
+        STRIPE_PRICE_SANDBOX="",
+        STRIPE_PRICE_STARTER="",
+        STRIPE_PRICE_GROWTH="",
+        STRIPE_PRICE_ENTERPRISE="",
+        STRIPE_PRICE_SOLO="",
+        STRIPE_PRICE_TEAM="",
+        STRIPE_PRICE_PRO="",
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 @pytest.fixture
 def stripe_prices_env(monkeypatch):
-    """Patch the Settings to return canned Stripe price ids."""
+    """Patch Settings with the modern STRIPE_PRICE_* env vars populated."""
     def _fake_settings():
-        return SimpleNamespace(
-            STRIPE_PRICE_SOLO="price_solo",
-            STRIPE_PRICE_TEAM="price_team",
-            STRIPE_PRICE_PRO="price_pro",
+        return _prices_settings(
+            STRIPE_PRICE_SANDBOX="price_sandbox",
+            STRIPE_PRICE_STARTER="price_starter",
+            STRIPE_PRICE_GROWTH="price_growth",
             STRIPE_PRICE_ENTERPRISE="price_ent",
         )
 
@@ -141,10 +155,28 @@ def stripe_prices_env(monkeypatch):
 
 
 def test_price_id_to_tier_resolves_known(stripe_prices_env):
-    assert price_id_to_tier("price_solo") == "solo"
-    assert price_id_to_tier("price_team") == "team"
-    assert price_id_to_tier("price_pro") == "pro"
+    assert price_id_to_tier("price_sandbox") == "sandbox"
+    assert price_id_to_tier("price_starter") == "starter"
+    assert price_id_to_tier("price_growth") == "growth"
     assert price_id_to_tier("price_ent") == "enterprise"
+
+
+def test_price_id_to_tier_resolves_legacy_env_var(monkeypatch):
+    """STRIPE_PRICE_{SOLO,TEAM,PRO} env vars remain honored and map to
+    sandbox/starter/growth so mid-deploy rollouts keep working."""
+    monkeypatch.setattr(
+        stripe_billing,
+        "get_settings",
+        lambda: _prices_settings(
+            STRIPE_PRICE_SOLO="price_legacy_solo",
+            STRIPE_PRICE_TEAM="price_legacy_team",
+            STRIPE_PRICE_PRO="price_legacy_pro",
+            STRIPE_PRICE_ENTERPRISE="price_ent",
+        ),
+    )
+    assert price_id_to_tier("price_legacy_solo") == "sandbox"
+    assert price_id_to_tier("price_legacy_team") == "starter"
+    assert price_id_to_tier("price_legacy_pro") == "growth"
 
 
 def test_price_id_to_tier_unknown_returns_none(stripe_prices_env):
@@ -159,15 +191,11 @@ def test_price_id_to_tier_empty_returns_none(stripe_prices_env):
 def test_price_id_to_tier_never_matches_blank_entry(monkeypatch):
     """Unconfigured tiers have empty-string env values. Passing an empty
     string must never match — that would downgrade every unknown event."""
-    def _fake_settings():
-        return SimpleNamespace(
-            STRIPE_PRICE_SOLO="",  # unconfigured
-            STRIPE_PRICE_TEAM="price_team",
-            STRIPE_PRICE_PRO="",
-            STRIPE_PRICE_ENTERPRISE="",
-        )
-
-    monkeypatch.setattr(stripe_billing, "get_settings", _fake_settings)
+    monkeypatch.setattr(
+        stripe_billing,
+        "get_settings",
+        lambda: _prices_settings(STRIPE_PRICE_STARTER="price_starter"),
+    )
     assert price_id_to_tier("") is None
 
 
@@ -177,8 +205,8 @@ def test_price_id_to_tier_never_matches_blank_entry(monkeypatch):
 class FakeTenant:
     def __init__(self, stripe_customer_id: str = ""):
         self.id = "tenant-uuid"
-        self.subscription_tier = "solo"
-        self.seat_limit = 1
+        self.plan_tier = "sandbox"
+        self.seat_limit = 3
         self.admin_seat_limit = 1
         self.features_enabled = {}
         self.stripe_customer_id = stripe_customer_id
@@ -253,13 +281,13 @@ async def test_subscription_created_applies_tier(stripe_prices_env):
         "id": "sub_123",
         "customer": "cus_abc",
         "status": "active",
-        "items": {"data": [{"price": {"id": "price_pro"}}]},
+        "items": {"data": [{"price": {"id": "price_growth"}}]},
     }
     result = await _handle_event(db, "customer.subscription.created", obj)
     assert result["handled"] is True
-    assert result["tier"] == "pro"
+    assert result["tier"] == "growth"
     # apply_tier must have flipped the seat limits too.
-    assert tenant.subscription_tier == "pro"
+    assert tenant.plan_tier == "growth"
     assert tenant.seat_limit == 50
     assert tenant.admin_seat_limit == 3
     assert tenant.stripe_subscription_id == "sub_123"
@@ -270,7 +298,7 @@ async def test_subscription_updated_handles_downgrade(stripe_prices_env):
     from backend.app.api.stripe_webhook import _handle_event
 
     tenant = FakeTenant(stripe_customer_id="cus_abc")
-    tenant.subscription_tier = "pro"
+    tenant.plan_tier = "growth"
     tenant.seat_limit = 50
     tenant.admin_seat_limit = 3
     db = FakeDB([tenant])
@@ -279,21 +307,21 @@ async def test_subscription_updated_handles_downgrade(stripe_prices_env):
         "id": "sub_123",
         "customer": "cus_abc",
         "status": "active",
-        "items": {"data": [{"price": {"id": "price_team"}}]},
+        "items": {"data": [{"price": {"id": "price_starter"}}]},
     }
     result = await _handle_event(db, "customer.subscription.updated", obj)
-    assert result["tier"] == "team"
+    assert result["tier"] == "starter"
     # Seat limit shrinks, but we don't deactivate existing users — that's
     # the non-retroactive policy. Just the cap changes.
     assert tenant.seat_limit == 10
 
 
 @pytest.mark.asyncio
-async def test_subscription_deleted_drops_to_solo(stripe_prices_env):
+async def test_subscription_deleted_drops_to_sandbox(stripe_prices_env):
     from backend.app.api.stripe_webhook import _handle_event
 
     tenant = FakeTenant(stripe_customer_id="cus_abc")
-    tenant.subscription_tier = "enterprise"
+    tenant.plan_tier = "enterprise"
     tenant.seat_limit = 500
     tenant.admin_seat_limit = 20
     tenant.stripe_subscription_id = "sub_old"
@@ -302,9 +330,9 @@ async def test_subscription_deleted_drops_to_solo(stripe_prices_env):
     obj = {"id": "sub_old", "customer": "cus_abc", "status": "canceled"}
     result = await _handle_event(db, "customer.subscription.deleted", obj)
     assert result["handled"] is True
-    assert result["tier"] == "solo"
-    assert tenant.subscription_tier == "solo"
-    assert tenant.seat_limit == 1
+    assert result["tier"] == "sandbox"
+    assert tenant.plan_tier == "sandbox"
+    assert tenant.seat_limit == 3
     assert tenant.stripe_subscription_id is None
 
 
@@ -317,7 +345,7 @@ async def test_unknown_customer_is_ignored_not_crashed(stripe_prices_env):
         "id": "sub_123",
         "customer": "cus_mystery",
         "status": "active",
-        "items": {"data": [{"price": {"id": "price_pro"}}]},
+        "items": {"data": [{"price": {"id": "price_growth"}}]},
     }
     result = await _handle_event(db, "customer.subscription.created", obj)
     assert result["handled"] is False
@@ -329,7 +357,7 @@ async def test_unknown_price_does_not_change_tier(stripe_prices_env):
     from backend.app.api.stripe_webhook import _handle_event
 
     tenant = FakeTenant(stripe_customer_id="cus_abc")
-    tenant.subscription_tier = "team"
+    tenant.plan_tier = "starter"
     tenant.seat_limit = 10
     db = FakeDB([tenant])
 
@@ -343,7 +371,7 @@ async def test_unknown_price_does_not_change_tier(stripe_prices_env):
     assert result["handled"] is False
     assert result["reason"] == "unknown_price"
     # Tier untouched.
-    assert tenant.subscription_tier == "team"
+    assert tenant.plan_tier == "starter"
     assert tenant.seat_limit == 10
 
 

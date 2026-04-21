@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_user_or_tenant
+from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Tenant, User
 from backend.app.plans import limits_for, trial_is_active, trial_is_expired
@@ -79,7 +79,7 @@ async def _resolve_current_user(
 @router.get("/me", response_model=MeOut)
 async def me(
     request: Request,
-    tenant: Tenant = Depends(get_current_user_or_tenant),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ) -> MeOut:
     user = await _resolve_current_user(request, db, tenant)
