@@ -8,9 +8,11 @@ afterward.
 ## Layout
 
 - `backend/` — FastAPI service (Postgres + Celery + Redis + Anthropic)
+- `apps/app/` — Next.js SPA for Tier 2/3 customers
 - `website/` — vanilla HTML/CSS/JS marketing page (`index.html`) and
   interactive demo dashboard (`demo.html`)
 - `tests/` — pytest suite
+- `docs/` — architecture, business plan, pricing models, scoring spec
 - `seed_cs.py`, `seed_it.py`, `seed_sales.py`, `backend/seed.py` — demo data
 - `backend/analyze_seed.py` — re-runs the real AI pipeline over seeded
   interactions to refresh insights
@@ -22,4 +24,8 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --reload
 ```
 
-For the static demo UI, `python server.py` serves `website/` on port 8000.
+For the static demo UI:
+
+```bash
+python -m http.server 8000 --directory website
+```
