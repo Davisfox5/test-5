@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SYNTHETIC DATA WARNING
+# Every name, email address, phone number, company, and transcript below is
+# fictional. Any resemblance to a real person or organization is coincidental.
+# Do NOT treat the contents of this file as customer data.
 """
 CallSight AI — Customer Service Call Transcript Seed Script
 Appends 17 realistic CS call transcripts to the existing Flex database.

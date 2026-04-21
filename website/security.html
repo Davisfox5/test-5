@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>Security — CallSight AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .legal-page { max-width: 820px; margin: 64px auto 96px; padding: 0 24px; line-height: 1.65; }
+        .legal-page h1 { font-size: 2.25rem; margin-bottom: 0.5rem; }
+        .legal-page h2 { margin-top: 2.5rem; margin-bottom: 0.75rem; font-size: 1.35rem; }
+        .legal-page p, .legal-page li { color: #c8c8d4; }
+        .legal-page ul { padding-left: 1.25rem; }
+        .legal-page a { color: #8b5cf6; }
+        .legal-page code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.88em; }
+        .legal-page .meta { color: #8c8ca0; font-size: 0.9rem; margin-bottom: 2rem; }
+    </style>
+</head>
+<body>
+    <nav class="navbar" id="navbar" aria-label="Primary">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo" aria-label="CallSight AI home">
+                <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+            </a>
+            <div class="nav-actions">
+                <a href="index.html" class="btn btn-ghost">Home</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="legal-page">
+        <h1>Security</h1>
+        <p class="meta">Updated: 2026-04-20</p>
+
+        <p>
+            This page describes CallSight's current security controls. It is factual about
+            what we do today; it does not claim certifications we do not yet hold.
+        </p>
+
+        <h2>Transport security</h2>
+        <ul>
+            <li>All API, webhook, and WebSocket traffic is TLS 1.2+ in production.</li>
+            <li>HSTS enforced at the edge; the FastAPI app emits CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy on every response.</li>
+            <li>Outbound webhook dispatch blocks private and link-local IP ranges (RFC 1918, 169.254.0.0/16, loopback, ULA) and pins the resolved IP at connect time to defend against DNS rebinding.</li>
+            <li>Database connections validate the CA chain and hostname; certificate verification is never disabled outside DEBUG mode.</li>
+        </ul>
+
+        <h2>Data at rest</h2>
+        <ul>
+            <li>OAuth access and refresh tokens are Fernet-encrypted (AES-128-CBC + HMAC-SHA256) in the <code>integrations</code> table with a key held in <code>TOKEN_ENCRYPTION_KEY</code>. The app refuses to start in production if the key is missing.</li>
+            <li>Sensitive transcript text, onboarding-session state, and feedback-event payloads use the same Fernet wrapper via SQLAlchemy <code>TypeDecorator</code>.</li>
+            <li>Storage (Neon Postgres, AWS S3) applies provider-native encryption at rest; CallSight layers application-level encryption on top for the most sensitive columns.</li>
+        </ul>
+
+        <h2>Tenant isolation</h2>
+        <ul>
+            <li>Every tenant-scoped table carries a <code>tenant_id</code> foreign key. Queries are scoped in the application layer and enforced by PostgreSQL row-level security, which is configured via a per-session <code>SET app.current_tenant_id</code>.</li>
+            <li>API-key authentication looks up a SHA-256 hash; the plaintext key is never stored.</li>
+            <li>WebSocket <code>/ws/live/{session_id}</code> requires authentication before the upgrade handshake and verifies that the resolved tenant owns the session.</li>
+            <li>Cross-tenant aggregation is gated behind a per-tenant opt-in (<code>features_enabled.data_use_for_improvement</code>) enforced at the SQL layer.</li>
+        </ul>
+
+        <h2>Authentication</h2>
+        <ul>
+            <li>User sessions are managed by Clerk with MFA enforced on admin roles.</li>
+            <li>Machine-to-machine access uses scoped API keys with a configurable expiry. Key rotation is supported; keys are revocable from the admin UI.</li>
+            <li>OAuth callbacks validate a signed, time-limited <code>state</code> token; stale or tampered tokens are rejected at 400.</li>
+        </ul>
+
+        <h2>AI-specific safeguards</h2>
+        <ul>
+            <li>Presidio-based PII redaction is applied to caller transcripts before they reach Claude; the engine status is exposed via <code>GET /api/v1/health/pii</code> so degradation is observable.</li>
+            <li>Untrusted inputs fed to LLMs (caller speech, uploaded KB documents, inbound email bodies, CRM contact names, outcome notes) are wrapped in explicit data-delimiter blocks with an instruction to the model that content between them is data, not instructions.</li>
+            <li>LLM outputs are schema-validated before persistence; adversarial responses fall back to safe defaults.</li>
+            <li>Suggestions generated from third-party content (e.g., InferFromSources) are quarantined as <code>TenantBriefSuggestion</code> rows that require admin review — they never auto-write to the tenant brief.</li>
+        </ul>
+
+        <h2>Webhook integrity</h2>
+        <ul>
+            <li>Every outbound webhook is HMAC-SHA256 signed over a canonical <code>timestamp + "\n" + body</code> string. Subscribers should reject requests outside a &plusmn;300&nbsp;s replay window.</li>
+            <li>Failed deliveries are persisted in <code>webhook_deliveries</code> and retried with exponential backoff (6 attempts, base 2). Operators can replay failed deliveries via the admin API.</li>
+        </ul>
+
+        <h2>Audit logging</h2>
+        <p>
+            An append-only <code>audit_log</code> table records authentication success,
+            transcript reads, OAuth token use, API-key mint and revoke, webhook registration,
+            and admin endpoint access. Database role permissions revoke <code>UPDATE</code>
+            and <code>DELETE</code> on the table.
+        </p>
+
+        <h2>Secure development lifecycle</h2>
+        <ul>
+            <li>GitHub Actions runs <code>detect-secrets</code> on every push and PR. A scan hit fails the build.</li>
+            <li>Dependencies are pinned to minimum safe versions; critical libraries (<code>cryptography</code>, <code>pypdf</code>, <code>python-docx</code>, <code>lxml</code>) are bumped promptly after security releases.</li>
+            <li>The default CI workflow permission is <code>contents: read</code>; the legacy self-heal step that force-pushed LLM-generated fixes to <code>main</code> has been removed.</li>
+        </ul>
+
+        <h2>Reporting a vulnerability</h2>
+        <p>
+            Email <a href="mailto:security@callsight.ai">security@callsight.ai</a>. We will
+            acknowledge within two business days and coordinate disclosure.
+        </p>
+    </main>
+</body>
+</html>

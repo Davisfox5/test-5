@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SYNTHETIC DATA WARNING
+# Every name, email address, phone number, company, and transcript below is
+# fictional. Any resemblance to a real person or organization is coincidental.
+# Do NOT treat the contents of this file as customer data.
 """
 seed_it.py — Seed 15 IT support calls into the CallSight demo database.
 Schema already exists (created by seed_sales.py).

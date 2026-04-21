@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>Privacy Policy — CallSight AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .legal-page { max-width: 820px; margin: 64px auto 96px; padding: 0 24px; line-height: 1.65; }
+        .legal-page h1 { font-size: 2.25rem; margin-bottom: 0.5rem; }
+        .legal-page h2 { margin-top: 2.5rem; margin-bottom: 0.75rem; font-size: 1.35rem; }
+        .legal-page h3 { margin-top: 1.5rem; font-size: 1.1rem; }
+        .legal-page p, .legal-page li { color: #c8c8d4; }
+        .legal-page ul { padding-left: 1.25rem; }
+        .legal-page table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; font-size: 0.9rem; }
+        .legal-page th, .legal-page td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
+        .legal-page th { font-weight: 600; color: #fff; background: rgba(255,255,255,0.03); }
+        .legal-page a { color: #8b5cf6; }
+        .legal-page .meta { color: #8c8ca0; font-size: 0.9rem; margin-bottom: 2rem; }
+    </style>
+</head>
+<body>
+    <nav class="navbar" id="navbar" aria-label="Primary">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo" aria-label="CallSight AI home">
+                <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+            </a>
+            <div class="nav-actions">
+                <a href="index.html" class="btn btn-ghost">Home</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="legal-page">
+        <h1>Privacy Policy</h1>
+        <p class="meta">Effective: 2026-04-20 &middot; Version 1.0</p>
+
+        <p>
+            CallSight AI ("CallSight", "we", "us") provides an AI-powered platform for
+            recording, transcribing, and analyzing customer-facing conversations.
+            This policy explains what personal data we process, why, and who we share it with.
+        </p>
+
+        <h2>1. Data we process</h2>
+        <p>
+            When you or your organization uses the platform, we may process the following
+            categories of personal data on behalf of your organization (acting as a data
+            processor under GDPR):
+        </p>
+        <ul>
+            <li>Audio recordings of voice calls, and their transcripts.</li>
+            <li>Email, SMS, WhatsApp, and chat messages exchanged with your contacts.</li>
+            <li>Contact identifiers: names, email addresses, phone numbers, employer.</li>
+            <li>AI-derived content: summaries, sentiment scores, action items, coaching notes, KB search results.</li>
+            <li>Operational metadata: call duration, timestamps, sentiment trends, agent identifiers.</li>
+            <li>Account data for your users: name, email, role, authentication identifiers (managed by Clerk).</li>
+        </ul>
+
+        <h2>2. Why we process it</h2>
+        <ul>
+            <li>To deliver the service you contracted us to provide.</li>
+            <li>To generate AI insights, coaching, follow-ups, and KB retrieval.</li>
+            <li>To improve our prompts and models, only when your tenant has explicitly opted in via <code>features_enabled.data_use_for_improvement</code>.</li>
+            <li>To investigate security incidents, prevent abuse, and comply with legal obligations.</li>
+        </ul>
+
+        <h2>3. Retention</h2>
+        <p>
+            Retention is configurable per tenant. By default audio is retained for 90 days and
+            transcripts for 24 months; your contract may override these. Tenant administrators
+            can request deletion of any contact's data via the <code>DELETE /api/v1/tenants/me/contacts/{id}</code>
+            endpoint, which purges interactions, transcripts, KB pins, and vector entries.
+        </p>
+
+        <h2 id="gdpr">4. Your GDPR &amp; CCPA rights</h2>
+        <p>
+            If your data is processed on behalf of a CallSight customer, please contact that
+            customer's administrator to exercise access, correction, deletion, portability,
+            and objection rights. CallSight supports these rights technically via:
+        </p>
+        <ul>
+            <li><strong>Access / portability:</strong> <code>GET /api/v1/tenants/me/export</code> returns a JSON bundle of every interaction, transcript, KB document, and integration record (minus OAuth tokens) owned by your tenant.</li>
+            <li><strong>Erasure:</strong> the contact-scoped delete endpoint above.</li>
+            <li><strong>Rectification:</strong> the transcript-correction and contact-update endpoints under <code>/api/v1/contacts</code>.</li>
+        </ul>
+
+        <h2>5. Subprocessors</h2>
+        <p>
+            We engage the following subprocessors to deliver the service. Each has its own
+            data-processing terms; a current DPA is available from the vendor link.
+        </p>
+        <table>
+            <thead>
+                <tr><th>Subprocessor</th><th>Purpose</th><th>Data received</th><th>Region</th><th>Terms</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Anthropic</td><td>Claude LLM inference (classification, coaching, summaries, drafting)</td><td>Transcripts, email bodies, KB snippets, synthesized prompts</td><td>US</td><td><a href="https://www.anthropic.com/legal/privacy" rel="noopener" target="_blank">anthropic.com/legal/privacy</a></td></tr>
+                <tr><td>Deepgram</td><td>Real-time and batch speech-to-text</td><td>Call audio, transcripts</td><td>US</td><td><a href="https://deepgram.com/privacy" rel="noopener" target="_blank">deepgram.com/privacy</a></td></tr>
+                <tr><td>Voyage AI</td><td>Document and query embeddings for KB retrieval</td><td>KB document chunks, caller queries</td><td>US</td><td><a href="https://www.voyageai.com/privacy" rel="noopener" target="_blank">voyageai.com/privacy</a></td></tr>
+                <tr><td>Neon</td><td>Managed PostgreSQL + pgvector storage</td><td>Application database contents (encrypted TLS in transit, AES at rest)</td><td>US/EU selectable</td><td><a href="https://neon.tech/privacy-policy" rel="noopener" target="_blank">neon.tech/privacy-policy</a></td></tr>
+                <tr><td>Qdrant</td><td>Vector similarity search (alternate backend)</td><td>Embedding vectors, chunk metadata</td><td>US/EU</td><td><a href="https://qdrant.tech/legal/privacy-policy/" rel="noopener" target="_blank">qdrant.tech/legal/privacy-policy</a></td></tr>
+                <tr><td>Elasticsearch (Elastic Cloud)</td><td>Full-text transcript search</td><td>Transcript text, tenant metadata</td><td>US/EU selectable</td><td><a href="https://www.elastic.co/legal/privacy-statement" rel="noopener" target="_blank">elastic.co/legal/privacy-statement</a></td></tr>
+                <tr><td>AWS (S3)</td><td>Audio file object storage</td><td>Call audio recordings</td><td>Region you select</td><td><a href="https://aws.amazon.com/privacy/" rel="noopener" target="_blank">aws.amazon.com/privacy</a></td></tr>
+                <tr><td>Clerk</td><td>Managed user authentication + SSO</td><td>User identity, session tokens</td><td>US</td><td><a href="https://clerk.com/legal/privacy" rel="noopener" target="_blank">clerk.com/legal/privacy</a></td></tr>
+                <tr><td>Twilio</td><td>Telephony ingestion</td><td>Call metadata and recording URLs</td><td>US</td><td><a href="https://www.twilio.com/legal/privacy" rel="noopener" target="_blank">twilio.com/legal/privacy</a></td></tr>
+                <tr><td>Telnyx</td><td>Telephony ingestion (alternate)</td><td>Call metadata and recording URLs</td><td>US/EU</td><td><a href="https://telnyx.com/privacy-policy" rel="noopener" target="_blank">telnyx.com/privacy-policy</a></td></tr>
+                <tr><td>SignalWire</td><td>Telephony ingestion (alternate)</td><td>Call metadata and recording URLs</td><td>US</td><td><a href="https://signalwire.com/legal/privacy-policy" rel="noopener" target="_blank">signalwire.com/legal/privacy-policy</a></td></tr>
+                <tr><td>Recall.ai</td><td>Meeting-bot recording</td><td>Meeting audio, attendee metadata</td><td>US</td><td><a href="https://www.recall.ai/privacy-policy" rel="noopener" target="_blank">recall.ai/privacy-policy</a></td></tr>
+                <tr><td>Google (Workspace, Gmail API, Pub/Sub)</td><td>Email ingestion + OAuth</td><td>Mailbox messages, OAuth tokens</td><td>US/EU selectable</td><td><a href="https://policies.google.com/privacy" rel="noopener" target="_blank">policies.google.com/privacy</a></td></tr>
+                <tr><td>Microsoft (Graph)</td><td>Email ingestion + OAuth</td><td>Mailbox messages, OAuth tokens</td><td>Region you select</td><td><a href="https://privacy.microsoft.com" rel="noopener" target="_blank">privacy.microsoft.com</a></td></tr>
+                <tr><td>Meta (WhatsApp Cloud API)</td><td>WhatsApp ingestion</td><td>Inbound WhatsApp messages</td><td>Region per Meta</td><td><a href="https://www.whatsapp.com/legal/business-policy" rel="noopener" target="_blank">whatsapp.com/legal/business-policy</a></td></tr>
+                <tr><td>HubSpot</td><td>CRM sync</td><td>Contacts, companies, deals, notes</td><td>US/EU selectable</td><td><a href="https://legal.hubspot.com/privacy-policy" rel="noopener" target="_blank">legal.hubspot.com/privacy-policy</a></td></tr>
+                <tr><td>Salesforce</td><td>CRM sync</td><td>Contacts, accounts, opportunities</td><td>Region you select</td><td><a href="https://www.salesforce.com/company/privacy/" rel="noopener" target="_blank">salesforce.com/company/privacy</a></td></tr>
+                <tr><td>Pipedrive</td><td>CRM sync</td><td>Contacts, organizations, deals</td><td>EU</td><td><a href="https://www.pipedrive.com/en/privacy" rel="noopener" target="_blank">pipedrive.com/en/privacy</a></td></tr>
+                <tr><td>PDL (People Data Labs)</td><td>Contact enrichment</td><td>Email addresses for lookup</td><td>US</td><td><a href="https://www.peopledatalabs.com/privacy-policy" rel="noopener" target="_blank">peopledatalabs.com/privacy-policy</a></td></tr>
+                <tr><td>Apollo</td><td>Contact enrichment (alternate)</td><td>Email addresses for lookup</td><td>US</td><td><a href="https://www.apollo.io/privacy-policy" rel="noopener" target="_blank">apollo.io/privacy-policy</a></td></tr>
+            </tbody>
+        </table>
+
+        <h2>6. Call recording consent</h2>
+        <p>
+            Many jurisdictions require all parties to a call to be notified that the call is
+            being recorded. Obtaining consent is the CallSight customer's responsibility. Our
+            platform records the consent method per interaction via the
+            <code>consent_method</code>, <code>consent_timestamp</code>, and
+            <code>consent_evidence_url</code> fields; interactions submitted without a
+            <code>consent_method</code> are rejected at ingest.
+        </p>
+
+        <h2>7. Security</h2>
+        <p>
+            See <a href="security.html">security.html</a> for our transport-layer, at-rest,
+            tenant-isolation, and audit-logging posture.
+        </p>
+
+        <h2>8. Contact</h2>
+        <p>
+            Questions, DSARs, or suspected breaches: <a href="mailto:privacy@callsight.ai">privacy@callsight.ai</a>.
+        </p>
+    </main>
+</body>
+</html>

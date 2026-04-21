@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <title>CallSight AI — Call Transcription & AI Insights Platform</title>
     <meta name="description" content="Transform every customer call into actionable insights with AI-powered transcription, sentiment analysis, coaching, and automated follow-ups. Built for sales and support teams.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -191,23 +194,19 @@
             <div class="compliance-row-inner">
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                    SOC 2 <span class="compliance-chip-label">Type II ready</span>
+                    SOC 2 <span class="compliance-chip-label">working toward Type II</span>
                 </span>
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    GDPR <span class="compliance-chip-label">compliant</span>
+                    GDPR <span class="compliance-chip-label">DSAR &amp; data-export support</span>
                 </span>
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    AES-256 <span class="compliance-chip-label">encryption</span>
-                </span>
-                <span class="compliance-chip">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                    HIPAA <span class="compliance-chip-label">ready</span>
+                    Encryption <span class="compliance-chip-label">Fernet at rest, TLS in transit</span>
                 </span>
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 12l2 2 4-4"/></svg>
-                    SSO / MFA <span class="compliance-chip-label">SAML, OIDC</span>
+                    SSO / MFA <span class="compliance-chip-label">via Clerk</span>
                 </span>
             </div>
         </div>
@@ -815,10 +814,10 @@
                 </div>
                 <div class="footer-links">
                     <h4>Legal</h4>
-                    <a href="#">Privacy Policy</a>
-                    <a href="#">Terms of Service</a>
-                    <a href="#">Security</a>
-                    <a href="#">GDPR</a>
+                    <a href="privacy.html">Privacy Policy</a>
+                    <a href="terms.html">Terms of Service</a>
+                    <a href="security.html">Security</a>
+                    <a href="privacy.html#gdpr">GDPR</a>
                 </div>
             </div>
             <div class="footer-bottom">
