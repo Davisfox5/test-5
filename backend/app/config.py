@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     DEFAULT_TRANSCRIPTION_ENGINE: Literal["deepgram", "whisper"] = "deepgram"
 
+    # ── Speaker Diarization (pyannote) ───────────────────
+    # Needed to download pyannote/speaker-diarization-3.1 from HuggingFace
+    # on first use. Accept the model's gated licence once per account.
+    HUGGINGFACE_TOKEN: str = ""
+    PYANNOTE_DIARIZATION_MODEL: str = "pyannote/speaker-diarization-3.1"
+
     # ── Vector DB ────────────────────────────────────────
     # Which backend serves KB retrieval. "pgvector" is the default and requires
     # no extra infrastructure. Flip to "qdrant" after running a reindex once the

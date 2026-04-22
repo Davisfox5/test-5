@@ -23,7 +23,6 @@ def _fake_tenant(**overrides):
         transcription_engine="deepgram",
         automation_level="approval",
         pii_redaction_enabled=True,
-        audio_storage_enabled=False,
         translation_enabled=False,
         default_language="en",
         keyterm_boost_list=[],

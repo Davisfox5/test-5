@@ -1,16 +1,13 @@
-"""Tests for the second telephony wave: recording helpers, hold/transfer
-TwiML, SignalWire URLs, Telnyx Ed25519 signatures.
-
-These are all pure-function tests — no HTTP round-trips, no boto3
-calls. Integration-level tests that exercise the actual webhook
-handlers would need a running Postgres + Redis, so those live in the
-Playwright / integration suite instead.
+"""Tests for telephony primitives still in scope after the 2026-04
+refactor: SignalWire URL builders and Telnyx Ed25519 signature
+verification. Live-stream ingress keeps the Twilio / SignalWire /
+Telnyx webhooks + WebSockets; call control (hold/transfer/recording)
+is owned by the tenant's phone system, not LINDA.
 """
 
 from __future__ import annotations
 
 import base64
-import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -25,76 +22,33 @@ from backend.app.services.telephony.telnyx import (
     call_control_answer_url,
     call_control_dial_url,
     call_control_hangup_url,
-    call_control_hold_url,
     call_control_streaming_start_url,
-    call_control_transfer_url,
-    call_control_unhold_url,
     streaming_start_payload,
     verify_telnyx_signature,
 )
-from backend.app.services.telephony.twilio import (
-    build_hold_twiml,
-    build_transfer_twiml,
-    build_voice_twiml,
-)
+from backend.app.services.telephony.twilio import build_voice_twiml
 
 
-# ── Twilio hold / transfer / recording TwiML ─────────────────────────
+# ── Voice TwiML ──────────────────────────────────────────────────────
 
 
-def test_build_hold_twiml_plays_music_in_loop():
-    twiml = build_hold_twiml(
-        hold_music_url="https://example.com/music.mp3", loop_count=0
-    )
-    assert "<Play" in twiml
-    assert 'loop="0"' in twiml
-    assert "https://example.com/music.mp3" in twiml
-
-
-def test_build_hold_twiml_escapes_url():
-    twiml = build_hold_twiml(hold_music_url='https://x/?a="b"&c=d')
-    # Quotes must be escaped inside the attribute; & must become &amp;.
-    assert "&quot;" in twiml
-    assert "&amp;" in twiml
-
-
-def test_build_transfer_twiml_basic():
-    twiml = build_transfer_twiml(to_number="+15551234")
-    assert "<Dial>+15551234</Dial>" in twiml
-    # No callerId attribute when not provided.
-    assert "callerId" not in twiml
-
-
-def test_build_transfer_twiml_with_caller_id():
-    twiml = build_transfer_twiml(to_number="+15559876", caller_id="+15551111")
-    assert 'callerId="+15551111"' in twiml
-    assert "+15559876" in twiml
-
-
-def test_voice_twiml_with_recording_adds_start_recording():
+def test_voice_twiml_has_stream_parameter_with_session_id():
     twiml = build_voice_twiml(
-        session_id="s1",
-        stream_url="wss://x",
-        record=True,
-        recording_status_callback_url="https://hooks.example.com/rec",
+        session_id="s1", stream_url="wss://x/ws"
     )
-    assert "<Start>" in twiml
-    assert "<Recording" in twiml
-    assert 'recordingTrack="both"' in twiml
-    assert "https://hooks.example.com/rec" in twiml
+    assert "<Connect>" in twiml
+    assert '<Stream url="wss://x/ws">' in twiml
+    assert '<Parameter name="session_id" value="s1"/>' in twiml
 
 
-def test_voice_twiml_without_recording_has_no_recording_verb():
+def test_voice_twiml_includes_greeting_when_provided():
     twiml = build_voice_twiml(
-        session_id="s1",
-        stream_url="wss://x",
-        record=False,
+        session_id="s1", stream_url="wss://x", greeting="Hello"
     )
-    assert "<Start>" not in twiml
-    assert "<Recording" not in twiml
+    assert "<Say>Hello</Say>" in twiml
 
 
-# ── S3 audio helper ──────────────────────────────────────────────────
+# ── S3 staging helpers ──────────────────────────────────────────────
 
 
 def test_s3_key_layout_is_stable_per_recording():
@@ -178,9 +132,6 @@ def test_telnyx_control_urls_are_stable():
     assert call_control_streaming_start_url("abc").endswith(
         "/calls/abc/actions/streaming_start"
     )
-    assert call_control_hold_url("abc").endswith("/calls/abc/actions/hold")
-    assert call_control_unhold_url("abc").endswith("/calls/abc/actions/unhold")
-    assert call_control_transfer_url("abc").endswith("/calls/abc/actions/transfer")
     assert call_control_dial_url().endswith("/calls")
 
 

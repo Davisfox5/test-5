@@ -155,10 +155,6 @@ celery_app.conf.update(
             "task": "crm_sync_daily",
             "schedule": crontab(minute=0, hour=3),
         },
-        "recording-retention-daily": {
-            "task": "recording_retention_daily",
-            "schedule": crontab(minute=30, hour=3),
-        },
     },
 )
 
@@ -1156,49 +1152,119 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             logger.error("Tenant not found for interaction %s", interaction_id)
             return {"status": "error", "detail": "Tenant not found"}
 
-        # ── Steps 3–4: Transcription (placeholder) ───────────────────
-        # In the real flow:
-        #   1. The audio file path comes from interaction.audio_s3_key or
-        #      a temp path passed when the task was enqueued.
-        #   2. We download the audio to a local temp file.
-        #   3. We call TranscriptionService.transcribe(audio_path, engine,
-        #      keyterms=tenant.keyterm_boost_list) to get Segment objects.
-        #   4. The Segment objects are converted to dicts for the pipeline.
-        #
-        # For now, since we need an actual audio file to transcribe, we
-        # check if the interaction already has transcript data populated
-        # (e.g. from a streaming/real-time path) and use that.  If not,
-        # we log a warning and set status to 'transcription_pending'.
+        # ── Steps 3–4: Transcription ─────────────────────────────────
+        # Three paths:
+        #   (a) live-call interactions already have ``transcript`` filled
+        #       by the Media Streams WebSocket handler → use as-is.
+        #   (b) direct uploads landed their bytes in S3 staging under
+        #       ``audio_s3_key`` → download, transcribe, delete.
+        #   (c) external recording systems pushed us a pointer →
+        #       ``audio_url`` is set → stream that URL directly to
+        #       Deepgram (we never touch the bytes).
 
         segments_dicts: Optional[List[Dict[str, Any]]] = None
+        staged_key: Optional[str] = None
+        staged_path: Optional[str] = None
 
         if interaction.transcript and len(interaction.transcript) > 0:
-            # Transcript was pre-populated (e.g. from real-time streaming).
             segments_dicts = interaction.transcript
             logger.info(
                 "Using pre-populated transcript (%d segments) for interaction %s",
                 len(segments_dicts), interaction_id,
             )
+        elif interaction.audio_s3_key or interaction.audio_url:
+            from backend.app.services import s3_audio
+            from backend.app.services.transcription import TranscriptionService
+
+            engine = interaction.engine or tenant.transcription_engine or "deepgram"
+            keyterms = getattr(tenant, "keyterm_boost_list", None) or None
+            language = getattr(tenant, "transcription_language", None) or "en"
+            svc = TranscriptionService()
+
+            try:
+                if interaction.audio_url and engine == "deepgram":
+                    # URL mode: Deepgram fetches directly, we never stage.
+                    segments = asyncio.run(
+                        svc.transcribe(
+                            audio_url=interaction.audio_url,
+                            engine="deepgram",
+                            language=language,
+                            keyterms=keyterms,
+                        )
+                    )
+                else:
+                    # Need a local path — from S3 staging, or download the
+                    # URL first (Whisper path requires a file).
+                    if interaction.audio_s3_key:
+                        staged_key = interaction.audio_s3_key
+                        staged_path = s3_audio.download_to_tempfile(staged_key)
+                    else:
+                        import httpx
+                        import tempfile
+
+                        tmp = tempfile.NamedTemporaryFile(
+                            prefix="linda-audio-", suffix=".bin", delete=False
+                        )
+                        try:
+                            with httpx.Client(timeout=60.0) as client:
+                                resp = client.get(interaction.audio_url)
+                                resp.raise_for_status()
+                                tmp.write(resp.content)
+                        finally:
+                            tmp.close()
+                        staged_path = tmp.name
+
+                    segments = asyncio.run(
+                        svc.transcribe(
+                            audio_path=staged_path,
+                            engine=engine,
+                            language=language,
+                            keyterms=keyterms,
+                        )
+                    )
+                segments_dicts = _segments_to_dicts(segments)
+                interaction.transcript = segments_dicts
+                # Persist duration_seconds from the last segment if not set.
+                if not interaction.duration_seconds and segments:
+                    interaction.duration_seconds = int(segments[-1].end)
+                session.commit()
+            except Exception:
+                logger.exception(
+                    "Transcription failed for interaction %s", interaction_id
+                )
+                interaction.status = "transcription_failed"
+                session.commit()
+                raise
+            finally:
+                # Clean up staged bytes — per product policy we don't retain
+                # the audio once we have the transcript. S3 staging object
+                # and the local tempfile both go here.
+                if staged_path:
+                    try:
+                        import os as _os
+
+                        _os.unlink(staged_path)
+                    except Exception:
+                        logger.debug("tempfile unlink failed: %s", staged_path, exc_info=True)
+                if staged_key:
+                    try:
+                        s3_audio.delete_object(staged_key)
+                        interaction.audio_s3_key = None
+                        session.commit()
+                    except Exception:
+                        logger.warning(
+                            "S3 staging cleanup failed for %s", staged_key, exc_info=True
+                        )
         else:
-            # TODO: Implement actual audio download + transcription flow:
-            #   audio_path = download_audio(interaction.audio_s3_key)
-            #   transcription_svc = TranscriptionService()
-            #   segments = asyncio.run(transcription_svc.transcribe(
-            #       audio_path,
-            #       engine=tenant.transcription_engine,
-            #       keyterms=tenant.keyterm_boost_list,
-            #   ))
-            #   segments_dicts = _segments_to_dicts(segments)
             logger.warning(
-                "No audio transcription available for interaction %s. "
-                "Transcript is empty and audio download is not yet implemented.",
+                "Interaction %s has no transcript, audio_s3_key, or audio_url",
                 interaction_id,
             )
             interaction.status = "transcription_pending"
             session.commit()
             return {
                 "status": "transcription_pending",
-                "detail": "Audio transcription not yet implemented",
+                "detail": "No audio source available",
             }
 
         # ── Steps 5–17: Run shared pipeline ──────────────────────────
@@ -2168,6 +2234,35 @@ def crm_sync_daily() -> Dict[str, Any]:
     return asyncio.run(_runner())
 
 
+@celery_app.task(name="sync_knowledge_base")
+def sync_knowledge_base(tenant_id: str, source_type: str) -> Dict[str, Any]:
+    """Run one KB provider sync for a tenant.
+
+    Dispatched by ``POST /kb/sync/{provider}`` and by the nightly
+    scheduler (when we add one). Returns a summary the dispatcher can
+    log / surface in the admin UI.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.kb.sync_runner import sync_kb_for_tenant
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await sync_kb_for_tenant(
+                db, uuid.UUID(tenant_id), source_type
+            )
+            await db.commit()
+            return {
+                "source_type": summary.source_type,
+                "status": summary.status,
+                "docs_seen": summary.docs_seen,
+                "docs_upserted": summary.docs_upserted,
+                "chunks_written": summary.chunks_written,
+                "error": summary.error,
+            }
+
+    return asyncio.run(_runner())
+
+
 @celery_app.task(name="webhook_deliver")
 def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
     """Attempt one HTTP delivery for a WebhookDelivery row.
@@ -2183,27 +2278,6 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await deliver_one(db, uuid.UUID(delivery_id))
-
-    return asyncio.run(_runner())
-
-
-@celery_app.task(name="recording_retention_daily")
-def recording_retention_daily() -> Dict[str, Any]:
-    """Nightly retention sweep across every tenant with a retention
-    setting. Deletes aged ``CallRecording`` rows' S3 objects and flips
-    the rows to ``status='deleted'``."""
-    from backend.app.db import async_session
-    from backend.app.services.recording_retention import run_retention_sweep
-
-    async def _runner() -> Dict[str, Any]:
-        async with async_session() as db:
-            summary = await run_retention_sweep(db)
-            return {
-                "tenants_processed": summary.tenants_processed,
-                "recordings_deleted": summary.recordings_deleted,
-                "s3_errors": summary.s3_errors,
-                "per_tenant": summary.per_tenant,
-            }
 
     return asyncio.run(_runner())
 

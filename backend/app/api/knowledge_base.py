@@ -447,22 +447,150 @@ async def sync_kb_provider(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Trigger a knowledge base sync for an external provider.
+    """Trigger a KB sync for an external provider.
 
-    Supported providers: confluence, notion, gdrive.
-    This is a placeholder — actual sync will be handled by a background worker.
+    Supported providers: ``gdrive``, ``onedrive``, ``sharepoint``,
+    ``confluence``. The tenant must have an ``Integration`` row for the
+    provider with OAuth credentials (Google/Microsoft) or API creds
+    (Confluence basic or bearer) already saved.
     """
-    valid_providers = {"confluence", "notion", "gdrive"}
-    if provider not in valid_providers:
+    from backend.app.services.kb.sync_runner import SUPPORTED_PROVIDERS
+
+    if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid provider '{provider}'. Must be one of: {', '.join(sorted(valid_providers))}",
+            detail=(
+                f"Invalid provider '{provider}'. Must be one of: "
+                + ", ".join(sorted(SUPPORTED_PROVIDERS))
+            ),
         )
 
-    # TODO: Dispatch background task to sync from provider using stored OAuth credentials
-    # sync_knowledge_base.delay(str(tenant.id), provider)
+    try:
+        from backend.app.tasks import sync_knowledge_base
+
+        sync_knowledge_base.delay(str(tenant.id), provider)
+    except Exception:
+        logger.exception(
+            "Failed to dispatch KB sync task for tenant=%s provider=%s",
+            tenant.id,
+            provider,
+        )
 
     return JSONResponse(
         status_code=202,
-        content={"message": f"Sync triggered for provider '{provider}'. Documents will be updated shortly."},
+        content={
+            "message": f"Sync queued for provider '{provider}'. Documents will land shortly.",
+            "provider": provider,
+        },
     )
+
+
+# ── Third-party direct ingest ─────────────────────────────────────────
+
+
+class KBExternalIngestIn(BaseModel):
+    """One document pushed into the KB by a third-party system.
+
+    Used by customers who want to feed LINDA from their own stack
+    without us maintaining a bespoke adapter. Identify documents with
+    ``(source_type, source_external_id)`` so re-pushes upsert.
+    """
+
+    source_type: str  # e.g., "vendor-docs", "runbooks", "zendesk-macros"
+    source_external_id: str
+    title: str
+    content: str
+    source_url: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+@router.post("/kb/ingest", status_code=202)
+async def ingest_external_document(
+    body: KBExternalIngestIn,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Accept one document from a third-party system and embed it
+    synchronously. The caller identifies the doc with
+    ``(source_type, source_external_id)`` so re-posting the same pair
+    updates in place.
+    """
+    stmt = select(KBDocument).where(
+        KBDocument.tenant_id == tenant.id,
+        KBDocument.source_type == body.source_type,
+        KBDocument.source_external_id == body.source_external_id,
+    )
+    existing = (await db.execute(stmt)).scalar_one_or_none()
+    if existing is None:
+        doc = KBDocument(
+            tenant_id=tenant.id,
+            title=body.title,
+            content=body.content,
+            source_type=body.source_type,
+            source_url=body.source_url,
+            source_external_id=body.source_external_id,
+            tags=list(body.tags or []),
+        )
+        db.add(doc)
+        await db.flush()
+    else:
+        doc = existing
+        doc.title = body.title or doc.title
+        doc.content = body.content
+        doc.source_url = body.source_url or doc.source_url
+        if body.tags is not None:
+            doc.tags = list(body.tags)
+        doc.last_synced_at = datetime.utcnow()
+
+    try:
+        chunks = await ingest_document(db, doc)
+    except VoyageEmbedderError as exc:
+        raise HTTPException(status_code=502, detail=f"embedding failed: {exc}")
+
+    return {
+        "doc_id": str(doc.id),
+        "chunks_written": chunks,
+        "source_type": doc.source_type,
+        "source_external_id": doc.source_external_id,
+    }
+
+
+# ── MCP-based ingest ──────────────────────────────────────────────────
+
+
+class KBMcpIngestIn(BaseModel):
+    """Trigger a one-shot pull from a registered MCP server.
+
+    The MCP server must implement a ``kb/list`` + ``kb/get`` pair that
+    mirrors the ``ExternalDocument`` shape. We call it over HTTP; the
+    server endpoint + shared secret live in the tenant's Integration
+    row with provider='mcp'.
+    """
+
+    server_name: str = (
+        "default"  # which MCP server to pull from when multiple are linked
+    )
+
+
+@router.post("/kb/mcp/sync", status_code=202)
+async def sync_kb_via_mcp(
+    body: KBMcpIngestIn,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Pull documents from an MCP server registered for this tenant.
+
+    The adapter reads ``Integration(provider='mcp', provider_config.name=
+    body.server_name)`` for the endpoint URL + bearer secret, then calls
+    the server's ``kb/list`` tool repeatedly and ingests each document.
+    """
+    from backend.app.services.kb.providers.mcp import pull_from_mcp
+
+    try:
+        summary = await pull_from_mcp(
+            db, tenant_id=tenant.id, server_name=body.server_name
+        )
+    except Exception as exc:
+        logger.exception("MCP pull failed (%s)", body.server_name)
+        raise HTTPException(status_code=502, detail=str(exc))
+    return summary

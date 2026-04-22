@@ -1,16 +1,18 @@
 """Profile API — expose the latest client/agent/manager/business profile.
 
+Access rules (RBAC, tenant-scoped on top of every query):
+
+* ``agent`` — own ``AgentProfile``; ``ClientProfile`` only for contacts
+  the agent has handled (``Interaction.agent_id == me``).
+* ``manager`` — own ``ManagerProfile``; ``AgentProfile`` / ``ClientProfile``
+  for agents where ``User.manager_id == me`` (and their clients).
+* ``admin`` — everything within the tenant, including the
+  ``BusinessProfile``.
+
 The payload returned is the *public* projection of the versioned profile
 row: summary narrative, structured metrics, top-K factors, and top
-recommendations.  Raw β coefficients, calibration parameters, and the
+recommendations. Raw β coefficients, calibration parameters, and the
 full feature vector are deliberately never exposed through this surface.
-
-Access control matches each entity's ownership model: agents can read
-their own profile plus the profiles of clients they've touched; managers
-can read their team's agents and those agents' clients; tenant admins
-can read the business profile.  The current implementation leaves
-per-user scoping as a TODO (no user-authz middleware yet in this
-codebase) and scopes strictly by tenant.
 """
 
 from __future__ import annotations
@@ -20,17 +22,19 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, select
+from sqlalchemy import desc, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import AuthPrincipal, get_current_principal
 from backend.app.db import get_db
 from backend.app.models import (
     AgentProfile,
     BusinessProfile,
     ClientProfile,
+    Interaction,
     ManagerProfile,
     Tenant,
+    User,
 )
 
 router = APIRouter()
@@ -53,11 +57,7 @@ class RecommendationOut(BaseModel):
 
 
 class ProfileOut(BaseModel):
-    """Public projection of a profile row.
-
-    Only ``metrics`` that the profile explicitly published are included;
-    nothing leaks raw feature vectors or scorer weights.
-    """
+    """Public projection of a profile row."""
 
     entity_id: uuid.UUID
     version: int
@@ -79,12 +79,6 @@ class ProfileHistoryOut(BaseModel):
 
 
 def _factor_cap(tenant: Tenant) -> int:
-    """Return the max number of factors to expose for this tenant.
-
-    Default 3; tenants with ``expert_mode_enabled`` may see up to 10.
-    The feature flag is stored in ``Tenant.branding_config`` for now to
-    avoid a new column on the already-large tenants table.
-    """
     cfg = getattr(tenant, "branding_config", {}) or {}
     if cfg.get("expert_mode_enabled"):
         return 10
@@ -92,7 +86,6 @@ def _factor_cap(tenant: Tenant) -> int:
 
 
 def _project(row: Any, entity_id: uuid.UUID, tenant: Tenant) -> ProfileOut:
-    """Cast a profile ORM row into its public projection."""
     profile = row.profile or {}
     factors = (row.top_factors or [])[: _factor_cap(tenant)]
     recommendations = (profile.get("recommendations") or [])[:3]
@@ -128,6 +121,105 @@ async def _history(db: AsyncSession, model, fk: str, entity_id: uuid.UUID, limit
     return (await db.execute(stmt)).scalars().all()
 
 
+# ── RBAC gates ───────────────────────────────────────────────────────────
+
+
+def _forbidden() -> HTTPException:
+    return HTTPException(status_code=403, detail="Forbidden")
+
+
+async def _authorize_agent_access(
+    db: AsyncSession, principal: AuthPrincipal, agent_id: uuid.UUID
+) -> None:
+    """Raise 403 unless the caller can view ``agent_id``'s profile.
+
+    * admin → always.
+    * manager → agent is themselves OR manages this agent (User.manager_id).
+    * agent → agent is themselves.
+    """
+    if principal.role == "admin":
+        return
+    me = principal.user_id
+    if me is not None and me == agent_id:
+        return
+    if principal.role == "manager" and me is not None:
+        stmt = select(exists().where(
+            User.id == agent_id,
+            User.tenant_id == principal.tenant.id,
+            User.manager_id == me,
+        ))
+        if bool((await db.execute(stmt)).scalar()):
+            return
+    raise _forbidden()
+
+
+async def _authorize_client_access(
+    db: AsyncSession, principal: AuthPrincipal, contact_id: uuid.UUID
+) -> None:
+    """Raise 403 unless the caller can view ``contact_id``'s client profile.
+
+    * admin → always.
+    * agent → at least one Interaction with agent_id == me + contact_id == target.
+    * manager → at least one Interaction on this contact where the handling
+      agent is one of the manager's reports (or is themselves).
+    """
+    if principal.role == "admin":
+        return
+    me = principal.user_id
+    if me is None:
+        raise _forbidden()
+    if principal.role == "agent":
+        stmt = select(exists().where(
+            Interaction.tenant_id == principal.tenant.id,
+            Interaction.contact_id == contact_id,
+            Interaction.agent_id == me,
+        ))
+        if bool((await db.execute(stmt)).scalar()):
+            return
+        raise _forbidden()
+    if principal.role == "manager":
+        # Manager passes if any interaction on this contact was handled by
+        # one of their reports (or by the manager themselves).
+        reports_stmt = select(User.id).where(
+            User.tenant_id == principal.tenant.id,
+            User.manager_id == me,
+        )
+        reports = [uid for (uid,) in (await db.execute(reports_stmt)).all()]
+        allowed = set(reports) | {me}
+        stmt = select(exists().where(
+            Interaction.tenant_id == principal.tenant.id,
+            Interaction.contact_id == contact_id,
+            Interaction.agent_id.in_(allowed),
+        ))
+        if bool((await db.execute(stmt)).scalar()):
+            return
+        raise _forbidden()
+    raise _forbidden()
+
+
+async def _authorize_manager_access(
+    principal: AuthPrincipal, manager_id: uuid.UUID
+) -> None:
+    """Raise 403 unless the caller can view ``manager_id``'s profile.
+
+    Managers can view only their own profile; admins can view any manager
+    in the tenant.
+    """
+    if principal.role == "admin":
+        return
+    if principal.role == "manager" and principal.user_id == manager_id:
+        return
+    raise _forbidden()
+
+
+async def _authorize_business_access(principal: AuthPrincipal) -> None:
+    """The business profile is admin-only — it aggregates across the
+    whole tenant and exposes trends agents/managers shouldn't necessarily
+    see outside of curated dashboards."""
+    if principal.role != "admin":
+        raise _forbidden()
+
+
 # ── Client profile ───────────────────────────────────────────────────────
 
 
@@ -135,13 +227,13 @@ async def _history(db: AsyncSession, model, fk: str, entity_id: uuid.UUID, limit
 async def get_client_profile(
     contact_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
-    """Latest ClientProfile for one contact (scoped to caller's tenant)."""
+    await _authorize_client_access(db, principal, contact_id)
     row = await _latest(db, ClientProfile, "contact_id", contact_id)
-    if row is None or row.tenant_id != tenant.id:
+    if row is None or row.tenant_id != principal.tenant.id:
         raise HTTPException(status_code=404, detail="Client profile not found")
-    return _project(row, contact_id, tenant)
+    return _project(row, contact_id, principal.tenant)
 
 
 @router.get(
@@ -152,8 +244,9 @@ async def client_profile_history(
     contact_id: uuid.UUID,
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
+    await _authorize_client_access(db, principal, contact_id)
     rows = await _history(db, ClientProfile, "contact_id", contact_id, limit)
     return [
         ProfileHistoryOut(
@@ -162,7 +255,7 @@ async def client_profile_history(
             headline=(r.profile or {}).get("summary", "")[:120],
         )
         for r in rows
-        if r.tenant_id == tenant.id
+        if r.tenant_id == principal.tenant.id
     ]
 
 
@@ -173,12 +266,13 @@ async def client_profile_history(
 async def get_agent_profile(
     agent_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
+    await _authorize_agent_access(db, principal, agent_id)
     row = await _latest(db, AgentProfile, "agent_id", agent_id)
-    if row is None or row.tenant_id != tenant.id:
+    if row is None or row.tenant_id != principal.tenant.id:
         raise HTTPException(status_code=404, detail="Agent profile not found")
-    return _project(row, agent_id, tenant)
+    return _project(row, agent_id, principal.tenant)
 
 
 # ── Manager profile ──────────────────────────────────────────────────────
@@ -188,12 +282,13 @@ async def get_agent_profile(
 async def get_manager_profile(
     manager_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
+    await _authorize_manager_access(principal, manager_id)
     row = await _latest(db, ManagerProfile, "manager_id", manager_id)
-    if row is None or row.tenant_id != tenant.id:
+    if row is None or row.tenant_id != principal.tenant.id:
         raise HTTPException(status_code=404, detail="Manager profile not found")
-    return _project(row, manager_id, tenant)
+    return _project(row, manager_id, principal.tenant)
 
 
 # ── Business profile ─────────────────────────────────────────────────────
@@ -202,12 +297,13 @@ async def get_manager_profile(
 @router.get("/profiles/business", response_model=ProfileOut)
 async def get_business_profile(
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
-    row = await _latest(db, BusinessProfile, "business_tenant_id", tenant.id)
+    await _authorize_business_access(principal)
+    row = await _latest(db, BusinessProfile, "business_tenant_id", principal.tenant.id)
     if row is None:
         raise HTTPException(status_code=404, detail="Business profile not yet generated")
-    return _project(row, tenant.id, tenant)
+    return _project(row, principal.tenant.id, principal.tenant)
 
 
 @router.get(
@@ -217,9 +313,12 @@ async def get_business_profile(
 async def business_profile_history(
     limit: int = Query(12, ge=1, le=52),
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
-    rows = await _history(db, BusinessProfile, "business_tenant_id", tenant.id, limit)
+    await _authorize_business_access(principal)
+    rows = await _history(
+        db, BusinessProfile, "business_tenant_id", principal.tenant.id, limit
+    )
     return [
         ProfileHistoryOut(
             version=r.version,
@@ -247,22 +346,40 @@ class InteractionScoreOut(BaseModel):
 async def interaction_scores(
     interaction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Compute fresh scores for one interaction from the feature store.
 
-    Returns three aggregates (sentiment, churn risk, per-call health
-    indicators) each with top-K factors and recommendations.  This is
-    a read-only derivation — no LLM calls — so it is cheap and fast.
+    Access: the interaction must belong to the caller's tenant, AND the
+    caller must pass the agent/manager gate that fits the role — agents
+    can only see their own interactions; managers see their reports';
+    admins see anything in the tenant.
     """
     from backend.app.models import InteractionFeatures
     from backend.app.services import score_engine
+
+    interaction = await db.get(Interaction, interaction_id)
+    if interaction is None or interaction.tenant_id != principal.tenant.id:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+    if principal.role == "agent":
+        if interaction.agent_id != principal.user_id:
+            raise _forbidden()
+    elif principal.role == "manager":
+        me = principal.user_id
+        if interaction.agent_id != me:
+            reports_stmt = select(User.id).where(
+                User.tenant_id == principal.tenant.id,
+                User.manager_id == me,
+            )
+            reports = {uid for (uid,) in (await db.execute(reports_stmt)).all()}
+            if interaction.agent_id not in reports:
+                raise _forbidden()
 
     stmt = (
         select(InteractionFeatures)
         .where(
             InteractionFeatures.interaction_id == interaction_id,
-            InteractionFeatures.tenant_id == tenant.id,
+            InteractionFeatures.tenant_id == principal.tenant.id,
         )
     )
     features_row = (await db.execute(stmt)).scalar_one_or_none()
@@ -274,7 +391,7 @@ async def interaction_scores(
         "llm_structured": features_row.llm_structured or {},
     }
     expert = bool(
-        (getattr(tenant, "branding_config", {}) or {}).get("expert_mode_enabled")
+        (getattr(principal.tenant, "branding_config", {}) or {}).get("expert_mode_enabled")
     )
 
     sentiment_result = score_engine.default_sentiment_scorer().score(
@@ -283,9 +400,6 @@ async def interaction_scores(
     churn_result = score_engine.default_churn_scorer().score(
         score_engine.flatten_features_for_churn(features)
     )
-    # Per-call health indicator combines sentiment + interaction quality.
-    # We reuse the default health composite; missing fields simply drop
-    # out of the factor list and reduce confidence.
     health_inputs = {
         "sentiment_delta_vs_baseline": (features_row.deterministic or {}).get("sentiment_trajectory_slope"),
         "stakeholder_count": (features_row.deterministic or {}).get("stakeholder_count"),

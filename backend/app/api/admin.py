@@ -333,7 +333,6 @@ class TenantSettingsOut(BaseModel):
     transcription_engine: str
     automation_level: str
     pii_redaction_enabled: bool
-    audio_storage_enabled: bool
     translation_enabled: bool
     default_language: str
     keyterm_boost_list: List[str]
@@ -346,7 +345,6 @@ class TenantSettingsPatch(BaseModel):
     transcription_engine: Optional[str] = None
     automation_level: Optional[str] = None
     pii_redaction_enabled: Optional[bool] = None
-    audio_storage_enabled: Optional[bool] = None
     translation_enabled: Optional[bool] = None
     default_language: Optional[str] = None
     keyterm_boost_list: Optional[List[str]] = None
@@ -367,7 +365,6 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
         "transcription_engine": tenant.transcription_engine or "deepgram",
         "automation_level": tenant.automation_level or "approval",
         "pii_redaction_enabled": bool(tenant.pii_redaction_enabled),
-        "audio_storage_enabled": bool(tenant.audio_storage_enabled),
         "translation_enabled": bool(tenant.translation_enabled),
         "default_language": tenant.default_language or "en",
         "keyterm_boost_list": list(tenant.keyterm_boost_list or []),
@@ -419,8 +416,6 @@ async def patch_tenant_settings(
         tenant.automation_level = val
     if "pii_redaction_enabled" in updates:
         tenant.pii_redaction_enabled = bool(updates["pii_redaction_enabled"])
-    if "audio_storage_enabled" in updates:
-        tenant.audio_storage_enabled = bool(updates["audio_storage_enabled"])
     if "translation_enabled" in updates:
         tenant.translation_enabled = bool(updates["translation_enabled"])
     if "default_language" in updates:

@@ -1,39 +1,33 @@
-"""Telephony ingress + outbound dial.
+"""Telephony ingress — live-stream transcription only.
 
-Twilio Media Streams flow:
+LINDA does not originate calls, place them on hold, or transfer them.
+Those controls live in the tenant's phone system (contact center, MiaRec,
+Teams, MetaSwitch, etc.). What we expose here is narrow:
 
-1. Twilio fires ``POST /telephony/twilio/voice?tenant_id={uuid}`` when
-   an inbound call arrives on the tenant's Twilio number. We verify
-   the ``X-Twilio-Signature`` header, create a LiveSession row, and
-   return TwiML telling Twilio to connect the call's audio to our
-   WebSocket at ``/ws/telephony/twilio/{session_id}``.
+1. **Inbound voice webhooks** (Twilio / SignalWire / Telnyx) — return
+   TwiML (or the provider equivalent) that bridges the live audio into
+   our Media Streams WebSocket so we can transcribe + coach in real
+   time.
+2. **Media Streams WebSockets** — accept base64 μ-law frames from the
+   provider, forward to Deepgram live, and dispatch batch analysis when
+   the call ends. Audio bytes are never persisted to disk or object
+   storage.
+3. **Admin**: link the tenant's Twilio credentials (used for inbound
+   signature verification).
 
-2. Twilio opens that WebSocket and streams base64 μ-law audio in the
-   Media Streams JSON protocol. Our handler decodes and forwards to
-   Deepgram live transcription, reusing the same coaching + retrieval
-   hooks as ``/ws/live/{session_id}``.
-
-3. ``POST /telephony/calls`` places an outbound call via Twilio's REST
-   API using the tenant's stored credentials.
-
-Scope limits today:
-- Signature validation is enforced when ``TWILIO_AUTH_TOKEN`` is
-  configured (so dev setups without it still work). Production must
-  set the token.
-- Recording / hold / transfer / SignalWire / Telnyx are not implemented
-  here.
+Post-call recordings from tenant recording systems come in through
+``POST /interactions/ingest-recording`` (see ``backend.app.api.interactions``),
+not here.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -43,17 +37,17 @@ from fastapi.responses import Response
 from backend.app.auth import AuthPrincipal, get_current_principal, require_role
 from backend.app.config import get_settings
 from backend.app.db import async_session, get_db
-from backend.app.models import CallRecording, Integration, Interaction, LiveSession, Tenant
-from backend.app.services import s3_audio
+from backend.app.models import Integration, LiveSession, Tenant
 from backend.app.services.telephony.twilio import (
-    build_conference_twiml,
-    build_hold_twiml,
-    build_transfer_twiml,
     build_voice_twiml,
     decode_media_payload,
     validate_twilio_signature,
 )
 from backend.app.services.token_crypto import decrypt_token
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
 
 
 @dataclass
@@ -70,21 +64,8 @@ class TwilioCreds:
 async def _twilio_creds(
     tenant_id: uuid.UUID, db: AsyncSession
 ) -> TwilioCreds:
-    """Resolve Twilio credentials for a tenant.
-
-    Order of precedence:
-
-    1. ``Integration(tenant_id, provider='twilio')`` — ``auth_token`` is
-       decrypted from ``access_token``, ``account_sid`` is read from
-       ``provider_config['account_sid']``.
-    2. Environment variables (``TWILIO_ACCOUNT_SID`` + ``TWILIO_AUTH_TOKEN``)
-       — kept for single-tenant dev deployments. Useful when a self-
-       hosted instance only runs one tenant.
-
-    Returns a ``TwilioCreds`` with empty strings when nothing is
-    configured. Callers decide whether empty creds are fatal (outbound
-    dial) or acceptable (webhook sig verify in dev).
-    """
+    """Resolve Twilio credentials for a tenant. Used only for webhook
+    signature verification — we no longer originate calls."""
     stmt = (
         select(Integration)
         .where(Integration.tenant_id == tenant_id, Integration.provider == "twilio")
@@ -108,10 +89,6 @@ async def _twilio_creds(
         source="env",
     )
 
-logger = logging.getLogger(__name__)
-
-router = APIRouter()
-
 
 # ── Inbound webhook (TwiML) ───────────────────────────────────────────
 
@@ -123,21 +100,18 @@ async def twilio_voice_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     """Twilio hits this URL when a call rings. We return TwiML that
-    bridges audio to our Media Streams WebSocket."""
-    settings = get_settings()
+    bridges audio to our Media Streams WebSocket.
 
-    raw = await request.body()
+    Audio is transcribed in real time and discarded — recordings (if any)
+    are produced by the tenant's own recording system and POSTed to
+    ``/interactions/ingest-recording`` as a separate flow.
+    """
     form = await request.form()
     form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
 
-    # Validate Twilio's HMAC-SHA1 signature using the **tenant's** auth
-    # token (falls back to env vars for single-tenant dev setups). Leave
-    # it blank in dev to bypass sig checks so local testing works.
     creds = await _twilio_creds(tenant_id, db)
     if creds.auth_token:
         signature = request.headers.get("X-Twilio-Signature", "")
-        # Twilio signs the URL that *they* called — that's what the
-        # request looks like from their side, including query string.
         request_url = str(request.url)
         if not validate_twilio_signature(
             auth_token=creds.auth_token,
@@ -156,14 +130,9 @@ async def twilio_voice_webhook(
     if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    # Create the LiveSession up front. The WebSocket handler will find it
-    # by id and attach transcription to it.
     session = LiveSession(
         tenant_id=tenant_id,
-        # ``agent_id`` is set later when an agent picks up; for now we
-        # fall back to the tenant id to satisfy the NOT NULL constraint.
-        # Inbound queue/routing would pick a real agent here.
-        agent_id=tenant_id,
+        agent_id=tenant_id,  # populated when an agent claims the session
         source="twilio",
         status="active",
     )
@@ -175,242 +144,19 @@ async def twilio_voice_webhook(
     )
     stream_url = f"{base}/ws/telephony/twilio/{session.id}"
 
-    # Recording opt-in: tenants with audio_storage_enabled get the
-    # ``<Start><Recording>`` verb plus a callback URL where Twilio will
-    # POST when the audio is ready. AWS must be configured for storage
-    # to actually succeed — we don't block the call here, we just log.
-    recording_callback: Optional[str] = None
-    if tenant.audio_storage_enabled:
-        http_base = str(request.base_url).rstrip("/")
-        recording_callback = (
-            f"{http_base}{settings.API_V1_PREFIX}/telephony/twilio/recording"
-            f"?tenant_id={tenant.id}&session_id={session.id}"
+    greeting: Optional[str] = None
+    if getattr(tenant, "pii_redaction_enabled", False):
+        greeting = (
+            "This call may be transcribed for quality assurance. "
+            "Audio is not retained."
         )
 
     twiml = build_voice_twiml(
         session_id=str(session.id),
         stream_url=stream_url,
-        greeting=(
-            "This call may be recorded and transcribed for quality assurance."
-            if tenant.pii_redaction_enabled or tenant.audio_storage_enabled
-            else None
-        ),
-        record=bool(tenant.audio_storage_enabled),
-        recording_status_callback_url=recording_callback,
+        greeting=greeting,
     )
     return Response(content=twiml, media_type="application/xml")
-
-
-@router.post("/telephony/twilio/recording")
-async def twilio_recording_callback(
-    request: Request,
-    tenant_id: uuid.UUID,
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """Twilio fires this when a recording is ``completed``.
-
-    Payload (form-encoded): ``RecordingSid``, ``RecordingUrl``,
-    ``RecordingDuration``, ``CallSid``, etc. We authenticate the request
-    by signature, then mirror the WAV to our own S3 bucket so the audio
-    stays under the tenant's control.
-    """
-    form = await request.form()
-    form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
-
-    creds = await _twilio_creds(tenant_id, db)
-    if creds.auth_token:
-        signature = request.headers.get("X-Twilio-Signature", "")
-        request_url = str(request.url)
-        if not validate_twilio_signature(
-            auth_token=creds.auth_token,
-            request_url=request_url,
-            params=form_dict,
-            signature_header=signature,
-        ):
-            raise HTTPException(status_code=403, detail="Invalid signature")
-
-    recording_sid = form_dict.get("RecordingSid", "")
-    recording_url = form_dict.get("RecordingUrl", "")
-    duration = _safe_int(form_dict.get("RecordingDuration"))
-
-    # Find the linked Interaction (if any) so the recording row can be
-    # pivoted off /interactions/{id}/recording.
-    sess = await db.get(LiveSession, session_id)
-    interaction_id = sess.interaction_id if sess is not None else None
-
-    rec = CallRecording(
-        tenant_id=tenant_id,
-        interaction_id=interaction_id,
-        live_session_id=session_id,
-        provider="twilio",
-        provider_recording_id=recording_sid,
-        status="pending",
-        duration_seconds=duration,
-    )
-    db.add(rec)
-    await db.flush()
-
-    # Twilio's recording URL serves the media when you append ".wav" and
-    # authenticate with the tenant's Twilio account SID + auth token.
-    wav_url = recording_url + ".wav" if recording_url else ""
-    if not wav_url:
-        rec.status = "failed"
-        rec.error = "Twilio callback missing RecordingUrl"
-        return {"status": "failed", "recording_id": str(rec.id)}
-
-    try:
-        stored = await s3_audio.download_and_store_url(
-            tenant_id=tenant_id,
-            recording_id=rec.id,
-            source_url=wav_url,
-            basic_auth=(
-                (creds.account_sid, creds.auth_token)
-                if creds.account_sid and creds.auth_token
-                else None
-            ),
-        )
-        rec.s3_key = stored.s3_key
-        rec.size_bytes = stored.size_bytes
-        rec.content_type = stored.content_type
-        rec.status = "stored"
-        rec.stored_at = datetime.now(timezone.utc)
-    except s3_audio.S3NotConfigured as exc:
-        rec.status = "failed"
-        rec.error = f"s3-not-configured: {exc}"
-        logger.warning(
-            "Recording %s: S3 not configured — keeping placeholder row", rec.id
-        )
-    except Exception as exc:
-        logger.exception("Recording %s upload failed", rec.id)
-        rec.status = "failed"
-        rec.error = str(exc)[:500]
-
-    return {"status": rec.status, "recording_id": str(rec.id)}
-
-
-def _safe_int(raw) -> Optional[int]:
-    try:
-        return int(raw) if raw is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-@router.get("/interactions/{interaction_id}/recording")
-async def get_recording_playback(
-    interaction_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(get_current_principal),
-):
-    """Return a short-lived signed URL for playback of the call audio.
-
-    Any role with access to the tenant can fetch playback — managers use
-    this for coaching, compliance uses it for audits. The signed URL TTL
-    is 5 minutes so refreshes are frequent and links are hard to leak.
-    """
-    stmt = (
-        select(CallRecording)
-        .where(
-            CallRecording.tenant_id == principal.tenant.id,
-            CallRecording.interaction_id == interaction_id,
-            CallRecording.status == "stored",
-        )
-        .order_by(CallRecording.created_at.desc())
-        .limit(1)
-    )
-    rec = (await db.execute(stmt)).scalar_one_or_none()
-    if rec is None or not rec.s3_key:
-        raise HTTPException(
-            status_code=404, detail="No stored recording for this interaction"
-        )
-    try:
-        url = s3_audio.signed_playback_url(rec.s3_key, ttl_seconds=300)
-    except s3_audio.S3NotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    return {
-        "recording_id": str(rec.id),
-        "url": url,
-        "expires_in": 300,
-        "content_type": rec.content_type,
-        "duration_seconds": rec.duration_seconds,
-        "size_bytes": rec.size_bytes,
-    }
-
-
-# ── Outbound dial ─────────────────────────────────────────────────────
-
-
-class OutboundDialIn(BaseModel):
-    to: str = Field(..., description="E.164 phone number to call")
-    from_: Optional[str] = Field(
-        default=None,
-        alias="from",
-        description="Caller ID (must be a verified Twilio number)",
-    )
-    # Where Twilio should POST for TwiML once the callee answers. Defaults
-    # to our inbound webhook so the outbound call goes through the same
-    # Media Streams pipe.
-    twiml_url: Optional[str] = None
-
-    model_config = {"populate_by_name": True}
-
-
-class OutboundDialOut(BaseModel):
-    sid: str
-    status: str
-
-
-@router.post("/telephony/calls", response_model=OutboundDialOut, status_code=201)
-async def place_outbound_call(
-    body: OutboundDialIn,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(get_current_principal),
-):
-    """Place an outbound call via Twilio's REST API.
-
-    Credentials resolve per-tenant via
-    ``Integration(tenant_id, provider='twilio')`` first, with the
-    ``TWILIO_ACCOUNT_SID`` / ``TWILIO_AUTH_TOKEN`` env vars as a
-    single-tenant-dev fallback.
-    """
-    creds = await _twilio_creds(principal.tenant.id, db)
-    if not (creds.account_sid and creds.auth_token):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Twilio credentials are not configured for this tenant. "
-                "Connect Twilio in Integrations or set TWILIO_ACCOUNT_SID "
-                "+ TWILIO_AUTH_TOKEN env vars."
-            ),
-        )
-
-    twiml_url = body.twiml_url
-    if not twiml_url:
-        base = str(request.base_url).rstrip("/")
-        twiml_url = f"{base}/api/v1/telephony/twilio/voice?tenant_id={principal.tenant.id}"
-
-    caller_from = body.from_ or ""
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls.json",
-            data={
-                "To": body.to,
-                "From": caller_from,
-                "Url": twiml_url,
-            },
-            auth=(creds.account_sid, creds.auth_token),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Twilio rejected the call: {resp.status_code} {resp.text[:300]}",
-        )
-    data = resp.json()
-    return OutboundDialOut(
-        sid=str(data.get("sid", "")),
-        status=str(data.get("status", "")),
-    )
 
 
 # ── Media Streams WebSocket ───────────────────────────────────────────
@@ -422,22 +168,19 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
 
     Twilio sends JSON text frames with these events:
 
-    * ``connected``  — handshake, contains protocol version.
-    * ``start``      — call has begun; ``start.mediaFormat`` confirms
-      audio encoding (audio/x-mulaw, 8kHz).
-    * ``media``      — a base64-encoded audio chunk in ``media.payload``.
-    * ``mark``       — marker echo (for sync, not used here).
-    * ``stop``       — call ended.
+    * ``connected`` — handshake, contains protocol version.
+    * ``start`` — call has begun; ``start.mediaFormat`` confirms audio
+      encoding (audio/x-mulaw, 8kHz).
+    * ``media`` — a base64-encoded audio chunk in ``media.payload``.
+    * ``mark`` — marker echo (for sync, not used here).
+    * ``stop`` — call ended.
 
-    We decode the payload on each ``media`` frame and push raw bytes
-    into our Deepgram live connection, then let the rest of the existing
-    live-transcription machinery (coaching, KB lookups, brief alerts,
-    outcome inference on close) take over.
+    We decode the payload on each ``media`` frame, push raw bytes into
+    the Deepgram live connection, and throw them away — nothing ever
+    reaches disk or S3.
     """
     await websocket.accept()
 
-    # Deepgram live connection setup. Twilio streams μ-law at 8 kHz, so
-    # tell Deepgram the encoding explicitly.
     settings = get_settings()
     try:
         from deepgram import DeepgramClient
@@ -448,9 +191,6 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
 
     dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
     dg_connection = dg_client.listen.live.v("1")
-
-    # Transcripts and coaching hints are handled by the existing live
-    # machinery. Here we only care about bridging audio in.
     try:
         await dg_connection.start(
             {
@@ -467,15 +207,11 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         await websocket.close(code=1011)
         return
 
-    # Mark the LiveSession as live so the monitor view shows it.
     try:
         async with async_session() as db:
-            try:
-                sess = await db.get(LiveSession, uuid.UUID(session_id))
-                if sess is not None:
-                    sess.status = "live"
-            except Exception:
-                pass
+            sess = await db.get(LiveSession, uuid.UUID(session_id))
+            if sess is not None:
+                sess.status = "live"
     except Exception:
         logger.debug("Couldn't update LiveSession.status", exc_info=True)
 
@@ -500,7 +236,6 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                     session_id,
                     frame.get("start", {}).get("mediaFormat"),
                 )
-            # connected / mark / dtmf / anything else: ignored here.
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -510,12 +245,6 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
             await dg_connection.finish()
         except Exception:
             pass
-        # Signal end-of-call to the live machinery. Today the
-        # ``_dispatch_batch_analysis`` path lives inside the
-        # ``/ws/live/{id}`` handler; for Twilio ingress we kick off the
-        # same pipeline by creating an Interaction row from the transcript
-        # buffer if the LiveSession has one. The existing
-        # ``_dispatch_batch_analysis`` does exactly that — call it.
         try:
             from backend.app.api.websocket import _dispatch_batch_analysis
             import redis.asyncio as aioredis
@@ -529,151 +258,7 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
             logger.exception("Batch analysis dispatch failed for %s", session_id)
 
 
-# ── Hold / resume / transfer ──────────────────────────────────────────
-
-
-class HoldIn(BaseModel):
-    music_url: Optional[str] = None
-
-
-class TransferIn(BaseModel):
-    to: str = Field(..., description="E.164 number the call should be transferred to")
-    caller_id: Optional[str] = None
-
-
-async def _twilio_update_call(
-    call_sid: str,
-    creds: TwilioCreds,
-    *,
-    twiml: Optional[str] = None,
-    url: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Twilio REST: ``POST /Calls/{sid}.json``. Either ``Twiml`` (inline)
-    or ``Url`` (absolute URL to GET TwiML from) must be set. Credentials
-    come from the caller (resolved via ``_twilio_creds`` for the tenant)."""
-    if not (creds.account_sid and creds.auth_token):
-        raise HTTPException(
-            status_code=503,
-            detail="Twilio credentials are not configured for this tenant",
-        )
-    if not (twiml or url):
-        raise ValueError("Pass either twiml or url to _twilio_update_call")
-
-    data: Dict[str, str] = {}
-    if twiml:
-        data["Twiml"] = twiml
-    else:
-        data["Url"] = url  # type: ignore[assignment]
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls/{call_sid}.json",
-            data=data,
-            auth=(creds.account_sid, creds.auth_token),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Twilio call update failed: {resp.status_code} {resp.text[:300]}",
-        )
-    return resp.json()
-
-
-@router.post("/telephony/calls/{call_sid}/hold")
-async def hold_call(
-    call_sid: str,
-    body: HoldIn,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(get_current_principal),
-):
-    """Put an in-progress call on hold.
-
-    Replaces the call's current TwiML with a ``<Play loop="0">`` of hold
-    music. ``POST /telephony/calls/{sid}/resume`` re-enters the main flow
-    by pointing the call back at our inbound voice webhook.
-    """
-    creds = await _twilio_creds(principal.tenant.id, db)
-    twiml = build_hold_twiml(
-        hold_music_url=body.music_url
-        or "https://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3"
-    )
-    result = await _twilio_update_call(call_sid, creds, twiml=twiml)
-    return {"status": result.get("status"), "call_sid": call_sid, "state": "hold"}
-
-
-@router.post("/telephony/calls/{call_sid}/resume")
-async def resume_call(
-    call_sid: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(get_current_principal),
-):
-    """Take a held call off hold by redirecting it back to our voice
-    webhook. The webhook creates a fresh LiveSession and resumes the
-    live transcription + coaching flow."""
-    creds = await _twilio_creds(principal.tenant.id, db)
-    base = str(request.base_url).rstrip("/")
-    voice_url = (
-        f"{base}{get_settings().API_V1_PREFIX}/telephony/twilio/voice"
-        f"?tenant_id={principal.tenant.id}"
-    )
-    result = await _twilio_update_call(call_sid, creds, url=voice_url)
-    return {"status": result.get("status"), "call_sid": call_sid, "state": "active"}
-
-
-@router.post("/telephony/calls/{call_sid}/transfer")
-async def transfer_call(
-    call_sid: str,
-    body: TransferIn,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(
-        require_role("manager")
-    ),
-):
-    """Cold-transfer the call to another number.
-
-    Managers + admins only — agents can't silently hand off a call
-    without manager approval. For warm transfer, the agent should use
-    hold + a separate outbound dial, then transfer once the new party
-    agrees to take it (that flow can be layered on top of these
-    primitives).
-    """
-    creds = await _twilio_creds(principal.tenant.id, db)
-    twiml = build_transfer_twiml(to_number=body.to, caller_id=body.caller_id)
-    result = await _twilio_update_call(call_sid, creds, twiml=twiml)
-    return {
-        "status": result.get("status"),
-        "call_sid": call_sid,
-        "state": "transferring",
-        "to": body.to,
-    }
-
-
 # ── SignalWire (TwiML-compatible) ─────────────────────────────────────
-
-
-def _signalwire_creds_for_tenant(tenant: Tenant, db_sync_integ=None) -> Dict[str, Any]:
-    """Return {project_id, api_token, space_url} for the tenant.
-
-    Resolution order: tenant Integration row (provider='signalwire')
-    first, with the tokens decrypted on the way out; fall back to env
-    vars for single-tenant deployments.
-    """
-    from backend.app.services.token_crypto import decrypt_token
-
-    settings = get_settings()
-    if db_sync_integ is not None:
-        cfg = db_sync_integ.provider_config or {}
-        return {
-            "project_id": settings.SIGNALWIRE_PROJECT_ID or cfg.get("project_id", ""),
-            "api_token": decrypt_token(db_sync_integ.access_token) or settings.SIGNALWIRE_TOKEN or "",
-            "space_url": cfg.get("space_url", ""),
-        }
-    return {
-        "project_id": settings.SIGNALWIRE_PROJECT_ID,
-        "api_token": settings.SIGNALWIRE_TOKEN,
-        "space_url": "",  # env-config path: caller must set via request.query or integration
-    }
 
 
 @router.post("/telephony/signalwire/voice")
@@ -683,19 +268,11 @@ async def signalwire_voice_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     """Inbound SignalWire webhook. SignalWire sends the same form-encoded
-    payload Twilio does and signs it with HMAC-SHA1, so we can reuse the
-    Twilio helpers.
-
-    Auth token for signature verification comes from the tenant's
-    Integration row (provider='signalwire'); we fall back to
-    ``SIGNALWIRE_TOKEN`` env var for single-tenant deployments.
-    """
-    from backend.app.models import Integration
-
+    payload Twilio does and signs it with HMAC-SHA1, so we reuse the
+    Twilio signature helper and TwiML builder."""
     form = await request.form()
     form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
 
-    # Resolve auth token for signature validation.
     stmt = (
         select(Integration)
         .where(
@@ -705,11 +282,7 @@ async def signalwire_voice_webhook(
         .limit(1)
     )
     integ = (await db.execute(stmt)).scalar_one_or_none()
-    auth_token = ""
-    if integ is not None:
-        from backend.app.services.token_crypto import decrypt_token
-
-        auth_token = decrypt_token(integ.access_token) or ""
+    auth_token = decrypt_token(integ.access_token) or "" if integ is not None else ""
     if not auth_token:
         auth_token = get_settings().SIGNALWIRE_TOKEN or ""
 
@@ -740,14 +313,16 @@ async def signalwire_voice_webhook(
         "https://", "wss://"
     )
     stream_url = f"{base}/ws/telephony/signalwire/{session.id}"
+    greeting: Optional[str] = None
+    if getattr(tenant, "pii_redaction_enabled", False):
+        greeting = (
+            "This call may be transcribed for quality assurance. "
+            "Audio is not retained."
+        )
     twiml = build_voice_twiml(
         session_id=str(session.id),
         stream_url=stream_url,
-        greeting=(
-            "This call may be recorded and transcribed for quality assurance."
-            if tenant.pii_redaction_enabled or tenant.audio_storage_enabled
-            else None
-        ),
+        greeting=greeting,
     )
     return Response(content=twiml, media_type="application/xml")
 
@@ -755,18 +330,13 @@ async def signalwire_voice_webhook(
 @router.websocket("/ws/telephony/signalwire/{session_id}")
 async def signalwire_media_stream(websocket: WebSocket, session_id: str):
     """SignalWire's Compatibility API streams audio in the same format
-    Twilio does. Just delegate to the Twilio handler implementation."""
-    # Reuse the Twilio handler — it's identical byte-for-byte.
+    Twilio does. Delegate to the Twilio handler."""
     await twilio_media_stream(websocket, session_id)
 
 
-# ── Telnyx Call Control ───────────────────────────────────────────────
+# ── Telnyx Call Control (inbound + live streaming only) ───────────────
 
 
-# Redis keyspace for Telnyx call_control_id → LiveSession.id pins. The
-# map lets ``call.hangup`` find the right session even when the tenant
-# has overlapping calls. 12-hour TTL covers generous call durations
-# without letting stale entries accumulate forever.
 _TELNYX_SESSION_KEY_PREFIX = "telephony:telnyx:call"
 _TELNYX_SESSION_TTL_SECONDS = 12 * 3600
 
@@ -787,8 +357,6 @@ async def _telnyx_remember_session(
         finally:
             await r.aclose()
     except Exception:
-        # Losing the pin is non-fatal — call.hangup falls back to the
-        # most-recent-active heuristic. Just log + continue.
         logger.debug("Telnyx session map write failed", exc_info=True)
 
 
@@ -826,10 +394,6 @@ async def _telnyx_forget_session(call_control_id: str) -> None:
 
 
 async def _telnyx_api_key_for_tenant(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[str]:
-    """Decrypt the tenant's Telnyx API key from Integration, if present."""
-    from backend.app.models import Integration
-    from backend.app.services.token_crypto import decrypt_token
-
     stmt = (
         select(Integration)
         .where(Integration.tenant_id == tenant_id, Integration.provider == "telnyx")
@@ -843,8 +407,6 @@ async def _telnyx_api_key_for_tenant(tenant_id: uuid.UUID, db: AsyncSession) -> 
 
 
 async def _telnyx_public_key_for_tenant(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[str]:
-    from backend.app.models import Integration
-
     stmt = (
         select(Integration)
         .where(Integration.tenant_id == tenant_id, Integration.provider == "telnyx")
@@ -857,11 +419,13 @@ async def _telnyx_public_key_for_tenant(tenant_id: uuid.UUID, db: AsyncSession) 
     return (integ.provider_config or {}).get("public_key")
 
 
-async def _telnyx_post(api_key: str, url: str, json: Optional[dict] = None) -> Dict[str, Any]:
+async def _telnyx_post(api_key: str, url: str, json_body: Optional[dict] = None) -> Dict:
+    import httpx
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             url,
-            json=json or {},
+            json=json_body or {},
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -883,14 +447,10 @@ async def telnyx_voice_webhook(
 ):
     """Telnyx Call Control webhook.
 
-    Handles the event types we need:
+    * ``call.initiated`` — answer, start streaming audio to our WS.
+    * ``call.hangup`` — dispatch batch analysis.
 
-    * ``call.initiated`` — answer the call, then kick off media streaming
-      to our WS by issuing ``streaming_start``.
-    * ``call.hangup`` — dispatch batch analysis (same as Twilio stop).
-
-    Other events (call.answered, streaming.started, etc.) are
-    acknowledged with 200 and ignored.
+    Other events are acknowledged with 200 and ignored.
     """
     from backend.app.services.telephony.telnyx import (
         call_control_answer_url,
@@ -901,9 +461,6 @@ async def telnyx_voice_webhook(
 
     raw = await request.body()
 
-    # Signature verification. Telnyx signs with Ed25519; the public key
-    # lives in provider_config. When it's not configured we log and
-    # accept (dev-only posture — same as Twilio).
     public_key = await _telnyx_public_key_for_tenant(tenant_id, db)
     if public_key:
         sig = request.headers.get("Telnyx-Signature-Ed25519", "")
@@ -916,11 +473,9 @@ async def telnyx_voice_webhook(
         ):
             raise HTTPException(status_code=403, detail="Invalid Telnyx signature")
 
-    import json as _json
-
     try:
-        payload = _json.loads(raw)
-    except _json.JSONDecodeError:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     data = (payload.get("data") or {}).get("payload") or payload.get("data") or {}
@@ -935,7 +490,6 @@ async def telnyx_voice_webhook(
         )
 
     if event_type == "call.initiated" and call_control_id:
-        # Create LiveSession so the downstream WS can attach to it.
         session = LiveSession(
             tenant_id=tenant_id,
             agent_id=tenant_id,
@@ -945,38 +499,24 @@ async def telnyx_voice_webhook(
         db.add(session)
         await db.flush()
 
-        # Pin call_control_id → session_id in Redis so ``call.hangup``
-        # can find the right session deterministically, even when the
-        # tenant has multiple concurrent Telnyx calls. Previously we
-        # fell back to "most recent active session", which broke for
-        # busy tenants with overlapping calls. 12h TTL — if a call
-        # genuinely runs longer than that, the cleanup sweep handles it.
         await _telnyx_remember_session(call_control_id, session.id)
 
-        # Answer the call, then start streaming to us.
         await _telnyx_post(api_key, call_control_answer_url(call_control_id))
         http_base = str(request.base_url).rstrip("/")
         wss_base = http_base.replace("http://", "wss://").replace("https://", "wss://")
-        stream_url = (
-            f"{wss_base}/ws/telephony/telnyx/{session.id}"
-        )
+        stream_url = f"{wss_base}/ws/telephony/telnyx/{session.id}"
         await _telnyx_post(
             api_key,
             call_control_streaming_start_url(call_control_id),
-            json=streaming_start_payload(stream_url=stream_url),
+            json_body=streaming_start_payload(stream_url=stream_url),
         )
         return {"status": "streaming_started", "session_id": str(session.id)}
 
     if event_type == "call.hangup" and call_control_id:
-        # Look up the session we mapped at call.initiated. Deterministic
-        # even when many Telnyx calls are in flight concurrently.
         session_id = await _telnyx_lookup_session(call_control_id)
         sess = None
         if session_id is not None:
             sess = await db.get(LiveSession, session_id)
-        # Fall back to the "most recent active" heuristic only if we
-        # have no map entry (e.g., it expired or this API instance
-        # didn't handle the matching call.initiated).
         if sess is None:
             stmt = (
                 select(LiveSession)
@@ -1003,28 +543,20 @@ async def telnyx_voice_webhook(
             except Exception:
                 logger.exception("Telnyx hangup dispatch failed")
 
-        # Drop the session-map entry once the hangup is handled so Redis
-        # doesn't accumulate stale pins for completed calls.
         await _telnyx_forget_session(call_control_id)
         return {"status": "hangup_handled"}
 
-    # Unhandled events get a polite 200 so Telnyx doesn't retry forever.
     return {"status": "ignored", "event_type": event_type}
 
 
 @router.websocket("/ws/telephony/telnyx/{session_id}")
 async def telnyx_media_stream(websocket: WebSocket, session_id: str):
-    """Telnyx Media Streaming WebSocket.
-
-    Like Twilio, Telnyx sends JSON frames with ``event: media`` + a
-    base64-encoded ``media.payload`` (μ-law 8kHz by default).
-    Structurally close enough that we can reuse the Twilio handler
-    verbatim — our decode helper is format-neutral.
-    """
+    """Telnyx Media Streaming WebSocket. Same JSON framing as Twilio —
+    delegate to the Twilio handler."""
     await twilio_media_stream(websocket, session_id)
 
 
-# ── Admin: manual per-tenant Twilio credentials ───────────────────────
+# ── Admin: link per-tenant Twilio credentials ─────────────────────────
 
 
 class TwilioCredsIn(BaseModel):
@@ -1040,12 +572,10 @@ async def link_twilio_credentials(
 ):
     """Save the tenant's Twilio account SID + auth token.
 
-    Upserts an ``Integration(provider='twilio')`` row. The auth token is
-    encrypted at rest via Fernet; the SID sits in ``provider_config``
-    alongside any other telephony bits we may add later.
+    Used only for webhook signature verification. The auth token is
+    Fernet-encrypted at rest; the SID sits in ``provider_config``.
     """
     from backend.app.services.token_crypto import encrypt_token
-    from backend.app.models import Integration
 
     stmt = (
         select(Integration)
@@ -1079,127 +609,3 @@ async def link_twilio_credentials(
         "account_sid": body.account_sid,
         "saved": True,
     }
-
-
-# ── Warm transfer ─────────────────────────────────────────────────────
-
-
-class WarmTransferIn(BaseModel):
-    to: str = Field(..., description="E.164 number for the transfer target")
-    caller_id: Optional[str] = Field(
-        default=None,
-        description="Caller ID shown to the target; defaults to the tenant's configured number",
-    )
-    conference_name: Optional[str] = Field(
-        default=None,
-        description="Override the auto-generated conference name (useful for tests)",
-    )
-
-
-@router.post("/telephony/calls/{call_sid}/warm-transfer")
-async def warm_transfer_call(
-    call_sid: str,
-    body: WarmTransferIn,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_role("manager")),
-):
-    """Start a warm transfer.
-
-    Warm transfer means the caller and the transfer target end up in the
-    same conference, with the agent free to join (to brief the target),
-    stay (three-way), or drop out (letting the other two continue). This
-    is distinct from cold transfer (``/transfer``), where the agent
-    bridges them and hangs up in one step.
-
-    How it works:
-
-    1. The existing ``call_sid`` is redirected into a fresh conference
-       via ``_twilio_update_call``. The caller lands there and hears
-       hold music until someone else joins (``startConferenceOnEnter=
-       false`` on their leg).
-    2. We place an **outbound call** to ``to`` whose answer-TwiML is
-       the same conference, with ``startConferenceOnEnter=true`` so the
-       conference begins speaking once the target picks up.
-
-    The agent can dial into the conference too (via a third call or by
-    merging their leg) to brief the target before dropping. That third
-    call is composable on top — we don't build it here because the
-    calling UI usually has the agent's own line already.
-    """
-    creds = await _twilio_creds(principal.tenant.id, db)
-    if not (creds.account_sid and creds.auth_token):
-        raise HTTPException(
-            status_code=503,
-            detail="Twilio credentials are not configured for this tenant",
-        )
-
-    conference_name = body.conference_name or f"cs-wt-{call_sid}"
-
-    # Step 1: move the existing caller into the conference. They arrive
-    # with start_on_enter=False so they don't hear silence — Twilio plays
-    # the default "waiting" hold music until a second party joins.
-    caller_twiml = build_conference_twiml(
-        conference_name=conference_name,
-        start_on_enter=False,
-        end_on_exit=False,
-    )
-    await _twilio_update_call(call_sid, creds, twiml=caller_twiml)
-
-    # Step 2: outbound-dial the transfer target. When they pick up,
-    # Twilio fetches TwiML from our new endpoint which returns the
-    # same conference with start_on_enter=True.
-    base = str(request.base_url).rstrip("/")
-    target_twiml_url = (
-        f"{base}/api/v1/telephony/twilio/conference-join"
-        f"?conference_name={conference_name}&start_on_enter=true"
-    )
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{creds.account_sid}/Calls.json",
-            data={
-                "To": body.to,
-                "From": body.caller_id or "",
-                "Url": target_twiml_url,
-            },
-            auth=(creds.account_sid, creds.auth_token),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Twilio rejected the warm-transfer target dial: "
-                f"{resp.status_code} {resp.text[:300]}"
-            ),
-        )
-    target = resp.json()
-    return {
-        "status": "warm_transfer_started",
-        "call_sid": call_sid,
-        "target_call_sid": target.get("sid"),
-        "conference_name": conference_name,
-    }
-
-
-@router.api_route(
-    "/telephony/twilio/conference-join",
-    methods=["GET", "POST"],
-)
-async def twilio_conference_join(
-    conference_name: str,
-    start_on_enter: bool = True,
-):
-    """TwiML-only endpoint: returns a ``<Conference>`` join.
-
-    Twilio calls this after the warm-transfer target answers. No auth —
-    it's invoked by Twilio during call flow, and the conference name
-    itself is the access token (random per transfer, bounded by Twilio
-    conference lifetime).
-    """
-    twiml = build_conference_twiml(
-        conference_name=conference_name,
-        start_on_enter=bool(start_on_enter),
-        end_on_exit=False,
-    )
-    return Response(content=twiml, media_type="application/xml")

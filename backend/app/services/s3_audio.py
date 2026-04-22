@@ -159,12 +159,51 @@ def signed_playback_url(s3_key: str, ttl_seconds: int = 300) -> str:
     )
 
 
+def download_to_tempfile(s3_key: str) -> str:
+    """Download an S3 object to a NamedTemporaryFile and return its path.
+
+    Used by the transcription worker to stage audio locally before
+    handing it to Whisper / pyannote, which both need a file path. The
+    caller is responsible for unlinking the file after use.
+    """
+    import tempfile
+
+    settings = get_settings()
+    if not settings.AWS_S3_BUCKET:
+        raise S3NotConfigured("AWS_S3_BUCKET is not configured")
+    ext = s3_key.rsplit(".", 1)[-1] if "." in s3_key else "bin"
+    tmp = tempfile.NamedTemporaryFile(prefix="linda-audio-", suffix=f".{ext}", delete=False)
+    try:
+        client = _client()
+        client.download_fileobj(Bucket=settings.AWS_S3_BUCKET, Key=s3_key, Fileobj=tmp)
+        tmp.flush()
+        return tmp.name
+    finally:
+        tmp.close()
+
+
+def delete_object(s3_key: str) -> None:
+    """Delete an S3 object. Silently succeeds on 'already gone'."""
+    settings = get_settings()
+    if not settings.AWS_S3_BUCKET:
+        raise S3NotConfigured("AWS_S3_BUCKET is not configured")
+    client = _client()
+    try:
+        client.delete_object(Bucket=settings.AWS_S3_BUCKET, Key=s3_key)
+    except Exception as exc:
+        if "404" in str(exc) or "NoSuchKey" in str(exc):
+            return
+        raise
+
+
 # Re-exported for tests that want to assert on key shape.
 __all__ = [
     "StoredAudio",
     "S3NotConfigured",
     "upload_bytes",
     "download_and_store_url",
+    "download_to_tempfile",
+    "delete_object",
     "signed_playback_url",
     "_build_key",
     "_content_type_extension",

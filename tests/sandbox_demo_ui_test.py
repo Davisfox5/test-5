@@ -649,7 +649,6 @@ def main() -> int:
                             transcription_engine: 'deepgram',
                             automation_level: 'approval',
                             pii_redaction_enabled: true,
-                            audio_storage_enabled: false,
                             translation_enabled: false,
                             default_language: 'en',
                             keyterm_boost_list: ['acme'],

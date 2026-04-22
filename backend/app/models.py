@@ -42,12 +42,6 @@ class Tenant(Base):
     automation_level: Mapped[str] = mapped_column(String, default="approval")
     pii_redaction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     pii_redaction_config: Mapped[dict] = mapped_column(JSONB, default=dict)
-    audio_storage_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Days to keep ``CallRecording`` audio before the nightly cleanup
-    # deletes the S3 object + row. 0 means "keep forever" (not
-    # recommended outside of short-lived test tenants). Regulated
-    # industries typically set 2555 (7 years).
-    recording_retention_days: Mapped[int] = mapped_column(Integer, default=0)
     enrichment_pdl_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     enrichment_apollo_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     keyterm_boost_list: Mapped[list] = mapped_column(JSONB, default=list)
@@ -244,40 +238,6 @@ class EmailSend(Base):
     )
 
 
-class CallRecording(Base):
-    """Audio recording of a voice interaction.
-
-    Populated by the Twilio ``recordingStatusCallback`` handler (and the
-    equivalent providers). We mirror the raw audio into our own S3 bucket
-    so it's retained under the tenant's control even if they revoke the
-    provider integration.
-    """
-
-    __tablename__ = "call_recordings"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
-    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
-    )
-    live_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("live_sessions.id", ondelete="SET NULL")
-    )
-    provider: Mapped[str] = mapped_column(String, nullable=False)  # twilio|signalwire|telnyx
-    provider_recording_id: Mapped[Optional[str]] = mapped_column(String)
-    s3_key: Mapped[Optional[str]] = mapped_column(String)
-    content_type: Mapped[str] = mapped_column(String, default="audio/wav")
-    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
-    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
-    # pending | stored | failed
-    status: Mapped[str] = mapped_column(String, default="pending")
-    error: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    stored_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-
-
 class CustomerOutcomeEvent(Base):
     """A lifecycle event on a Customer — the signal we learn from.
 
@@ -373,7 +333,13 @@ class Interaction(Base):
     thread_id: Mapped[Optional[str]] = mapped_column(String)
 
     # Audio-specific
+    # ``audio_s3_key`` holds short-lived staging for direct uploads (we
+    # transcribe then delete). ``audio_url`` holds a provider-hosted URL
+    # for external recording systems that push us a pointer rather than
+    # bytes (MiaRec, Dubber, Teams, MetaSwitch, etc.). At most one of the
+    # two is set per interaction.
     audio_s3_key: Mapped[Optional[str]] = mapped_column(String)
+    audio_url: Mapped[Optional[str]] = mapped_column(String)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
     caller_phone: Mapped[Optional[str]] = mapped_column(String)
 

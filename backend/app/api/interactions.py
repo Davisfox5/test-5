@@ -181,7 +181,9 @@ async def upload_voice_interaction(
     if file.content_type and file.content_type not in allowed_types:
         raise HTTPException(400, f"Unsupported file type: {file.content_type}")
 
-    # Read file content (in production, stream to S3 if tenant.audio_storage_enabled)
+    # Read bytes into memory so we can stage them in S3. Staging is
+    # short-lived — the Celery voice task deletes the object after the
+    # transcript lands.
     audio_bytes = await file.read()
     if len(audio_bytes) > 500 * 1024 * 1024:  # 500MB
         raise HTTPException(400, "File too large (max 500MB)")
@@ -245,6 +247,163 @@ async def upload_voice_interaction(
         import logging as _logging
         _logging.getLogger(__name__).debug(
             "Celery dispatch failed for uploaded interaction %s", interaction.id, exc_info=True,
+        )
+
+    return interaction
+
+
+# ── External recording ingest ────────────────────────────
+
+
+class IngestRecordingIn(BaseModel):
+    """Payload for JSON-based recording ingest.
+
+    External recording systems (MiaRec, Dubber, Teams, MetaSwitch, etc.)
+    post either a pre-signed ``audio_url`` we can fetch or nothing at
+    all — in which case ``POST /interactions/ingest-recording`` should
+    be called as ``multipart/form-data`` with a file part named
+    ``file`` instead of JSON.
+    """
+
+    audio_url: str = Field(..., description="HTTPS URL to the audio file")
+    title: Optional[str] = None
+    caller_phone: Optional[str] = None
+    agent_id: Optional[uuid.UUID] = None
+    contact_id: Optional[uuid.UUID] = None
+    direction: Optional[Literal["inbound", "outbound", "internal"]] = None
+    source: Optional[str] = Field(
+        default=None,
+        description="Provider slug, e.g. 'miarec', 'dubber', 'teams', 'metaswitch'",
+    )
+    external_call_id: Optional[str] = Field(
+        default=None,
+        description="Provider's own call id — mirrored into interaction.thread_id for traceability",
+    )
+    duration_seconds: Optional[int] = None
+    started_at: Optional[datetime] = None
+    engine: Literal["deepgram", "whisper"] = "deepgram"
+
+
+@router.post("/interactions/ingest-recording", response_model=InteractionOut, status_code=201)
+async def ingest_recording(
+    payload: Optional[IngestRecordingIn] = None,
+    file: Optional[UploadFile] = File(default=None),
+    audio_url: Optional[str] = Form(default=None),
+    title: Optional[str] = Form(default=None),
+    caller_phone: Optional[str] = Form(default=None),
+    agent_id: Optional[uuid.UUID] = Form(default=None),
+    contact_id: Optional[uuid.UUID] = Form(default=None),
+    direction: Optional[str] = Form(default=None),
+    source: Optional[str] = Form(default=None),
+    external_call_id: Optional[str] = Form(default=None),
+    duration_seconds: Optional[int] = Form(default=None),
+    engine: str = Form(default="deepgram"),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Ingest a post-call recording from an external recording system.
+
+    Two shapes:
+
+    * ``POST … Content-Type: application/json`` with ``{audio_url, …}``
+      — we hand the URL to Deepgram directly, no bytes touch our disk.
+    * ``POST … Content-Type: multipart/form-data`` with ``file`` (the
+      audio) + optional metadata fields — we stage the bytes in S3
+      briefly, the worker transcribes then deletes.
+
+    The audio itself is discarded after transcription either way;
+    metadata (``external_call_id``, ``direction``, ``source``, participant
+    ids) is persisted on the Interaction row.
+    """
+    # Collapse the two entry shapes into one set of locals.
+    if payload is not None:
+        resolved_url = payload.audio_url
+        resolved_title = payload.title
+        resolved_caller = payload.caller_phone
+        resolved_agent = payload.agent_id
+        resolved_contact = payload.contact_id
+        resolved_direction = payload.direction
+        resolved_source = payload.source
+        resolved_external = payload.external_call_id
+        resolved_duration = payload.duration_seconds
+        resolved_engine = payload.engine
+    else:
+        resolved_url = audio_url
+        resolved_title = title
+        resolved_caller = caller_phone
+        resolved_agent = agent_id
+        resolved_contact = contact_id
+        resolved_direction = direction
+        resolved_source = source
+        resolved_external = external_call_id
+        resolved_duration = duration_seconds
+        resolved_engine = engine
+
+    if resolved_engine not in ("deepgram", "whisper"):
+        raise HTTPException(status_code=400, detail="engine must be deepgram|whisper")
+    if not resolved_url and file is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either audio_url (JSON) or a multipart file upload",
+        )
+
+    interaction = Interaction(
+        tenant_id=tenant.id,
+        channel="voice",
+        source=resolved_source or "external-recording",
+        direction=resolved_direction,
+        title=resolved_title or (resolved_external or "Ingested recording"),
+        caller_phone=resolved_caller,
+        agent_id=resolved_agent,
+        engine=resolved_engine,
+        status="processing",
+        duration_seconds=resolved_duration,
+        thread_id=resolved_external,
+    )
+    db.add(interaction)
+    await db.flush()
+
+    # URL mode: store the pointer, Celery passes it to Deepgram directly.
+    if resolved_url:
+        interaction.audio_url = resolved_url
+    else:
+        # Multipart mode: stage bytes into S3; worker cleans up.
+        import asyncio as _asyncio
+        from backend.app.services import s3_audio
+
+        audio_bytes = await file.read()
+        if len(audio_bytes) > 500 * 1024 * 1024:
+            raise HTTPException(400, "File too large (max 500MB)")
+        content_type = file.content_type or "audio/wav"
+        try:
+            stored = await _asyncio.to_thread(
+                s3_audio.upload_bytes,
+                tenant_id=tenant.id,
+                recording_id=interaction.id,
+                data=audio_bytes,
+                content_type=content_type,
+            )
+            interaction.audio_s3_key = stored.s3_key
+        except s3_audio.S3NotConfigured:
+            interaction.status = "failed"
+            interaction.insights = {"error": "audio_storage_not_configured"}
+            return interaction
+        except Exception as exc:
+            interaction.status = "failed"
+            interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
+            return interaction
+
+    # Dispatch the same voice pipeline used for the manual upload path.
+    try:
+        from backend.app.tasks import process_voice_interaction
+
+        process_voice_interaction.delay(str(interaction.id))
+    except Exception:
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "Celery dispatch failed for ingested interaction %s", interaction.id,
+            exc_info=True,
         )
 
     return interaction

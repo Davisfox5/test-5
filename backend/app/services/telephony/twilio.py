@@ -31,8 +31,6 @@ def build_voice_twiml(
     session_id: str,
     stream_url: str,
     greeting: Optional[str] = None,
-    record: bool = False,
-    recording_status_callback_url: Optional[str] = None,
 ) -> str:
     """Return the TwiML Twilio should execute when a call comes in.
 
@@ -43,112 +41,21 @@ def build_voice_twiml(
 
     ``greeting`` is an optional ``<Say>`` pre-roll (useful for
     compliance disclosures).
-
-    ``record=True`` adds a ``<Record>`` with ``recordingStatusCallback``
-    so Twilio POSTs us when the audio is ready to pull. We use Twilio's
-    ``record="record-from-answer-dual"`` mode on ``<Start>`` instead of
-    ``<Record>`` to capture both sides without blocking the Stream. The
-    status callback URL is XML-escaped.
     """
     safe_url = _xml_escape(stream_url, {'"': "&quot;"})
     safe_session = _xml_escape(session_id, {'"': "&quot;"})
     pre = ""
     if greeting:
         pre = f"  <Say>{_xml_escape(greeting)}</Say>\n"
-
-    record_verb = ""
-    if record and recording_status_callback_url:
-        safe_cb = _xml_escape(recording_status_callback_url, {'"': "&quot;"})
-        record_verb = (
-            "  <Start>\n"
-            f'    <Recording recordingStatusCallback="{safe_cb}" '
-            'recordingStatusCallbackEvent="completed" '
-            'recordingTrack="both"/>\n'
-            "  </Start>\n"
-        )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<Response>\n"
         f"{pre}"
-        f"{record_verb}"
         "  <Connect>\n"
         f'    <Stream url="{safe_url}">\n'
         f'      <Parameter name="session_id" value="{safe_session}"/>\n'
         "    </Stream>\n"
         "  </Connect>\n"
-        "</Response>"
-    )
-
-
-def build_hold_twiml(
-    *,
-    hold_music_url: str = "https://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3",
-    loop_count: int = 0,
-) -> str:
-    """TwiML that plays hold music in a loop until the call is redirected
-    back to its main flow. ``loop_count=0`` means loop forever."""
-    safe_url = _xml_escape(hold_music_url, {'"': "&quot;"})
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<Response>\n"
-        f'  <Play loop="{int(loop_count)}">{safe_url}</Play>\n'
-        "</Response>"
-    )
-
-
-def build_conference_twiml(
-    *,
-    conference_name: str,
-    start_on_enter: bool = True,
-    end_on_exit: bool = False,
-    wait_url: Optional[str] = None,
-) -> str:
-    """TwiML that drops the current call into a named conference.
-
-    Used by warm transfer: the caller is placed into the conference with
-    ``start_on_enter=False`` + ``end_on_exit=False`` so they hear hold
-    music until someone else joins. The agent + transfer target get the
-    same TwiML but with ``start_on_enter=True`` so the bridge kicks off
-    once they land.
-
-    ``wait_url`` is a Twilio "waiting TwiML" URL (hold music before the
-    conference starts); omitting it uses Twilio's default.
-    """
-    if not conference_name:
-        raise ValueError("conference_name is required")
-    safe_name = _xml_escape(conference_name)
-    attrs = [
-        f'startConferenceOnEnter="{str(bool(start_on_enter)).lower()}"',
-        f'endConferenceOnExit="{str(bool(end_on_exit)).lower()}"',
-    ]
-    if wait_url:
-        attrs.append(f'waitUrl="{_xml_escape(wait_url, {chr(34): "&quot;"})}"')
-    attrs_str = " ".join(attrs)
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<Response>\n"
-        f'  <Dial>\n'
-        f"    <Conference {attrs_str}>{safe_name}</Conference>\n"
-        "  </Dial>\n"
-        "</Response>"
-    )
-
-
-def build_transfer_twiml(*, to_number: str, caller_id: Optional[str] = None) -> str:
-    """TwiML that dials ``to_number`` — used when an agent hits the
-    transfer button. Once the callee answers Twilio bridges the two legs.
-
-    When ``caller_id`` is provided it's set on the <Dial> so the callee
-    sees the original caller (assuming Twilio permits the override).
-    """
-    safe_to = _xml_escape(to_number, {'"': "&quot;"})
-    caller_attr = ""
-    if caller_id:
-        caller_attr = f' callerId="{_xml_escape(caller_id, {chr(34): "&quot;"})}"'
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<Response>\n"
-        f'  <Dial{caller_attr}>{safe_to}</Dial>\n'
         "</Response>"
     )
 

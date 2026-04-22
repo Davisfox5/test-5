@@ -54,7 +54,7 @@ class FakeDB:
 
 @pytest.fixture
 def fake_tenant():
-    return SimpleNamespace(id=uuid.uuid4(), audio_storage_enabled=True)
+    return SimpleNamespace(id=uuid.uuid4())
 
 
 @pytest.fixture
