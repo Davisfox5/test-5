@@ -6,9 +6,14 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-import anthropic
+import time
 
-from backend.app.config import get_settings
+from backend.app.services import metrics as _metrics
+from backend.app.services.kb.context_builder import format_brief_for_prompt
+from backend.app.services.kb.customer_brief_builder import (
+    format_customer_brief_for_prompt,
+)
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -19,26 +24,35 @@ MODELS = {
 }
 
 ANALYSIS_SYSTEM_PROMPT = (
-    "You are an expert call analyst for a conversation intelligence platform. "
+    "You are Linda — the AI assistant who listened in on this call. Your name "
+    "stands for Listening Intelligence and Natural Dialogue Assistant, and "
+    "you speak in the first person to the rep who ran the call, like a "
+    "thoughtful colleague who was quietly taking notes. Your tone is calm, "
+    "attentive, warm, and honest — never robotic, never fawning.\n\n"
     "Analyze the provided transcript and return ONLY valid JSON (no markdown "
     "fences) with the following fields:\n\n"
-    "- summary: string — concise paragraph summarizing the call\n"
+    "- summary: string — a short paragraph summarizing the call in my voice "
+    "(\"I heard…\", \"The customer pushed back on…\", \"You handled X well\")\n"
     "- sentiment_overall: 'positive' | 'neutral' | 'negative' | 'mixed'\n"
     "- sentiment_score: float 0–10 (10 = most positive)\n"
     "- sentiment_trajectory: list of {time: str, score: float} tracking "
     "sentiment over the call\n"
     "- topics: list of {name: str, relevance: float 0–1, mentions: int}\n"
     "- key_moments: list of {time: str, type: str, description: str, "
-    "start_time: str, end_time: str}\n"
+    "start_time: str, end_time: str} — descriptions in my first-person voice\n"
     "- competitor_mentions: list of {name: str, context: str, "
     "handled_well: bool}\n"
     "- product_feedback: list of {theme: str, quote: str, sentiment: str}\n"
     "- action_items: list of {title: str, category: str, priority: "
     "'high'|'medium'|'low', due_date: str|null, "
-    "suggested_email_draft: str|null}\n"
+    "suggested_email_draft: str|null} — drafts written as if I'm handing "
+    "you a starting point\n"
     "- coaching: {what_went_well: list[str], improvements: list[str], "
-    "script_adherence_score: float 0–100, compliance_gaps: list[str]}\n"
-    "- follow_up_email_draft: {subject: str, body: str}\n"
+    "script_adherence_score: float 0–100, compliance_gaps: list[str]} — "
+    "phrase what_went_well and improvements as direct second-person notes "
+    "to the rep (\"You did a great job framing…\", \"Next time, try…\")\n"
+    "- follow_up_email_draft: {subject: str, body: str} — body written in "
+    "the rep's voice, ready for them to edit and send\n"
     "- churn_risk_signal: 'high' | 'medium' | 'low' | 'none'\n"
     "- churn_risk: float 0.0–1.0 (numeric counterpart: high≈0.85, "
     "medium≈0.55, low≈0.25, none≈0.05 — tune within bucket from evidence)\n"
@@ -47,9 +61,11 @@ ANALYSIS_SYSTEM_PROMPT = (
     "bucket convention as churn_risk)\n"
     "- notable_snippets: list of {start_time: str, end_time: str, "
     "type: str, quality: 'positive'|'negative'|'neutral', title: str, "
-    "description: str, tags: list[str]}\n\n"
+    "description: str, tags: list[str]} — descriptions in my first-person "
+    "voice (\"This is where I heard the pricing pushback…\")\n\n"
     "Be thorough but concise. Ground every observation in evidence from the "
-    "transcript."
+    "transcript. Never invent quotes. Keep the JSON schema exactly as "
+    "specified — only the prose inside string fields should carry my voice."
 )
 
 
@@ -68,14 +84,19 @@ class AIAnalysisService:
     """Run deep AI analysis on call transcripts."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = get_async_anthropic()
 
     async def analyze(
         self,
         transcript_segments: List[Dict[str, Any]],
         tier: str = "sonnet",
         triage_result: Optional[Dict[str, Any]] = None,
+        system_prompt_override: Optional[str] = None,
+        tenant_context_block: Optional[str] = None,
+        rag_context_block: Optional[str] = None,
+        max_tokens_override: Optional[int] = None,
+        tenant_context: Optional[Dict[str, Any]] = None,
+        customer_brief: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -87,11 +108,26 @@ class AIAnalysisService:
             ``"haiku"`` for simple calls, ``"sonnet"`` for complex calls.
         triage_result:
             Optional output from :class:`TriageService` to give the model context.
+        system_prompt_override:
+            If provided, used in place of ``ANALYSIS_SYSTEM_PROMPT`` (prompt-variant swap).
+        tenant_context_block:
+            Pre-formatted tenant block appended to the user message. Takes
+            precedence over ``tenant_context`` when provided.
+        rag_context_block:
+            Optional knowledge-base excerpts retrieved for this specific call.
+        max_tokens_override:
+            Per-tenant parameter override for ``max_tokens``.
+        tenant_context:
+            Raw tenant brief dict; auto-formatted and injected as a cacheable
+            system block when ``tenant_context_block`` is not provided.
+        customer_brief:
+            Raw customer brief dict; auto-formatted as a system block.
         """
         model = MODELS.get(tier, MODELS["sonnet"])
         formatted = _format_transcript(transcript_segments)
+        system_prompt = system_prompt_override or ANALYSIS_SYSTEM_PROMPT
 
-        # Build user message, optionally prepending triage context.
+        # Build user message, optionally prepending triage + tenant + RAG context.
         parts: List[str] = []
         if triage_result:
             summary = triage_result.get("quick_summary", "")
@@ -101,21 +137,60 @@ class AIAnalysisService:
                 f"Quick summary: {summary}\n"
                 f"Detected topics: {topics}\n"
             )
+        if tenant_context_block:
+            parts.append(tenant_context_block)
+        if rag_context_block:
+            parts.append(rag_context_block)
         parts.append(f"## Transcript\n{formatted}")
         user_content = "\n".join(parts)
 
+        raw_text = ""
+
+        # Assemble system blocks. Tenant context first (most stable for prompt
+        # caching), customer brief second, analyst instructions last. If a
+        # system_prompt_override is provided (prompt-variant path), it replaces
+        # the analyst instructions block.
+        system_blocks: List[Dict[str, Any]] = []
+        tenant_text = (
+            None
+            if tenant_context_block  # already appended to user message above
+            else format_brief_for_prompt(tenant_context or {})
+        )
+        if tenant_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": tenant_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        customer_text = format_customer_brief_for_prompt(customer_brief or {})
+        if customer_text:
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": customer_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+
         try:
+            t0 = time.perf_counter()
             response = await self._client.messages.create(
                 model=model,
-                max_tokens=8192,
-                system=[
-                    {
-                        "type": "text",
-                        "text": ANALYSIS_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
+                max_tokens=max_tokens_override or 8192,
+                system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
+            )
+            _metrics.LLM_LATENCY.labels(surface="analysis", model=model).observe(
+                time.perf_counter() - t0
             )
 
             raw_text = response.content[0].text
@@ -130,9 +205,8 @@ class AIAnalysisService:
 
         except json.JSONDecodeError as exc:
             logger.error("AI analysis JSON parse error: %s — raw: %s", exc, raw_text)
-            # Return whatever we can salvage.
             return {
-                "summary": raw_text if "raw_text" in dir() else "",
+                "summary": raw_text,
                 "error": f"JSON parse error: {exc}",
             }
         except anthropic.APIError as exc:

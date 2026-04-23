@@ -1,7 +1,27 @@
+// ======== MIGRATION: one-time rename of legacy callsight-* localStorage keys ========
+(function migrateLegacyStorageKeys() {
+    try {
+        var legacyPrefix = 'callsight-';
+        var newPrefix = 'linda-';
+        var legacy = [];
+        for (var i = 0; i < localStorage.length; i++) {
+            var k = localStorage.key(i);
+            if (k && k.indexOf(legacyPrefix) === 0) legacy.push(k);
+        }
+        legacy.forEach(function(k) {
+            var newKey = newPrefix + k.slice(legacyPrefix.length);
+            if (localStorage.getItem(newKey) === null) {
+                localStorage.setItem(newKey, localStorage.getItem(k));
+            }
+            localStorage.removeItem(k);
+        });
+    } catch (e) { /* ignore */ }
+})();
+
 // ======== THEME (runs before DOMContentLoaded to avoid flash) ========
 (function initTheme() {
     try {
-        var stored = localStorage.getItem('callsight-theme');
+        var stored = localStorage.getItem('linda-theme');
         var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
         var theme = stored || (prefersLight ? 'light' : 'dark');
         if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
@@ -10,15 +30,16 @@
 
 // ======== API CONFIGURATION ========
 let API_CONNECTED = false;
-let API_KEY = localStorage.getItem('callsight-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
+let API_KEY = localStorage.getItem('linda-api-key') || 'csk__aQLNT3-D21Yiyv60ffeAA9L8XUKVi5HOB58f0c_1wg';
 
-// Channel icon SVG templates for dynamic row building
+// Channel icon SVG templates for dynamic row building.
+// SMS/WhatsApp icons removed while those channels are stubbed — the
+// backend still stores legacy rows with those channels, so unknown
+// channels fall back to the voice icon in the row renderer.
 const CHANNEL_ICONS = {
     voice: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
-    sms: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
     email: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>',
-    chat: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
-    whatsapp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>'
+    chat: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>'
 };
 
 /**
@@ -260,6 +281,9 @@ async function loadInteractions(channel) {
  */
 async function loadInteractionDetail(interactionId) {
     switchView('interaction-detail');
+    // Broadcast the id so admin-surfaces.js can unhide the follow-up
+    // email button (and future contextual actions).
+    window.currentInteractionId = interactionId;
 
     var data = await apiFetch('/interactions/' + interactionId);
     if (!data) return;
@@ -267,6 +291,21 @@ async function loadInteractionDetail(interactionId) {
     // Title
     var titleEl = document.querySelector('#interaction-detail .view-header h1');
     if (titleEl) titleEl.textContent = data.title || 'Interaction Detail';
+
+    // Post-call aggregate scores (sentiment, churn risk, health).  Fetched
+    // in parallel with the rest of the detail payload; renders score +
+    // top factors + recommendations via the public ScoreResult projection.
+    apiFetch('/interactions/' + interactionId + '/scores').then(function(s) {
+        if (!s) return;
+        renderPostCallScore('sentiment', s.sentiment, { scaleMax: 100 });
+        renderPostCallScore('churn_risk', s.churn_risk, { scaleMax: 100, invert: true });
+        renderPostCallScore('health', s.health_indicators, { scaleMax: 100 });
+    });
+    if (data.contact_id) {
+        apiFetch('/profiles/clients/' + data.contact_id).then(function(p) {
+            if (p) mergeClientProfileIntoScores(p);
+        });
+    }
 
     // AI Summary
     var summaryEl = document.querySelector('#interaction-detail .insight-card p');
@@ -751,6 +790,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var sections = document.querySelectorAll('.view');
     var viewContainer = document.getElementById('viewContainer');
 
+    var _previousView = null;
+
     window.switchView = function(viewId) {
         sections.forEach(function(s) { s.classList.remove('active'); });
         navItems.forEach(function(n) { n.classList.remove('active'); });
@@ -763,6 +804,21 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (viewContainer) viewContainer.scrollTop = 0;
 
+        // Live-call WebSocket lifecycle.  Opens only when connected; closes
+        // cleanly on any view-switch away so we don't leak connections.
+        if (_previousView === 'live-call' && viewId !== 'live-call') {
+            if (typeof window.closeLiveCall === 'function') window.closeLiveCall();
+        }
+        if (viewId === 'live-call' && _previousView !== 'live-call') {
+            if (typeof window.openLiveCall === 'function') {
+                // Session ID could be threaded through from a running call;
+                // for the demo we use a stable placeholder so the backend
+                // handler scopes Redis correctly.
+                window.openLiveCall('demo-' + Date.now());
+            }
+        }
+        _previousView = viewId;
+
         // Load API data when switching views (connected mode)
         if (API_CONNECTED) {
             if (viewId === 'interactions') loadInteractions();
@@ -770,7 +826,16 @@ document.addEventListener('DOMContentLoaded', function() {
             else if (viewId === 'contacts') loadContacts();
             else if (viewId === 'analytics') loadAnalytics();
             else if (viewId === 'call-library') loadLibrary();
+            else if (viewId === 'conversations' && typeof loadConversations === 'function') loadConversations();
         }
+
+        // Notify any listeners (e.g. linda-insights) that the view changed so
+        // they can refetch their data.
+        try {
+            window.dispatchEvent(
+                new CustomEvent('callsight:viewChanged', { detail: { view: viewId } })
+            );
+        } catch (e) { /* older browsers: ignore */ }
     };
 
     // Make loadInteractionDetail globally accessible
@@ -809,7 +874,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // ======== NAV GROUP COLLAPSE/EXPAND ========
     var navGroups = document.querySelectorAll('.nav-group');
-    var savedGroups = JSON.parse(localStorage.getItem('callsight-nav-groups') || '{}');
+    var savedGroups = JSON.parse(localStorage.getItem('linda-nav-groups') || '{}');
 
     navGroups.forEach(function(group) {
         var key = group.getAttribute('data-group');
@@ -828,7 +893,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 navGroups.forEach(function(g) {
                     states[g.getAttribute('data-group')] = g.classList.contains('collapsed') ? 'collapsed' : 'expanded';
                 });
-                localStorage.setItem('callsight-nav-groups', JSON.stringify(states));
+                localStorage.setItem('linda-nav-groups', JSON.stringify(states));
             });
         }
     });
@@ -839,7 +904,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var userRole = document.querySelector('.user-role');
 
     // Restore saved role
-    if (localStorage.getItem('callsight-role') === 'manager') {
+    if (localStorage.getItem('linda-role') === 'manager') {
         appLayout.classList.add('manager-mode');
         if (roleToggle) roleToggle.querySelector('[data-role="manager"]').classList.add('active');
         if (roleToggle) roleToggle.querySelector('[data-role="agent"]').classList.remove('active');
@@ -859,7 +924,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     appLayout.classList.remove('manager-mode');
                     if (userRole) userRole.textContent = 'Sales Agent';
                 }
-                localStorage.setItem('callsight-role', role);
+                localStorage.setItem('linda-role', role);
             });
         });
     }
@@ -964,7 +1029,7 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 document.documentElement.removeAttribute('data-theme');
             }
-            try { localStorage.setItem('callsight-theme', next); } catch (e) {}
+            try { localStorage.setItem('linda-theme', next); } catch (e) {}
         });
     }
 
@@ -974,7 +1039,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (sidebar) {
         // Restore saved state
         try {
-            if (localStorage.getItem('callsight-sidebar') === 'collapsed') {
+            if (localStorage.getItem('linda-sidebar') === 'collapsed') {
                 sidebar.classList.add('collapsed');
                 if (sidebarBtn) {
                     sidebarBtn.setAttribute('aria-pressed', 'true');
@@ -990,7 +1055,7 @@ document.addEventListener('DOMContentLoaded', function() {
             sidebarBtn.setAttribute('aria-pressed', String(collapsed));
             sidebarBtn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
             if (collapsed) addCollapsedAriaLabels();
-            try { localStorage.setItem('callsight-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
+            try { localStorage.setItem('linda-sidebar', collapsed ? 'collapsed' : 'expanded'); } catch (e) {}
         });
     }
 
@@ -1296,4 +1361,426 @@ function seededRandom(seed) {
         t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
         return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
+}
+
+// ======== CONVERSATIONS ========
+// Standalone module. Talks to /api/v1/conversations endpoints; when
+// the API is unreachable (demo mode) the list shows an empty-state row.
+
+var _currentConversationId = null;
+var _currentConversationProviderIntegrationId = null;
+var _currentReplyDefaults = null;
+// Attachments from the current thread the user can re-attach on reply.
+var _currentConversationAttachments = [];
+// Attachments the user has toggled on in the picker (by id).
+var _selectedReattachIds = new Set();
+
+async function loadConversations(filter) {
+    var body = document.getElementById('conversationsTableBody');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="8" class="empty-row">Loading…</td></tr>';
+    var qs = '';
+    if (filter && filter !== 'all') {
+        if (filter === 'waiting_agent') qs = '?status=waiting_agent';
+        else qs = '?classification=' + encodeURIComponent(filter);
+    }
+    var rows = await apiFetch('/conversations' + qs);
+    if (!rows || !rows.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty-row">No conversations yet — connect Gmail or Outlook in Integrations.</td></tr>';
+        return;
+    }
+    body.innerHTML = '';
+    rows.forEach(function(conv) {
+        var tr = document.createElement('tr');
+        tr.className = 'interaction-row';
+        tr.setAttribute('data-conv-id', conv.id);
+        var insights = conv.insights || {};
+        var latestSentiment = (insights.sentiment_series || []).slice(-1)[0];
+        var churn = insights.latest_churn_risk;
+        var signalBits = [];
+        if (churn && churn > 0.6) signalBits.push('<span class="badge risk">churn risk</span>');
+        if (insights.latest_upsell_score && insights.latest_upsell_score > 0.6) signalBits.push('<span class="badge upsell">upsell</span>');
+        tr.innerHTML =
+            '<td>' + (CHANNEL_ICONS[conv.channel] || CHANNEL_ICONS.email) + '</td>' +
+            '<td>' + escapeHtml(conv.subject || '(no subject)') + '</td>' +
+            '<td>' + escapeHtml(conv.classification || '—') + '</td>' +
+            '<td><span class="status-pill ' + (conv.status || 'open') + '">' + (conv.status || 'open') + '</span></td>' +
+            '<td>' + (conv.message_count || 0) + '</td>' +
+            '<td>' + formatRelativeDate(conv.last_message_at) + '</td>' +
+            '<td>' + (latestSentiment != null ? latestSentiment.toFixed(1) : '—') + '</td>' +
+            '<td>' + signalBits.join(' ') + '</td>';
+        tr.addEventListener('click', function() { openConversation(conv.id); });
+        body.appendChild(tr);
+    });
+}
+
+// Strip scripts/event handlers before dropping HTML into an iframe.
+// We render in a sandboxed iframe anyway, but scrubbing here keeps the
+// DOM clean and avoids loading external images silently.
+function _scrubEmailHtml(html) {
+    if (!html) return '';
+    return String(html)
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/ on[a-z]+="[^"]*"/gi, '')
+        .replace(/ on[a-z]+='[^']*'/gi, '');
+}
+
+function _renderMessageBody(m) {
+    if (m.body_html) {
+        var safe = _scrubEmailHtml(m.body_html);
+        // Sandboxed iframe with srcdoc — no JS, no top navigation,
+        // images allowed but lazy-loaded.
+        var quoted = safe.replace(/"/g, '&quot;');
+        return '<iframe class="conv-html-body" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy" srcdoc="' + quoted + '"></iframe>';
+    }
+    return '<pre class="conv-body">' + escapeHtml((m.raw_text || '').slice(0, 8000)) + '</pre>';
+}
+
+function _renderAttachments(atts) {
+    if (!atts || !atts.length) return '';
+    var rows = atts.map(function(a) {
+        var size = a.size_bytes ? ' · ' + _formatBytes(a.size_bytes) : '';
+        var link = a.has_bytes
+            ? '<a href="/api/v1/attachments/' + a.id + '/download" target="_blank" rel="noopener">' + escapeHtml(a.filename || 'attachment') + '</a>'
+            : '<span class="muted">' + escapeHtml(a.filename || 'attachment') + ' <em>(bytes unavailable)</em></span>';
+        return '<li>' + link + size + '</li>';
+    }).join('');
+    return '<ul class="conv-attachments">' + rows + '</ul>';
+}
+
+function _formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+async function openConversation(conversationId) {
+    _currentConversationId = conversationId;
+    _currentReplyDefaults = null;
+    _selectedReattachIds = new Set();
+    window.switchView('conversation-detail');
+    var data = await apiFetch('/conversations/' + conversationId);
+    if (!data) return;
+    document.getElementById('conversationDetailSubject').textContent = data.subject || '(no subject)';
+    document.getElementById('conversationDetailMeta').textContent =
+        (data.classification || 'unclassified') + ' · ' + (data.status || 'open') +
+        ' · ' + (data.message_count || 0) + ' messages';
+
+    var threadEl = document.getElementById('conversationThread');
+    threadEl.innerHTML = '';
+    var allAttachments = [];
+    (data.messages || []).forEach(function(m) {
+        (m.attachments || []).forEach(function(a) { allAttachments.push(a); });
+        var div = document.createElement('div');
+        div.className = 'conv-message ' + (m.direction === 'inbound' ? 'inbound' : 'outbound');
+        div.innerHTML =
+            '<div class="conv-message-header">' +
+                '<span class="conv-who">' + (m.direction === 'inbound' ? 'Customer' : 'Agent') + '</span>' +
+                '<span class="conv-from">' + escapeHtml(m.from_address || '') + '</span>' +
+                '<span class="conv-when">' + formatRelativeDate(m.created_at) + '</span>' +
+            '</div>' +
+            '<div class="conv-subject">' + escapeHtml(m.subject || '') + '</div>' +
+            _renderMessageBody(m) +
+            _renderAttachments(m.attachments || []);
+        threadEl.appendChild(div);
+    });
+    _currentConversationAttachments = allAttachments.filter(function(a) { return a.has_bytes; });
+
+    var insightsEl = document.getElementById('conversationInsights');
+    var insights = data.insights || {};
+    insightsEl.innerHTML =
+        '<div><label>Latest summary</label><p>' + escapeHtml(insights.latest_summary || '—') + '</p></div>' +
+        '<div><label>Churn risk</label><p>' + (insights.latest_churn_risk != null ? insights.latest_churn_risk.toFixed(2) : '—') + '</p></div>' +
+        '<div><label>Upsell score</label><p>' + (insights.latest_upsell_score != null ? insights.latest_upsell_score.toFixed(2) : '—') + '</p></div>';
+
+    // Reset draft panel
+    document.getElementById('conversationDraftOutput').hidden = true;
+    document.getElementById('conversationDraftInstructions').value = '';
+    document.getElementById('conversationDraftTo').value = '';
+    document.getElementById('conversationDraftCc').value = '';
+    document.getElementById('conversationDraftBcc').value = '';
+
+    // Prefetch reply defaults so the Reply-All button can fire instantly.
+    _currentReplyDefaults = await apiFetch('/conversations/' + conversationId + '/reply-defaults');
+
+    // Look up the first email-capable integration so Send has a target.
+    var integrations = await apiFetch('/oauth/status');
+    if (integrations && integrations.integrations && integrations.integrations.length) {
+        var first = integrations.integrations.find(function(i) {
+            return i.provider === 'google' || i.provider === 'microsoft';
+        });
+        _currentConversationProviderIntegrationId = first ? first.id : null;
+    } else {
+        _currentConversationProviderIntegrationId = null;
+    }
+}
+
+function _populateAttachmentPicker() {
+    var host = document.getElementById('conversationAttachPicker');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!_currentConversationAttachments.length) {
+        host.innerHTML = '<span class="muted">No attachments in this thread.</span>';
+        return;
+    }
+    _currentConversationAttachments.forEach(function(a) {
+        var id = 'reattach_' + a.id;
+        var wrap = document.createElement('label');
+        wrap.className = 'conv-attach-option';
+        wrap.innerHTML =
+            '<input type="checkbox" value="' + a.id + '" ' + (_selectedReattachIds.has(a.id) ? 'checked' : '') + '> ' +
+            escapeHtml(a.filename || 'attachment') + ' <span class="muted">' + _formatBytes(a.size_bytes || 0) + '</span>';
+        wrap.querySelector('input').addEventListener('change', function(e) {
+            if (e.target.checked) _selectedReattachIds.add(a.id);
+            else _selectedReattachIds.delete(a.id);
+        });
+        host.appendChild(wrap);
+    });
+}
+
+function _prefillRecipientsFromDefaults(mode) {
+    if (!_currentReplyDefaults) return;
+    var toEl = document.getElementById('conversationDraftTo');
+    var ccEl = document.getElementById('conversationDraftCc');
+    var subjEl = document.getElementById('conversationDraftSubject');
+    if (mode === 'reply_all') {
+        toEl.value = (_currentReplyDefaults.reply_all_to || []).join(', ');
+        ccEl.value = (_currentReplyDefaults.reply_all_cc || []).join(', ');
+    } else {
+        toEl.value = (_currentReplyDefaults.reply_to || []).join(', ');
+        ccEl.value = '';
+    }
+    if (!subjEl.value) subjEl.value = _currentReplyDefaults.subject || '';
+}
+
+async function draftConversationReply() {
+    if (!_currentConversationId) return;
+    var instructionsEl = document.getElementById('conversationDraftInstructions');
+    var btn = document.getElementById('conversationDraftBtn');
+    btn.disabled = true;
+    btn.textContent = 'Drafting…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/draft-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ extra_instructions: instructionsEl.value || null })
+        });
+        if (!resp) { btn.textContent = 'Generate draft'; btn.disabled = false; return; }
+        document.getElementById('conversationDraftOutput').hidden = false;
+        document.getElementById('conversationDraftSubject').value = resp.subject || '';
+        document.getElementById('conversationDraftBody').value = resp.body || '';
+        document.getElementById('conversationDraftRationale').textContent = resp.rationale || '';
+        document.getElementById('conversationDraftFlag').hidden = !resp.requires_human_review;
+        _prefillRecipientsFromDefaults('reply');
+        _populateAttachmentPicker();
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate draft';
+    }
+}
+
+function prepareReplyAll() {
+    if (!_currentConversationId) return;
+    document.getElementById('conversationDraftOutput').hidden = false;
+    var bodyEl = document.getElementById('conversationDraftBody');
+    if (!bodyEl.value) bodyEl.value = '';
+    _prefillRecipientsFromDefaults('reply_all');
+    if (!document.getElementById('conversationDraftSubject').value && _currentReplyDefaults) {
+        document.getElementById('conversationDraftSubject').value = _currentReplyDefaults.subject || '';
+    }
+    _populateAttachmentPicker();
+}
+
+function _splitAddresses(raw) {
+    return (raw || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+}
+
+async function sendConversationReply() {
+    if (!_currentConversationId) return;
+    if (!_currentConversationProviderIntegrationId) {
+        alert('Connect Gmail or Outlook first (Integrations view).');
+        return;
+    }
+    var to = _splitAddresses(document.getElementById('conversationDraftTo').value);
+    var cc = _splitAddresses(document.getElementById('conversationDraftCc').value);
+    var bcc = _splitAddresses(document.getElementById('conversationDraftBcc').value);
+    var subject = document.getElementById('conversationDraftSubject').value;
+    var body = document.getElementById('conversationDraftBody').value;
+    if (!to.length) { alert('Add at least one recipient.'); return; }
+
+    var attachments = Array.from(_selectedReattachIds).map(function(id) {
+        return { attachment_id: id };
+    });
+
+    var btn = document.getElementById('conversationSendBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    try {
+        var resp = await apiFetch('/conversations/' + _currentConversationId + '/send-reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subject: subject,
+                body: body,
+                to: to,
+                cc: cc,
+                bcc: bcc,
+                integration_id: _currentConversationProviderIntegrationId,
+                attachments: attachments
+            })
+        });
+        if (resp) {
+            btn.textContent = 'Sent ✓';
+            setTimeout(function() { openConversation(_currentConversationId); }, 500);
+        } else {
+            btn.textContent = 'Send reply';
+        }
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Wire UI events once the DOM is ready.
+document.addEventListener('DOMContentLoaded', function() {
+    var draftBtn = document.getElementById('conversationDraftBtn');
+    if (draftBtn) draftBtn.addEventListener('click', draftConversationReply);
+    var sendBtn = document.getElementById('conversationSendBtn');
+    if (sendBtn) sendBtn.addEventListener('click', sendConversationReply);
+    var replyAllBtn = document.getElementById('conversationReplyAllBtn');
+    if (replyAllBtn) replyAllBtn.addEventListener('click', prepareReplyAll);
+    document.querySelectorAll('[data-conv-filter]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('[data-conv-filter]').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            loadConversations(btn.getAttribute('data-conv-filter'));
+        });
+    });
+});
+
+window.loadConversations = loadConversations;
+window.openConversation = openConversation;
+
+
+// ── Post-call aggregate score rendering ─────────────────────────────────
+
+/**
+ * Render one score card (sentiment / churn_risk / health) from the
+ * public ScoreResult projection returned by /interactions/{id}/scores.
+ *
+ * @param {string} kind  — selector key: 'sentiment' | 'churn_risk' | 'health'
+ * @param {object} payload — {value, confidence, top_factors[], recommendations[], scorer_version}
+ * @param {object} opts — {scaleMax: 100, invert: false}
+ */
+function renderPostCallScore(kind, payload, opts) {
+    if (!payload) return;
+    opts = opts || {};
+    var card = document.querySelector('[data-scores="' + kind + '"]');
+    if (!card) return;
+
+    card.hidden = false;
+
+    var valueEl = card.querySelector('[data-scores-value]');
+    if (valueEl) {
+        var val = payload.value != null ? Math.round(payload.value) : null;
+        valueEl.textContent = val == null ? '—' : val;
+        valueEl.classList.remove('good', 'warn', 'bad');
+        // Colour the badge based on the 0..scaleMax range.  For churn_risk
+        // we invert: higher value = worse.
+        var normalized = val == null ? 50 : (val / (opts.scaleMax || 100)) * 100;
+        if (opts.invert) normalized = 100 - normalized;
+        if (normalized >= 70)      valueEl.classList.add('good');
+        else if (normalized >= 40) valueEl.classList.add('warn');
+        else                        valueEl.classList.add('bad');
+    }
+
+    var confEl = card.querySelector('[data-scores-confidence]');
+    if (confEl) {
+        if (payload.confidence == null) {
+            confEl.textContent = '';
+        } else {
+            confEl.textContent = 'Confidence ' + Math.round(payload.confidence * 100) + '%';
+        }
+    }
+
+    var caveatEl = card.querySelector('[data-scores-caveat]');
+    if (caveatEl) {
+        // Churn model "learning" caveat — present in scorer_version == 'churn_cox' + status flag.
+        // The /interactions/{id}/scores projection doesn't currently return
+        // the churn Cox status, but if it's ever added via
+        // ``payload.caveat``, render it here.
+        var caveat = payload.caveat || null;
+        if (caveat) {
+            caveatEl.hidden = false;
+            caveatEl.textContent = caveat;
+        } else {
+            caveatEl.hidden = true;
+        }
+    }
+
+    var factorsEl = card.querySelector('[data-scores-factors]');
+    if (factorsEl) {
+        factorsEl.innerHTML = '';
+        (payload.top_factors || []).forEach(function(f) {
+            var row = document.createElement('div');
+            row.className = 'score-factor ' + (f.direction === '+' ? 'positive' : 'negative');
+            row.innerHTML =
+                '<span class="score-factor-dir">' + (f.direction === '+' ? '+' : '−') + '</span>' +
+                '<span class="score-factor-label">' + escapeHtml(f.label || '') + '</span>' +
+                (f.why ? ' <span class="score-factor-why">' + escapeHtml(f.why) + '</span>' : '') +
+                '<span class="score-factor-mag">' + (f.magnitude_pct != null ? Math.round(f.magnitude_pct) + '%' : '') + '</span>';
+            factorsEl.appendChild(row);
+        });
+    }
+
+    var recsEl = card.querySelector('[data-scores-recs]');
+    if (recsEl) {
+        recsEl.innerHTML = '';
+        (payload.recommendations || []).forEach(function(r) {
+            var row = document.createElement('div');
+            row.className = 'score-rec';
+            row.innerHTML =
+                '<span class="score-rec-priority ' + escapeHtml(r.priority || 'low') + '">' + escapeHtml(r.priority || '') + '</span>' +
+                '<span class="score-rec-action">' + escapeHtml(r.action || '') + '</span>' +
+                (r.expected_impact ? ' <span class="score-factor-mag">' + escapeHtml(r.expected_impact) + '</span>' : '');
+            recsEl.appendChild(row);
+        });
+    }
+}
+
+/**
+ * Pull richer context off the ClientProfile into the churn + health cards:
+ * narrative summary goes into the confidence line, client-level top_factors
+ * supplement the per-call factors when those are thin.  Idempotent.
+ */
+function mergeClientProfileIntoScores(profile) {
+    if (!profile) return;
+    // Promote the account-level summary onto the health card's confidence
+    // line so the single post-call view carries both interaction + account
+    // context without a second view switch.
+    var healthCard = document.querySelector('[data-scores="health"]');
+    if (healthCard && profile.summary) {
+        var confEl = healthCard.querySelector('[data-scores-confidence]');
+        if (confEl) {
+            confEl.textContent = profile.summary;
+        }
+    }
+    // If the churn card got no top_factors back from /scores but the
+    // ClientProfile has them, use those instead.
+    var churnCard = document.querySelector('[data-scores="churn_risk"]');
+    if (churnCard) {
+        var factorsEl = churnCard.querySelector('[data-scores-factors]');
+        if (factorsEl && !factorsEl.children.length && (profile.top_factors || []).length) {
+            (profile.top_factors || []).slice(0, 3).forEach(function(f) {
+                var row = document.createElement('div');
+                row.className = 'score-factor ' + (f.direction === '+' ? 'positive' : 'negative');
+                row.innerHTML =
+                    '<span class="score-factor-dir">' + (f.direction === '+' ? '+' : '−') + '</span>' +
+                    '<span class="score-factor-label">' + escapeHtml(f.label || '') + '</span>' +
+                    (f.why ? ' <span class="score-factor-why">' + escapeHtml(f.why) + '</span>' : '') +
+                    '<span class="score-factor-mag">' + (f.magnitude_pct != null ? Math.round(f.magnitude_pct) + '%' : '') + '</span>';
+                factorsEl.appendChild(row);
+            });
+        }
+    }
 }

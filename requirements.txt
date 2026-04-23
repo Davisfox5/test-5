@@ -1,4 +1,4 @@
-# CallSight AI — Backend Dependencies
+# LINDA — Backend Dependencies
 # Python 3.12+
 
 # === Web Framework ===
@@ -21,6 +21,10 @@ pyannote.audio>=3.1               # Self-hosted speaker diarization
 # === Audio Processing ===
 ffmpeg-python>=0.2                # Audio normalization
 
+# === Document Extraction (KB upload) ===
+pypdf>=4                          # PDF text extraction for /kb/upload
+python-docx>=1                    # DOCX text extraction for /kb/upload
+
 # === Database ===
 asyncpg>=0.29                     # Neon PostgreSQL async driver
 sqlalchemy[asyncio]>=2.0
@@ -29,6 +33,9 @@ alembic>=1.13
 # === Cache / Message Queue ===
 redis>=5                          # ElastiCache — pub/sub, sessions, Celery broker
 celery[redis]>=5                  # Async task queue
+
+# === Observability ===
+prometheus-client>=0.20            # /metrics for the continuous-improvement system
 
 # === Vector DB ===
 qdrant-client>=1.9                # Knowledge base RAG
@@ -39,11 +46,17 @@ elasticsearch[async]>=8           # Transcript search across all interactions
 # === Auth ===
 clerk-backend-api>=1              # Managed auth (transitional)
 python-jose[cryptography]>=3.3   # JWT validation
+bcrypt>=4                         # Password hashing for per-user login
+email-validator>=2                # Pydantic EmailStr validator
+
+# === Token encryption at rest (Fernet) ===
+cryptography>=42
 
 # === OAuth / Google ===
 google-auth>=2
 google-api-python-client>=2
 google-auth-oauthlib>=1
+requests>=2.31                    # used by Google token refresh
 
 # === OAuth / Microsoft ===
 msal>=1.28
@@ -68,4 +81,6 @@ pydantic-settings>=2.0
 # === Testing ===
 pytest>=8
 pytest-asyncio>=0.23
-httpx                             # TestClient
+httpx                             # TestClient / AsyncClient
+aiosqlite>=0.19                   # in-memory DB for integration tests
+asgi-lifespan>=2.1                # lifespan mgmt when mounting AsyncClient

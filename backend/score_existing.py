@@ -2,7 +2,7 @@
 """
 Targeted scorecard-only runner.
 
-Scores every analyzed interaction for the CallSight demo tenant that doesn't
+Scores every analyzed interaction for the Linda demo tenant that doesn't
 already have an interaction_scores row. Uses the fixed ScorecardService
 (with JSON fence stripping). Cheap — uses Claude Haiku only.
 """
@@ -92,10 +92,10 @@ async def main():
     cur = conn.cursor()
 
     # Get tenant
-    cur.execute("SELECT id FROM tenants WHERE slug = 'callsight-demo'")
+    cur.execute("SELECT id FROM tenants WHERE slug = 'linda-demo'")
     row = cur.fetchone()
     if not row:
-        print("No callsight-demo tenant found.")
+        print("No linda-demo tenant found.")
         return
     tenant_id = str(row[0])
 

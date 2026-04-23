@@ -1,5 +1,5 @@
 /**
- * CallSight AI — Sandbox Demo Interactions
+ * LINDA — Sandbox Demo Interactions
  * Wires up every interactive control in demo.html so buttons and
  * inputs do exactly what they say, even when the backend is absent.
  */
@@ -947,7 +947,7 @@
             openModal({
                 title: row ? 'Edit Webhook' : 'Add Webhook',
                 body:
-                    '<label>Endpoint URL<input type="url" id="whUrl" value="' + esc(existingUrl) + '" placeholder="https://hooks.yoursite.com/callsight"></label>' +
+                    '<label>Endpoint URL<input type="url" id="whUrl" value="' + esc(existingUrl) + '" placeholder="https://hooks.yoursite.com/linda"></label>' +
                     '<label>Events (comma-separated)<input type="text" id="whEvents" value="' + esc(existingEvents || 'call.completed, transcript.ready') + '"></label>' +
                     '<label style="flex-direction:row;align-items:center;gap:.5rem"><input type="checkbox" id="whActive" checked> Active</label>',
                 actions: [
@@ -998,7 +998,7 @@
                     title: 'New Contact',
                     body:
                         '<label>Full name<input type="text" id="cName" placeholder="Jane Doe"></label>' +
-                        '<label>Company<input type="text" id="cCompany" placeholder="Acme Corp"></label>' +
+                        '<label>Company<input type="text" id="cCustomer" placeholder="Acme Corp"></label>' +
                         '<label>Phone<input type="text" id="cPhone" placeholder="+1 (555) 123-4567"></label>' +
                         '<label>Email<input type="email" id="cEmail" placeholder="jane@acme.com"></label>',
                     actions: [
@@ -1009,7 +1009,7 @@
                             onClick: function (overlay) {
                                 var name = (overlay.querySelector('#cName') || {}).value;
                                 if (!name) { showToast('Name required', 'error'); return false; }
-                                var company = (overlay.querySelector('#cCompany') || {}).value || '—';
+                                var company = (overlay.querySelector('#cCustomer') || {}).value || '—';
                                 var phone = (overlay.querySelector('#cPhone') || {}).value || '—';
                                 var email = (overlay.querySelector('#cEmail') || {}).value || '—';
                                 var tbody = document.querySelector('#contacts .data-table tbody');
@@ -1157,7 +1157,7 @@
     });
 
     // Expose helpers for debugging / potential reuse
-    window.CallsightDemo = {
+    window.LindaDemo = {
         showToast: showToast,
         openModal: openModal,
         closeModal: closeGenericModal,

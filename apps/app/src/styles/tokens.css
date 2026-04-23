@@ -1,0 +1,6 @@
+/*
+ * Re-exports the shared LINDA design tokens. The actual token
+ * declarations live in website/css/tokens.css so the public demo and
+ * this SPA resolve to the same values without duplication.
+ */
+@import "../../../../website/css/tokens.css";

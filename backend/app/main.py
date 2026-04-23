@@ -1,4 +1,4 @@
-"""CallSight AI — FastAPI application entry point."""
+"""LINDA — FastAPI application entry point."""
 
 from __future__ import annotations
 
@@ -58,6 +58,29 @@ from backend.app.api.analytics import router as analytics_router  # noqa: E402
 from backend.app.api.knowledge_base import router as kb_router  # noqa: E402
 from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
+from backend.app.api.profiles import router as profiles_router  # noqa: E402
+from backend.app.api.outcomes import router as outcomes_router  # noqa: E402
+from backend.app.api.corrections import router as corrections_router  # noqa: E402
+from backend.app.api.quality import router as quality_router  # noqa: E402
+from backend.app.api.ws_tickets import router as ws_tickets_router  # noqa: E402
+from backend.app.api.oauth import router as oauth_router  # noqa: E402
+from backend.app.api.conversations import router as conversations_router  # noqa: E402
+from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
+from backend.app.api.email_push import router as email_push_router  # noqa: E402
+from backend.app.api.feedback import router as feedback_router  # noqa: E402
+from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
+from backend.app.api.experiments import router as experiments_router  # noqa: E402
+from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
+from backend.app.api.admin import router as admin_router  # noqa: E402
+from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
+from backend.app.api.crm import router as crm_router  # noqa: E402
+from backend.app.api.emails import router as emails_router  # noqa: E402
+from backend.app.api.onboarding import router as onboarding_router  # noqa: E402
+from backend.app.api.stripe_webhook import router as stripe_router  # noqa: E402
+from backend.app.api.telephony import router as telephony_router  # noqa: E402
+from backend.app.api.chat import router as chat_router  # noqa: E402
+from backend.app.api.me import router as me_router  # noqa: E402
+from backend.app.api.signup import router as signup_router  # noqa: E402
 
 app.include_router(health_router, prefix=settings.API_V1_PREFIX, tags=["health"])
 app.include_router(interactions_router, prefix=settings.API_V1_PREFIX, tags=["interactions"])
@@ -69,15 +92,69 @@ app.include_router(contacts_router, prefix=settings.API_V1_PREFIX, tags=["contac
 app.include_router(scorecards_router, prefix=settings.API_V1_PREFIX, tags=["scorecards"])
 app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analytics"])
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
+from fastapi import Depends as _Depends  # noqa: E402
+from backend.app.auth import require_role as _require_role  # noqa: E402
+
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
+app.include_router(profiles_router, prefix=settings.API_V1_PREFIX, tags=["profiles"])
+app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcomes"])
+app.include_router(corrections_router, prefix=settings.API_V1_PREFIX, tags=["corrections"])
+app.include_router(quality_router, prefix=settings.API_V1_PREFIX, tags=["quality"])
+app.include_router(ws_tickets_router, prefix=settings.API_V1_PREFIX, tags=["ws-tickets"])
+app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
+app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
+app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
+app.include_router(feedback_router, prefix=settings.API_V1_PREFIX, tags=["feedback"])
+app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["evaluation"])
+app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])
+app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
+
+# Every /admin/* endpoint requires an admin principal.
+app.include_router(
+    admin_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["admin"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
+app.include_router(
+    crm_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["crm"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(emails_router, prefix=settings.API_V1_PREFIX, tags=["emails"])
+app.include_router(onboarding_router, prefix=settings.API_V1_PREFIX, tags=["onboarding"])
+# Telephony ingress (Twilio voice webhook + Media Streams WS + outbound dial).
+app.include_router(telephony_router, prefix=settings.API_V1_PREFIX, tags=["telephony"])
+# Stripe: webhook unauthenticated (Stripe signature); admin `link` gated per-endpoint.
+app.include_router(stripe_router, prefix=settings.API_V1_PREFIX, tags=["billing"])
+app.include_router(
+    webhooks_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["webhooks"],
+    dependencies=[_Depends(_require_role("admin"))],
+)
+app.include_router(chat_router, prefix=settings.API_V1_PREFIX, tags=["chat"])
+app.include_router(me_router, prefix=settings.API_V1_PREFIX, tags=["me"])
+app.include_router(signup_router, prefix=settings.API_V1_PREFIX, tags=["signup"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 
 app.include_router(websocket_router, tags=["websocket"])
 
-# Routers to be added as built:
-# app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
-# app.include_router(webhooks_router, prefix=settings.API_V1_PREFIX, tags=["webhooks"])
+
+# ── Prometheus /metrics ──────────────────────────────────
+from fastapi import Response  # noqa: E402
+
+from backend.app.services import metrics as _ai_metrics  # noqa: E402
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> Response:
+    payload, content_type = _ai_metrics.metrics_handler()
+    return Response(content=payload, media_type=content_type)
+
 
 # ── Static Files (minimal demo UI) ───────────────────────
 app.mount("/", StaticFiles(directory="website", html=True), name="website")

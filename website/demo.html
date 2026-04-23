@@ -3,12 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CallSight AI — Interactive Demo Dashboard</title>
+    <title>LINDA — Interactive Demo Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/demo.css">
+    <link rel="stylesheet" href="css/ask-linda.css">
+    <link rel="stylesheet" href="css/demo-gate.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body class="demo-body">
@@ -17,14 +19,21 @@
         <!-- Sidebar -->
         <aside class="app-sidebar" id="appSidebar" aria-label="Primary navigation">
             <div class="sidebar-brand">
-                <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-                    <rect width="32" height="32" rx="8" fill="url(#logo-grad-demo)"/>
-                    <path d="M10 22V16C10 12.6863 12.6863 10 16 10V10C19.3137 10 22 12.6863 22 16V22" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-                    <circle cx="16" cy="16" r="2" fill="white"/>
-                    <path d="M16 18V22" stroke="white" stroke-width="2" stroke-linecap="round"/>
-                    <defs><linearGradient id="logo-grad-demo" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6366F1"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs>
+                <svg class="logo-mark" width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="linda-mark-grad" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#6366F1"/>
+                            <stop offset="100%" stop-color="#8B5CF6"/>
+                        </linearGradient>
+                        <linearGradient id="linda-mark-grad-ghost" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#6366F1" stop-opacity="0.3"/>
+                            <stop offset="100%" stop-color="#8B5CF6" stop-opacity="0.3"/>
+                        </linearGradient>
+                    </defs>
+                    <ellipse cx="10" cy="20" rx="6" ry="7" fill="url(#linda-mark-grad-ghost)"/>
+                    <ellipse cx="19" cy="15" rx="9" ry="11" fill="url(#linda-mark-grad)"/>
                 </svg>
-                <span class="logo-text">CallSight<span class="logo-ai">AI</span></span>
+                <span class="logo-text">LINDA</span>
                 <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" type="button" aria-label="Collapse sidebar" aria-pressed="false">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
                 </button>
@@ -72,6 +81,11 @@
                             <span class="nav-icon">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                             </span> Action Items
+                        </a>
+                        <a href="#" class="nav-item" data-view="conversations">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                            </span> Conversations
                         </a>
                         <a href="#" class="nav-item" data-view="contacts">
                             <span class="nav-icon">
@@ -127,6 +141,16 @@
                             <span class="nav-icon">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
                             </span> Knowledge Base
+                        </a>
+                        <a href="#" class="nav-item" data-view="linda-insights">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                            </span> LINDA Insights
+                        </a>
+                        <a href="#" class="nav-item" data-view="onboarding">
+                            <span class="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            </span> Onboarding
                         </a>
                         <a href="#" class="nav-item" data-view="integrations">
                             <span class="nav-icon">
@@ -185,7 +209,10 @@
                 <!-- ============================================================ -->
                 <section class="view active" id="interactions">
                     <div class="view-header">
-                        <h1>Interactions</h1>
+                        <div>
+                            <h1>Interactions</h1>
+                            <p class="view-kicker">Here's your week at a glance — I've flagged the calls worth a second look.</p>
+                        </div>
                         <div class="date-picker">Last 30 Days ▾</div>
                     </div>
 
@@ -228,10 +255,8 @@
                     <div class="channel-tabs">
                         <button class="channel-tab active" data-channel="all">All</button>
                         <button class="channel-tab" data-channel="voice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Calls</button>
-                        <button class="channel-tab" data-channel="sms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> SMS</button>
                         <button class="channel-tab" data-channel="email"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg> Email</button>
                         <button class="channel-tab" data-channel="chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Chat</button>
-                        <button class="channel-tab" data-channel="whatsapp"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> WhatsApp</button>
                     </div>
 
                     <!-- Full-width interactions table -->
@@ -330,6 +355,98 @@
                 </section>
 
                 <!-- ============================================================ -->
+                <!-- CONVERSATIONS VIEW (email threads) -->
+                <!-- ============================================================ -->
+                <section class="view" id="conversations">
+                    <div class="view-header">
+                        <h1>Conversations</h1>
+                        <div class="date-picker">Email threads &middot; last 30 days</div>
+                    </div>
+
+                    <div class="action-items-filter-bar">
+                        <button class="action-filter-btn active" data-conv-filter="all">All</button>
+                        <button class="action-filter-btn" data-conv-filter="sales">Sales</button>
+                        <button class="action-filter-btn" data-conv-filter="support">Support</button>
+                        <button class="action-filter-btn" data-conv-filter="it">IT</button>
+                        <button class="action-filter-btn" data-conv-filter="waiting_agent">Waiting on us</button>
+                    </div>
+
+                    <div class="interactions-table-wrap">
+                        <table class="interactions-table" id="conversationsTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px" aria-label="Channel">Ch.</th>
+                                    <th>Subject</th>
+                                    <th>Classification</th>
+                                    <th>Status</th>
+                                    <th>Msgs</th>
+                                    <th>Last message</th>
+                                    <th>Sentiment</th>
+                                    <th>Signals</th>
+                                </tr>
+                            </thead>
+                            <tbody id="conversationsTableBody">
+                                <tr><td colspan="8" class="empty-row">No conversations yet — connect Gmail or Outlook in Integrations.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- CONVERSATION DETAIL VIEW (thread + AI draft) -->
+                <!-- ============================================================ -->
+                <section class="view" id="conversation-detail">
+                    <div class="view-header">
+                        <div class="breadcrumb">
+                            <a href="#" class="back-link" data-back="conversations">← Back to Conversations</a>
+                        </div>
+                        <h1 id="conversationDetailSubject">Conversation</h1>
+                        <div class="conv-meta" id="conversationDetailMeta"></div>
+                    </div>
+
+                    <div class="conv-layout">
+                        <div class="conv-thread" id="conversationThread">
+                            <!-- Populated by JS -->
+                        </div>
+
+                        <aside class="conv-sidebar">
+                            <div class="conv-panel">
+                                <h3>AI Draft Reply</h3>
+                                <textarea id="conversationDraftInstructions" rows="2" placeholder="Optional: extra instructions to the drafting agent"></textarea>
+                                <div class="conv-draft-actions" style="margin-bottom:0.5rem;">
+                                    <button class="btn btn-primary" id="conversationDraftBtn" type="button">Generate draft</button>
+                                    <button class="btn btn-ghost" id="conversationReplyAllBtn" type="button">Reply all</button>
+                                </div>
+                                <div class="conv-draft" id="conversationDraftOutput" hidden>
+                                    <label>To</label>
+                                    <input type="text" id="conversationDraftTo" placeholder="comma-separated">
+                                    <label>Cc</label>
+                                    <input type="text" id="conversationDraftCc" placeholder="comma-separated (optional)">
+                                    <label>Bcc</label>
+                                    <input type="text" id="conversationDraftBcc" placeholder="comma-separated (optional)">
+                                    <label>Subject</label>
+                                    <input type="text" id="conversationDraftSubject">
+                                    <label>Body</label>
+                                    <textarea id="conversationDraftBody" rows="10"></textarea>
+                                    <label>Re-attach from this thread</label>
+                                    <div id="conversationAttachPicker" class="conv-attach-picker"></div>
+                                    <p class="conv-draft-rationale" id="conversationDraftRationale"></p>
+                                    <div class="conv-draft-actions">
+                                        <button class="btn btn-secondary" id="conversationSendBtn" type="button">Send reply</button>
+                                        <span class="conv-draft-flag" id="conversationDraftFlag" hidden>⚠️ Marked for human review</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="conv-panel">
+                                <h3>Insights</h3>
+                                <div id="conversationInsights" class="conv-insights"></div>
+                            </div>
+                        </aside>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
                 <!-- 2. INTERACTION DETAIL VIEW -->
                 <!-- ============================================================ -->
                 <section class="view" id="interaction-detail">
@@ -338,6 +455,39 @@
                             <a href="#" class="back-link" data-back="interactions">← Back to Interactions</a>
                         </div>
                         <h1><!-- Populated by JS --></h1>
+                        <div class="interaction-actions">
+                            <button type="button" class="li-primary-btn" id="followUpEmailBtn" hidden>Send follow-up email</button>
+                        </div>
+                    </div>
+
+                    <!-- Follow-up email composer — hidden by default,
+                         shown when the agent clicks "Send follow-up email"
+                         on an analyzed interaction. Pre-filled with the
+                         AI draft and the contact's email, editable before
+                         sending via the connected Gmail/Outlook. -->
+                    <div class="followup-composer-overlay" id="followupOverlay" hidden aria-modal="true" role="dialog">
+                        <form class="followup-composer" id="followupForm">
+                            <header class="followup-head">
+                                <h2>Follow-up email</h2>
+                                <button type="button" class="seat-modal-close" id="followupClose" aria-label="Close">×</button>
+                            </header>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">To</span>
+                                <input type="email" id="followupTo" required>
+                            </label>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Subject</span>
+                                <input type="text" id="followupSubject" required>
+                            </label>
+                            <label class="tenant-kv-field followup-body-field">
+                                <span class="tenant-kv-label">Body</span>
+                                <textarea id="followupBody" rows="12" required></textarea>
+                            </label>
+                            <div class="followup-actions">
+                                <span class="followup-status" id="followupStatus"></span>
+                                <button type="submit" class="li-primary-btn" id="followupSend">Send</button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="call-player-grid">
@@ -366,27 +516,65 @@
                         </div>
 
                         <div class="insights-column">
-                            <div class="insight-card">
-                                <h3>AI Summary</h3>
-                                <p><!-- Populated by JS --></p>
+                            <!-- Post-call aggregate scores (sentiment, churn risk, health).
+                                 Populated from /interactions/{id}/scores + /profiles/clients/{id}.
+                                 Each card shows {value, confidence, top_factors[3], recommendations[3]}. -->
+                            <div class="insight-card score-card" data-scores="sentiment" hidden>
+                                <div class="score-card-header">
+                                    <h3>Sentiment</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="churn_risk" hidden>
+                                <div class="score-card-header">
+                                    <h3>Churn Risk</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-caveat" data-scores-caveat hidden></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
+                            </div>
+
+                            <div class="insight-card score-card" data-scores="health" hidden>
+                                <div class="score-card-header">
+                                    <h3>Account Health</h3>
+                                    <span class="score-badge" data-scores-value></span>
+                                </div>
+                                <div class="score-confidence" data-scores-confidence></div>
+                                <div class="score-factors" data-scores-factors></div>
+                                <div class="score-recs" data-scores-recs></div>
                             </div>
 
                             <div class="insight-card">
-                                <h3>Sentiment Trajectory</h3>
+                                <h3>Linda's Summary</h3>
+                                <p><!-- Populated by JS --></p>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="summary"></div>
+                                <div data-cs-rating data-cs-surface="analysis"></div>
+                            </div>
+
+                            <div class="insight-card">
+                                <h3>How the mood shifted</h3>
                                 <div class="sentiment-over-time">
                                     <!-- Populated by JS -->
                                 </div>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="sentiment"></div>
                             </div>
 
                             <div class="insight-card">
-                                <h3>Coaching Notes</h3>
+                                <h3>Linda's Coaching</h3>
                                 <div class="coaching-notes">
                                     <!-- Populated by JS -->
                                 </div>
+                                <div data-cs-thumbs data-cs-surface="analysis" data-cs-dimension="coaching"></div>
                             </div>
 
                             <div class="insight-card">
-                                <h3>Scorecard: Sales QA</h3>
+                                <h3>How you scored: Sales QA</h3>
                                 <div class="scorecard-score">--<small>/100</small></div>
                                 <div class="criterion-bars">
                                     <!-- Populated by JS -->
@@ -394,7 +582,7 @@
                             </div>
 
                             <div class="insight-card">
-                                <h3>Notable Snippets</h3>
+                                <h3>Moments that stood out</h3>
                                 <div class="snippets-list">
                                     <!-- Populated by JS -->
                                 </div>
@@ -456,7 +644,7 @@
                         <div class="live-left">
                             <div class="live-transcript-panel">
                                 <h3>Live Transcript</h3>
-                                <div class="live-transcript-scroll">
+                                <div class="live-transcript-scroll" data-live="transcript">
                                     <div class="transcript-entry">
                                         <span class="entry-time">00:00</span>
                                         <span class="entry-speaker agent">Sarah M. (Agent)</span>
@@ -505,8 +693,8 @@
 
                         <div class="live-right">
                             <div class="insight-card coaching-card">
-                                <h3>AI Coaching Hints</h3>
-                                <div class="coaching-hint-cards">
+                                <h3>Linda, live</h3>
+                                <div class="coaching-hint-cards" id="liveCoachingHints" data-live="alerts">
                                     <div class="hint-card warning">
                                         <span class="hint-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.8.8 1 1.8 1 2.3h6c0-.5.2-1.5 1-2.3A7 7 0 0 0 12 2z"/></svg></span>
                                         <p>Customer seems hesitant about pricing -- try reframing the value proposition. Emphasize ROI: avg. clients see 23% improvement in close rates.</p>
@@ -516,6 +704,22 @@
                                         <p>Competitor comparison data available. Robert's company currently uses BasicCall -- highlight real-time analytics advantage.</p>
                                     </div>
                                 </div>
+                            </div>
+
+                            <div class="insight-card kb-answers-card">
+                                <h3>
+                                    <span class="kb-header-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+                                    KB Answers
+                                </h3>
+                                <div class="kb-answer-cards" id="liveKbAnswers" aria-live="polite">
+                                    <p class="kb-empty">Verbatim answers from the knowledge base will appear here when the caller asks a question.</p>
+                                </div>
+                                <button type="button" class="kb-history-toggle" id="kbHistoryToggle" aria-expanded="false" aria-controls="kbHistoryDrawer">
+                                    <span class="kb-history-label">History</span>
+                                    <span class="kb-history-count" id="kbHistoryCount">0</span>
+                                    <svg class="kb-history-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </button>
+                                <div class="kb-history-drawer" id="kbHistoryDrawer" hidden></div>
                             </div>
 
                             <div class="insight-card">
@@ -536,54 +740,139 @@
                                 </div>
                             </div>
 
-                            <div class="insight-card">
-                                <h3>Caller Info</h3>
-                                <div class="caller-info-grid">
+                            <article class="insight-card customer-brief-card" id="liveCustomerBrief" aria-live="polite">
+                                <header class="customer-brief-header">
+                                    <h3>Customer Brief</h3>
+                                    <span class="customer-status-badge" data-status="active" id="cbStatusBadge">Active</span>
+                                </header>
+
+                                <!-- Live alert toasts — populated by kb-cards.js from `brief_alert` events. -->
+                                <div class="customer-brief-alerts" id="cbAlertLane" aria-live="assertive"></div>
+
+                                <!-- Identity row: name / company / phone stays at the top so agents
+                                     still get the quick-reference info the old Caller Info card gave. -->
+                                <div class="caller-info-grid cb-identity">
                                     <div class="caller-field">
-                                        <span class="field-label">Name</span>
-                                        <span class="field-value">Robert Hayes</span>
+                                        <span class="field-label">Contact</span>
+                                        <span class="field-value" id="cbContactName">Robert Hayes</span>
                                     </div>
                                     <div class="caller-field">
-                                        <span class="field-label">Company</span>
-                                        <span class="field-value">TechVenture LLC</span>
+                                        <span class="field-label">Customer</span>
+                                        <span class="field-value" id="cbCustomerName">TechVenture LLC</span>
                                     </div>
                                     <div class="caller-field">
                                         <span class="field-label">Phone</span>
-                                        <span class="field-value">+1 (555) 234-8901</span>
+                                        <span class="field-value" id="cbPhone">+1 (555) 234-8901</span>
                                     </div>
                                     <div class="caller-field">
                                         <span class="field-label">Last Interaction</span>
-                                        <span class="field-value">Apr 8, 2026</span>
+                                        <span class="field-value" id="cbLastInteraction">Apr 8, 2026</span>
                                     </div>
-                                    <div class="caller-field full-width">
-                                        <span class="field-label">Sentiment Trend</span>
+                                </div>
+
+                                <!-- Sentiment tile: live if the tenant subscribes, historical otherwise. -->
+                                <section class="cb-section">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Sentiment</span>
+                                        <span class="cb-sentiment-mode" id="cbSentimentMode">historical</span>
+                                    </div>
+                                    <div class="cb-sentiment-body">
+                                        <span class="cb-sentiment-score" id="cbSentimentScore">—</span>
                                         <div class="mini-sparkline">
-                                            <svg viewBox="0 0 120 30" class="sparkline-svg">
+                                            <svg viewBox="0 0 120 30" class="sparkline-svg" id="cbSentimentSparkline">
                                                 <polyline points="0,25 20,20 40,18 60,22 80,15 100,10 120,8" fill="none" stroke="#10B981" stroke-width="2"/>
                                             </svg>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
+                                </section>
+
+                                <section class="cb-section" data-section="stakeholders">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Stakeholders</span>
+                                        <span class="cb-confidence" data-field="stakeholders" title="LINDA's confidence in this section"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbStakeholders"></ul>
+                                </section>
+
+                                <section class="cb-section" data-section="best_approaches">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Best approaches</span>
+                                        <span class="cb-confidence" data-field="best_approaches"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbBestApproaches"></ul>
+                                </section>
+
+                                <section class="cb-section" data-section="avoid">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Avoid</span>
+                                        <span class="cb-confidence" data-field="avoid"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbAvoid"></ul>
+                                </section>
+
+                                <section class="cb-section cb-signals" data-section="signals">
+                                    <div class="cb-signal-column">
+                                        <div class="cb-section-head">
+                                            <span class="cb-section-title">Churn signals</span>
+                                            <span class="cb-confidence" data-field="churn_signals"></span>
+                                        </div>
+                                        <ul class="cb-list" id="cbChurnSignals"></ul>
+                                    </div>
+                                    <div class="cb-signal-column">
+                                        <div class="cb-section-head">
+                                            <span class="cb-section-title">Upsell signals</span>
+                                            <span class="cb-confidence" data-field="upsell_signals"></span>
+                                        </div>
+                                        <ul class="cb-list" id="cbUpsellSignals"></ul>
+                                    </div>
+                                </section>
+
+                                <section class="cb-section" data-section="objections_raised">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Objections raised</span>
+                                        <span class="cb-confidence" data-field="objections_raised"></span>
+                                    </div>
+                                    <ul class="cb-list" id="cbObjections"></ul>
+                                </section>
+
+                                <!-- Inline note composer — notes flow into the next CustomerBriefBuilder run. -->
+                                <section class="cb-notes">
+                                    <div class="cb-section-head">
+                                        <span class="cb-section-title">Notes</span>
+                                        <span class="cb-notes-count" id="cbNotesCount">0</span>
+                                    </div>
+                                    <ul class="cb-notes-list" id="cbNotesList"></ul>
+                                    <form class="cb-note-composer" id="cbNoteForm">
+                                        <textarea id="cbNoteInput" rows="2" placeholder="Add a note for LINDA to fold into the brief…"></textarea>
+                                        <div class="cb-note-actions">
+                                            <button type="submit" class="cb-note-submit">Save note</button>
+                                        </div>
+                                    </form>
+                                </section>
+                            </article>
                         </div>
                     </div>
 
                     <!-- Live Metrics Bottom Bar -->
-                    <div class="call-metrics-bar">
-                        <div class="metric-item">
+                    <div class="call-metrics-bar" data-live="metrics-strip">
+                        <div class="metric-item" data-metric="talk-listen">
                             <span class="metric-label">Talk / Listen <span class="info-hint" tabindex="0" data-tip="Ratio of time the agent spoke vs. listened. Target: 40-60% talk for discovery calls.">?</span></span>
                             <div class="talk-listen-bar">
                                 <div class="talk-portion" style="width:58%">58%</div>
                                 <div class="listen-portion" style="width:42%">42%</div>
                             </div>
                         </div>
-                        <div class="metric-item">
-                            <span class="metric-label">Questions</span>
-                            <span class="metric-value">3</span>
+                        <div class="metric-item" data-metric="patience">
+                            <span class="metric-label">Patience <span class="info-hint" tabindex="0" data-tip="Median pause before you respond after the customer stops speaking. Target 0.6-1.0s.">?</span></span>
+                            <span class="metric-value patience-light neutral" data-live-value="patience">&mdash;</span>
                         </div>
-                        <div class="metric-item">
-                            <span class="metric-label">Sentiment</span>
-                            <span class="metric-value sentiment-positive">Positive</span>
+                        <div class="metric-item" data-metric="fillers">
+                            <span class="metric-label">Fillers / min</span>
+                            <span class="metric-value" data-live-value="fillers">&mdash;</span>
+                        </div>
+                        <div class="metric-item" data-metric="interactivity">
+                            <span class="metric-label">Turns / min</span>
+                            <span class="metric-value" data-live-value="interactivity">&mdash;</span>
                         </div>
                     </div>
 
@@ -977,13 +1266,7 @@
                                         <span class="history-date">Mar 28, 2026 &middot; 8 msgs &middot; <span class="sentiment-badge neutral">6.8</span></span>
                                     </div>
                                 </div>
-                                <div class="history-item">
-                                    <span class="channel-icon-svg whatsapp" aria-label="WhatsApp"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
-                                    <div class="history-content">
-                                        <span class="history-title">WhatsApp: Quick pricing Q</span>
-                                        <span class="history-date">Mar 25, 2026 &middot; 5 msgs &middot; <span class="sentiment-badge neutral">6.2</span></span>
-                                    </div>
-                                </div>
+                                <!-- WhatsApp history item removed while messaging is stubbed. -->
                             </div>
                         </div>
                     </div>
@@ -996,6 +1279,17 @@
                     <div class="view-header">
                         <h1>Analytics</h1>
                         <div class="date-picker">Last 30 Days ▾</div>
+                    </div>
+
+                    <!-- AI Health (Tier 2 — populated by ai-health.js) -->
+                    <div class="analytics-chart-card" style="margin-bottom:1.5rem;">
+                        <h3>AI Health</h3>
+                        <p class="muted" style="margin:0 0 0.5rem;font-size:0.8rem;">
+                            Quality scores, transcription accuracy, feedback velocity, and pending vocabulary review for your tenant.
+                        </p>
+                        <div id="cs-ai-health-card"></div>
+                        <h4 style="margin-top:1.25rem;">Pending vocabulary candidates</h4>
+                        <div id="cs-vocab-pending"></div>
                     </div>
 
                     <!-- Company Health Score -->
@@ -1360,11 +1654,124 @@
                 </section>
 
                 <!-- ============================================================ -->
+                <!-- LINDA INSIGHTS VIEW                                           -->
+                <!--   Admin dashboard for the tenant brief: onboarding progress,  -->
+                <!--   pending suggestions from the Infer-From-Sources agent,      -->
+                <!--   and the learned playbook. One place to "see what LINDA      -->
+                <!--   knows about us and approve what it wants to learn next".    -->
+                <!-- ============================================================ -->
+                <section class="view" id="linda-insights">
+                    <div class="view-header">
+                        <h1>LINDA Insights</h1>
+                        <p class="view-subtitle">What LINDA has learned about your tenant, and the changes it wants to make.</p>
+                    </div>
+
+                    <!-- Seat reconciliation banner — shown when a Stripe downgrade
+                         left us with more active users than the new plan allows.
+                         The admin must explicitly pick who to keep active. -->
+                    <aside class="seat-reconcile-banner" id="seatBanner" hidden>
+                        <div class="seat-banner-copy">
+                            <strong id="seatBannerHeadline">Seat reconciliation needed</strong>
+                            <p id="seatBannerBody"></p>
+                        </div>
+                        <button type="button" class="li-primary-btn" id="seatBannerReview">Review suspended users</button>
+                    </aside>
+
+                    <div class="linda-insights-grid">
+                        <section class="insight-card" id="liOnboardingCard">
+                            <header class="li-card-head">
+                                <h3>Onboarding</h3>
+                                <span class="li-progress" id="liOnboardingProgress">0/5 sections</span>
+                            </header>
+                            <div class="li-progress-bar"><div class="li-progress-fill" id="liOnboardingFill" style="width: 0%"></div></div>
+                            <ul class="li-check-list" id="liOnboardingChecklist"></ul>
+                            <button type="button" class="li-primary-btn" id="liOnboardingStart">Start / resume interview</button>
+                        </section>
+
+                        <section class="insight-card" id="liSuggestionsCard">
+                            <header class="li-card-head">
+                                <h3>Pending suggestions</h3>
+                                <button type="button" class="li-secondary-btn" id="liInferNow">Run agent now</button>
+                            </header>
+                            <p class="li-help">The Infer-From-Sources agent proposes updates from what it sees in recent calls. Nothing is applied until you approve it.</p>
+                            <ul class="li-suggestion-list" id="liSuggestions"></ul>
+                        </section>
+
+                        <section class="insight-card" id="liPlaybookCard">
+                            <header class="li-card-head">
+                                <h3>Learned playbook</h3>
+                                <span class="li-sample" id="liPlaybookSample">—</span>
+                            </header>
+                            <div class="li-playbook" id="liPlaybook"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
+                <!-- ONBOARDING INTERVIEW VIEW                                     -->
+                <!--   Conversational agent that fills goals/KPIs/strategies/      -->
+                <!--   org_structure/personal_touches on the tenant brief. State   -->
+                <!--   lives in the backend (onboarding_sessions); the UI just     -->
+                <!--   renders message bubbles and POSTs replies.                  -->
+                <!-- ============================================================ -->
+                <section class="view" id="onboarding">
+                    <div class="view-header">
+                        <h1>Onboarding Interview</h1>
+                        <p class="view-subtitle">Answer a few questions so LINDA knows how your business works. You can pause and come back anytime.</p>
+                    </div>
+
+                    <div class="onboarding-shell">
+                        <aside class="onboarding-sidebar">
+                            <h3>Progress</h3>
+                            <ul class="onboarding-checklist" id="obChecklist"></ul>
+                            <div class="onboarding-actions">
+                                <button type="button" class="li-secondary-btn" id="obAbandonBtn" title="Discard this interview">Abandon</button>
+                                <button type="button" class="li-primary-btn" id="obCompleteBtn" disabled>Save &amp; apply</button>
+                            </div>
+                            <p class="onboarding-help" id="obHint">
+                                Loading your interview state…
+                            </p>
+                        </aside>
+
+                        <div class="onboarding-chat">
+                            <div class="onboarding-messages" id="obMessages" aria-live="polite"></div>
+                            <form class="onboarding-composer" id="obComposer">
+                                <textarea id="obInput" rows="2" placeholder="Type your reply…" disabled></textarea>
+                                <button type="submit" class="cb-note-submit" id="obSendBtn" disabled>Send</button>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ============================================================ -->
                 <!-- 11. INTEGRATIONS VIEW -->
                 <!-- ============================================================ -->
                 <section class="view" id="integrations">
                     <div class="view-header">
                         <h1>Integrations</h1>
+                    </div>
+
+                    <!-- Per-tenant Twilio credentials. Paste your account
+                         SID + auth token from the Twilio console. We
+                         encrypt the auth token at rest; the SID is
+                         stored in provider_config. -->
+                    <div class="integrations-section" id="twilioCredsSection">
+                        <h3>Twilio</h3>
+                        <p class="settings-desc">Connect your own Twilio account so calls, recordings, and spend controls belong to you.</p>
+                        <form class="twilio-creds-form" id="twilioCredsForm">
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Account SID</span>
+                                <input type="text" id="twilioSid" class="tenant-kv-input" placeholder="AC…" autocomplete="off">
+                            </label>
+                            <label class="tenant-kv-field">
+                                <span class="tenant-kv-label">Auth token</span>
+                                <input type="password" id="twilioToken" class="tenant-kv-input" placeholder="(never displayed after save)" autocomplete="off">
+                            </label>
+                            <div class="twilio-creds-actions">
+                                <span class="twilio-creds-status" id="twilioCredsStatus"></span>
+                                <button type="submit" class="li-primary-btn" id="twilioCredsSave">Save credentials</button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="integrations-section">
@@ -1466,6 +1873,85 @@
                 <section class="view" id="preferences">
                     <div class="view-header">
                         <h1>Preferences</h1>
+                        <p class="view-subtitle">Workspace-level configuration. Changes save automatically when you toggle them.</p>
+                    </div>
+
+                    <!-- Tenant settings panel — populated from /admin/tenant-settings. -->
+                    <div class="settings-sections">
+                        <div class="settings-section tenant-settings-section" id="tenantSettingsPanel">
+                            <div class="tenant-settings-head">
+                                <h3>LINDA feature flags</h3>
+                                <span class="tenant-settings-status" id="tenantSettingsStatus">Loading…</span>
+                            </div>
+                            <p class="settings-desc">Feature flags that change how LINDA operates for this workspace. Each toggle saves the moment you flip it.</p>
+                            <div class="feature-flag-list" id="featureFlagList"></div>
+
+                            <div class="tenant-kv-row">
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Transcription engine</label>
+                                    <select id="tenantTranscriptionEngine" class="tenant-kv-select">
+                                        <option value="deepgram">Deepgram</option>
+                                        <option value="whisper">Whisper (self-hosted)</option>
+                                    </select>
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Automation level</label>
+                                    <select id="tenantAutomationLevel" class="tenant-kv-select">
+                                        <option value="approval">Approval required</option>
+                                        <option value="auto">Fully automated</option>
+                                        <option value="shadow">Shadow mode (log only)</option>
+                                    </select>
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Default language</label>
+                                    <input type="text" id="tenantDefaultLanguage" class="tenant-kv-input" maxlength="8" placeholder="en">
+                                </div>
+                            </div>
+
+                            <div class="tenant-kv-row">
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Keyterm boost list (comma-separated)</label>
+                                    <input type="text" id="tenantKeytermBoost" class="tenant-kv-input" placeholder="acme, refund policy, enterprise tier">
+                                </div>
+                                <div class="tenant-kv-field">
+                                    <label class="tenant-kv-label">Question keyterms (comma-separated)</label>
+                                    <input type="text" id="tenantQuestionKeyterms" class="tenant-kv-input" placeholder="how much, can you, what about">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Billing: tier picker + Stripe customer-id link. All
+                         Stripe-driven subscription changes flow through the
+                         webhook, but an admin still needs to pin the
+                         ``stripe_customer_id`` once so the webhook knows
+                         which tenant to apply changes to. -->
+                    <div class="settings-sections">
+                        <div class="settings-section billing-section" id="billingPanel">
+                            <div class="billing-head">
+                                <h3>Billing &amp; subscription</h3>
+                                <span class="billing-tier-pill" id="billingTierPill">—</span>
+                            </div>
+                            <p class="settings-desc">Your subscription tier controls seat limits and feature flags. Changes sync automatically from Stripe.</p>
+
+                            <div class="billing-row">
+                                <label class="tenant-kv-field">
+                                    <span class="tenant-kv-label">Subscription tier</span>
+                                    <select id="billingTierSelect" class="tenant-kv-select"></select>
+                                </label>
+                                <button type="button" class="li-secondary-btn" id="billingTierApply">Apply tier</button>
+                            </div>
+                            <p class="billing-caps" id="billingCaps"></p>
+
+                            <div class="billing-row">
+                                <label class="tenant-kv-field billing-stripe-field">
+                                    <span class="tenant-kv-label">Stripe customer ID</span>
+                                    <input type="text" id="billingStripeId" class="tenant-kv-input" placeholder="cus_…">
+                                </label>
+                                <button type="button" class="li-primary-btn" id="billingStripeLink">Link</button>
+                            </div>
+                            <p class="billing-status" id="billingStatus"></p>
+                        </div>
                     </div>
 
                     <div class="settings-sections">
@@ -1566,7 +2052,7 @@
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td><code>https://api.acme.com/webhooks/callsight</code></td>
+                                        <td><code>https://api.acme.com/webhooks/linda</code></td>
                                         <td>call.completed, transcript.ready</td>
                                         <td><span class="status-badge complete">Active</span></td>
                                         <td><button class="btn btn-ghost btn-sm">Edit</button></td>
@@ -1636,7 +2122,57 @@
     <!-- Tooltip (singleton) -->
     <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
+    <!-- Seat reconciliation modal. -->
+    <div class="seat-modal-overlay" id="seatModalOverlay" hidden aria-modal="true" role="dialog">
+        <div class="seat-modal">
+            <header class="seat-modal-head">
+                <h2>Seat reconciliation</h2>
+                <button type="button" class="seat-modal-close" id="seatModalClose" aria-label="Close">×</button>
+            </header>
+            <p class="seat-modal-sub" id="seatModalSub">Loading…</p>
+            <ul class="seat-modal-list" id="seatSuspendedList"></ul>
+            <p class="seat-modal-foot">
+                Tip: reactivating someone when you're already at cap requires
+                choosing another active user to suspend in their place.
+            </p>
+        </div>
+    </div>
+
+    <!-- Login overlay — shown when /auth/me returns 401. -->
+    <div class="login-overlay" id="loginOverlay" hidden aria-modal="true" role="dialog">
+        <form class="login-card" id="loginForm">
+            <h2>Sign in</h2>
+            <p class="login-sub">Sign in with your user account. Admins, managers, and agents share the same door — your role is picked up automatically.</p>
+            <label class="login-label">
+                Email
+                <input type="email" id="loginEmail" autocomplete="username" required>
+            </label>
+            <label class="login-label">
+                Password
+                <input type="password" id="loginPassword" autocomplete="current-password" required minlength="1">
+            </label>
+            <button type="submit" class="li-primary-btn" id="loginSubmit">Sign in</button>
+            <p class="login-error" id="loginError" hidden></p>
+            <p class="login-help">
+                Don't have a user yet? Use a tenant API key in the URL as
+                <code>?api_key=csk_…</code> and an admin can create your user.
+            </p>
+        </form>
+    </div>
+
+    <script src="js/auth-bootstrap.js"></script>
+    <script src="js/live-call.js"></script>
     <script src="js/demo.js"></script>
     <script src="js/demo-interactions.js"></script>
+    <script src="js/feedback.js"></script>
+    <script src="js/ai-health.js"></script>
+    <script src="js/kb-cards.js"></script>
+    <script src="js/customer-brief.js"></script>
+    <script src="js/linda-insights.js"></script>
+    <script src="js/tenant-settings.js"></script>
+    <script src="js/onboarding.js"></script>
+    <script src="js/admin-surfaces.js"></script>
+    <script src="js/ask-linda.js"></script>
+    <script src="js/demo-gate.js"></script>
 </body>
 </html>

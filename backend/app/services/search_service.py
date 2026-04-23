@@ -18,7 +18,7 @@ class SearchService:
         self.es = AsyncElasticsearch(hosts=[settings.ELASTICSEARCH_URL])
 
     def _index_name(self, tenant_id: str) -> str:
-        return f"callsight-interactions-{tenant_id}"
+        return f"linda-interactions-{tenant_id}"
 
     # ── Index management ────────────────────────────────────
 
