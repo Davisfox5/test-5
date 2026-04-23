@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     # ── Core ──────────────────────────────────────────────
     APP_NAME: str = "LINDA"
     DEBUG: bool = False
+    # Environment name used to tag Sentry events + metric labels so
+    # staging noise doesn't bleed into prod dashboards.
+    ENVIRONMENT: str = "local"
+    # Deploy SHA / version. Populated by CI.
+    RELEASE_VERSION: str = ""
+    # Sentry DSN — empty disables error monitoring (local dev default).
+    SENTRY_DSN: str = ""
     API_V1_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: list[str] = ["*"]
 

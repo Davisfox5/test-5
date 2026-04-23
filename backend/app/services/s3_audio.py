@@ -90,14 +90,20 @@ def upload_bytes(
     recording_id,
     data: bytes,
     content_type: str,
+    s3_key_override: Optional[str] = None,
 ) -> StoredAudio:
     """Synchronous upload — wrap in ``asyncio.to_thread`` when calling from
-    async context."""
+    async context.
+
+    ``s3_key_override`` lets callers place the object at a specific
+    key (backup tasks use this to group files under ``backups/…``);
+    when omitted the key is derived from tenant + recording id.
+    """
     settings = get_settings()
     if not settings.AWS_S3_BUCKET:
         raise S3NotConfigured("AWS_S3_BUCKET is not configured")
 
-    key = _build_key(tenant_id, recording_id, content_type)
+    key = s3_key_override or _build_key(tenant_id, recording_id, content_type)
     client = _client()
     client.put_object(
         Bucket=settings.AWS_S3_BUCKET,
@@ -112,6 +118,25 @@ def upload_bytes(
         size_bytes=len(data),
         content_type=content_type or "application/octet-stream",
     )
+
+
+def download_object_bytes(s3_key: str) -> bytes:
+    """Download an S3 object's full contents into memory.
+
+    Used by backup-restore where streaming to disk adds complexity
+    for little gain — backups fit in RAM for any tenant that isn't
+    at absurd scale. For very large tenants, swap to
+    ``download_to_tempfile`` and stream-parse.
+    """
+    import io
+
+    settings = get_settings()
+    if not settings.AWS_S3_BUCKET:
+        raise S3NotConfigured("AWS_S3_BUCKET is not configured")
+    client = _client()
+    buf = io.BytesIO()
+    client.download_fileobj(Bucket=settings.AWS_S3_BUCKET, Key=s3_key, Fileobj=buf)
+    return buf.getvalue()
 
 
 async def download_and_store_url(
@@ -203,6 +228,7 @@ __all__ = [
     "upload_bytes",
     "download_and_store_url",
     "download_to_tempfile",
+    "download_object_bytes",
     "delete_object",
     "signed_playback_url",
     "_build_key",

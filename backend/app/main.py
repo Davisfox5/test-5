@@ -4,12 +4,23 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.app.config import get_settings
 from backend.app.db import engine
+from backend.app.logging_setup import (
+    bind_context,
+    configure_logging,
+    new_request_id,
+    reset_context,
+)
+from backend.app.observability import init_sentry
+
+configure_logging()
+init_sentry()
 
 settings = get_settings()
 
@@ -37,6 +48,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Attach a correlation id + tenant id to every request.
+
+    * If the caller sends ``X-Request-Id``, we honor it (lets upstream
+      load balancers and SDK clients correlate their own trace). Else
+      we mint a fresh UUID4.
+    * The tenant id is populated opportunistically from the
+      ``X-Tenant-Id`` header if present; the auth layer later updates
+      it with the authenticated tenant's id. Either way, every log line
+      in the request's async scope gets the tenant id for free.
+    * The request id echoes on the response as ``X-Request-Id`` so
+      clients can report "this call failed, here's my request id" and
+      we can find it instantly.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-Id") or new_request_id()
+        tenant_hint = request.headers.get("X-Tenant-Id")
+        tokens = bind_context(request_id=request_id, tenant_id=tenant_hint)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_context(tokens)
+        response.headers["X-Request-Id"] = request_id
+        return response
+
+
+app.add_middleware(RequestContextMiddleware)
+
 # ── CORS ──────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -44,6 +85,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-Id"],
 )
 
 # ── API Routers ───────────────────────────────────────────
@@ -138,6 +180,10 @@ app.include_router(
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX, tags=["chat"])
 app.include_router(me_router, prefix=settings.API_V1_PREFIX, tags=["me"])
 app.include_router(signup_router, prefix=settings.API_V1_PREFIX, tags=["signup"])
+
+from backend.app.api.gdpr import router as gdpr_router  # noqa: E402
+
+app.include_router(gdpr_router, prefix=settings.API_V1_PREFIX, tags=["gdpr"])
 
 from backend.app.api.websocket import router as websocket_router  # noqa: E402
 

@@ -119,6 +119,107 @@ RAG_RETRIEVAL_LATENCY = Histogram(
 )
 
 
+# ── Pipeline stage timings ───────────────────────────────────────────────
+
+PIPELINE_STAGE_LATENCY = Histogram(
+    "linda_pipeline_stage_seconds",
+    "Voice + text pipeline stage durations.",
+    # ``stage`` maps to Step 1..17 in tasks._run_pipeline_impl.
+    # ``channel`` is voice|email|chat. ``status`` is success|error.
+    ["stage", "channel", "status"],
+    # Cover both fast stages (ms-scale — search indexing) and slow
+    # ones (minutes — large Whisper transcripts).
+    buckets=(0.05, 0.25, 1.0, 3.0, 10.0, 30.0, 120.0, 300.0),
+)
+
+PIPELINE_RUNS = Counter(
+    "linda_pipeline_runs_total",
+    "Pipeline executions, counted per final outcome.",
+    ["channel", "status"],
+)
+
+
+# ── Transcription ────────────────────────────────────────────────────────
+
+TRANSCRIPTION_SECONDS = Histogram(
+    "linda_transcription_duration_seconds",
+    "Time spent inside TranscriptionService.transcribe, per engine + mode.",
+    ["engine", "mode"],  # mode=url|file; engine=deepgram|whisper
+    buckets=(0.5, 2.0, 5.0, 15.0, 45.0, 120.0, 300.0),
+)
+
+TRANSCRIPTION_AUDIO_SECONDS = Counter(
+    "linda_transcription_audio_seconds_total",
+    "Cumulative audio seconds transcribed — useful for unit-economics dashboards.",
+    ["engine"],
+)
+
+TRANSCRIPTION_FAILURES = Counter(
+    "linda_transcription_failures_total",
+    "Transcription attempts that raised. Split by engine + reason class.",
+    ["engine", "reason"],  # reason=timeout|auth|server|other
+)
+
+
+# ── Celery queue + worker depth ──────────────────────────────────────────
+
+CELERY_TASK_RUNS = Counter(
+    "linda_celery_task_runs_total",
+    "Celery task completions.",
+    ["task_name", "status"],  # status=success|failure|retry
+)
+
+CELERY_TASK_LATENCY = Histogram(
+    "linda_celery_task_seconds",
+    "Celery task end-to-end duration.",
+    ["task_name"],
+    buckets=(0.05, 0.25, 1.0, 5.0, 30.0, 120.0, 600.0),
+)
+
+CELERY_QUEUE_DEPTH = Gauge(
+    "linda_celery_queue_depth",
+    "Redis LIST length for each celery queue — sampled periodically.",
+    ["queue"],
+)
+
+
+# ── CRM ──────────────────────────────────────────────────────────────────
+
+CRM_SYNC_OUTCOMES = Counter(
+    "linda_crm_sync_outcomes_total",
+    "CRM sync runs, by provider + outcome.",
+    ["provider", "status"],  # status=success|partial|failed
+)
+
+CRM_WRITEBACK_OUTCOMES = Counter(
+    "linda_crm_writeback_outcomes_total",
+    "CRM write-back attempts, by provider + kind + outcome.",
+    # kind=note|activity|stage ; status=success|capability_missing|error|auth
+    ["provider", "kind", "status"],
+)
+
+
+# ── Live telephony ───────────────────────────────────────────────────────
+
+LIVE_SESSIONS = Gauge(
+    "linda_live_sessions_active",
+    "Concurrent live telephony sessions by provider.",
+    ["provider"],  # twilio|signalwire|telnyx
+)
+
+LIVE_DEEPGRAM_WS_CONNECTS = Counter(
+    "linda_live_deepgram_connects_total",
+    "Deepgram live websocket establishments, by outcome.",
+    ["status"],  # success|failed
+)
+
+LIVE_PARALINGUISTIC_SNAPSHOTS = Counter(
+    "linda_live_paralinguistic_snapshots_total",
+    "Paralinguistic snapshots produced per live session, by outcome.",
+    ["status"],  # emitted|short_buffer|error
+)
+
+
 # ── Endpoint helpers ─────────────────────────────────────────────────────
 
 

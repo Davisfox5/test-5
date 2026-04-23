@@ -1,0 +1,23 @@
+corpus_name: example
+description: >
+  Placeholder manifest — fill with real WAV paths + human-annotated
+  alert timelines. See ../corpora/README.md for collection guidance.
+clips:
+  - id: example-monotone-agent
+    wav_path: ./clips/example-monotone-agent.wav
+    description: >
+      Agent monotone mid-call. Scanner should fire a monotone alert
+      within ±8 s of the 45-second mark.
+    expected_alerts:
+      - kind: monotone
+        at_sec: 45.0
+        tolerance_sec: 8.0
+
+  - id: example-customer-stress
+    wav_path: ./clips/example-customer-stress.wav
+    description: >
+      Customer voice tightening 70-80 s into the call.
+    expected_alerts:
+      - kind: stress
+        at_sec: 72.0
+        tolerance_sec: 10.0

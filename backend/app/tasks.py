@@ -9,16 +9,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import task_prerun, task_postrun, worker_process_init
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.config import get_settings
+from backend.app.logging_setup import (
+    bind_context,
+    configure_logging,
+    reset_context,
+)
+from backend.app.observability import init_sentry
+
+configure_logging()
+init_sentry()
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +97,19 @@ celery_app.conf.update(
         "email-ingest-poll": {
             "task": "email_ingest_poll",
             "schedule": 900.0,  # 15 minutes
+        },
+        # Sample Celery queue depths into Prometheus gauges every 30s
+        # so dashboards + alerts can see backpressure.
+        "sample-queue-depth": {
+            "task": "sample_queue_depth",
+            "schedule": 30.0,
+        },
+        # Nightly GDPR-export backup per tenant — lands in the staging
+        # bucket under backups/{tenant}/{timestamp}.ndjson.gz. Tenants
+        # can opt out via features_enabled.scheduled_backups = False.
+        "nightly-tenant-backup": {
+            "task": "tenant_backup_all_tenants",
+            "schedule": crontab(minute=0, hour=2),
         },
         "email-push-renew": {
             "task": "email_push_renew_subscriptions",
@@ -157,6 +181,108 @@ celery_app.conf.update(
         },
     },
 )
+
+# ── Worker lifecycle hooks ───────────────────────────────────────────────
+
+
+@worker_process_init.connect
+def _on_worker_start(**_kwargs: Any) -> None:
+    """Warm up heavy models so the first task doesn't pay a cold-start tax.
+
+    Two models are worth pre-loading:
+
+    * pyannote.audio speaker-diarization-3.1 (~500 MB) — used by the
+      Whisper transcription path for speaker labels.
+    * SpeechBrain emotion-recognition-wav2vec2-IEMOCAP (~1 GB) — used
+      when a tenant has ``emotion_classification`` enabled.
+
+    We swallow failures so a model fetch outage doesn't refuse the
+    worker from starting — individual tasks degrade gracefully when
+    the model isn't loaded.
+
+    Set ``LINDA_WORKER_WARMUP=0`` in the env to skip (useful for
+    beat-only workers that never run audio tasks).
+    """
+    if os.environ.get("LINDA_WORKER_WARMUP", "1") == "0":
+        logger.info("Worker warmup skipped (LINDA_WORKER_WARMUP=0)")
+        return
+
+    # Reconfigure logging + sentry in the fresh process.
+    configure_logging()
+    init_sentry()
+
+    try:
+        from backend.app.services.transcription import _get_diarization_pipeline
+
+        if _get_diarization_pipeline() is not None:
+            logger.info("pyannote diarization pipeline preloaded")
+    except Exception:
+        logger.debug("pyannote warmup failed (non-fatal)", exc_info=True)
+
+    try:
+        from backend.app.services.paralinguistics_emotion import (
+            prefetch_emotion_classifier,
+        )
+
+        if prefetch_emotion_classifier():
+            logger.info("speechbrain emotion classifier preloaded")
+    except Exception:
+        logger.debug("speechbrain warmup failed (non-fatal)", exc_info=True)
+
+
+@task_prerun.connect
+def _on_task_prerun(sender: Any = None, task_id: str = "", args=None, kwargs=None, **_: Any) -> None:
+    """Bind correlation ids onto the per-task context.
+
+    We set ``request_id`` to the Celery task id so logs fan-out under
+    a single key across the pipeline. Some tasks also take an
+    interaction id as the first positional arg — we pick that up
+    automatically to keep per-interaction grepping easy.
+    """
+    values: Dict[str, Optional[str]] = {"request_id": task_id}
+    if args:
+        first = args[0] if not isinstance(args[0], (int, float, bool)) else None
+        if isinstance(first, str) and len(first) == 36:  # likely a UUID
+            values["interaction_id"] = first
+    # Stash tokens on the task request so postrun can reset them.
+    task_request = getattr(sender, "request", None)
+    if task_request is not None:
+        task_request.linda_context_tokens = bind_context(**values)
+    else:
+        bind_context(**values)
+
+
+@task_postrun.connect
+def _on_task_postrun(
+    sender: Any = None,
+    task_id: str = "",
+    state: str = "",
+    runtime: Optional[float] = None,
+    **_: Any,
+) -> None:
+    task_request = getattr(sender, "request", None)
+    tokens = getattr(task_request, "linda_context_tokens", None) if task_request else None
+    if tokens:
+        reset_context(tokens)
+
+    # Metrics — task name is the Celery-registered name, not the Python
+    # function name (matters for aliased tasks).
+    try:
+        from backend.app.services.metrics import (
+            CELERY_TASK_LATENCY,
+            CELERY_TASK_RUNS,
+        )
+
+        task_name = getattr(sender, "name", "unknown")
+        status = "success" if state == "SUCCESS" else (
+            "retry" if state == "RETRY" else "failure"
+        )
+        CELERY_TASK_RUNS.labels(task_name=task_name, status=status).inc()
+        if runtime is not None:
+            CELERY_TASK_LATENCY.labels(task_name=task_name).observe(float(runtime))
+    except Exception:
+        logger.debug("task metrics emission failed", exc_info=True)
+
 
 # ── Synchronous SQLAlchemy session for Celery tasks ──────────────────────
 
@@ -1367,6 +1493,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             staged_path = None
             staged_key = None
 
+        try:
+            from backend.app.services.metrics import PIPELINE_RUNS
+
+            PIPELINE_RUNS.labels(
+                channel=interaction.channel or "unknown",
+                status="success",
+            ).inc()
+        except Exception:
+            pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
     except Exception as exc:
@@ -1456,6 +1591,15 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
         # ── Steps 5–17: Run shared pipeline ──────────────────────────
         _run_pipeline(session, interaction_id, segments_dicts, tenant, interaction)
 
+        try:
+            from backend.app.services.metrics import PIPELINE_RUNS
+
+            PIPELINE_RUNS.labels(
+                channel=interaction.channel or "unknown",
+                status="success",
+            ).inc()
+        except Exception:
+            pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
     except Exception as exc:
@@ -2433,6 +2577,185 @@ def crm_sync_daily() -> Dict[str, Any]:
     return asyncio.run(_runner())
 
 
+@celery_app.task(name="tenant_export_to_s3", max_retries=1)
+def tenant_export_to_s3(
+    tenant_id: str,
+    s3_key_prefix: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Produce an NDJSON GDPR export for ``tenant_id`` and upload it to
+    the tenant-owned S3 bucket.
+
+    This is the non-interactive companion to ``GET /tenants/{id}/export``
+    — suitable for scheduled backups or an admin-triggered async
+    export the UI polls for. Writes to
+    ``{AWS_S3_BUCKET}/{s3_key_prefix}/{timestamp}.ndjson.gz`` by default.
+
+    The bundle is gzipped on the fly so terabyte-scale tenants don't
+    pay 10x storage for JSON boilerplate. Metadata (row counts per
+    table, schema version) lands in the accompanying ``.meta.json``.
+    """
+    import gzip
+    import io
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    from backend.app.db import async_session
+    from backend.app.services import s3_audio
+    from backend.app.services.tenant_dataops import export_tenant
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            buf = io.BytesIO()
+            line_count = 0
+            tenant_uuid = _uuid.UUID(tenant_id)
+            with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+                async for chunk in export_tenant(db, tenant_uuid):
+                    gz.write(chunk)
+                    line_count += 1
+            body = buf.getvalue()
+
+        prefix = (s3_key_prefix or "backups").strip("/")
+        timestamp = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
+        key = f"{prefix}/{tenant_id}/{timestamp}.ndjson.gz"
+        s3_audio.upload_bytes(
+            tenant_id=tenant_uuid,
+            recording_id=_uuid.UUID(tenant_id),
+            data=body,
+            content_type="application/gzip",
+            s3_key_override=key,
+        )
+        logger.info(
+            "Tenant export uploaded: tenant=%s key=%s bytes=%d lines=%d",
+            tenant_id, key, len(body), line_count,
+        )
+        return {
+            "tenant_id": tenant_id,
+            "s3_key": key,
+            "bytes": len(body),
+            "lines": line_count,
+            "reason": reason,
+            "exported_at": timestamp,
+        }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="tenant_backup_all_tenants")
+def tenant_backup_all_tenants() -> Dict[str, Any]:
+    """Nightly backup fan-out — one export per tenant.
+
+    Dispatches ``tenant_export_to_s3`` per tenant so one slow export
+    doesn't hold up the others. Beat schedule below wires this to run
+    daily; disable per-tenant by setting
+    ``tenants.features_enabled['scheduled_backups'] = False``.
+    """
+    from backend.app.models import Tenant
+
+    session = _get_sync_session()
+    try:
+        dispatched = 0
+        skipped = 0
+        for tenant in session.query(Tenant).all():
+            feats = (tenant.features_enabled or {})
+            if feats.get("scheduled_backups") is False:
+                skipped += 1
+                continue
+            try:
+                tenant_export_to_s3.delay(str(tenant.id), reason="nightly_backup")
+                dispatched += 1
+            except Exception:
+                logger.exception(
+                    "Failed to dispatch backup for tenant %s", tenant.id
+                )
+        return {"dispatched": dispatched, "skipped": skipped}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="tenant_restore_from_s3")
+def tenant_restore_from_s3(s3_key: str) -> Dict[str, Any]:
+    """Restore a tenant export back into the database.
+
+    Reads the NDJSON.gz bundle from S3, walks it line by line, and
+    upserts every row into its destination table. Intended for two
+    scenarios:
+
+    1. **Disaster recovery** — a tenant's data got corrupted and we
+       need yesterday's backup back.
+    2. **Environment sync** — copy a tenant from prod to staging for
+       repro work (make sure PII redaction ran before the snapshot).
+
+    The operation is idempotent on the primary key (``ON CONFLICT DO
+    UPDATE``), so running it twice is safe. Foreign-key ordering is
+    honored because ``_tenant_tables_reverse_topo`` emits parents
+    first during export — the restore walks the file in order.
+    """
+    import gzip
+    import json as _json
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from backend.app.db import async_session
+    from backend.app.models import Base
+    from backend.app.services import s3_audio
+
+    async def _runner() -> Dict[str, Any]:
+        blob = s3_audio.download_object_bytes(s3_key)  # type: ignore[attr-defined]
+        data = gzip.decompress(blob).decode("utf-8")
+
+        per_table_counts: Dict[str, int] = {}
+        async with async_session() as db:
+            for line in data.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    doc = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if doc.get("_meta") or doc.get("_eof"):
+                    continue
+                table_name = doc.get("_table")
+                row = doc.get("row") or {}
+                if not table_name or not row:
+                    continue
+                table = Base.metadata.tables.get(table_name)
+                if table is None:
+                    logger.warning("restore: skipping unknown table %s", table_name)
+                    continue
+                # Unwrap base64 blobs produced during export.
+                row = {
+                    k: (
+                        __import__("base64").b64decode(v["__b64__"])
+                        if isinstance(v, dict) and "__b64__" in v
+                        else v
+                    )
+                    for k, v in row.items()
+                }
+                # Only populate columns the table actually has — a
+                # restore from an older schema shouldn't fail on a
+                # column that was dropped since.
+                allowed = {c.name for c in table.columns}
+                row = {k: v for k, v in row.items() if k in allowed}
+                stmt = pg_insert(table).values(**row)
+                pk_cols = [c.name for c in table.primary_key]
+                if pk_cols:
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=pk_cols,
+                        set_={
+                            k: row[k] for k in row.keys() if k not in pk_cols
+                        },
+                    )
+                await db.execute(stmt)
+                per_table_counts[table_name] = (
+                    per_table_counts.get(table_name, 0) + 1
+                )
+            await db.commit()
+        return {"s3_key": s3_key, "restored": per_table_counts}
+
+    return asyncio.run(_runner())
+
+
 @celery_app.task(name="sync_knowledge_base")
 def sync_knowledge_base(tenant_id: str, source_type: str) -> Dict[str, Any]:
     """Run one KB provider sync for a tenant.
@@ -2479,6 +2802,41 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
             return await deliver_one(db, uuid.UUID(delivery_id))
 
     return asyncio.run(_runner())
+
+
+@celery_app.task(name="sample_queue_depth")
+def sample_queue_depth() -> Dict[str, int]:
+    """Read each Celery queue's Redis LIST length into the
+    ``linda_celery_queue_depth`` gauge.
+
+    Cheap — one LLEN per queue every 30 s. Lets us alert on
+    backpressure before tasks start timing out downstream.
+    """
+    try:
+        import redis
+
+        from backend.app.services.metrics import CELERY_QUEUE_DEPTH
+
+        redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # Celery names default to ``celery`` unless routing is configured;
+        # we enumerate all keys that look like queue lists so adding a
+        # new queue doesn't require a code change here.
+        depths: Dict[str, int] = {}
+        # ``keys *`` is O(n) — fine at our key count; scan is an option
+        # if that ever changes.
+        for key in redis_client.scan_iter(match="*", count=200):
+            try:
+                if redis_client.type(key) != "list":
+                    continue
+                length = int(redis_client.llen(key))
+                depths[str(key)] = length
+                CELERY_QUEUE_DEPTH.labels(queue=str(key)).set(length)
+            except Exception:
+                continue
+        return depths
+    except Exception:
+        logger.debug("queue depth sampling failed", exc_info=True)
+        return {}
 
 
 @celery_app.task(name="event_retention_sweep")

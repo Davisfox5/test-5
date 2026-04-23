@@ -192,6 +192,20 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
     dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
     dg_connection = dg_client.listen.live.v("1")
 
+    # Provider defaults to twilio — the SignalWire + Telnyx paths delegate
+    # here and keep the same metric label because framing is identical.
+    try:
+        from backend.app.services.metrics import (
+            LIVE_DEEPGRAM_WS_CONNECTS,
+            LIVE_PARALINGUISTIC_SNAPSHOTS,
+            LIVE_SESSIONS,
+        )
+
+        LIVE_SESSIONS.labels(provider="twilio").inc()
+    except Exception:
+        LIVE_DEEPGRAM_WS_CONNECTS = LIVE_PARALINGUISTIC_SNAPSHOTS = None  # type: ignore
+        LIVE_SESSIONS = None  # type: ignore
+
     # Per-tenant live paralinguistic surface (opt-in). The window runs
     # on CPU in the worker thread-pool so we don't block Deepgram I/O.
     live_para_window = None
@@ -230,8 +244,14 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 "diarize": True,
             }
         )
+        if LIVE_DEEPGRAM_WS_CONNECTS is not None:
+            LIVE_DEEPGRAM_WS_CONNECTS.labels(status="success").inc()
     except Exception:
         logger.exception("Failed to start Deepgram connection for session %s", session_id)
+        if LIVE_DEEPGRAM_WS_CONNECTS is not None:
+            LIVE_DEEPGRAM_WS_CONNECTS.labels(status="failed").inc()
+        if LIVE_SESSIONS is not None:
+            LIVE_SESSIONS.labels(provider="twilio").dec()
         await websocket.close(code=1011)
         return
 
@@ -276,6 +296,11 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
             await dg_connection.finish()
         except Exception:
             pass
+        if LIVE_SESSIONS is not None:
+            try:
+                LIVE_SESSIONS.labels(provider="twilio").dec()
+            except Exception:
+                pass
         try:
             from backend.app.api.websocket import _dispatch_batch_analysis
             import redis.asyncio as aioredis
@@ -376,14 +401,27 @@ async def _publish_paralinguistic_snapshot(
     """
     import asyncio
 
+    try:
+        from backend.app.services.metrics import LIVE_PARALINGUISTIC_SNAPSHOTS
+    except Exception:
+        LIVE_PARALINGUISTIC_SNAPSHOTS = None  # type: ignore
+
     loop = asyncio.get_event_loop()
     try:
         features = await loop.run_in_executor(None, window.maybe_snapshot)
     except Exception:
         logger.debug("paralinguistic snapshot failed", exc_info=True)
+        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
+            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="error").inc()
         return
-    if features is None or not getattr(features, "available", False):
+    if features is None:
+        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
+            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="short_buffer").inc()
         return
+    if not getattr(features, "available", False):
+        return
+    if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
+        LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="emitted").inc()
 
     # Inline arousal annotation — deterministic, microsecond-cheap, so
     # live coaching can render the label on the same frame.

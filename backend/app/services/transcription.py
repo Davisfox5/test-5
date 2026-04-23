@@ -115,6 +115,34 @@ class TranscriptionService:
         if audio_path and audio_url:
             raise ValueError("Pass audio_path OR audio_url, not both")
 
+        import time as _time
+
+        mode = "url" if audio_url else "file"
+        _t0 = _time.monotonic()
+        try:
+            segments = await self._dispatch(
+                audio_path=audio_path,
+                audio_url=audio_url,
+                engine=engine,
+                language=language,
+                keyterms=keyterms,
+            )
+        except Exception as exc:
+            self._emit_failure_metric(engine, exc)
+            raise
+        else:
+            self._emit_success_metric(engine, mode, _time.monotonic() - _t0, segments)
+            return segments
+
+    async def _dispatch(
+        self,
+        *,
+        audio_path: Optional[str],
+        audio_url: Optional[str],
+        engine: str,
+        language: str,
+        keyterms: Optional[List[str]],
+    ) -> List[Segment]:
         if engine == "deepgram":
             return await self._transcribe_deepgram(
                 audio_path=audio_path,
@@ -127,6 +155,45 @@ class TranscriptionService:
                 raise ValueError("whisper engine requires a local audio_path")
             return await self._transcribe_whisper(audio_path, language)
         raise ValueError(f"Unknown transcription engine: {engine}")
+
+    # ── Metric emission ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _emit_success_metric(
+        engine: str, mode: str, elapsed: float, segments: List[Segment]
+    ) -> None:
+        try:
+            from backend.app.services.metrics import (
+                TRANSCRIPTION_AUDIO_SECONDS,
+                TRANSCRIPTION_SECONDS,
+            )
+
+            TRANSCRIPTION_SECONDS.labels(engine=engine, mode=mode).observe(elapsed)
+            if segments:
+                audio_seconds = max(0.0, segments[-1].end - segments[0].start)
+                TRANSCRIPTION_AUDIO_SECONDS.labels(engine=engine).inc(audio_seconds)
+        except Exception:
+            logger.debug("transcription metric emission failed", exc_info=True)
+
+    @staticmethod
+    def _emit_failure_metric(engine: str, exc: Exception) -> None:
+        try:
+            from backend.app.services.metrics import TRANSCRIPTION_FAILURES
+
+            # Coarse bucketing so the label space stays bounded — full
+            # messages live in the Sentry event instead.
+            msg = (str(exc) or "").lower()
+            if "timeout" in msg or "timed out" in msg:
+                reason = "timeout"
+            elif "auth" in msg or "401" in msg or "403" in msg:
+                reason = "auth"
+            elif any(code in msg for code in ("500", "502", "503", "504")):
+                reason = "server"
+            else:
+                reason = "other"
+            TRANSCRIPTION_FAILURES.labels(engine=engine, reason=reason).inc()
+        except Exception:
+            logger.debug("transcription failure metric emission failed", exc_info=True)
 
     # ── Deepgram ─────────────────────────────────────────────────────────
 
