@@ -704,6 +704,35 @@ class Integration(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TenantDataOpsLog(Base):
+    """Audit trail for GDPR-style data operations (export, hard-delete).
+
+    Every run of ``export_tenant`` / ``hard_delete_tenant`` writes a
+    row so a data-protection review can reconstruct who asked for
+    what and when. Kept separate from the general audit log because
+    its retention rules are different (we never delete these rows,
+    even when the target tenant is erased).
+    """
+
+    __tablename__ = "tenant_dataops_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    # We store as UUID rather than FK because the tenant may be gone
+    # by the time someone audits this row.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    actor_email: Mapped[Optional[str]] = mapped_column(String)
+    operation: Mapped[str] = mapped_column(String, nullable=False)  # export | delete
+    status: Mapped[str] = mapped_column(String, default="running")  # running | success | failed
+    reason: Mapped[Optional[str]] = mapped_column(String)
+    counts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class CrmSyncLog(Base):
     """One row per CRM sync run. Used by the admin UI to show sync status."""
 

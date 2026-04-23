@@ -250,16 +250,25 @@ async def get_current_principal(
 
     Tries session JWT first (dashboard traffic), then API key (programmatic).
     Raises 401 if neither succeeds.
+
+    As a side effect, updates the ``tenant_id`` / ``user_id`` context
+    vars so every log line the request fans out to carries them. The
+    middleware seeded ``tenant_id`` from a client-supplied header (if
+    any); this overwrites that with the authenticated value.
     """
+    from backend.app.logging_setup import bind_context
+
     principal = await _principal_from_session_jwt(request, db)
-    if principal is not None:
-        return principal
+    if principal is None:
+        principal = await _principal_from_api_key(request, db)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid credentials")
 
-    principal = await _principal_from_api_key(request, db)
-    if principal is not None:
-        return principal
-
-    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+    bind_context(
+        tenant_id=str(principal.tenant.id),
+        user_id=str(principal.user_id) if principal.user_id else None,
+    )
+    return principal
 
 
 async def get_current_tenant(

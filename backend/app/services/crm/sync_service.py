@@ -196,6 +196,13 @@ async def sync_crm_for_tenant(
             logger.debug("adapter.close failed", exc_info=True)
         log.finished_at = datetime.now(timezone.utc)
 
+    try:
+        from backend.app.services.metrics import CRM_SYNC_OUTCOMES
+
+        CRM_SYNC_OUTCOMES.labels(provider=provider, status=log.status).inc()
+    except Exception:
+        logger.debug("sync metric emission failed", exc_info=True)
+
     return SyncSummary(
         provider=provider,
         status=log.status,

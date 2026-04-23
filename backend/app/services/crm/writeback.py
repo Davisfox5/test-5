@@ -98,6 +98,8 @@ async def write_back_interaction(
         "skipped": [],
     }
 
+    from backend.app.services.metrics import CRM_WRITEBACK_OUTCOMES
+
     try:
         if features.get(WRITE_BACK_NOTE_FLAG):
             try:
@@ -112,8 +114,14 @@ async def write_back_interaction(
                         customer_external_id=_customer_external_id(contact),
                     )
                     summary["note_id"] = note_id
+                    CRM_WRITEBACK_OUTCOMES.labels(
+                        provider=provider, kind="note", status="success"
+                    ).inc()
             except CrmCapabilityMissing:
                 summary["skipped"].append("note")
+                CRM_WRITEBACK_OUTCOMES.labels(
+                    provider=provider, kind="note", status="capability_missing"
+                ).inc()
 
         if features.get(WRITE_BACK_ACTIVITY_FLAG):
             try:
@@ -134,14 +142,27 @@ async def write_back_interaction(
                     )
                     activity_ids.append(activity_id)
                 summary["activity_ids"] = activity_ids
+                if activity_ids:
+                    CRM_WRITEBACK_OUTCOMES.labels(
+                        provider=provider, kind="activity", status="success"
+                    ).inc(len(activity_ids))
             except CrmCapabilityMissing:
                 summary["skipped"].append("activity")
+                CRM_WRITEBACK_OUTCOMES.labels(
+                    provider=provider, kind="activity", status="capability_missing"
+                ).inc()
     except CrmAuthError as exc:
         summary["status"] = "auth_failed"
         summary["error"] = str(exc)
+        CRM_WRITEBACK_OUTCOMES.labels(
+            provider=provider, kind="note", status="auth"
+        ).inc()
     except CrmError as exc:
         summary["status"] = "error"
         summary["error"] = str(exc)
+        CRM_WRITEBACK_OUTCOMES.labels(
+            provider=provider, kind="note", status="error"
+        ).inc()
     except Exception:
         logger.exception(
             "CRM write-back crashed for interaction %s", interaction_id
