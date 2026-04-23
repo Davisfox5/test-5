@@ -405,6 +405,11 @@ def default_churn_scorer() -> CompositeScorer:
             # relative to the tenant baseline is a reliable cue that
             # the call is going hot, independent of the transcript.
             WeightedFeature("customer_hot_voice", 2.0, 0.0, 1.0),
+            # Arousal axis (pitch variance + intensity + rate +
+            # jitter/shimmer). ``neutral`` baseline ≈ 0.35; above 0.5
+            # flags an escalating customer even when the transcript
+            # stays polite.
+            WeightedFeature("customer_arousal", 1.5, 0.35, 0.2),
         ],
     )
 
@@ -495,6 +500,7 @@ def flatten_features_for_churn(
         "churn_risk_language": churn_language,
         "competitor_pressure": len(llm.get("competitor_mentions") or []),
         "customer_hot_voice": para["customer_hot_voice"],
+        "customer_arousal": para["customer_arousal"],
     }
 
 
@@ -546,10 +552,19 @@ def _paralinguistic_signals(
         except (TypeError, ValueError):
             hot = 0.0
 
+    customer_arousal = 0.0
+    arousal = customer.get("arousal")
+    if isinstance(arousal, dict) and arousal.get("score") is not None:
+        try:
+            customer_arousal = float(arousal["score"])
+        except (TypeError, ValueError):
+            customer_arousal = 0.0
+
     return {
         "agent_voice_stress": stress,
         "agent_monotone": monotone,
         "customer_hot_voice": hot,
+        "customer_arousal": customer_arousal,
     }
 
 

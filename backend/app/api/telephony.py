@@ -241,12 +241,12 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 if audio:
                     await dg_connection.send(audio)
                     if live_para_window is not None:
-                        # Twilio marks the inbound/outbound leg on every
-                        # media frame; map that to a stable speaker id
-                        # so the scanner can tell agent from customer.
-                        track = media.get("track") or "inbound"
-                        speaker = "agent" if track == "outbound" else "customer"
-                        live_para_window.feed(audio, speaker_id=speaker)
+                        # Whole-window aggregate — we intentionally do
+                        # not trust the provider-reported ``track`` as
+                        # a proxy for agent/customer. Per-speaker live
+                        # features land once we wire Deepgram's live
+                        # diarization stream into the timeline.
+                        live_para_window.feed(audio)
                         await _publish_paralinguistic_snapshot(
                             session_id, live_para_window
                         )
@@ -304,6 +304,15 @@ async def _publish_paralinguistic_snapshot(
     if features is None or not getattr(features, "available", False):
         return
 
+    # Inline arousal annotation — deterministic, microsecond-cheap, so
+    # live coaching can render the label on the same frame.
+    try:
+        from backend.app.services.paralinguistics_emotion import annotate_arousal
+
+        annotated = annotate_arousal(features.as_dict())
+    except Exception:
+        annotated = features.as_dict()
+
     try:
         import redis.asyncio as aioredis
 
@@ -311,7 +320,7 @@ async def _publish_paralinguistic_snapshot(
         try:
             await redis.publish(
                 f"livecoach:{session_id}",
-                json.dumps({"paralinguistic": features.as_dict()}),
+                json.dumps({"paralinguistic": annotated}),
             )
         finally:
             await redis.aclose()

@@ -443,11 +443,15 @@ class ParalinguisticScanner:
             return []
 
         per_speaker = getattr(features, "per_speaker", {}) or {}
+        # Resolution order:
+        #   1. Explicit agent row (post-call pipeline with diarization).
+        #   2. Aggregate "window" row (live mode — see
+        #      LiveParalinguisticWindow.WHOLE_WINDOW_SPEAKER_ID).
+        #   3. First per-speaker row as a last resort.
         agent = per_speaker.get(self._agent_speaker_id) or {}
         if not agent:
-            # Some callers label by diarization index rather than role;
-            # fall back to the first available speaker rather than drop
-            # the snapshot entirely.
+            agent = per_speaker.get("window") or {}
+        if not agent:
             agent = next(iter(per_speaker.values()), {}) or {}
 
         alerts: List[CoachingAlert] = []

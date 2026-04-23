@@ -28,10 +28,18 @@ from typing import Any, Dict, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import Contact, CrmSyncLog, Customer, Integration
+from backend.app.models import (
+    Contact,
+    CrmDealRecord,
+    CrmSyncLog,
+    Customer,
+    Integration,
+)
 from backend.app.services.crm.base import (
     CrmAdapter,
     CrmAuthError,
+    CrmCapabilityMissing,
+    CrmDeal,
     CrmError,
 )
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
@@ -117,11 +125,14 @@ async def sync_crm_for_tenant(
                 partial = True
 
         # ── 2. Contacts ────────────────────────────────────────────
+        contact_ext_to_internal: Dict[str, uuid.UUID] = {}
         async for ct in adapter.iter_contacts():
             try:
-                await _upsert_contact(
+                internal_contact_id = await _upsert_contact(
                     db, tenant_id, provider, ct, ext_id_to_internal
                 )
+                if internal_contact_id is not None:
+                    contact_ext_to_internal[ct.external_id] = internal_contact_id
                 log.contacts_upserted += 1
             except Exception:
                 logger.exception(
@@ -130,6 +141,31 @@ async def sync_crm_for_tenant(
                     tenant_id,
                 )
                 partial = True
+
+        # ── 2b. Deals (providers that support it) ─────────────────
+        try:
+            async for deal in adapter.iter_deals():
+                try:
+                    await _upsert_deal(
+                        db,
+                        tenant_id,
+                        provider,
+                        deal,
+                        ext_id_to_internal,
+                        contact_ext_to_internal,
+                    )
+                    log.deals_upserted += 1
+                except Exception:
+                    logger.exception(
+                        "Failed to upsert deal %s for tenant %s",
+                        deal.external_id,
+                        tenant_id,
+                    )
+                    partial = True
+        except CrmCapabilityMissing:
+            logger.info(
+                "%s does not support deal pull; skipping deals pass", provider
+            )
 
         # ── 3. Schedule brief rebuilds for net-new customers ───────
         if rebuild_briefs_for_new_customers:
@@ -249,6 +285,8 @@ async def _build_adapter(
             access_token=access_token_plain,
             refresh_token=refresh_token_plain,
             api_domain=cfg.get("api_domain", ""),
+            auth_mode=cfg.get("auth_mode") or "bearer",
+            field_map=cfg.get("field_map") or {},
             on_token_refresh=on_refresh,
         )
     raise ValueError(f"Unhandled provider: {provider}")
@@ -301,8 +339,10 @@ async def _upsert_contact(
     provider: str,
     ct,
     ext_to_internal: Dict[str, uuid.UUID],
-) -> None:
-    """Upsert a contact by (tenant_id, crm_id, crm_source)."""
+) -> Optional[uuid.UUID]:
+    """Upsert a contact by (tenant_id, crm_id, crm_source). Returns the
+    internal Contact.id so callers can resolve deal↔contact links
+    against the contacts we just touched."""
     existing = (
         await db.execute(
             select(Contact).where(
@@ -318,19 +358,19 @@ async def _upsert_contact(
     )
 
     if existing is None:
-        db.add(
-            Contact(
-                tenant_id=tenant_id,
-                name=ct.name,
-                email=ct.email,
-                phone=ct.phone,
-                customer_id=customer_id,
-                crm_id=ct.external_id,
-                crm_source=provider,
-                metadata_=ct.metadata or {},
-            )
+        new_contact = Contact(
+            tenant_id=tenant_id,
+            name=ct.name,
+            email=ct.email,
+            phone=ct.phone,
+            customer_id=customer_id,
+            crm_id=ct.external_id,
+            crm_source=provider,
+            metadata_=ct.metadata or {},
         )
-        return
+        db.add(new_contact)
+        await db.flush()
+        return new_contact.id
 
     existing.name = ct.name or existing.name
     existing.email = ct.email or existing.email
@@ -340,3 +380,78 @@ async def _upsert_contact(
     merged_meta = dict(existing.metadata_ or {})
     merged_meta.update(ct.metadata or {})
     existing.metadata_ = merged_meta
+    return existing.id
+
+
+async def _upsert_deal(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    provider: str,
+    deal: CrmDeal,
+    customer_ext_to_internal: Dict[str, uuid.UUID],
+    contact_ext_to_internal: Dict[str, uuid.UUID],
+) -> None:
+    """Upsert a deal by (tenant_id, provider, external_id). Resolves
+    customer/contact references against the ids populated during the
+    first two passes of this sync."""
+    existing = (
+        await db.execute(
+            select(CrmDealRecord).where(
+                CrmDealRecord.tenant_id == tenant_id,
+                CrmDealRecord.provider == provider,
+                CrmDealRecord.external_id == deal.external_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    customer_id = (
+        customer_ext_to_internal.get(deal.customer_external_id)
+        if deal.customer_external_id
+        else None
+    )
+    contact_id = (
+        contact_ext_to_internal.get(deal.contact_external_id)
+        if deal.contact_external_id
+        else None
+    )
+
+    if existing is None:
+        db.add(
+            CrmDealRecord(
+                tenant_id=tenant_id,
+                provider=provider,
+                external_id=deal.external_id,
+                title=deal.title,
+                stage=deal.stage,
+                status=deal.status,
+                amount=deal.amount,
+                currency=deal.currency,
+                probability=deal.probability,
+                close_date=deal.close_date,
+                customer_id=customer_id,
+                contact_id=contact_id,
+                owner_name=deal.owner_name,
+                metadata_json=deal.metadata or {},
+                last_synced_at=datetime.now(timezone.utc),
+            )
+        )
+        return
+
+    existing.title = deal.title or existing.title
+    existing.stage = deal.stage or existing.stage
+    existing.status = deal.status or existing.status
+    existing.amount = deal.amount if deal.amount is not None else existing.amount
+    existing.currency = deal.currency or existing.currency
+    existing.probability = (
+        deal.probability if deal.probability is not None else existing.probability
+    )
+    existing.close_date = deal.close_date or existing.close_date
+    if customer_id:
+        existing.customer_id = customer_id
+    if contact_id:
+        existing.contact_id = contact_id
+    existing.owner_name = deal.owner_name or existing.owner_name
+    merged_meta = dict(existing.metadata_json or {})
+    merged_meta.update(deal.metadata or {})
+    existing.metadata_json = merged_meta
+    existing.last_synced_at = datetime.now(timezone.utc)

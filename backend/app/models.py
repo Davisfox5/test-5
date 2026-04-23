@@ -716,12 +716,53 @@ class CrmSyncLog(Base):
     status: Mapped[str] = mapped_column(String, default="running")
     customers_upserted: Mapped[int] = mapped_column(Integer, default=0)
     contacts_upserted: Mapped[int] = mapped_column(Integer, default=0)
+    deals_upserted: Mapped[int] = mapped_column(Integer, default=0)
     briefs_rebuilt: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[Optional[str]] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CrmDealRecord(Base):
+    """Persisted projection of a CRM deal (Pipedrive Deal, HubSpot Deal,
+    Salesforce Opportunity). Kept narrow — the source of truth stays in
+    the CRM; we cache enough to power LINDA's deal-aware coaching and
+    write-back decisions without re-pulling on every request.
+    """
+
+    __tablename__ = "crm_deals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # pipedrive | hubspot | salesforce
+    external_id: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    stage: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[Optional[str]] = mapped_column(String)  # open|won|lost|deleted
+    amount: Mapped[Optional[float]] = mapped_column(Float)
+    currency: Mapped[Optional[str]] = mapped_column(String)
+    probability: Mapped[Optional[float]] = mapped_column(Float)
+    close_date: Mapped[Optional[str]] = mapped_column(String)
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    owner_name: Mapped[Optional[str]] = mapped_column(String)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", "external_id", name="uq_crm_deals_tenant_provider_external"),
+    )
 
 
 # ──────────────────────────────────────────────────────────

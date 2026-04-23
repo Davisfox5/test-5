@@ -344,6 +344,37 @@ _FEATURE_FLAG_SPEC: List[Dict[str, Any]] = [
             "high-touch teams."
         ),
     },
+    {
+        "key": "emotion_classification",
+        "default": False,
+        "label": "Emotion classification (beta)",
+        "help": (
+            "Run a SpeechBrain wav2vec2 pass on each voice interaction to "
+            "label emotion (neutral/happy/sad/angry). Requires the "
+            "speechbrain package and an ~1 GB model download on the "
+            "worker; not recommended for production until load-tested."
+        ),
+    },
+    {
+        "key": "crm_writeback_notes",
+        "default": False,
+        "label": "CRM note write-back",
+        "help": (
+            "After each call, write a summary note back to the linked "
+            "deal/contact in Pipedrive. Runs only when a matching open "
+            "deal is found for the contact."
+        ),
+    },
+    {
+        "key": "crm_writeback_activities",
+        "default": False,
+        "label": "CRM activity write-back",
+        "help": (
+            "After each call, create a Pipedrive activity for every "
+            "open action item the call produced. Due date, subject, "
+            "and note are carried over."
+        ),
+    },
 ]
 
 

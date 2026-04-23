@@ -32,16 +32,16 @@ from backend.app.services.score_engine import (
 
 def test_window_trims_old_audio_by_window_sec():
     w = LiveParalinguisticWindow(window_sec=0.1, recompute_every_sec=10.0)
-    w.feed(b"\xff" * 160, speaker_id="agent")
+    w.feed(b"\xff" * 160)
     time.sleep(0.15)
-    w.feed(b"\xff" * 160, speaker_id="agent")
+    w.feed(b"\xff" * 160)
     # Only the most recent chunk should remain in the buffer.
     assert len(w._chunks) == 1
 
 
 def test_window_skips_snapshot_when_recompute_interval_not_elapsed():
     w = LiveParalinguisticWindow(window_sec=60.0, recompute_every_sec=10.0)
-    w.feed(b"\xff" * 160, speaker_id="agent")
+    w.feed(b"\xff" * 160)
     # First call resets the internal last-snapshot timer by taking one;
     # in practice the result is None because the buffer is too short.
     first = w.maybe_snapshot()
