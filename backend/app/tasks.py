@@ -104,6 +104,13 @@ celery_app.conf.update(
             "task": "sample_queue_depth",
             "schedule": 30.0,
         },
+        # Nightly GDPR-export backup per tenant — lands in the staging
+        # bucket under backups/{tenant}/{timestamp}.ndjson.gz. Tenants
+        # can opt out via features_enabled.scheduled_backups = False.
+        "nightly-tenant-backup": {
+            "task": "tenant_backup_all_tenants",
+            "schedule": crontab(minute=0, hour=2),
+        },
         "email-push-renew": {
             "task": "email_push_renew_subscriptions",
             "schedule": 43200.0,
@@ -2566,6 +2573,185 @@ def crm_sync_daily() -> Dict[str, Any]:
                         }
                     )
         return {"runs": results, "count": len(results)}
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="tenant_export_to_s3", max_retries=1)
+def tenant_export_to_s3(
+    tenant_id: str,
+    s3_key_prefix: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Produce an NDJSON GDPR export for ``tenant_id`` and upload it to
+    the tenant-owned S3 bucket.
+
+    This is the non-interactive companion to ``GET /tenants/{id}/export``
+    — suitable for scheduled backups or an admin-triggered async
+    export the UI polls for. Writes to
+    ``{AWS_S3_BUCKET}/{s3_key_prefix}/{timestamp}.ndjson.gz`` by default.
+
+    The bundle is gzipped on the fly so terabyte-scale tenants don't
+    pay 10x storage for JSON boilerplate. Metadata (row counts per
+    table, schema version) lands in the accompanying ``.meta.json``.
+    """
+    import gzip
+    import io
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    from backend.app.db import async_session
+    from backend.app.services import s3_audio
+    from backend.app.services.tenant_dataops import export_tenant
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            buf = io.BytesIO()
+            line_count = 0
+            tenant_uuid = _uuid.UUID(tenant_id)
+            with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+                async for chunk in export_tenant(db, tenant_uuid):
+                    gz.write(chunk)
+                    line_count += 1
+            body = buf.getvalue()
+
+        prefix = (s3_key_prefix or "backups").strip("/")
+        timestamp = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
+        key = f"{prefix}/{tenant_id}/{timestamp}.ndjson.gz"
+        s3_audio.upload_bytes(
+            tenant_id=tenant_uuid,
+            recording_id=_uuid.UUID(tenant_id),
+            data=body,
+            content_type="application/gzip",
+            s3_key_override=key,
+        )
+        logger.info(
+            "Tenant export uploaded: tenant=%s key=%s bytes=%d lines=%d",
+            tenant_id, key, len(body), line_count,
+        )
+        return {
+            "tenant_id": tenant_id,
+            "s3_key": key,
+            "bytes": len(body),
+            "lines": line_count,
+            "reason": reason,
+            "exported_at": timestamp,
+        }
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="tenant_backup_all_tenants")
+def tenant_backup_all_tenants() -> Dict[str, Any]:
+    """Nightly backup fan-out — one export per tenant.
+
+    Dispatches ``tenant_export_to_s3`` per tenant so one slow export
+    doesn't hold up the others. Beat schedule below wires this to run
+    daily; disable per-tenant by setting
+    ``tenants.features_enabled['scheduled_backups'] = False``.
+    """
+    from backend.app.models import Tenant
+
+    session = _get_sync_session()
+    try:
+        dispatched = 0
+        skipped = 0
+        for tenant in session.query(Tenant).all():
+            feats = (tenant.features_enabled or {})
+            if feats.get("scheduled_backups") is False:
+                skipped += 1
+                continue
+            try:
+                tenant_export_to_s3.delay(str(tenant.id), reason="nightly_backup")
+                dispatched += 1
+            except Exception:
+                logger.exception(
+                    "Failed to dispatch backup for tenant %s", tenant.id
+                )
+        return {"dispatched": dispatched, "skipped": skipped}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="tenant_restore_from_s3")
+def tenant_restore_from_s3(s3_key: str) -> Dict[str, Any]:
+    """Restore a tenant export back into the database.
+
+    Reads the NDJSON.gz bundle from S3, walks it line by line, and
+    upserts every row into its destination table. Intended for two
+    scenarios:
+
+    1. **Disaster recovery** — a tenant's data got corrupted and we
+       need yesterday's backup back.
+    2. **Environment sync** — copy a tenant from prod to staging for
+       repro work (make sure PII redaction ran before the snapshot).
+
+    The operation is idempotent on the primary key (``ON CONFLICT DO
+    UPDATE``), so running it twice is safe. Foreign-key ordering is
+    honored because ``_tenant_tables_reverse_topo`` emits parents
+    first during export — the restore walks the file in order.
+    """
+    import gzip
+    import json as _json
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from backend.app.db import async_session
+    from backend.app.models import Base
+    from backend.app.services import s3_audio
+
+    async def _runner() -> Dict[str, Any]:
+        blob = s3_audio.download_object_bytes(s3_key)  # type: ignore[attr-defined]
+        data = gzip.decompress(blob).decode("utf-8")
+
+        per_table_counts: Dict[str, int] = {}
+        async with async_session() as db:
+            for line in data.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    doc = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if doc.get("_meta") or doc.get("_eof"):
+                    continue
+                table_name = doc.get("_table")
+                row = doc.get("row") or {}
+                if not table_name or not row:
+                    continue
+                table = Base.metadata.tables.get(table_name)
+                if table is None:
+                    logger.warning("restore: skipping unknown table %s", table_name)
+                    continue
+                # Unwrap base64 blobs produced during export.
+                row = {
+                    k: (
+                        __import__("base64").b64decode(v["__b64__"])
+                        if isinstance(v, dict) and "__b64__" in v
+                        else v
+                    )
+                    for k, v in row.items()
+                }
+                # Only populate columns the table actually has — a
+                # restore from an older schema shouldn't fail on a
+                # column that was dropped since.
+                allowed = {c.name for c in table.columns}
+                row = {k: v for k, v in row.items() if k in allowed}
+                stmt = pg_insert(table).values(**row)
+                pk_cols = [c.name for c in table.primary_key]
+                if pk_cols:
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=pk_cols,
+                        set_={
+                            k: row[k] for k in row.keys() if k not in pk_cols
+                        },
+                    )
+                await db.execute(stmt)
+                per_table_counts[table_name] = (
+                    per_table_counts.get(table_name, 0) + 1
+                )
+            await db.commit()
+        return {"s3_key": s3_key, "restored": per_table_counts}
 
     return asyncio.run(_runner())
 

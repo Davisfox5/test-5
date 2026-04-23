@@ -1,4 +1,4 @@
-name: "CI"
+name: "CI/CD"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -10,8 +10,14 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      deploy_env:
+        description: "Target environment (staging|production)"
+        required: false
+        default: "staging"
 
 jobs:
+  # ── Tests run on every push + PR ──────────────────────────────
   test:
     runs-on: ubuntu-latest
 
@@ -29,6 +35,10 @@ jobs:
       ANTHROPIC_API_KEY: "sk-ant-stub"
       JWT_SECRET: "stub"
       REDIS_URL: "redis://localhost:6379/0"
+      # Skip the emotion-live tests in CI — model download would make
+      # the job 5-10x slower. They run fine in staging after the
+      # worker warmup hook fills the HF cache.
+      LINDA_EMOTION_TESTS_DISABLED: "1"
 
     steps:
       - name: "Check out code"
@@ -50,3 +60,160 @@ jobs:
 
       - name: "Run tests"
         run: pytest -q --ignore=tests/sandbox_demo_ui_test.py
+
+  # ── Build container image on main + manual dispatch ───────────
+  # Separate job so failed deploys don't invalidate the test run.
+  # No-op gracefully when no registry creds are configured — lets
+  # forks / public contributors run CI without infra access.
+  build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Compute image tag"
+        id: meta
+        run: |
+          # Use the commit SHA as the image tag so deploys are
+          # immutable + each release has a unique name.
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: "Set up Docker Buildx"
+        if: env.CONTAINER_REGISTRY != ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: "Log in to container registry"
+        if: env.CONTAINER_REGISTRY != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.CONTAINER_REGISTRY }}
+          username: ${{ secrets.CONTAINER_REGISTRY_USER }}
+          password: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+        env:
+          CONTAINER_REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+
+      - name: "Build and push backend image"
+        if: env.CONTAINER_REGISTRY != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ vars.CONTAINER_REGISTRY }}/linda-backend:${{ steps.meta.outputs.tag }}
+            ${{ vars.CONTAINER_REGISTRY }}/linda-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Pass the release SHA as a build arg so the process logs
+          # the version it's running.
+          build-args: |
+            RELEASE_VERSION=${{ steps.meta.outputs.tag }}
+        env:
+          CONTAINER_REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+
+      - name: "No-registry notice"
+        if: env.CONTAINER_REGISTRY == ''
+        run: |
+          echo "::notice::CONTAINER_REGISTRY var is unset — skipping image build. \
+Set vars.CONTAINER_REGISTRY + secrets.CONTAINER_REGISTRY_USER/PASSWORD in repo settings to enable."
+        env:
+          CONTAINER_REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+
+  # ── Auto-deploy to staging on push to main ────────────────────
+  # Production requires workflow_dispatch + explicit deploy_env=production
+  # so one never happens by accident.
+  deploy_staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Invoke staging deploy hook"
+        if: env.STAGING_DEPLOY_HOOK != ''
+        run: |
+          curl -fsS -X POST "$STAGING_DEPLOY_HOOK" \
+               -H 'Content-Type: application/json' \
+               -d "{\"release\":\"${{ needs.build.outputs.image_tag }}\",\"commit\":\"${GITHUB_SHA}\"}"
+        env:
+          STAGING_DEPLOY_HOOK: ${{ secrets.STAGING_DEPLOY_HOOK }}
+
+      - name: "Wait for staging /ready/deep"
+        if: env.STAGING_URL != ''
+        run: |
+          # Poll up to 5 minutes for the new version to pass the
+          # deep readiness probe. Fails the deploy if not ready.
+          for _ in $(seq 1 30); do
+            if curl -fsS "$STAGING_URL/api/v1/ready/deep" >/tmp/probe.json; then
+              echo "staging is ready:"
+              cat /tmp/probe.json
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::staging did not reach ready/deep within 5 minutes"
+          exit 1
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+
+      - name: "Staging deploy stub notice"
+        if: env.STAGING_DEPLOY_HOOK == ''
+        run: |
+          echo "::notice::STAGING_DEPLOY_HOOK secret unset — deploy step is a no-op. \
+Set it in repo secrets to wire up your Fly/Render/ECS webhook."
+        env:
+          STAGING_DEPLOY_HOOK: ${{ secrets.STAGING_DEPLOY_HOOK }}
+
+  # ── Manual promote to production ──────────────────────────────
+  deploy_production:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'production'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      # GitHub environments can require manual approval + enforce
+      # main-only deploys. Configure the gates in repo settings.
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Invoke production deploy hook"
+        if: env.PRODUCTION_DEPLOY_HOOK != ''
+        run: |
+          curl -fsS -X POST "$PRODUCTION_DEPLOY_HOOK" \
+               -H 'Content-Type: application/json' \
+               -d "{\"release\":\"${{ needs.build.outputs.image_tag }}\",\"commit\":\"${GITHUB_SHA}\"}"
+        env:
+          PRODUCTION_DEPLOY_HOOK: ${{ secrets.PRODUCTION_DEPLOY_HOOK }}
+
+      - name: "Wait for production /ready/deep"
+        if: env.PRODUCTION_URL != ''
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS "$PRODUCTION_URL/api/v1/ready/deep" >/tmp/probe.json; then
+              echo "production is ready:"
+              cat /tmp/probe.json
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::production did not reach ready/deep within 10 minutes"
+          exit 1
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+
+      - name: "Production deploy stub notice"
+        if: env.PRODUCTION_DEPLOY_HOOK == ''
+        run: |
+          echo "::notice::PRODUCTION_DEPLOY_HOOK secret unset — deploy step is a no-op."
+        env:
+          PRODUCTION_DEPLOY_HOOK: ${{ secrets.PRODUCTION_DEPLOY_HOOK }}

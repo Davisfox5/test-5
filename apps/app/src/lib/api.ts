@@ -35,7 +35,28 @@ export function useApi() {
         return (await resp.json()) as T;
     }
 
-    return { request };
+    return {
+        request,
+        // Method-shaped sugar so call sites read like a normal REST
+        // client. ``request`` stays exposed for the rare endpoint that
+        // needs a custom init (form uploads, streaming, etc.).
+        get: <T>(path: string, init: RequestInit = {}) =>
+            request<T>(path, { ...init, method: "GET" }),
+        post: <T>(path: string, body?: unknown, init: RequestInit = {}) =>
+            request<T>(path, {
+                ...init,
+                method: "POST",
+                body: body === undefined ? undefined : JSON.stringify(body),
+            }),
+        patch: <T>(path: string, body?: unknown, init: RequestInit = {}) =>
+            request<T>(path, {
+                ...init,
+                method: "PATCH",
+                body: body === undefined ? undefined : JSON.stringify(body),
+            }),
+        del: <T>(path: string, init: RequestInit = {}) =>
+            request<T>(path, { ...init, method: "DELETE" }),
+    };
 }
 
 export class ApiError extends Error {
