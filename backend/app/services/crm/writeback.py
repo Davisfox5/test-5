@@ -73,9 +73,7 @@ async def write_back_interaction(
     ):
         return {"status": "disabled"}
 
-    # For now only Pipedrive is wired up on the write path. HubSpot and
-    # Salesforce adapters raise CrmCapabilityMissing so we safely bail.
-    provider = _pick_provider_for_writeback(tenant, interaction)
+    provider = await _pick_provider_for_writeback(db, tenant, interaction)
     if provider is None:
         return {"status": "no_provider"}
 
@@ -161,15 +159,49 @@ async def write_back_interaction(
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
-def _pick_provider_for_writeback(tenant: Tenant, interaction: Interaction) -> Optional[str]:
-    """Which CRM to write back to. We prefer Pipedrive while the other
-    adapters don't implement the write path. Tenants can force a
-    provider via ``branding_config.crm_writeback_provider`` once they
-    connect more than one CRM."""
+SUPPORTED_WRITEBACK_PROVIDERS = ("pipedrive", "hubspot", "salesforce")
+
+
+async def _pick_provider_for_writeback(
+    db: AsyncSession, tenant: Tenant, interaction: Interaction
+) -> Optional[str]:
+    """Pick which CRM to write back to.
+
+    Resolution order:
+    1. Explicit override on ``branding_config.crm_writeback_provider``
+       (admin-controlled — useful when a tenant has two CRMs connected
+       but only wants to write to one of them).
+    2. Provider attached to the interaction's contact (``Contact.crm_source``)
+       — keeps write-backs in sync with where the contact lives.
+    3. Provider attached to the contact's customer.
+    4. Most recent Integration row that matches any supported provider.
+    """
     override = (getattr(tenant, "branding_config", {}) or {}).get("crm_writeback_provider")
-    if override:
+    if override and override in SUPPORTED_WRITEBACK_PROVIDERS:
         return str(override)
-    return "pipedrive"
+
+    if interaction.contact_id is not None:
+        contact = await db.get(Contact, interaction.contact_id)
+        if contact is not None and contact.crm_source in SUPPORTED_WRITEBACK_PROVIDERS:
+            return contact.crm_source
+        if contact is not None and contact.customer_id is not None:
+            from backend.app.models import Customer
+
+            customer = await db.get(Customer, contact.customer_id)
+            if customer is not None and customer.crm_source in SUPPORTED_WRITEBACK_PROVIDERS:
+                return customer.crm_source
+
+    stmt = (
+        select(Integration)
+        .where(
+            Integration.tenant_id == tenant.id,
+            Integration.provider.in_(SUPPORTED_WRITEBACK_PROVIDERS),
+        )
+        .order_by(Integration.created_at.desc())
+        .limit(1)
+    )
+    latest = (await db.execute(stmt)).scalar_one_or_none()
+    return latest.provider if latest is not None else None
 
 
 async def _load_writeback_adapter(
@@ -213,15 +245,34 @@ async def _load_writeback_adapter(
             cfg.update(extra)
             integ.provider_config = cfg
 
+    cfg = integ.provider_config or {}
     if provider == "pipedrive":
         from backend.app.services.crm.pipedrive import PipedriveAdapter
 
-        cfg = integ.provider_config or {}
         return PipedriveAdapter(
             access_token=access,
             refresh_token=refresh,
             api_domain=cfg.get("api_domain", ""),
             auth_mode=cfg.get("auth_mode") or "bearer",
+            field_map=cfg.get("field_map") or {},
+            on_token_refresh=on_refresh,
+        )
+    if provider == "hubspot":
+        from backend.app.services.crm.hubspot import HubSpotAdapter
+
+        return HubSpotAdapter(
+            access_token=access,
+            refresh_token=refresh,
+            field_map=cfg.get("field_map") or {},
+            on_token_refresh=on_refresh,
+        )
+    if provider == "salesforce":
+        from backend.app.services.crm.salesforce import SalesforceAdapter
+
+        return SalesforceAdapter(
+            access_token=access,
+            instance_url=cfg.get("instance_url", ""),
+            refresh_token=refresh,
             field_map=cfg.get("field_map") or {},
             on_token_refresh=on_refresh,
         )

@@ -175,6 +175,19 @@ _emotion_classifier_loaded = False
 
 
 def _get_emotion_classifier() -> Any:
+    """Return a cached SpeechBrain emotion classifier.
+
+    On the first call we attempt to load (and therefore download, if
+    not cached) the ``emotion-recognition-wav2vec2-IEMOCAP`` model. The
+    cache keys off the module-level ``_emotion_classifier_loaded`` flag
+    so a single failure (missing library, no internet at worker boot,
+    HF rate-limited) doesn't cause N retries per Celery task.
+
+    Deployment note: the model is ~1 GB. Production workers should
+    call :func:`prefetch_emotion_classifier` during warmup (or ship an
+    image with the model pre-baked under ``~/.cache/huggingface``) so
+    the first inference isn't stuck behind a cold download.
+    """
     global _emotion_classifier, _emotion_classifier_loaded
     if _emotion_classifier_loaded:
         return _emotion_classifier
@@ -188,15 +201,43 @@ def _get_emotion_classifier() -> Any:
         )
         return None
     try:
+        import os
+
+        savedir = os.environ.get(
+            "LINDA_EMOTION_MODEL_DIR",
+            os.path.expanduser("~/.cache/linda/emotion-iemocap"),
+        )
         _emotion_classifier = foreign_class(
             source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
             pymodule_file="custom_interface.py",
             classname="CustomEncoderWav2vec2Classifier",
+            savedir=savedir,
         )
     except Exception:
         logger.exception("Failed to load SpeechBrain emotion classifier")
         _emotion_classifier = None
     return _emotion_classifier
+
+
+def prefetch_emotion_classifier() -> bool:
+    """Eagerly load the emotion model so the first inference is fast.
+
+    Meant for worker startup hooks — a warmup task that runs once per
+    Celery worker. Returns True when the model is ready, False when
+    loading fails (SpeechBrain not installed, HF unreachable, etc.).
+
+    Idempotent: calling twice is a no-op after the first success.
+    """
+    classifier = _get_emotion_classifier()
+    return classifier is not None
+
+
+def reset_emotion_classifier_cache() -> None:
+    """Test helper — forget the cached classifier so a subsequent call
+    re-attempts the load path. Not intended for production code."""
+    global _emotion_classifier, _emotion_classifier_loaded
+    _emotion_classifier = None
+    _emotion_classifier_loaded = False
 
 
 def classify_emotion(audio_path: str) -> Optional[EmotionResult]:
