@@ -25,8 +25,10 @@ import httpx
 from backend.app.config import get_settings
 from backend.app.services.crm.base import (
     CrmAuthError,
+    CrmCapabilityMissing,  # re-exported for callers
     CrmContact,
     CrmCustomer,
+    CrmDeal,
     CrmError,
     CrmRateLimitError,
 )
@@ -45,6 +47,7 @@ class PipedriveAdapter:
         api_domain: str,
         refresh_token: Optional[str] = None,
         auth_mode: str = "bearer",  # "bearer" (OAuth) | "api_token" (PAT)
+        field_map: Optional[Dict[str, str]] = None,
         on_token_refresh=None,
     ) -> None:
         if not access_token:
@@ -57,6 +60,11 @@ class PipedriveAdapter:
         self._refresh_token = refresh_token
         self._api_domain = api_domain.rstrip("/")
         self._auth_mode = auth_mode
+        # Custom-field mapping: LINDA field key → Pipedrive custom-field
+        # hash (Pipedrive exposes custom fields as ``abcd1234…``-style
+        # hashes on the deal/person/org row). Used on write-back so
+        # insights land on the right columns in the tenant's pipeline.
+        self._field_map: Dict[str, str] = dict(field_map or {})
         self._on_token_refresh = on_token_refresh
         self._client = httpx.AsyncClient(timeout=30.0)
 
@@ -94,6 +102,154 @@ class PipedriveAdapter:
                 },
             )
 
+    # ── Deals ─────────────────────────────────────────────────────
+
+    async def iter_deals(self) -> AsyncIterator[CrmDeal]:
+        async for row in self._paginate("/v1/deals"):
+            status = str(row.get("status") or "").lower() or None
+            yield CrmDeal(
+                external_id=str(row.get("id", "")),
+                title=str(row.get("title") or "Untitled deal"),
+                stage=str(row.get("stage_id")) if row.get("stage_id") is not None else None,
+                status=status if status in ("open", "won", "lost", "deleted") else status,
+                amount=_float_or_none(row.get("value")),
+                currency=row.get("currency"),
+                probability=_float_or_none(row.get("probability")),
+                close_date=row.get("close_time") or row.get("expected_close_date"),
+                customer_external_id=_org_id(row.get("org_id")),
+                contact_external_id=(
+                    _org_id(row.get("person_id"))
+                    if row.get("person_id") is not None
+                    else None
+                ),
+                owner_name=(
+                    (row.get("owner_id") or {}).get("name")
+                    if isinstance(row.get("owner_id"), dict)
+                    else None
+                ),
+                metadata={
+                    "pipeline_id": row.get("pipeline_id"),
+                    "won_time": row.get("won_time"),
+                    "lost_time": row.get("lost_time"),
+                    "lost_reason": row.get("lost_reason"),
+                },
+            )
+
+    # ── Write-back ────────────────────────────────────────────────
+
+    async def create_note(
+        self,
+        *,
+        content: str,
+        deal_external_id: Optional[str] = None,
+        contact_external_id: Optional[str] = None,
+        customer_external_id: Optional[str] = None,
+    ) -> str:
+        """Attach a note via ``POST /v1/notes``.
+
+        At least one of deal/person/organization must be provided, per
+        the Pipedrive API. We pass all supplied ids so the note is
+        linked everywhere it makes sense.
+        """
+        if not content:
+            raise CrmError("note content is required")
+        if not any([deal_external_id, contact_external_id, customer_external_id]):
+            raise CrmError(
+                "Pipedrive notes require at least one target (deal/person/org)"
+            )
+        payload: Dict[str, Any] = {"content": content}
+        if deal_external_id:
+            payload["deal_id"] = int(deal_external_id)
+        if contact_external_id:
+            payload["person_id"] = int(contact_external_id)
+        if customer_external_id:
+            payload["org_id"] = int(customer_external_id)
+
+        data = await self._post("/v1/notes", json=payload)
+        note_id = ((data.get("data") or {}).get("id"))
+        if note_id is None:
+            raise CrmError("Pipedrive note response missing id")
+        return str(note_id)
+
+    async def create_activity(
+        self,
+        *,
+        subject: str,
+        activity_type: str,
+        due_date: Optional[str] = None,
+        note: Optional[str] = None,
+        deal_external_id: Optional[str] = None,
+        contact_external_id: Optional[str] = None,
+    ) -> str:
+        """Create a follow-up activity via ``POST /v1/activities``.
+
+        ``activity_type`` must match an activity-type key that exists in
+        the tenant's Pipedrive (``call``, ``meeting``, ``task``, or a
+        custom one). The caller is responsible for picking a value the
+        tenant actually has configured.
+        """
+        payload: Dict[str, Any] = {
+            "subject": subject,
+            "type": activity_type,
+        }
+        if due_date:
+            payload["due_date"] = due_date
+        if note:
+            payload["note"] = note
+        if deal_external_id:
+            payload["deal_id"] = int(deal_external_id)
+        if contact_external_id:
+            payload["person_id"] = int(contact_external_id)
+
+        data = await self._post("/v1/activities", json=payload)
+        act_id = ((data.get("data") or {}).get("id"))
+        if act_id is None:
+            raise CrmError("Pipedrive activity response missing id")
+        return str(act_id)
+
+    async def update_deal_stage(
+        self,
+        *,
+        deal_external_id: str,
+        stage_external_id: str,
+    ) -> None:
+        """Move a deal to a different stage via ``PUT /v1/deals/{id}``."""
+        await self._put(
+            f"/v1/deals/{int(deal_external_id)}",
+            json={"stage_id": int(stage_external_id)},
+        )
+
+    async def update_deal_custom_fields(
+        self,
+        *,
+        deal_external_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Write a dict of LINDA-keyed fields into a Pipedrive deal.
+
+        Each key is looked up in the adapter's ``field_map`` to resolve
+        the Pipedrive custom-field hash. Unknown keys are silently
+        dropped with a warning — better than failing the whole write
+        because one mapping was missing.
+        """
+        if not fields:
+            return
+        mapped: Dict[str, Any] = {}
+        for key, value in fields.items():
+            pd_hash = self._field_map.get(key)
+            if not pd_hash:
+                logger.warning(
+                    "Pipedrive field_map missing entry for '%s'; skipping", key
+                )
+                continue
+            mapped[pd_hash] = value
+        if not mapped:
+            return
+        await self._put(
+            f"/v1/deals/{int(deal_external_id)}",
+            json=mapped,
+        )
+
     async def _paginate(self, path: str) -> AsyncIterator[Dict[str, Any]]:
         start = 0
         while True:
@@ -126,20 +282,58 @@ class PipedriveAdapter:
         return resp.json()
 
     async def _request(
-        self, method: str, path: str, params: Dict[str, Any]
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
     ) -> httpx.Response:
         headers: Dict[str, str] = {"Accept": "application/json"}
-        request_params = dict(params)
+        request_params = dict(params or {})
         if self._auth_mode == "api_token":
             request_params["api_token"] = self._access_token
         else:
             headers["Authorization"] = f"Bearer {self._access_token}"
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         return await self._client.request(
             method,
             f"{self._api_domain}{path}",
             params=request_params,
             headers=headers,
+            json=json_body,
         )
+
+    async def _post(self, path: str, *, json: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("POST", path, json_body=json)
+        if resp.status_code == 401 and self._refresh_token and self._auth_mode == "bearer":
+            await self._refresh_access_token()
+            resp = await self._request("POST", path, json_body=json)
+        if resp.status_code == 401:
+            raise CrmAuthError("Pipedrive rejected the token after refresh")
+        if resp.status_code == 429:
+            raise CrmRateLimitError("Pipedrive rate limit hit")
+        if resp.status_code >= 400:
+            raise CrmError(
+                f"Pipedrive POST {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
+        return resp.json()
+
+    async def _put(self, path: str, *, json: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("PUT", path, json_body=json)
+        if resp.status_code == 401 and self._refresh_token and self._auth_mode == "bearer":
+            await self._refresh_access_token()
+            resp = await self._request("PUT", path, json_body=json)
+        if resp.status_code == 401:
+            raise CrmAuthError("Pipedrive rejected the token after refresh")
+        if resp.status_code == 429:
+            raise CrmRateLimitError("Pipedrive rate limit hit")
+        if resp.status_code >= 400:
+            raise CrmError(
+                f"Pipedrive PUT {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
+        return resp.json() if resp.content else {}
 
     async def _refresh_access_token(self) -> None:
         settings = get_settings()
@@ -208,3 +402,15 @@ def _org_id(org: Any) -> Optional[str]:
         val = org.get("value") or org.get("id")
         return str(val) if val is not None else None
     return str(org)
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+__all__ = ["PipedriveAdapter", "CrmCapabilityMissing"]

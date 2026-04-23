@@ -11,23 +11,27 @@ and handed to the existing :class:`ParalinguisticExtractor` for a
 snapshot. The expensive Praat work runs in a thread-pool executor so
 it never blocks the WS read loop.
 
-Outputs the same ``ParalinguisticFeatures`` shape the post-call
-pipeline uses, so downstream consumers (Redis publisher, scanner,
-scoring factors) don't need a second code path.
+**Speaker assignment deliberately stays out of the live path.** The
+provider-reported ``track`` (inbound/outbound) doesn't reliably map to
+agent-vs-customer across warm-transferred lines, conferenced calls, or
+shared-seat setups, so we compute acoustic features on the **whole
+window** and let the scanner act on those aggregates. When we're ready
+for per-speaker live features we'll pull the timeline from Deepgram's
+live diarization event stream and slice the buffer by those ranges —
+provider-agnostic and grounded in actual speaker IDs, not leg metadata.
 """
 
 from __future__ import annotations
 
 import audioop
-import io
 import logging
 import os
 import tempfile
 import time
 import wave
+from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional
-from collections import deque
 
 from backend.app.services.paralinguistics import (
     ParalinguisticFeatures,
@@ -40,28 +44,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _Chunk:
-    """A μ-law frame from Twilio/SignalWire/Telnyx Media Streams.
-
-    Two tracks — ``inbound`` is whoever called us (customer on an
-    inbound call, agent on an outbound), ``outbound`` is the other
-    leg. We map these to stable speaker ids so post-hoc joins with
-    diarized text land on the right person.
-    """
+    """One decoded audio chunk from Media Streams. We no longer carry
+    a speaker label — see the module docstring for the rationale."""
 
     payload: bytes  # μ-law, 8 kHz, 1 channel
     timestamp: float
-    speaker_id: str
 
 
 class LiveParalinguisticWindow:
     """Rolling audio window + scheduled recompute.
 
     Call order:
-    ``feed(payload, speaker_id)`` on every media frame → cheap.
+    ``feed(payload)`` on every media frame → cheap.
     ``maybe_snapshot()`` whenever you're willing to pay the compute
     cost → returns a :class:`ParalinguisticFeatures` snapshot when the
     recompute interval has elapsed, or None otherwise.
     """
+
+    # Synthetic id used to label the whole-window snapshot. The
+    # downstream scanner looks this up when per-speaker data isn't
+    # available and applies its thresholds to the aggregate.
+    WHOLE_WINDOW_SPEAKER_ID = "window"
 
     def __init__(
         self,
@@ -80,11 +83,11 @@ class LiveParalinguisticWindow:
 
     # ── Frame intake ─────────────────────────────────────────────────
 
-    def feed(self, payload: bytes, *, speaker_id: str = "agent") -> None:
+    def feed(self, payload: bytes) -> None:
         if not payload:
             return
         now = time.time()
-        self._chunks.append(_Chunk(payload=payload, timestamp=now, speaker_id=speaker_id))
+        self._chunks.append(_Chunk(payload=payload, timestamp=now))
         cutoff = now - self.window_sec
         while self._chunks and self._chunks[0].timestamp < cutoff:
             self._chunks.popleft()
@@ -128,25 +131,22 @@ class LiveParalinguisticWindow:
                 wav.setframerate(self.sample_rate)
                 wav.writeframes(pcm)
 
-            # Collapse the per-chunk speaker labels into one segment per
-            # speaker covering the whole window. parselmouth will slice
-            # the audio itself using these times, so overlapping labels
-            # just mean we're computing per-speaker acoustic features on
-            # the whole window (cheap and fine).
             window_start = self._chunks[0].timestamp
             window_end = self._chunks[-1].timestamp
             duration = max(0.0, window_end - window_start)
             if duration < 1.5:
                 return None
 
-            speakers = {c.speaker_id for c in self._chunks}
+            # Whole-window segment — the extractor will still produce
+            # per-speaker structure (a single synthetic speaker in the
+            # live case) so scorers and scanners can read the same
+            # shape post-call and live.
             segments = [
                 SpeakerAudioSegment(
-                    speaker_id=spk,
+                    speaker_id=self.WHOLE_WINDOW_SPEAKER_ID,
                     start=0.0,
                     end=duration,
                 )
-                for spk in sorted(speakers)
             ]
             return self._extractor.extract(segments, audio_path=tmp_path)
         except Exception:

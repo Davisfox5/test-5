@@ -892,7 +892,38 @@ def _run_pipeline_impl(
                 para_segments, audio_path=audio_path
             )
             if para.available:
-                deterministic_features["paralinguistic"] = para.as_dict()
+                block = para.as_dict()
+                # Deterministic arousal annotation is cheap (no models,
+                # pure arithmetic) so it runs on every paralinguistic
+                # output — no feature flag.
+                try:
+                    from backend.app.services.paralinguistics_emotion import (
+                        annotate_arousal,
+                    )
+
+                    block = annotate_arousal(block)
+                except Exception:
+                    logger.debug("arousal annotation failed", exc_info=True)
+
+                # Optional SpeechBrain emotion pass — heavy, opt-in.
+                if tenant_features.get("emotion_classification"):
+                    try:
+                        from backend.app.services.paralinguistics_emotion import (
+                            annotate_emotion,
+                        )
+
+                        # For now we pass the whole-file path for each
+                        # speaker. A finer-grained pass (per-speaker
+                        # concatenated slices) can land as a follow-up
+                        # once we have per-speaker audio extraction
+                        # factored out of the extractor.
+                        speakers = list((block.get("per_speaker") or {}).keys())
+                        segment_paths = [(sid, audio_path) for sid in speakers]
+                        block = annotate_emotion(block, segment_paths)
+                    except Exception:
+                        logger.debug("emotion annotation failed", exc_info=True)
+
+                deterministic_features["paralinguistic"] = block
         except Exception:
             logger.exception(
                 "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
@@ -918,6 +949,20 @@ def _run_pipeline_impl(
         outcome_type=interaction.outcome_type,
         outcome_confidence=interaction.outcome_confidence,
     )
+
+    # ── Step 17d: CRM write-back (opt-in) ──────────────────────────────
+    # Dispatch as a separate Celery task so a slow CRM doesn't stretch
+    # the critical path. Idempotent against the same interaction, so a
+    # Celery retry can replay safely.
+    tf = getattr(tenant, "features_enabled", None) or {}
+    if tf.get("crm_writeback_notes") or tf.get("crm_writeback_activities"):
+        try:
+            crm_writeback.delay(interaction_id)
+        except Exception:
+            logger.debug(
+                "CRM write-back dispatch failed for %s", interaction_id,
+                exc_info=True,
+            )
 
     # ── Step 17b: Weak-supervision labels (orthogonal to the LLM guess) ─
     # Cheap regex LFs produce {cancel_intent, commitment, objection_resolved}
@@ -2282,6 +2327,27 @@ def vector_health_daily() -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_vector_health_check(db)
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="crm_writeback", max_retries=2)
+def crm_writeback(interaction_id: str) -> Dict[str, Any]:
+    """Apply CRM write-backs (notes, activities) for one interaction.
+
+    Dispatched after the voice pipeline lands insights. Reads
+    ``Tenant.features_enabled`` to decide which kinds of write-back to
+    attempt; the tenant stays in control. Exceptions are swallowed by
+    the write-back service so a CRM outage never poisons this task.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.crm.writeback import write_back_interaction
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            summary = await write_back_interaction(db, uuid.UUID(interaction_id))
+            await db.commit()
+            return summary
 
     return asyncio.run(_runner())
 

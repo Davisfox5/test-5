@@ -1,20 +1,24 @@
-"""CRM sync API — trigger on-demand pulls and inspect recent runs."""
+"""CRM sync API — trigger on-demand pulls, inspect recent runs, receive
+provider webhooks for real-time sync."""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import CrmSyncLog, Tenant
+from backend.app.models import CrmSyncLog, Integration, Tenant
 from backend.app.services.crm.sync_service import (
     SUPPORTED_PROVIDERS,
     sync_crm_for_tenant,
@@ -110,3 +114,66 @@ async def list_crm_sync_logs(
     if provider:
         stmt = stmt.where(CrmSyncLog.provider == provider)
     return list((await db.execute(stmt)).scalars().all())
+
+
+# ── Pipedrive webhooks ────────────────────────────────────────────────
+
+
+@router.post("/crm/webhooks/pipedrive/{tenant_id}", status_code=202)
+async def pipedrive_webhook(
+    tenant_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(default=None, alias="X-Webhook-Secret"),
+):
+    """Receive a Pipedrive webhook for a tenant and schedule a targeted
+    sync. Pipedrive signs events by letting you configure HTTP basic
+    auth or a custom header on the webhook definition; we use the
+    custom header path because it doesn't require us to expose a
+    username/password combination in their UI.
+
+    Events land in ``Integration.provider_config['webhook_secret']`` —
+    set when the admin registers the webhook. Unrecognized tenants
+    return 404; mismatched secrets return 403. Successful events are
+    acknowledged with 202 and dispatched to the sync task, so
+    Pipedrive doesn't retry on slow syncs.
+    """
+    stmt = (
+        select(Integration)
+        .where(
+            Integration.tenant_id == tenant_id,
+            Integration.provider == "pipedrive",
+        )
+        .limit(1)
+    )
+    integ = (await db.execute(stmt)).scalar_one_or_none()
+    if integ is None:
+        raise HTTPException(status_code=404, detail="No Pipedrive integration for tenant")
+
+    cfg = integ.provider_config or {}
+    expected = cfg.get("webhook_secret")
+    if expected and not (
+        x_webhook_secret and hmac.compare_digest(str(expected), str(x_webhook_secret))
+    ):
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    try:
+        payload: Dict[str, Any] = json.loads(await request.body() or b"{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Pipedrive shape: ``{event: "added.deal"|"updated.person"|…,
+    # current: {...row}, previous: {...}}``. We don't try to apply the
+    # change in-process — we queue a full provider sync (customers +
+    # contacts + deals) so the tenant always sees a consistent state.
+    event = str(payload.get("event") or "")
+    try:
+        from backend.app.tasks import crm_sync_tenant
+
+        crm_sync_tenant.delay(str(tenant_id), "pipedrive")
+    except Exception:
+        logger.exception(
+            "Pipedrive webhook dispatch failed (tenant=%s event=%s)", tenant_id, event
+        )
+        # Still acknowledge — retrying doesn't help if our broker is down.
+    return {"status": "accepted", "event": event}
