@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     APP_NAME: str = "CallSight AI"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
-    ALLOWED_ORIGINS: list[str] = ["*"]
+    # Default is empty so production deploys fail loud if CORS isn't configured.
+    # Set to a comma-separated list of origins (e.g., "https://app.callsight.ai").
+    # When DEBUG=True and this is empty, the middleware falls back to
+    # "http://localhost:*" / "http://127.0.0.1:*" to keep local dev working.
+    ALLOWED_ORIGINS: list[str] = []
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str

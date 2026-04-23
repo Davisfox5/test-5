@@ -2,16 +2,106 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from backend.app.config import get_settings
 from backend.app.db import engine
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# ── Fail-fast startup checks ──────────────────────────────────
+# Catch missing / insecure configuration at import time rather than on first
+# request. Anything with a security impact that must never be silently
+# permissive in production gets validated here.
+def _validate_production_settings() -> None:
+    if settings.DEBUG:
+        # Dev tree — permissive defaults are acceptable. Loud logs only.
+        if not settings.ALLOWED_ORIGINS:
+            logger.warning(
+                "ALLOWED_ORIGINS is empty; DEBUG=True so CORS middleware "
+                "will accept localhost origins for development."
+            )
+        if not settings.TOKEN_ENCRYPTION_KEY:
+            logger.warning(
+                "TOKEN_ENCRYPTION_KEY is unset; token_crypto will mint an "
+                "ephemeral per-process key because DEBUG=True."
+            )
+        return
+
+    problems: list[str] = []
+    if not settings.ALLOWED_ORIGINS:
+        problems.append(
+            "ALLOWED_ORIGINS is empty. Set it to a comma-separated list of "
+            "origins (e.g., 'https://app.callsight.ai') or enable DEBUG."
+        )
+    if not settings.TOKEN_ENCRYPTION_KEY:
+        problems.append(
+            "TOKEN_ENCRYPTION_KEY is empty. Generate one with "
+            "`python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\"`."
+        )
+    if not settings.ANTHROPIC_API_KEY:
+        problems.append("ANTHROPIC_API_KEY is empty.")
+    if problems:
+        raise RuntimeError(
+            "Refusing to start in production with insecure defaults:\n - "
+            + "\n - ".join(problems)
+        )
+
+
+_validate_production_settings()
+
+
+# ── Security headers middleware ───────────────────────────────
+# Applies to every response, including the static marketing/demo site mount.
+# The CSP + frame-ancestors pairing blocks clickjacking; X-Content-Type-Options
+# nosniff prevents MIME confusion; HSTS is emitted only when we detect HTTPS
+# (the reverse proxy terminates TLS in prod, so we respect the forwarded proto).
+_CSP = (
+    "default-src 'self'; "
+    "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "script-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self' ws: wss:; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        headers = response.headers
+        headers.setdefault("Content-Security-Policy", _CSP)
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault(
+            "Referrer-Policy", "strict-origin-when-cross-origin"
+        )
+        headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=()",
+        )
+        # Only advertise HSTS on HTTPS requests. Emitting it over plain HTTP
+        # is at best ignored and at worst flagged by scanners.
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        if request.url.scheme == "https" or forwarded_proto == "https":
+            headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=63072000; includeSubDomains; preload",
+            )
+        return response
 
 
 @asynccontextmanager
@@ -31,19 +121,38 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version="0.1.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if settings.DEBUG else None,
+    redoc_url="/api/redoc" if settings.DEBUG else None,
+    openapi_url="/api/openapi.json" if settings.DEBUG else None,
     lifespan=lifespan,
 )
 
+# Security headers apply to every response; add before CORS so preflights
+# get them too.
+app.add_middleware(SecurityHeadersMiddleware)
+
 # ── CORS ──────────────────────────────────────────────────
+# Explicit methods + headers instead of "*" so a future accidental credential
+# leak can't be swept up via a permissive preflight.
+_dev_origins = (
+    ["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:8000"]
+    if settings.DEBUG and not settings.ALLOWED_ORIGINS
+    else []
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=settings.ALLOWED_ORIGINS or _dev_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-CallSight-Event",
+        "X-CallSight-Signature",
+        "X-CallSight-Timestamp",
+        "X-Request-ID",
+    ],
+    max_age=600,
 )
 
 # ── API Routers ───────────────────────────────────────────

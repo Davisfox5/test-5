@@ -97,29 +97,14 @@ async def _resolve_clerk_user(
 ) -> Optional[Tenant]:
     """Attempt to resolve a tenant via Clerk JWT.
 
-    Returns None if the token is not a Clerk JWT or verification fails.
-    This is a stub — full Clerk verification requires the ``pyjwt`` library
-    and the Clerk JWKS endpoint.  For now, it recognises a header of the form
-    ``Authorization: Bearer clerk_<...>`` and looks up the user.
+    **Hard-disabled.** The previous implementation treated the bearer token
+    verbatim as a Clerk user ID, meaning any caller sending
+    ``Authorization: Bearer clerk_<any-user-id>`` became that user's tenant.
+    Until we wire real JWKS-backed signature + `iss`/`aud` verification, we
+    refuse to accept Clerk bearer tokens altogether; callers must use an API
+    key. Flip ``CLERK_JWT_VERIFIED`` to True once the verification is in.
     """
-    token = _extract_bearer_token(request)
-    if token is None or not token.startswith("clerk_"):
-        return None
-
-    # In production: verify JWT signature via Clerk JWKS, extract ``sub`` claim.
-    # For now we treat the token value after "clerk_" as the clerk_user_id.
-    clerk_user_id = token  # placeholder — replace with real JWT verification
-
-    stmt = (
-        select(User)
-        .options(selectinload(User.tenant))
-        .where(User.clerk_user_id == clerk_user_id)
-    )
-    result = await db.execute(stmt)
-    user: Optional[User] = result.scalar_one_or_none()
-    if user is None:
-        return None
-    return user.tenant
+    return None
 
 
 async def get_current_user_or_tenant(
@@ -138,3 +123,42 @@ async def get_current_user_or_tenant(
 
     # 2. Fall back to API key
     return await get_current_tenant(request, db)
+
+
+# ── Admin gate ───────────────────────────────────────────
+# Everything under /api/v1/admin/ uses this dependency instead of
+# get_current_tenant. An API key qualifies as admin only if its `scopes`
+# JSONB array contains the literal string "admin". The default scopes
+# for a minted key are ["read:all", "write:all"] — admin must be granted
+# explicitly by a tenant admin via the API-key management UI.
+
+
+async def get_current_admin(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Tenant:
+    """Resolve the current tenant and require admin scope on the API key."""
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    key_hash = hash_api_key(token)
+    stmt = (
+        select(ApiKey)
+        .options(selectinload(ApiKey.tenant))
+        .where(ApiKey.key_hash == key_hash)
+    )
+    result = await db.execute(stmt)
+    api_key: Optional[ApiKey] = result.scalar_one_or_none()
+    if api_key is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if api_key.expires_at is not None:
+        if api_key.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="API key expired")
+
+    scopes = api_key.scopes or []
+    if "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Admin scope required")
+
+    api_key.last_used_at = datetime.now(timezone.utc)
+    return api_key.tenant

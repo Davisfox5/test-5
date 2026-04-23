@@ -1,8 +1,9 @@
 """Admin-only endpoints. Not exposed to end users.
 
-Auth gate reuses the standard API key dependency — in production these routes
-should be restricted to admin tokens via an extra scope check, but for now any
-tenant with an API key can inspect / edit their own signals.
+All routes here require an API key whose JSONB ``scopes`` array contains
+``"admin"`` (enforced by ``get_current_admin``). The dependency still scopes
+the returned tenant to the caller's tenant_id — admin does not imply
+cross-tenant access.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import get_current_admin
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import KBChunk, Tenant, TenantBriefSuggestion
@@ -36,7 +37,7 @@ router = APIRouter()
 
 @router.get("/admin/tenant-context")
 async def get_tenant_context(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Return LINDA's current per-tenant operating brief plus a rendered
     preview of how it lands in the system prompt."""
@@ -66,7 +67,7 @@ class TenantContextFields(BaseModel):
 @router.put("/admin/tenant-context/fields")
 async def set_tenant_context_fields(
     body: TenantContextFields,
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Set the onboarding-owned sections of LINDA's tenant brief.
 
@@ -92,7 +93,7 @@ async def rebuild_tenant_context(
     mode: str = "full",
     sync: bool = False,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Force a rebuild of the tenant-context brief.
 
@@ -118,7 +119,7 @@ async def rebuild_tenant_context(
 @router.get("/admin/vector-health")
 async def vector_health(
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Vector store health snapshot for the developer.
 
@@ -192,7 +193,7 @@ class BriefSuggestionOut(BaseModel):
 async def list_suggestions(
     status: str = "pending",
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """List pending (or approved/rejected) suggestions from the
     Infer-From-Sources agent for this tenant."""
@@ -216,7 +217,7 @@ async def list_suggestions(
 async def approve_suggestion(
     suggestion_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Apply a suggestion to the tenant brief and mark it approved."""
     import uuid as _uuid
@@ -238,7 +239,7 @@ async def approve_suggestion(
 async def reject_suggestion_endpoint(
     suggestion_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     import uuid as _uuid
 
@@ -259,7 +260,7 @@ async def reject_suggestion_endpoint(
 async def trigger_infer_now(
     sync: bool = False,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Trigger the Infer-From-Sources agent immediately for this tenant.
 
@@ -372,7 +373,7 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
 
 @router.get("/admin/tenant-settings", response_model=TenantSettingsOut)
 async def get_tenant_settings(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Return the tenant-level configuration surfaced in the admin UI.
 
@@ -385,7 +386,7 @@ async def get_tenant_settings(
 @router.patch("/admin/tenant-settings", response_model=TenantSettingsOut)
 async def patch_tenant_settings(
     body: TenantSettingsPatch,
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_current_admin),
 ) -> Dict[str, Any]:
     """Merge updates into the tenant record. Allowlisted fields only.
 
