@@ -26,7 +26,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -207,11 +207,22 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         await websocket.close(code=1011)
         return
 
+    # Per-tenant live paralinguistic surface (opt-in). The window runs
+    # on CPU in the worker thread-pool so we don't block Deepgram I/O.
+    live_para_window = None
     try:
         async with async_session() as db:
             sess = await db.get(LiveSession, uuid.UUID(session_id))
             if sess is not None:
                 sess.status = "live"
+                tenant = await db.get(Tenant, sess.tenant_id)
+                feats = (getattr(tenant, "features_enabled", None) or {})
+                if feats.get("paralinguistic_live"):
+                    from backend.app.services.paralinguistics_live import (
+                        LiveParalinguisticWindow,
+                    )
+
+                    live_para_window = LiveParalinguisticWindow()
     except Exception:
         logger.debug("Couldn't update LiveSession.status", exc_info=True)
 
@@ -224,10 +235,21 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 continue
             event = frame.get("event")
             if event == "media":
-                payload = (frame.get("media") or {}).get("payload") or ""
+                media = frame.get("media") or {}
+                payload = media.get("payload") or ""
                 audio = decode_media_payload(payload)
                 if audio:
                     await dg_connection.send(audio)
+                    if live_para_window is not None:
+                        # Twilio marks the inbound/outbound leg on every
+                        # media frame; map that to a stable speaker id
+                        # so the scanner can tell agent from customer.
+                        track = media.get("track") or "inbound"
+                        speaker = "agent" if track == "outbound" else "customer"
+                        live_para_window.feed(audio, speaker_id=speaker)
+                        await _publish_paralinguistic_snapshot(
+                            session_id, live_para_window
+                        )
             elif event == "stop":
                 break
             elif event == "start":
@@ -256,6 +278,45 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 await redis.aclose()
         except Exception:
             logger.exception("Batch analysis dispatch failed for %s", session_id)
+
+
+async def _publish_paralinguistic_snapshot(
+    session_id: str, window: Any
+) -> None:
+    """Take a rate-limited snapshot and publish it on the live-coaching
+    Redis channel. The UI already subscribes to this channel for
+    ``LiveFeatureWindow`` snapshots; paralinguistic data lands under the
+    ``paralinguistic`` subkey so existing clients ignore what they don't
+    understand.
+
+    The Praat work runs in the default thread-pool executor. If another
+    snapshot is already in flight we simply don't queue a second one —
+    the window throttles itself via ``recompute_every_sec`` anyway.
+    """
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    try:
+        features = await loop.run_in_executor(None, window.maybe_snapshot)
+    except Exception:
+        logger.debug("paralinguistic snapshot failed", exc_info=True)
+        return
+    if features is None or not getattr(features, "available", False):
+        return
+
+    try:
+        import redis.asyncio as aioredis
+
+        redis = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        try:
+            await redis.publish(
+                f"livecoach:{session_id}",
+                json.dumps({"paralinguistic": features.as_dict()}),
+            )
+        finally:
+            await redis.aclose()
+    except Exception:
+        logger.debug("paralinguistic publish failed", exc_info=True)
 
 
 # ── SignalWire (TwiML-compatible) ─────────────────────────────────────

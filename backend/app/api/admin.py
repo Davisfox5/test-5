@@ -325,6 +325,25 @@ _FEATURE_FLAG_SPEC: List[Dict[str, Any]] = [
         "label": "Daily CRM sync",
         "help": "Pull customers + contacts from connected CRMs overnight.",
     },
+    {
+        "key": "paralinguistic_analysis",
+        "default": True,
+        "label": "Post-call voice analysis",
+        "help": (
+            "Extract pitch, pace, pauses, and voice-stress markers from each "
+            "call. Adds acoustic signals to sentiment + churn scoring."
+        ),
+    },
+    {
+        "key": "paralinguistic_live",
+        "default": False,
+        "label": "Live voice coaching",
+        "help": (
+            "Show real-time monotone, pace, and stress alerts during calls. "
+            "Costs ~20% of one CPU per concurrent call — opt in only for "
+            "high-touch teams."
+        ),
+    },
 ]
 
 

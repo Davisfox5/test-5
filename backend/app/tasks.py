@@ -266,6 +266,39 @@ def update_contact_rollup(contact, insights: Dict[str, Any], created_at) -> None
 
 # ── Helper: convert Segment dataclass list → list of dicts ───────────────
 
+def _cleanup_staged_audio(
+    session: Session,
+    interaction: Any,
+    staged_path: Optional[str],
+    staged_key: Optional[str],
+) -> None:
+    """Delete the local tempfile and the S3 staging object.
+
+    Called from the voice task after transcription + paralinguistic
+    extraction (or on transcription failure). Idempotent — safe to call
+    when either argument is None.
+    """
+    if staged_path:
+        try:
+            import os as _os
+
+            _os.unlink(staged_path)
+        except Exception:
+            logger.debug("tempfile unlink failed: %s", staged_path, exc_info=True)
+    if staged_key:
+        try:
+            from backend.app.services import s3_audio
+
+            s3_audio.delete_object(staged_key)
+            if getattr(interaction, "audio_s3_key", None) == staged_key:
+                interaction.audio_s3_key = None
+                session.commit()
+        except Exception:
+            logger.warning(
+                "S3 staging cleanup failed for %s", staged_key, exc_info=True
+            )
+
+
 def _segments_to_dicts(segments: list) -> List[Dict[str, Any]]:
     """Convert transcription Segment objects to plain dicts."""
     result: List[Dict[str, Any]] = []
@@ -408,10 +441,15 @@ def _run_pipeline(
     segments_dicts: List[Dict[str, Any]],
     tenant: Any,
     interaction: Any,
+    audio_path: Optional[str] = None,
 ) -> None:
     """Shared pipeline logic for both voice and text interactions.
 
     Runs steps 5–16 of the batch pipeline (everything after transcription).
+
+    ``audio_path``, when supplied, is the local file still on disk from
+    the transcription step. Used by the paralinguistic extractor (step
+    17a). Unused for text interactions.
 
     All async subcalls (triage, analysis, scorecard, webhook emit, search
     indexing, delta reports, brief rebuild…) run inside a single event
@@ -421,7 +459,13 @@ def _run_pipeline(
     """
     with _TaskEventLoop() as _loop:
         _run_pipeline_impl(
-            session, interaction_id, segments_dicts, tenant, interaction, _loop
+            session,
+            interaction_id,
+            segments_dicts,
+            tenant,
+            interaction,
+            _loop,
+            audio_path=audio_path,
         )
 
 
@@ -432,6 +476,8 @@ def _run_pipeline_impl(
     tenant: Any,
     interaction: Any,
     _loop: "_TaskEventLoop",
+    *,
+    audio_path: Optional[str] = None,
 ) -> None:
     from backend.app.models import (
         ActionItem,
@@ -820,42 +866,37 @@ def _run_pipeline_impl(
 
     deterministic_features = FeatureExtractor().extract(segment_objects)
 
-    # ── Step 17a: Paralinguistic features (if audio is retained) ─────
-    try:
-        from backend.app.services.audio_storage import AudioHandle, get_audio_store
-        from backend.app.services.paralinguistics import (
-            SpeakerAudioSegment,
-            get_paralinguistic_extractor,
-        )
-
-        if getattr(interaction, "audio_s3_key", None):
-            store = get_audio_store()
-            handle = AudioHandle(
-                s3_key=interaction.audio_s3_key,
-                tenant_id=str(tenant.id),
-                stored_at=interaction.created_at or datetime.utcnow(),
-                retention_hours=int(getattr(tenant, "audio_retention_hours", 24) or 24),
-                backend=store.backend,
+    # ── Step 17a: Paralinguistic features ────────────────────────────
+    # Runs whenever we still have the audio file on disk (``audio_path``
+    # is populated by process_voice_interaction for S3-staged uploads
+    # and for URL-mode ingests when the tenant has opted in). Per-
+    # speaker + overall acoustic features are stored under the
+    # ``paralinguistic`` key so scorers can read them.
+    tenant_features = getattr(tenant, "features_enabled", None) or {}
+    if audio_path and tenant_features.get("paralinguistic_analysis", True):
+        try:
+            from backend.app.services.paralinguistics import (
+                SpeakerAudioSegment,
+                get_paralinguistic_extractor,
             )
-            audio_path = store.get_local_path(handle)
-            if audio_path:
-                para_segments = [
-                    SpeakerAudioSegment(
-                        speaker_id=s.speaker_id or "unknown",
-                        start=s.start,
-                        end=s.end,
-                    )
-                    for s in segment_objects
-                ]
-                para = get_paralinguistic_extractor().extract(
-                    para_segments, audio_path=audio_path
+
+            para_segments = [
+                SpeakerAudioSegment(
+                    speaker_id=s.speaker_id or "unknown",
+                    start=s.start,
+                    end=s.end,
                 )
-                if para.available:
-                    deterministic_features["paralinguistic"] = para.as_dict()
-    except Exception:
-        logger.exception(
-            "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
-        )
+                for s in segment_objects
+            ]
+            para = get_paralinguistic_extractor().extract(
+                para_segments, audio_path=audio_path
+            )
+            if para.available:
+                deterministic_features["paralinguistic"] = para.as_dict()
+        except Exception:
+            logger.exception(
+                "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
+            )
 
     features_row = (
         session.query(InteractionFeatures)
@@ -1181,8 +1222,21 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             language = getattr(tenant, "transcription_language", None) or "en"
             svc = TranscriptionService()
 
+            # Paralinguistic extraction needs a local file. In URL mode
+            # we'd normally hand the URL to Deepgram without downloading,
+            # but if the tenant opted into paralinguistics we need the
+            # bytes on disk — so fetch once and reuse.
+            tenant_features = getattr(tenant, "features_enabled", None) or {}
+            want_paralinguistic = bool(
+                tenant_features.get("paralinguistic_analysis", True)
+            )
+
             try:
-                if interaction.audio_url and engine == "deepgram":
+                if (
+                    interaction.audio_url
+                    and engine == "deepgram"
+                    and not want_paralinguistic
+                ):
                     # URL mode: Deepgram fetches directly, we never stage.
                     segments = asyncio.run(
                         svc.transcribe(
@@ -1194,7 +1248,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                     )
                 else:
                     # Need a local path — from S3 staging, or download the
-                    # URL first (Whisper path requires a file).
+                    # URL first (Whisper + paralinguistic both want bytes).
                     if interaction.audio_s3_key:
                         staged_key = interaction.audio_s3_key
                         staged_path = s3_audio.download_to_tempfile(staged_key)
@@ -1234,27 +1288,10 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                 )
                 interaction.status = "transcription_failed"
                 session.commit()
+                # Clean up staged bytes on transcription failure too —
+                # the rest of the pipeline won't run.
+                _cleanup_staged_audio(session, interaction, staged_path, staged_key)
                 raise
-            finally:
-                # Clean up staged bytes — per product policy we don't retain
-                # the audio once we have the transcript. S3 staging object
-                # and the local tempfile both go here.
-                if staged_path:
-                    try:
-                        import os as _os
-
-                        _os.unlink(staged_path)
-                    except Exception:
-                        logger.debug("tempfile unlink failed: %s", staged_path, exc_info=True)
-                if staged_key:
-                    try:
-                        s3_audio.delete_object(staged_key)
-                        interaction.audio_s3_key = None
-                        session.commit()
-                    except Exception:
-                        logger.warning(
-                            "S3 staging cleanup failed for %s", staged_key, exc_info=True
-                        )
         else:
             logger.warning(
                 "Interaction %s has no transcript, audio_s3_key, or audio_url",
@@ -1268,7 +1305,22 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             }
 
         # ── Steps 5–17: Run shared pipeline ──────────────────────────
-        _run_pipeline(session, interaction_id, segments_dicts, tenant, interaction)
+        try:
+            _run_pipeline(
+                session,
+                interaction_id,
+                segments_dicts,
+                tenant,
+                interaction,
+                audio_path=staged_path,
+            )
+        finally:
+            # Paralinguistic extraction has had its shot — evict the
+            # audio bytes. Keeps us aligned with the no-retention
+            # product policy.
+            _cleanup_staged_audio(session, interaction, staged_path, staged_key)
+            staged_path = None
+            staged_key = None
 
         return {"status": "analyzed", "interaction_id": interaction_id}
 
@@ -1665,7 +1717,9 @@ def orchestrator_daily_all_tenants() -> Dict[str, Any]:
     """Daily consolidation of delta reports into profile versions.
 
     Iterates every tenant and runs :meth:`Orchestrator.run_daily`.  One
-    tenant failing does not block the others.
+    tenant failing does not block the others. Also refreshes each
+    tenant's paralinguistic baselines so scorers have up-to-date
+    percentiles for the "hot voice" / "flat tone" signals.
     """
     from backend.app.models import Tenant
     from backend.app.services.orchestrator import get_orchestrator
@@ -1673,6 +1727,7 @@ def orchestrator_daily_all_tenants() -> Dict[str, Any]:
     session = _get_sync_session()
     orch = get_orchestrator()
     totals: Dict[str, int] = {}
+    baselines_refreshed = 0
     processed = 0
     try:
         for tenant in session.query(Tenant).all():
@@ -1685,9 +1740,87 @@ def orchestrator_daily_all_tenants() -> Dict[str, Any]:
                 logger.exception(
                     "Daily orchestrator failed for tenant %s", tenant.id
                 )
+            try:
+                if _refresh_paralinguistic_baselines(session, tenant):
+                    baselines_refreshed += 1
+            except Exception:
+                logger.exception(
+                    "Paralinguistic baseline refresh failed for tenant %s",
+                    tenant.id,
+                )
     finally:
         session.close()
-    return {"tenants_processed": processed, "profile_updates": totals}
+    return {
+        "tenants_processed": processed,
+        "profile_updates": totals,
+        "paralinguistic_baselines_refreshed": baselines_refreshed,
+    }
+
+
+def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
+    """Recompute per-tenant acoustic percentiles off the last 90 days of
+    interactions and persist them on ``Tenant.paralinguistic_baselines``.
+
+    Returns True when the tenant had enough paralinguistic-enabled
+    interactions (≥10) to compute meaningful baselines, False otherwise.
+    """
+    from backend.app.models import Interaction, InteractionFeatures
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=90)
+    rows = (
+        session.query(InteractionFeatures.deterministic)
+        .join(Interaction, Interaction.id == InteractionFeatures.interaction_id)
+        .filter(
+            Interaction.tenant_id == tenant.id,
+            Interaction.channel == "voice",
+            Interaction.created_at >= cutoff,
+        )
+        .all()
+    )
+    customer_db: List[float] = []
+    agent_pitch_std: List[float] = []
+    for (det,) in rows:
+        block = ((det or {}).get("paralinguistic") or {})
+        if not block or not block.get("available"):
+            continue
+        per_speaker = block.get("per_speaker") or {}
+        agent = per_speaker.get("agent") or next(iter(per_speaker.values()), {}) or {}
+        customer = per_speaker.get("customer")
+        if customer is None and len(per_speaker) > 1:
+            customer = list(per_speaker.values())[1]
+        customer = customer or {}
+        if (ps := agent.get("pitch_std_semitones")) is not None:
+            agent_pitch_std.append(float(ps))
+        if (cd := customer.get("intensity_db_p50")) is not None:
+            customer_db.append(float(cd))
+
+    if len(customer_db) < 10 and len(agent_pitch_std) < 10:
+        return False
+
+    def _pctile(values: List[float], p: float) -> Optional[float]:
+        if not values:
+            return None
+        clean = sorted(values)
+        idx = p * (len(clean) - 1)
+        lo = int(idx)
+        hi = min(len(clean) - 1, lo + 1)
+        frac = idx - lo
+        return round(clean[lo] + (clean[hi] - clean[lo]) * frac, 3)
+
+    baselines = {
+        "customer_intensity_db_p90": _pctile(customer_db, 0.9),
+        "customer_intensity_db_p50": _pctile(customer_db, 0.5),
+        "agent_pitch_std_semitones_p50": _pctile(agent_pitch_std, 0.5),
+        "sample_counts": {
+            "customer_intensity": len(customer_db),
+            "agent_pitch_std": len(agent_pitch_std),
+        },
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    tenant.paralinguistic_baselines = baselines
+    session.commit()
+    return True
 
 
 @celery_app.task(name="orchestrator_weekly_all_tenants")

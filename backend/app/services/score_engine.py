@@ -366,6 +366,17 @@ def default_sentiment_scorer() -> CompositeScorer:
                 recommendation="Leave more space before replying after the customer speaks.",
             ),
             WeightedFeature("laughter_events", 1.0, 1.0, 1.0),
+            # Acoustic stress markers on the agent side drag sentiment
+            # lower: a tight, strained voice reads as impatience even when
+            # the words are polite.
+            WeightedFeature(
+                "agent_voice_stress", 1.5, 0.0, 1.0, direction=-1,
+                recommendation="Agent voice tension detected — slow breathing, longer pauses.",
+            ),
+            WeightedFeature(
+                "agent_monotone", 1.0, 0.0, 1.0, direction=-1,
+                recommendation="Flat delivery dulls rapport — vary tone and emphasis.",
+            ),
         ],
     )
 
@@ -390,6 +401,10 @@ def default_churn_scorer() -> CompositeScorer:
             ),
             WeightedFeature("churn_risk_language", 3.0, 0.0, 1.0),
             WeightedFeature("competitor_pressure", 2.0, 0.0, 1.0),
+            # Customer-side acoustic escalation: sustained loudness
+            # relative to the tenant baseline is a reliable cue that
+            # the call is going hot, independent of the transcript.
+            WeightedFeature("customer_hot_voice", 2.0, 0.0, 1.0),
         ],
     )
 
@@ -408,6 +423,10 @@ def default_health_scorer() -> CompositeScorer:
             WeightedFeature("response_latency_p90", 1.5, 24.0, 12.0, direction=-1,
                             recommendation="Tighten response time on customer follow-ups."),
             WeightedFeature("competitor_pressure", 1.5, 0.0, 1.0, direction=-1),
+            WeightedFeature(
+                "agent_voice_stress", 1.0, 0.0, 1.0, direction=-1,
+                recommendation="Voice strain spotted — coach on calm-voice techniques.",
+            ),
         ],
     )
 
@@ -442,6 +461,7 @@ def flatten_features_for_sentiment(features: Dict[str, Any]) -> Dict[str, Option
     traj = llm.get("sentiment_trajectory") or []
     slope = _trajectory_slope([t.get("score") for t in traj])
     end_val = traj[-1]["score"] if traj else None
+    para = _paralinguistic_signals(det, tenant_baselines=None)
     return {
         "sentiment_score_llm": llm.get("sentiment_score") or llm.get("sentiment_score_llm"),
         "sentiment_trajectory_slope": slope,
@@ -449,12 +469,15 @@ def flatten_features_for_sentiment(features: Dict[str, Any]) -> Dict[str, Option
         "linguistic_style_match": det.get("linguistic_style_match"),
         "interruption_count_total": det.get("interruption_count_total"),
         "laughter_events": det.get("laughter_events"),
+        "agent_voice_stress": para["agent_voice_stress"],
+        "agent_monotone": para["agent_monotone"],
     }
 
 
 def flatten_features_for_churn(
     features: Dict[str, Any],
     contact_rollup: Optional[Dict[str, Any]] = None,
+    tenant_baselines: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Optional[float]]:
     det = features.get("deterministic", {}) or {}
     llm = features.get("llm_structured", {}) or {}
@@ -462,6 +485,7 @@ def flatten_features_for_churn(
     slope = _trajectory_slope([t.get("score") for t in traj])
     churn_language = len(llm.get("churn_risk_factors") or [])
     rollup = contact_rollup or {}
+    para = _paralinguistic_signals(det, tenant_baselines=tenant_baselines)
     return {
         "churn_risk_llm": llm.get("churn_risk"),
         "sustain_talk_count": llm.get("sustain_talk_count"),
@@ -470,6 +494,62 @@ def flatten_features_for_churn(
         "action_item_completion_rate": rollup.get("action_item_completion_rate"),
         "churn_risk_language": churn_language,
         "competitor_pressure": len(llm.get("competitor_mentions") or []),
+        "customer_hot_voice": para["customer_hot_voice"],
+    }
+
+
+def _paralinguistic_signals(
+    deterministic: Dict[str, Any],
+    tenant_baselines: Optional[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Collapse the paralinguistic block into the 0/1-ish signals the
+    scorers consume.
+
+    Three outputs: ``agent_voice_stress`` (0/1 if jitter or shimmer
+    clear stress thresholds), ``agent_monotone`` (0/1 if pitch σ is
+    below 2.0 semitones), ``customer_hot_voice`` (proportion of how
+    far the customer's median intensity sits above the tenant p90 —
+    0 when no baseline is available).
+    """
+    block = (deterministic or {}).get("paralinguistic") or {}
+    if not block or not block.get("available"):
+        return {
+            "agent_voice_stress": 0.0,
+            "agent_monotone": 0.0,
+            "customer_hot_voice": 0.0,
+        }
+    per_speaker = block.get("per_speaker") or {}
+    # Pick the agent/customer rows by convention: "agent" / "customer"
+    # when live-ingest set them, else positional (first = agent is the
+    # typical diarization convention when we seed from a live call).
+    agent = per_speaker.get("agent") or next(iter(per_speaker.values()), {}) or {}
+    customer = per_speaker.get("customer")
+    if customer is None and len(per_speaker) > 1:
+        # Second speaker in insertion order.
+        speaker_ids = list(per_speaker.keys())
+        customer = per_speaker.get(speaker_ids[1], {})
+    customer = customer or {}
+
+    jitter = agent.get("jitter_local") or 0.0
+    shimmer = agent.get("shimmer_local") or 0.0
+    stress = 1.0 if (jitter > 0.02 or shimmer > 0.1) else 0.0
+
+    pitch_std = agent.get("pitch_std_semitones")
+    monotone = 1.0 if (pitch_std is not None and pitch_std < 2.0) else 0.0
+
+    hot = 0.0
+    cust_db = customer.get("intensity_db_p50")
+    baseline = (tenant_baselines or {}).get("customer_intensity_db_p90")
+    if cust_db is not None and baseline:
+        try:
+            hot = max(0.0, float(cust_db) - float(baseline))
+        except (TypeError, ValueError):
+            hot = 0.0
+
+    return {
+        "agent_voice_stress": stress,
+        "agent_monotone": monotone,
+        "customer_hot_voice": hot,
     }
 
 

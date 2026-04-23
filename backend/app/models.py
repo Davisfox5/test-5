@@ -49,6 +49,13 @@ class Tenant(Base):
     default_language: Mapped[str] = mapped_column(String, default="en")
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     features_enabled: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Per-tenant acoustic baselines used by the churn/sentiment scorers.
+    # Populated by the nightly orchestrator with p50/p90 percentiles of
+    # per-speaker intensity, pitch etc. across the last ~90 days of
+    # interactions. Shape: ``{"customer_intensity_db_p90": float,
+    # "agent_pitch_std_semitones_p50": float, …}``. Empty dict until
+    # the first computation completes.
+    paralinguistic_baselines: Mapped[dict] = mapped_column(JSONB, default=dict)
     # Outcomes webhook HMAC secret verified on X-Linda-Signature.
     outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
     # How many hours of call audio to retain after processing.

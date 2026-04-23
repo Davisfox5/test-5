@@ -397,3 +397,126 @@ class LFTriggerScanner:
             ))
 
         return alerts
+
+
+# ── Paralinguistic scanner ───────────────────────────────────────────────
+
+
+# Thresholds chosen to match typical call-center norms (not perfectionist):
+#   * pitch_std_semitones < 2.0 reads as monotone in informal listening
+#   * speaking_rate > 4.5 syll/sec is noticeably fast in EN
+#   * jitter > 0.02 and shimmer > 0.1 are the established "voice stress"
+#     cutoffs in clinical phonetics (Teixeira et al. 2013)
+#   * pause_rate_per_min > 8 flags halting speech / long silences
+_PARALING_THRESHOLDS = {
+    "monotone_pitch_std_semitones": 2.0,
+    "fast_rate_syll_per_sec": 4.5,
+    "jitter_stress": 0.02,
+    "shimmer_stress": 0.1,
+    "silence_pause_rate_per_min": 8.0,
+}
+
+
+class ParalinguisticScanner:
+    """Turns :class:`ParalinguisticFeatures` snapshots into coaching alerts.
+
+    Mirrors :class:`LFTriggerScanner`: stateless except for per-kind
+    cooldowns so the UI doesn't get spammed with the same alert every
+    few seconds.
+
+    Only emits for the agent speaker_id (defaults to "agent"); customer
+    acoustic signals feed into the scorers instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        cooldown_sec: float = 60.0,
+        agent_speaker_id: str = "agent",
+    ) -> None:
+        self._cooldown = _Cooldown(min_interval_sec=cooldown_sec)
+        self._agent_speaker_id = agent_speaker_id
+
+    def push(self, features: Any) -> List[CoachingAlert]:
+        """Scan one snapshot and return any alerts that fire."""
+        if features is None or not getattr(features, "available", False):
+            return []
+
+        per_speaker = getattr(features, "per_speaker", {}) or {}
+        agent = per_speaker.get(self._agent_speaker_id) or {}
+        if not agent:
+            # Some callers label by diarization index rather than role;
+            # fall back to the first available speaker rather than drop
+            # the snapshot entirely.
+            agent = next(iter(per_speaker.values()), {}) or {}
+
+        alerts: List[CoachingAlert] = []
+        now = time.time()
+
+        pitch_std = agent.get("pitch_std_semitones")
+        if (
+            pitch_std is not None
+            and pitch_std < _PARALING_THRESHOLDS["monotone_pitch_std_semitones"]
+            and self._cooldown.should_fire("monotone", now)
+        ):
+            alerts.append(CoachingAlert(
+                kind="monotone",
+                severity="info",
+                message="Your tone has gone flat — vary your pitch to re-engage.",
+                evidence={"pitch_std_semitones": round(pitch_std, 2)},
+            ))
+
+        rate = agent.get("speaking_rate_syll_per_sec")
+        if (
+            rate is not None
+            and rate > _PARALING_THRESHOLDS["fast_rate_syll_per_sec"]
+            and self._cooldown.should_fire("pace", now)
+        ):
+            alerts.append(CoachingAlert(
+                kind="pace",
+                severity="warn",
+                message="You're speaking quickly — slow down a quarter and let it land.",
+                evidence={"speaking_rate_syll_per_sec": round(rate, 2)},
+            ))
+
+        jitter = agent.get("jitter_local") or 0.0
+        shimmer = agent.get("shimmer_local") or 0.0
+        if (
+            (jitter > _PARALING_THRESHOLDS["jitter_stress"]
+             or shimmer > _PARALING_THRESHOLDS["shimmer_stress"])
+            and self._cooldown.should_fire("stress", now)
+        ):
+            alerts.append(CoachingAlert(
+                kind="stress",
+                severity="warn",
+                message="Voice strain picking up — pause, take a breath, reset.",
+                evidence={
+                    "jitter_local": round(jitter, 4),
+                    "shimmer_local": round(shimmer, 4),
+                },
+            ))
+
+        pause_rate = agent.get("pause_rate_per_min")
+        if (
+            pause_rate is not None
+            and pause_rate > _PARALING_THRESHOLDS["silence_pause_rate_per_min"]
+            and self._cooldown.should_fire("silence", now)
+        ):
+            alerts.append(CoachingAlert(
+                kind="silence",
+                severity="info",
+                message="Lots of long pauses — pick up the thread with a question.",
+                evidence={"pause_rate_per_min": round(pause_rate, 2)},
+            ))
+
+        return alerts
+
+
+__all__ = [
+    "LiveTurn",
+    "LiveFeatureWindow",
+    "LiveFeatureSnapshot",
+    "CoachingAlert",
+    "LFTriggerScanner",
+    "ParalinguisticScanner",
+]
