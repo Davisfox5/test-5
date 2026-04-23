@@ -18,6 +18,16 @@ deepgram-sdk>=3                   # Live + batch ASR + diarization
 faster-whisper>=1.0               # Self-hosted batch ASR
 pyannote.audio>=3.1               # Self-hosted speaker diarization
 
+# === Paralinguistic + Emotion ===
+# SpeechBrain's IEMOCAP wav2vec2 model powers the optional emotion
+# classifier (paralinguistics_emotion.classify_emotion). Pre-warm on
+# worker boot via prefetch_emotion_classifier() so the first call
+# isn't stuck behind the ~1 GB HF download.
+speechbrain>=1.0
+transformers>=4.38
+torch>=2.1                        # pulled in transitively anyway, but pinned for workers
+torchaudio>=2.1
+
 # === Audio Processing ===
 ffmpeg-python>=0.2                # Audio normalization
 

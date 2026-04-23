@@ -349,10 +349,11 @@ _FEATURE_FLAG_SPEC: List[Dict[str, Any]] = [
         "default": False,
         "label": "Emotion classification (beta)",
         "help": (
-            "Run a SpeechBrain wav2vec2 pass on each voice interaction to "
-            "label emotion (neutral/happy/sad/angry). Requires the "
-            "speechbrain package and an ~1 GB model download on the "
-            "worker; not recommended for production until load-tested."
+            "Run SpeechBrain's IEMOCAP wav2vec2 model on each voice "
+            "interaction to label emotion (neutral/happy/sad/angry). "
+            "Model is ~1 GB and downloads on first use; pre-warm on "
+            "worker boot with prefetch_emotion_classifier() so the "
+            "first call isn't slow."
         ),
     },
     {

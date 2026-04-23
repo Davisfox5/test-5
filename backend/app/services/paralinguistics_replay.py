@@ -22,14 +22,15 @@ forces a snapshot every ``snapshot_every_sec`` of simulated audio.
 
 from __future__ import annotations
 
-import audioop
 import contextlib
 import logging
+import struct
 import time
 import wave
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, List, Optional
 
+from backend.app.services.audio_codecs import pcm16_to_mono, resample_pcm16
 from backend.app.services.live_coaching_features import (
     CoachingAlert,
     ParalinguisticScanner,
@@ -104,14 +105,11 @@ def replay_pcm_into_window(
         return ReplayReport(total_duration_sec=0.0)
 
     # Convert PCM16 → μ-law 8 kHz mono so the window sees the same bytes
-    # a live Media Streams connection would hand it. We downsample with
-    # audioop since we want the input file to stay at whatever rate the
-    # caller gave us.
+    # a live Media Streams connection would hand it.
     target_rate = 8000
     if sample_rate != target_rate:
-        converted, _ = audioop.ratecv(pcm16, 2, 1, sample_rate, target_rate, None)
-        pcm16 = converted
-    mulaw = audioop.lin2ulaw(pcm16, 2)
+        pcm16 = resample_pcm16(pcm16, sample_rate, target_rate)
+    mulaw = _pcm16_to_ulaw(pcm16)
 
     # Deterministic synthetic clock that advances by one frame per feed.
     # Each call to feed() uses its own timestamp, so the window sees
@@ -176,10 +174,7 @@ def replay_wav_file(
 
     if sampwidth != 2:
         raise ValueError(f"replay_wav_file expects 16-bit PCM, got {sampwidth * 8} bit")
-    if n_channels == 2:
-        frames = audioop.tomono(frames, 2, 0.5, 0.5)
-    elif n_channels != 1:
-        raise ValueError(f"replay_wav_file expects 1 or 2 channels, got {n_channels}")
+    frames = pcm16_to_mono(frames, n_channels)
 
     return replay_pcm_into_window(
         pcm16=frames,
@@ -188,6 +183,40 @@ def replay_wav_file(
         snapshot_every_sec=snapshot_every_sec,
         scanner=scanner,
     )
+
+
+def _pcm16_to_ulaw(pcm16: bytes) -> bytes:
+    """Encode 16-bit PCM to G.711 μ-law — only used by the replay
+    harness to produce bytes that match what Media Streams delivers.
+
+    We don't need an encoder in the live ingest path (we only decode
+    what providers send) so this lives here rather than in the public
+    audio_codecs module.
+    """
+    if not pcm16:
+        return b""
+    n = len(pcm16) // 2
+    samples = struct.unpack(f"<{n}h", pcm16)
+    BIAS = 0x84
+    CLIP = 32635
+    out = bytearray()
+    for sample in samples:
+        sign = 0x80 if sample < 0 else 0x00
+        if sample < 0:
+            sample = -sample
+        if sample > CLIP:
+            sample = CLIP
+        sample += BIAS
+        # Compute exponent as position of the highest set bit above the
+        # shifted mantissa — same table Python's removed audioop used.
+        exponent = 7
+        mask = 0x4000
+        while exponent > 0 and (sample & mask) == 0:
+            mask >>= 1
+            exponent -= 1
+        mantissa = (sample >> ((exponent + 3))) & 0x0F
+        out.append(~(sign | (exponent << 4) | mantissa) & 0xFF)
+    return bytes(out)
 
 
 # ── Validation (ground-truth comparison) ────────────────────────────────

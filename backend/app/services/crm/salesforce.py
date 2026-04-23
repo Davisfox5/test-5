@@ -20,6 +20,7 @@ from backend.app.services.crm.base import (
     CrmAuthError,
     CrmContact,
     CrmCustomer,
+    CrmDeal,
     CrmError,
     CrmRateLimitError,
 )
@@ -37,6 +38,7 @@ class SalesforceAdapter:
         access_token: str,
         instance_url: str,
         refresh_token: Optional[str] = None,
+        field_map: Optional[Dict[str, str]] = None,
         on_token_refresh=None,
     ) -> None:
         if not access_token:
@@ -46,6 +48,7 @@ class SalesforceAdapter:
         self._access_token = access_token
         self._instance_url = instance_url.rstrip("/")
         self._refresh_token = refresh_token
+        self._field_map: Dict[str, str] = dict(field_map or {})
         self._on_token_refresh = on_token_refresh
         self._client = httpx.AsyncClient(timeout=30.0)
 
@@ -88,6 +91,165 @@ class SalesforceAdapter:
                 metadata={"job_title": row.get("Title")},
             )
 
+    # ── Deals (opportunities) ─────────────────────────────────────
+
+    async def iter_deals(self) -> AsyncIterator[CrmDeal]:
+        query = (
+            "SELECT Id, Name, StageName, Amount, Probability, CloseDate, "
+            "IsClosed, IsWon, AccountId, OwnerId FROM Opportunity"
+        )
+        async for row in self._paginate_soql(query):
+            status = (
+                "won" if row.get("IsWon") else
+                "lost" if row.get("IsClosed") else "open"
+            )
+            yield CrmDeal(
+                external_id=str(row.get("Id", "")),
+                title=str(row.get("Name") or "Untitled deal"),
+                stage=row.get("StageName"),
+                status=status,
+                amount=_float_or_none(row.get("Amount")),
+                currency="USD",  # per-tenant override goes in provider_config
+                probability=_float_or_none(row.get("Probability")),
+                close_date=row.get("CloseDate"),
+                customer_external_id=row.get("AccountId"),
+                contact_external_id=None,  # Opportunity↔Contact via junction object
+                owner_name=row.get("OwnerId"),
+                metadata={"is_closed": row.get("IsClosed")},
+            )
+
+    # ── Write-back ───────────────────────────────────────────────
+
+    async def create_note(
+        self,
+        *,
+        content: str,
+        deal_external_id: Optional[str] = None,
+        contact_external_id: Optional[str] = None,
+        customer_external_id: Optional[str] = None,
+    ) -> str:
+        """Create a Salesforce ``Note`` record.
+
+        Salesforce deprecated the classic Note sObject in favor of
+        ``ContentNote`` + ``ContentDocumentLink``; we use ``ContentNote``
+        and link it to the first provided parent id (deal → Opportunity,
+        contact → Contact, customer → Account).
+        """
+        if not content:
+            raise CrmError("note content is required")
+        parent_id = deal_external_id or contact_external_id or customer_external_id
+        if not parent_id:
+            raise CrmError(
+                "Salesforce notes require at least one parent (deal/contact/customer)"
+            )
+
+        note_payload = {
+            "Title": _truncate(content.split("\n", 1)[0], 80),
+            "Content": _base64_utf8(content),
+        }
+        note_resp = await self._post(
+            f"/services/data/{_API_VERSION}/sobjects/ContentNote", note_payload
+        )
+        note_id = note_resp.get("id")
+        if not note_id:
+            raise CrmError("Salesforce note response missing id")
+
+        # Link the note to its parent. ShareType=V gives viewer access
+        # to everyone who can see the parent — the usual CRM default.
+        link_payload = {
+            "ContentDocumentId": note_id,
+            "LinkedEntityId": parent_id,
+            "ShareType": "V",
+            "Visibility": "AllUsers",
+        }
+        try:
+            await self._post(
+                f"/services/data/{_API_VERSION}/sobjects/ContentDocumentLink",
+                link_payload,
+            )
+        except CrmError:
+            # The note itself exists; re-raise so the caller sees the link
+            # failure rather than silently orphaning the note.
+            raise
+        return str(note_id)
+
+    async def create_activity(
+        self,
+        *,
+        subject: str,
+        activity_type: str,
+        due_date: Optional[str] = None,
+        note: Optional[str] = None,
+        deal_external_id: Optional[str] = None,
+        contact_external_id: Optional[str] = None,
+    ) -> str:
+        """Create a Salesforce ``Task`` record (the standard activity
+        object). ``WhatId`` links the task to an Opportunity/Account;
+        ``WhoId`` links to a Contact.
+        """
+        body: Dict[str, Any] = {
+            "Subject": _truncate(subject, 255),
+            "Type": activity_type,
+            "Status": "Not Started",
+            "Priority": "Normal",
+        }
+        if due_date:
+            body["ActivityDate"] = due_date
+        if note:
+            body["Description"] = _truncate(note, 32000)
+        if deal_external_id:
+            body["WhatId"] = deal_external_id
+        if contact_external_id:
+            body["WhoId"] = contact_external_id
+        data = await self._post(
+            f"/services/data/{_API_VERSION}/sobjects/Task", body
+        )
+        task_id = data.get("id")
+        if not task_id:
+            raise CrmError("Salesforce task response missing id")
+        return str(task_id)
+
+    async def update_deal_stage(
+        self,
+        *,
+        deal_external_id: str,
+        stage_external_id: str,
+    ) -> None:
+        await self._patch(
+            f"/services/data/{_API_VERSION}/sobjects/Opportunity/{deal_external_id}",
+            {"StageName": stage_external_id},
+        )
+
+    async def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("POST", path, json_body=body)
+        if resp.status_code == 401 and self._refresh_token:
+            await self._refresh_access_token()
+            resp = await self._request("POST", path, json_body=body)
+        if resp.status_code == 401:
+            raise CrmAuthError("Salesforce rejected the token after refresh")
+        if resp.status_code == 429:
+            raise CrmRateLimitError("Salesforce rate limit hit")
+        if resp.status_code >= 400:
+            raise CrmError(
+                f"Salesforce POST {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
+        return resp.json() if resp.content else {}
+
+    async def _patch(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        resp = await self._request("PATCH", path, json_body=body)
+        if resp.status_code == 401 and self._refresh_token:
+            await self._refresh_access_token()
+            resp = await self._request("PATCH", path, json_body=body)
+        if resp.status_code == 401:
+            raise CrmAuthError("Salesforce rejected the token after refresh")
+        if resp.status_code == 429:
+            raise CrmRateLimitError("Salesforce rate limit hit")
+        if resp.status_code >= 400:
+            raise CrmError(
+                f"Salesforce PATCH {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
+        return resp.json() if resp.content else {}
+
     async def _paginate_soql(self, query: str):
         next_path = f"/services/data/{_API_VERSION}/query?q={self._encode_query(query)}"
         while next_path:
@@ -119,14 +281,24 @@ class SalesforceAdapter:
             )
         return resp.json()
 
-    async def _request(self, method: str, path: str) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> httpx.Response:
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         return await self._client.request(
             method,
             f"{self._instance_url}{path}",
-            headers={
-                "Authorization": f"Bearer {self._access_token}",
-                "Accept": "application/json",
-            },
+            headers=headers,
+            json=json_body,
         )
 
     async def _refresh_access_token(self) -> None:
@@ -164,3 +336,35 @@ class SalesforceAdapter:
                 )
             except Exception:
                 logger.exception("on_token_refresh callback failed")
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _truncate(text: str, limit: int) -> str:
+    if text is None:
+        return ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _base64_utf8(text: str) -> str:
+    """Salesforce ``ContentNote.Content`` field is Base64-encoded HTML.
+    Wrap the plain text in a ``<p>…</p>`` so rendering stays readable
+    in the native UI."""
+    import base64
+
+    safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = f"<p>{safe}</p>"
+    return base64.b64encode(html.encode("utf-8")).decode("ascii")
+
+
+__all__ = ["SalesforceAdapter"]

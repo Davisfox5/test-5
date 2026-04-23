@@ -191,21 +191,6 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
 
     dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
     dg_connection = dg_client.listen.live.v("1")
-    try:
-        await dg_connection.start(
-            {
-                "model": "nova-3",
-                "encoding": "mulaw",
-                "sample_rate": 8000,
-                "channels": 1,
-                "interim_results": True,
-                "diarize": True,
-            }
-        )
-    except Exception:
-        logger.exception("Failed to start Deepgram connection for session %s", session_id)
-        await websocket.close(code=1011)
-        return
 
     # Per-tenant live paralinguistic surface (opt-in). The window runs
     # on CPU in the worker thread-pool so we don't block Deepgram I/O.
@@ -225,6 +210,30 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                     live_para_window = LiveParalinguisticWindow()
     except Exception:
         logger.debug("Couldn't update LiveSession.status", exc_info=True)
+
+    # Deepgram live → diarization timeline → paralinguistic window.
+    # We register the event handler before start() so the first
+    # Results frame doesn't slip through. The SDK invokes handlers on
+    # its own thread, so we only call threadsafe mutators on the
+    # window (feed + update_diarization are plain lists/deques).
+    if live_para_window is not None:
+        _attach_deepgram_diarization(dg_connection, live_para_window)
+
+    try:
+        await dg_connection.start(
+            {
+                "model": "nova-3",
+                "encoding": "mulaw",
+                "sample_rate": 8000,
+                "channels": 1,
+                "interim_results": True,
+                "diarize": True,
+            }
+        )
+    except Exception:
+        logger.exception("Failed to start Deepgram connection for session %s", session_id)
+        await websocket.close(code=1011)
+        return
 
     try:
         while True:
@@ -278,6 +287,78 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 await redis.aclose()
         except Exception:
             logger.exception("Batch analysis dispatch failed for %s", session_id)
+
+
+def _attach_deepgram_diarization(dg_connection: Any, window: Any) -> None:
+    """Wire Deepgram's live ``Transcript`` events into the per-speaker
+    diarization timeline of a :class:`LiveParalinguisticWindow`.
+
+    Runs on whatever thread the Deepgram SDK chose. We only touch
+    ``window.update_diarization``, which is list-based and safe to
+    call from any thread (GIL-protected mutation + no async side
+    effects). The audio feed and snapshot reads on the main task
+    thread don't race against it.
+
+    Silent on failures — diarization is best-effort; a parsing glitch
+    mustn't take down the audio ingest path.
+    """
+    try:
+        from deepgram import LiveTranscriptionEvents  # type: ignore
+    except Exception:
+        logger.debug("deepgram LiveTranscriptionEvents not available", exc_info=True)
+        return
+
+    from backend.app.services.paralinguistics_live import (
+        diar_turns_from_deepgram_words,
+    )
+
+    def _on_transcript(self, result, **kwargs) -> None:  # noqa: ARG001
+        try:
+            channel = getattr(result, "channel", None)
+            if channel is None and isinstance(result, dict):
+                channel = (result.get("channel") or {})
+            if channel is None:
+                return
+            alternatives = (
+                getattr(channel, "alternatives", None)
+                if not isinstance(channel, dict)
+                else channel.get("alternatives")
+            )
+            if not alternatives:
+                return
+            alt = alternatives[0]
+            words = (
+                getattr(alt, "words", None)
+                if not isinstance(alt, dict)
+                else alt.get("words")
+            )
+            if not words:
+                return
+            # Word objects from the SDK are dataclass-ish; normalise.
+            normalised: list[dict] = []
+            for w in words:
+                if isinstance(w, dict):
+                    normalised.append(w)
+                else:
+                    normalised.append(
+                        {
+                            "speaker": getattr(w, "speaker", None),
+                            "start": getattr(w, "start", None),
+                            "end": getattr(w, "end", None),
+                        }
+                    )
+            turns = diar_turns_from_deepgram_words(normalised)
+            if turns:
+                window.update_diarization(turns)
+        except Exception:
+            logger.debug("deepgram diarization handler failed", exc_info=True)
+
+    try:
+        dg_connection.on(LiveTranscriptionEvents.Transcript, _on_transcript)
+    except Exception:
+        logger.debug(
+            "could not register deepgram transcript handler", exc_info=True
+        )
 
 
 async def _publish_paralinguistic_snapshot(

@@ -262,9 +262,11 @@ async def _build_adapter(
     if provider == "hubspot":
         from backend.app.services.crm.hubspot import HubSpotAdapter
 
+        cfg = integ.provider_config or {}
         return HubSpotAdapter(
             access_token=access_token_plain,
             refresh_token=refresh_token_plain,
+            field_map=cfg.get("field_map") or {},
             on_token_refresh=on_refresh,
         )
     if provider == "salesforce":
@@ -275,6 +277,7 @@ async def _build_adapter(
             access_token=access_token_plain,
             instance_url=cfg.get("instance_url", ""),
             refresh_token=refresh_token_plain,
+            field_map=cfg.get("field_map") or {},
             on_token_refresh=on_refresh,
         )
     if provider == "pipedrive":
