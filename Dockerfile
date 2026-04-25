@@ -64,6 +64,10 @@ COPY --chown=linda:linda . .
 
 USER linda
 
+# Make `backend.app.*` importable when uvicorn / celery / alembic launch
+# as console-script entrypoints — their sys.path does not include CWD.
+ENV PYTHONPATH=/home/linda/app
+
 ARG RELEASE_VERSION=dev
 ENV RELEASE_VERSION=${RELEASE_VERSION}
 

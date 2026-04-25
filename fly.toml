@@ -24,6 +24,10 @@ primary_region = "iad"
   # has no model-cache volume yet, so models would re-download on every
   # restart. They still load lazily on the first audio task.
   LINDA_WORKER_WARMUP = "0"
+  # uvicorn / celery / alembic run as console-script entrypoints whose
+  # sys.path doesn't include CWD; this makes backend.app.* importable.
+  # Mirrors the ENV in the Dockerfile (belt-and-braces).
+  PYTHONPATH = "/home/linda/app"
 
 [processes]
   api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
