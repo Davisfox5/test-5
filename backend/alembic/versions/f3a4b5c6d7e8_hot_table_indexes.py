@@ -52,7 +52,10 @@ _TENANT_INDEXES: Sequence[tuple[str, str, str]] = (
     ("correction_events", "tenant_id, created_at DESC", "tenant_created"),
     ("write_proposals", "tenant_id, created_at DESC", "tenant_created"),
     ("kb_documents", "tenant_id, created_at DESC", "tenant_created"),
-    ("demo_email_captures", "tenant_id, created_at DESC", "tenant_created"),
+    # NB: demo_email_captures is intentionally excluded — it uses
+    # ``converted_tenant_id`` (nullable, populated only after the lead
+    # becomes a tenant), not the standard tenant_id FK, so this index
+    # shape doesn't apply.
     # (tenant_id, last_message_at DESC NULLS LAST) — conversations list.
     (
         "conversations",
