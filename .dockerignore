@@ -1,0 +1,43 @@
+# Source control + tooling
+.git
+.github
+.gitignore
+.claude
+.pytest_cache
+.vscode
+.idea
+
+# Python build artefacts
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+*.dist-info
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Local env / secrets — must never enter an image
+.env
+.env.*
+!.env.example
+
+# Out of scope for the backend image
+apps
+tests
+corpora
+fail_logs.txt
+test_output.log
+
+# Frontend / docs / OS noise — keep image lean
+node_modules
+.next
+.turbo
+.DS_Store
+Thumbs.db
+
+# Misc large files
+*.log
+*.zip
+*.tar.gz
