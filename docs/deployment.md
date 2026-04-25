@@ -110,12 +110,16 @@ Repo → **Settings** → **Secrets and variables** → **Actions**.
 | `STAGING_URL` | `https://staging.linda.example.com` | post-deploy readiness probe |
 | `PRODUCTION_URL` | `https://api.linda.example.com` | post-deploy readiness probe |
 
+For GHCR pushes the workflow uses the auto-issued `GITHUB_TOKEN` with
+`packages: write`, so no registry credentials are needed in repo secrets.
+For ECR or another registry, add a `CONTAINER_REGISTRY_USER` /
+`CONTAINER_REGISTRY_PASSWORD` pair and swap them into the `docker/login-action`
+step in `.github/workflows/ci-cd.yml`.
+
 ### Secrets
 
 | Name | Value | Used by |
 |------|-------|---------|
-| `CONTAINER_REGISTRY_USER` | usually your GitHub username or service account | CI image push |
-| `CONTAINER_REGISTRY_PASSWORD` | PAT with `write:packages` for GHCR, access key for ECR | CI image push |
 | `STAGING_DEPLOY_HOOK` | webhook URL your hosting platform provides | CI deploy_staging |
 | `PRODUCTION_DEPLOY_HOOK` | webhook URL for production | CI deploy_production |
 
@@ -153,8 +157,7 @@ database, Redis, and the model caches. The only worker-specific var is:
 If you just want to get a staging environment up, this is the short list:
 
 **GitHub** (5 min)
-- [ ] `vars.CONTAINER_REGISTRY`
-- [ ] `secrets.CONTAINER_REGISTRY_USER`, `secrets.CONTAINER_REGISTRY_PASSWORD`
+- [ ] `vars.CONTAINER_REGISTRY` (e.g. `ghcr.io/davisfox5`)
 - [ ] `vars.STAGING_URL`
 - [ ] `secrets.STAGING_DEPLOY_HOOK`
 
