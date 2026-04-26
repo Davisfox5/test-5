@@ -1,0 +1,12 @@
+node_modules
+.next
+.turbo
+.git
+.github
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+README.md
+fly.toml

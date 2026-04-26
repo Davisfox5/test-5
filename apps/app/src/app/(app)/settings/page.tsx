@@ -12,7 +12,7 @@ export default function SettingsPage() {
     const { data: settings, isLoading, error } = useTenantSettings();
     const update = useUpdateTenantSettings();
 
-    const isExec = me?.user.role === "executive";
+    const isExec = me?.user?.role === "executive";
 
     return (
         <div className="space-y-6">
