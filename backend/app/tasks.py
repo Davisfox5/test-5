@@ -43,6 +43,21 @@ celery_app = Celery(
     backend=settings.REDIS_URL,
 )
 
+# TLS Redis (rediss://) requires Celery to be told how to validate
+# certs explicitly. redis-py and Celery accept different URL-query
+# spellings for this, so we set it via celery config rather than the
+# URL. CERT_NONE matches redis-py's default behaviour and is what
+# most managed Redis providers (Upstash, ElastiCache) end up using
+# in practice. Tighten to CERT_REQUIRED if + when you provision a
+# trusted CA bundle in the worker image.
+if settings.REDIS_URL.startswith("rediss://"):
+    import ssl as _ssl
+
+    celery_app.conf.update(
+        broker_use_ssl={"ssl_cert_reqs": _ssl.CERT_NONE},
+        redis_backend_use_ssl={"ssl_cert_reqs": _ssl.CERT_NONE},
+    )
+
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
