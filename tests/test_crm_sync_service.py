@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.app.services.crm.base import CrmContact, CrmCustomer
+from backend.app.services.crm.base import CrmCapabilityMissing, CrmContact, CrmCustomer
 from backend.app.services.crm.sync_service import sync_crm_for_tenant
 
 
@@ -35,6 +35,11 @@ class FakeAdapter:
     async def iter_contacts(self):
         for c in self._contacts:
             yield c
+
+    async def iter_deals(self):
+        # Mirror the base-class default: no deals on this fake.
+        raise CrmCapabilityMissing(f"{self.provider} fake adapter does not pull deals")
+        yield  # pragma: no cover — keeps this an async generator
 
     async def close(self) -> None:
         return None

@@ -523,6 +523,7 @@ def _paralinguistic_signals(
             "agent_voice_stress": 0.0,
             "agent_monotone": 0.0,
             "customer_hot_voice": 0.0,
+            "customer_arousal": 0.0,
         }
     per_speaker = block.get("per_speaker") or {}
     # Pick the agent/customer rows by convention: "agent" / "customer"
