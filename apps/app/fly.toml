@@ -1,0 +1,39 @@
+# Fly.io config — LINDA dashboard SPA (Next.js).
+#
+# Separate Fly app from the FastAPI backend (linda-staging.fly.dev).
+# The SPA proxies /api/* to the backend via next.config.mjs rewrites,
+# so requests look same-origin to the browser even though the auth +
+# data layer live on the other Fly app.
+
+app = "linda-staging-app"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  # Where the SPA proxies /api/* to. Keeps Clerk + cookies same-origin.
+  LINDA_BACKEND_URL = "https://linda-staging.fly.dev"
+  NEXT_PUBLIC_CLERK_SIGN_IN_URL = "/sign-in"
+  NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up"
+  NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL = "/dashboard"
+  NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL = "/dashboard"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
