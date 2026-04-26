@@ -59,6 +59,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /opt/venv /opt/venv
 
+# Pre-create the workdir owned by linda. WORKDIR creates dirs as root
+# (the active user at this point), so without this Celery beat can't
+# write its schedule file under /home/linda/app and other runtime
+# writes would fail too.
+RUN mkdir -p /home/linda/app && chown linda:linda /home/linda/app
 WORKDIR /home/linda/app
 COPY --chown=linda:linda . .
 
