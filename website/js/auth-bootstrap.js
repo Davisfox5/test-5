@@ -6,10 +6,14 @@
  *     localStorage (repeat visits) or an ?api_key=… query param (admin
  *     onboarding link).
  *   - Call GET /auth/me to resolve the caller's identity + role.
- *   - When no token is set, or /auth/me returns 401, show the login
- *     overlay. On successful login, store the token and reload.
- *   - Stamp the resolved role on <body data-user-role="…"> so CSS can hide
- *     admin-only nav items for non-admins.
+ *   - On successful login, store the token, stamp the role on
+ *     <body data-user-role="…"> so CSS can hide admin-only nav items
+ *     for non-admins, and hide the login overlay.
+ *   - When the page is anonymous (no token, or /auth/me 401), do *not*
+ *     auto-show the login overlay — the public demo is a 60s preview
+ *     and the email-capture gate (demo-gate.js) handles conversion.
+ *     The login overlay opens on demand via `window.lindaAuth.showLogin()`
+ *     or when an ?api_key= query param is present.
  *
  * Compatibility: we keep the existing `callsight-api-key` localStorage
  * slot so legacy controllers (kb-cards, customer-brief, tenant-settings,
@@ -42,8 +46,10 @@
                 url.searchParams.delete("api_key");
                 url.searchParams.delete("token");
                 window.history.replaceState({}, "", url.toString());
+                return true;
             }
         } catch (e) { /* older browsers: ignore */ }
+        return false;
     }
 
     async function fetchMe() {
@@ -131,18 +137,24 @@
     }
 
     async function bootstrap() {
-        maybePickupQueryKey();
+        const hadQueryKey = maybePickupQueryKey();
         wireLoginForm();
 
         const me = await fetchMe();
         if (me) {
             applyIdentity(me);
             hideLogin();
-        } else {
-            applyIdentity(null);
-            showLogin();
+            return;
         }
+        applyIdentity(null);
+        // Anonymous visitors stay on the public demo (which has its own
+        // 60s email-capture gate). The login overlay only opens on demand
+        // — when the page was loaded with ?api_key=… (admin onboarding),
+        // or when something later calls window.lindaAuth.showLogin().
+        if (hadQueryKey) showLogin();
     }
+
+    window.lindaAuth = { showLogin, hideLogin };
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", bootstrap);

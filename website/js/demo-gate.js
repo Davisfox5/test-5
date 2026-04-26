@@ -98,7 +98,7 @@
                 "The full demo is yours to explore. When you want to run your own calls through Linda, "
                 + "start a 14-day sandbox — mock data stays, plus you can upload up to 120 minutes."),
             el('div', { class: 'demo-gate-actions' }, [
-                el('a', { class: 'btn-primary', href: '/app/signup' }, 'Start free sandbox'),
+                el('a', { class: 'btn-primary', href: (window.lindaAppUrl ? window.lindaAppUrl('/app/signup') : '/app/signup') }, 'Start free sandbox'),
                 el('button', { class: 'btn-ghost', type: 'button', onClick: dismiss }, 'Keep exploring the demo'),
             ]),
         ]);

@@ -187,7 +187,9 @@
                 </button>
                 <div class="header-actions">
                     <span class="demo-badge">Sample Data</span>
-                    <button class="btn btn-primary btn-sm" id="uploadBtn" type="button">
+                    <a class="btn btn-ghost btn-sm" href="/app/sign-in" id="demoSignInBtn">Sign in</a>
+                    <a class="btn btn-primary btn-sm" href="/app/signup" id="demoTrialBtn">Start free trial</a>
+                    <button class="btn btn-ghost btn-sm" id="uploadBtn" type="button">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
                         <span>Upload Call</span>
                     </button>
@@ -2114,8 +2116,8 @@
             <button type="submit" class="li-primary-btn" id="loginSubmit">Sign in</button>
             <p class="login-error" id="loginError" hidden></p>
             <p class="login-help">
-                Don't have a user yet? Use a tenant API key in the URL as
-                <code>?api_key=csk_…</code> and an admin can create your user.
+                Don't have a workspace yet?
+                <a href="/app/signup" class="login-help-link">Start a free 14-day sandbox</a>.
             </p>
         </form>
     </div>
@@ -2133,6 +2135,7 @@
     <script src="js/onboarding.js"></script>
     <script src="js/admin-surfaces.js"></script>
     <script src="js/ask-linda.js"></script>
+    <script src="js/platform-links.js"></script>
     <script src="js/demo-gate.js"></script>
 </body>
 </html>
