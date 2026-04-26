@@ -36,7 +36,8 @@ pypdf>=4                          # PDF text extraction for /kb/upload
 python-docx>=1                    # DOCX text extraction for /kb/upload
 
 # === Database ===
-asyncpg>=0.29                     # Neon PostgreSQL async driver
+asyncpg>=0.29                     # Neon PostgreSQL async driver — FastAPI / async paths
+psycopg2-binary>=2.9              # sync driver — used by Celery tasks via SQLAlchemy create_engine
 sqlalchemy[asyncio]>=2.0
 alembic>=1.13
 
@@ -46,6 +47,7 @@ celery[redis]>=5                  # Async task queue
 
 # === Observability ===
 prometheus-client>=0.20            # /metrics for the continuous-improvement system
+sentry-sdk[fastapi,celery]>=2      # Error monitoring — observability.init_sentry imports this
 
 # === Vector DB ===
 qdrant-client>=1.9                # Knowledge base RAG
