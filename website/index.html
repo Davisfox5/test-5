@@ -165,8 +165,8 @@
                 <span class="trust-logo" aria-label="Twilio">
                     <svg viewBox="0 0 120 28" fill="currentColor" aria-hidden="true"><circle cx="14" cy="14" r="14" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="9.5" cy="9.5" r="2.2"/><circle cx="18.5" cy="9.5" r="2.2"/><circle cx="9.5" cy="18.5" r="2.2"/><circle cx="18.5" cy="18.5" r="2.2"/><text x="34" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700" letter-spacing="0.5">Twilio</text></svg>
                 </span>
-                <span class="trust-logo" aria-label="Zoom">
-                    <svg viewBox="0 0 110 28" fill="currentColor" aria-hidden="true"><rect x="1" y="5" width="20" height="18" rx="4" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M21 10l6-3v14l-6-3z" fill="currentColor"/><text x="34" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">Zoom</text></svg>
+                <span class="trust-logo" aria-label="SignalWire">
+                    <svg viewBox="0 0 140 28" fill="currentColor" aria-hidden="true"><path d="M2 12a10 10 0 0 1 20 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M5 12a7 7 0 0 1 14 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="1.8"/><text x="30" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">SignalWire</text></svg>
                 </span>
                 <span class="trust-logo" aria-label="Salesforce">
                     <svg viewBox="0 0 150 28" fill="currentColor" aria-hidden="true"><path d="M10 16c0-3 2.5-5 5.5-5 2 0 3.5 1 4.3 2.5.8-.8 2-1.3 3.3-1.3 2.8 0 5 2.2 5 5s-2.2 5-5 5c-.7 0-1.4-.1-2-.4-.8 1.4-2.3 2.3-4 2.3-1.5 0-2.8-.7-3.6-1.8-.6.3-1.3.4-2 .4-2.5 0-4.5-2-4.5-4.5 0-1.3.6-2.5 1.5-3.3-.3-.6-.5-1.3-.5-2z" fill="currentColor"/><text x="36" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">Salesforce</text></svg>
@@ -201,12 +201,8 @@
                     AES-256 <span class="compliance-chip-label">encryption</span>
                 </span>
                 <span class="compliance-chip">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                    HIPAA <span class="compliance-chip-label">ready</span>
-                </span>
-                <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 12l2 2 4-4"/></svg>
-                    SSO / MFA <span class="compliance-chip-label">SAML, OIDC</span>
+                    Tenant API keys <span class="compliance-chip-label">scoped, rotatable</span>
                 </span>
             </div>
         </div>
@@ -347,7 +343,7 @@
                         </div>
                     </div>
                     <h3 class="feature-title">Contact Intelligence</h3>
-                    <p class="feature-desc">Phone number matching, mid-call name recognition, CRM sync, and optional enrichment via People Data Labs and Apollo.</p>
+                    <p class="feature-desc">Phone number matching, mid-call name recognition, and two-way CRM sync against HubSpot, Salesforce, and Pipedrive contact records.</p>
                 </div>
                 <!-- 13. White-Label Ready (large) -->
                 <div class="feature-card feature-card-large" id="feature-whitelabel">
@@ -374,11 +370,11 @@
                     <h3 class="feature-title">API-First Architecture</h3>
                     <p class="feature-desc">Full read/write REST API for every data object. Webhooks for every event. Built for MSPs who integrate, not just dashboards.</p>
                     <div class="feature-visual">
-                        <div style="padding:1.5rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--accent-emerald);line-height:1.8;text-align:left;width:100%;">
-                            <span style="color:var(--text-muted);">GET</span> /api/v1/calls<br>
-                            <span style="color:var(--text-muted);">POST</span> /api/v1/webhooks<br>
-                            <span style="color:var(--text-muted);">GET</span> /api/v1/transcripts/:id<br>
-                            <span style="color:var(--text-muted);">GET</span> /api/v1/insights/sentiment
+                        <div style="padding:1.5rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--text-main);line-height:1.8;text-align:left;width:100%;">
+                            <span style="color:var(--primary);font-weight:700;">GET</span> /api/v1/calls<br>
+                            <span style="color:var(--primary);font-weight:700;">POST</span> /api/v1/webhooks<br>
+                            <span style="color:var(--primary);font-weight:700;">GET</span> /api/v1/transcripts/:id<br>
+                            <span style="color:var(--primary);font-weight:700;">GET</span> /api/v1/insights/sentiment
                         </div>
                     </div>
                 </div>
@@ -399,7 +395,7 @@
                     <div class="step-number">01</div>
                     <div class="step-content">
                         <h3>Capture</h3>
-                        <p>Connect your phone system, upload recordings, or use our webhooks for Twilio, Zoom, and more. We handle any audio format.</p>
+                        <p>Connect your phone system through Twilio, SignalWire, or Telnyx Media Streams, or upload recordings directly. Audio is transcribed and discarded — never stored long-term.</p>
                     </div>
                     <div class="step-visual">
                         <div class="step-icon-large">
@@ -412,7 +408,7 @@
                     <div class="step-number">02</div>
                     <div class="step-content">
                         <h3>Transcribe</h3>
-                        <p>Our AI engine transcribes with 98.5% accuracy. Speaker diarization labels who said what. Supports 50+ languages.</p>
+                        <p>Deepgram Nova-3 for live and batch ASR, with self-hosted faster-whisper and pyannote.audio diarization as a fallback. Speaker diarization labels who said what.</p>
                     </div>
                     <div class="step-visual">
                         <div class="step-icon-large">
@@ -478,26 +474,6 @@
                     </div>
                 </div>
 
-                <!-- Meetings -->
-                <div class="integration-group">
-                    <h4 class="integration-group-label">Meetings</h4>
-                    <div class="integrations-grid">
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4V8z"/></svg></div>
-                            <span>Zoom</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
-                            <span>Google Meet</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-                            <span>Microsoft Teams</span>
-                            <small class="integration-note">via Recall.ai</small>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- CRM -->
                 <div class="integration-group">
                     <h4 class="integration-group-label">CRM</h4>
@@ -546,54 +522,24 @@
                     <h4 class="integration-group-label">Knowledge Base</h4>
                     <div class="integrations-grid">
                         <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+                            <span>Google Drive / Docs</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg></div>
+                            <span>OneDrive / SharePoint</span>
+                        </div>
+                        <div class="integration-card">
                             <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
                             <span>Confluence</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/></svg></div>
-                            <span>Notion</span>
+                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
+                            <span>MCP server pull</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
-                            <span>Google Drive</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Scheduling -->
-                <div class="integration-group">
-                    <h4 class="integration-group-label">Scheduling</h4>
-                    <div class="integrations-grid">
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg></div>
-                            <span>Google Calendar</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" x2="21" y1="10" y2="10"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg></div>
-                            <span>Outlook Calendar</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
-                            <span>Cal.com</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- VoIP/PBX -->
-                <div class="integration-group">
-                    <h4 class="integration-group-label">VoIP / PBX</h4>
-                    <div class="integrations-grid">
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-                            <span>NetSapiens</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div>
-                            <span>SimpleVoIP</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
-                            <span>FreeSWITCH</span>
+                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+                            <span>Generic API push</span>
                         </div>
                     </div>
                 </div>
@@ -725,8 +671,8 @@
                 </div>
                 <div class="security-item">
                     <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 8.15-8.15"/><path d="m18 5 3 3"/><path d="m15 8 3 3"/></svg></div>
-                    <h4>SSO &amp; MFA</h4>
-                    <p>OAuth2/OIDC, scoped API keys, and multi-factor authentication.</p>
+                    <h4>Scoped API Keys</h4>
+                    <p>Per-tenant API keys with role-based access (agent / manager / admin) and per-session JWTs.</p>
                 </div>
             </div>
         </div>

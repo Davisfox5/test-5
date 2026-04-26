@@ -1961,9 +1961,16 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.55rem 0.7rem;
-    color: white;
+    color: var(--text-main);
     font-size: 0.85rem;
     font-family: var(--font-sans);
+}
+:root[data-theme="light"] .generic-modal-body input[type="text"],
+:root[data-theme="light"] .generic-modal-body input[type="url"],
+:root[data-theme="light"] .generic-modal-body input[type="email"],
+:root[data-theme="light"] .generic-modal-body textarea,
+:root[data-theme="light"] .generic-modal-body select {
+    background: #fff;
 }
 .generic-modal-body textarea { min-height: 120px; resize: vertical; }
 .generic-modal-actions .btn { padding: 0.5rem 0.9rem; font-size: 0.85rem; }
@@ -2038,7 +2045,7 @@
     border-radius: 8px;
     font-size: 0.85rem;
 }
-.upload-file-row .file-name { flex: 1; color: white; }
+.upload-file-row .file-name { flex: 1; color: var(--text-main); }
 .upload-file-row .file-size { color: var(--text-muted); font-size: 0.75rem; }
 .upload-file-row .remove-file { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
 .upload-area.drag-over { border-color: var(--primary); background: rgba(99,102,241,0.05); }
