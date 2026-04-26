@@ -1061,6 +1061,8 @@ select.form-input {
 }
 :root[data-theme="light"] .feature-card:hover { box-shadow: var(--shadow-lg); }
 :root[data-theme="light"] .footer { background: var(--bg-secondary); }
+:root[data-theme="light"] .step-number { color: rgba(15, 23, 42, 0.08); }
+:root[data-theme="light"] .feature-icon-wrap { background-color: rgba(15, 23, 42, 0.04); }
 :root[data-theme="light"] .preview-header { background-color: rgba(15, 23, 42, 0.04); }
 :root[data-theme="light"] .preview-sidebar { background-color: rgba(15, 23, 42, 0.03); }
 :root[data-theme="light"] .feature-visual { background: rgba(15, 23, 42, 0.03); }
