@@ -141,14 +141,17 @@ jobs:
       - name: "Check out code"
         uses: actions/checkout@v4
 
-      - name: "Invoke staging deploy hook"
-        if: env.STAGING_DEPLOY_HOOK != ''
-        run: |
-          curl -fsS -X POST "$STAGING_DEPLOY_HOOK" \
-               -H 'Content-Type: application/json' \
-               -d "{\"release\":\"${{ needs.build.outputs.image_tag }}\",\"commit\":\"${GITHUB_SHA}\"}"
+      - name: "Set up flyctl"
+        if: env.FLY_API_TOKEN != ''
+        uses: superfly/flyctl-actions/setup-flyctl@master
         env:
-          STAGING_DEPLOY_HOOK: ${{ secrets.STAGING_DEPLOY_HOOK }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Deploy to Fly staging"
+        if: env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only --app linda-staging
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: "Wait for staging /ready/deep"
         if: env.STAGING_URL != ''
@@ -169,11 +172,11 @@ jobs:
           STAGING_URL: ${{ vars.STAGING_URL }}
 
       - name: "Staging deploy stub notice"
-        if: env.STAGING_DEPLOY_HOOK == ''
+        if: env.FLY_API_TOKEN == ''
         run: |
-          echo "::notice::STAGING_DEPLOY_HOOK secret unset — deploy step is a no-op. Set it in repo secrets to wire up your Fly/Render/ECS webhook."
+          echo "::notice::FLY_API_TOKEN secret unset — skipping deploy. Set via 'flyctl tokens create deploy --app linda-staging' to enable."
         env:
-          STAGING_DEPLOY_HOOK: ${{ secrets.STAGING_DEPLOY_HOOK }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   # ── Manual promote to production ──────────────────────────────
   deploy_production:

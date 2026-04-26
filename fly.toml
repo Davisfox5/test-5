@@ -32,7 +32,24 @@ primary_region = "iad"
 [processes]
   api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
   worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2"
-  beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO"
+  beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
+
+# Persistent storage for celerybeat-schedule. Without this the beat
+# scheduler resets its "last fired" state on every restart, which
+# means periodic tasks can fire twice (or skip a window). Volume
+# created via:  flyctl volumes create linda_beat_data -r iad -s 1
+[[mounts]]
+  source      = "linda_beat_data"
+  destination = "/data"
+  processes   = ["beat"]
+
+# Auto-recover crashed worker / beat machines instead of parking them
+# in 'stopped' state. on-failure means non-zero exits restart; clean
+# exits (e.g. flyctl machine stop) do not.
+[[restart]]
+  policy    = "on-failure"
+  retries   = 10
+  processes = ["worker", "beat"]
 
 [http_service]
   internal_port = 8000

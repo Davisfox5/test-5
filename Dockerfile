@@ -54,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         curl \
         ca-certificates \
+        gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 linda
 
@@ -67,7 +68,11 @@ RUN mkdir -p /home/linda/app && chown linda:linda /home/linda/app
 WORKDIR /home/linda/app
 COPY --chown=linda:linda . .
 
-USER linda
+# Entrypoint chowns mounted Fly volumes (root:root by default) and drops
+# to the linda user via gosu before exec'ing the real CMD. Container runs
+# as root only for the few microseconds needed to fix mount permissions.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Make `backend.app.*` importable when uvicorn / celery / alembic launch
 # as console-script entrypoints — their sys.path does not include CWD.
@@ -78,5 +83,6 @@ ENV RELEASE_VERSION=${RELEASE_VERSION}
 
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # Default process = API. Workers/beat override this via fly.toml [processes].
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
