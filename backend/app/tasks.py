@@ -2819,13 +2819,19 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
     return asyncio.run(_runner())
 
 
+# Celery queues we sample for backpressure. Default queue is ``celery``;
+# add new queue names here when task routing is introduced. Do NOT scan
+# the keyspace — on per-command-billed Redis (Upstash) a SCAN + TYPE on
+# every key every 30 s dominates the bill.
+_SAMPLED_CELERY_QUEUES: tuple[str, ...] = ("celery",)
+
+
 @celery_app.task(name="sample_queue_depth")
 def sample_queue_depth() -> Dict[str, int]:
     """Read each Celery queue's Redis LIST length into the
     ``linda_celery_queue_depth`` gauge.
 
-    Cheap — one LLEN per queue every 30 s. Lets us alert on
-    backpressure before tasks start timing out downstream.
+    One LLEN per known queue every 30 s.
     """
     try:
         import redis
@@ -2833,21 +2839,15 @@ def sample_queue_depth() -> Dict[str, int]:
         from backend.app.services.metrics import CELERY_QUEUE_DEPTH
 
         redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
-        # Celery names default to ``celery`` unless routing is configured;
-        # we enumerate all keys that look like queue lists so adding a
-        # new queue doesn't require a code change here.
         depths: Dict[str, int] = {}
-        # ``keys *`` is O(n) — fine at our key count; scan is an option
-        # if that ever changes.
-        for key in redis_client.scan_iter(match="*", count=200):
-            try:
-                if redis_client.type(key) != "list":
-                    continue
-                length = int(redis_client.llen(key))
-                depths[str(key)] = length
-                CELERY_QUEUE_DEPTH.labels(queue=str(key)).set(length)
-            except Exception:
-                continue
+        pipe = redis_client.pipeline(transaction=False)
+        for queue in _SAMPLED_CELERY_QUEUES:
+            pipe.llen(queue)
+        results = pipe.execute()
+        for queue, length in zip(_SAMPLED_CELERY_QUEUES, results):
+            length_int = int(length or 0)
+            depths[queue] = length_int
+            CELERY_QUEUE_DEPTH.labels(queue=queue).set(length_int)
         return depths
     except Exception:
         logger.debug("queue depth sampling failed", exc_info=True)
