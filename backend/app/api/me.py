@@ -12,14 +12,10 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
-from backend.app.db import get_db
-from backend.app.models import Tenant, User
+from backend.app.auth import AuthPrincipal, get_current_principal
 from backend.app.plans import limits_for, trial_is_active, trial_is_expired
 
 router = APIRouter()
@@ -63,26 +59,12 @@ class MeOut(BaseModel):
     user: Optional[UserOut]
 
 
-async def _resolve_current_user(
-    request: Request, db: AsyncSession, tenant: Tenant
-) -> Optional[User]:
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return None
-    token = auth.split(" ", 1)[1].strip()
-    if not token.startswith("clerk_"):
-        return None
-    stmt = select(User).where(User.clerk_user_id == token, User.tenant_id == tenant.id)
-    return (await db.execute(stmt)).scalar_one_or_none()
-
-
 @router.get("/me", response_model=MeOut)
 async def me(
-    request: Request,
-    tenant: Tenant = Depends(get_current_tenant),
-    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ) -> MeOut:
-    user = await _resolve_current_user(request, db, tenant)
+    tenant = principal.tenant
+    user = principal.user
     limits = limits_for(tenant)
     return MeOut(
         tenant=TenantOut(
