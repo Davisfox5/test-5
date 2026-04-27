@@ -246,7 +246,10 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .nav-link:hover { color: var(--text-main); }
-.nav-link-demo { color: var(--accent-emerald); font-weight: 600; }
+/* "Live Demo" call-out: use --primary so it pops without failing AA on
+   the light-theme nav (emerald #10B981 on near-white was ~2.35:1). */
+.nav-link-demo { color: var(--primary); font-weight: 600; }
+.nav-link-demo:hover { color: var(--primary-hover); }
 
 .nav-actions {
     display: flex;
