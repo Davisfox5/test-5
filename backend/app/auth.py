@@ -185,9 +185,14 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 async def _principal_from_session_jwt(
     request: Request, db: AsyncSession
 ) -> Optional[AuthPrincipal]:
-    """If the Bearer token is a signed session JWT, resolve it to the user."""
+    """If the Bearer token is a signed session JWT, resolve it to the user.
+
+    Skips API keys (csk_ prefix). Clerk JWTs aren't filtered here
+    — they're RS256, so _decode_session_token (HS256 + our secret)
+    will fail and we'll fall through to _principal_from_clerk.
+    """
     token = _extract_bearer_token(request)
-    if not token or token.startswith("csk_") or token.startswith("clerk_"):
+    if not token or token.startswith("csk_"):
         return None
     payload = _decode_session_token(token)
     if payload is None:
@@ -303,18 +308,22 @@ async def _fetch_clerk_jwks() -> Optional[dict]:
 async def _principal_from_clerk(
     request: Request, db: AsyncSession
 ) -> Optional[AuthPrincipal]:
-    """If the Bearer is a Clerk session JWT (prefixed ``clerk_`` by the SPA),
-    verify it against Clerk's JWKS and resolve the User by ``clerk_user_id``.
+    """If the Bearer is a Clerk session JWT, verify it against Clerk's
+    JWKS and resolve the User by ``clerk_user_id`` (the ``sub`` claim,
+    e.g. ``user_2lj…``).
 
-    The SPA wraps the Clerk session token as ``Bearer clerk_<JWT>``. We
-    strip the prefix, validate the JWT signature against Clerk's public
-    keys, and read ``sub`` (the Clerk user id, e.g. ``user_2lj…``) to
-    look up the matching ``users`` row written at /trial/signup time.
+    Accepts either ``Bearer <JWT>`` (current SPA convention) or
+    ``Bearer clerk_<JWT>`` (legacy — the prefix tripped Clerk's own
+    Next.js middleware on the SPA, which tried to base64-decode the
+    full string and threw ``Unexpected token 'r'... is not valid JSON``
+    on every authenticated request).
     """
     token = _extract_bearer_token(request)
-    if not token or not token.startswith("clerk_"):
+    if not token:
         return None
-    jwt_token = token[len("clerk_"):]
+    if token.startswith("csk_"):
+        return None
+    jwt_token = token[len("clerk_"):] if token.startswith("clerk_") else token
     if not jwt_token:
         return None
 
