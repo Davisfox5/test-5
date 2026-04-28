@@ -18,7 +18,7 @@ export function TrialBanner() {
             <div className="mx-4 my-3 rounded-lg border border-accent-amber/60 bg-accent-amber/10 px-4 py-3 text-sm">
                 <strong>Your sandbox trial has ended.</strong>{" "}
                 Pick a plan to keep running calls through Linda.{" "}
-                <Link href="/billing" className="underline">
+                <Link href="/settings" className="underline">
                     See plans
                 </Link>
             </div>
@@ -29,7 +29,7 @@ export function TrialBanner() {
             <div className="mx-4 my-3 rounded-lg border border-primary/50 bg-primary-soft px-4 py-3 text-sm">
                 <strong>{daysLeft(tenant.trial_ends_at)} days left</strong> on your
                 sandbox trial.{" "}
-                <Link href="/billing" className="underline">
+                <Link href="/settings" className="underline">
                     Upgrade now
                 </Link>{" "}
                 to keep full access.

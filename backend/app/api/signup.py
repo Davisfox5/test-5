@@ -142,7 +142,7 @@ async def trial_signup(
         clerk_user_id=payload.clerk_user_id,
         email=payload.email,
         name=payload.name,
-        role="executive",  # first user on a tenant gets the top role by default
+        role="admin",  # first user on a tenant gets the top role by default
     )
     db.add(user)
     await db.flush()
