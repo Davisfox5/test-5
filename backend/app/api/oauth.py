@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import Integration, Tenant
@@ -245,13 +245,125 @@ async def _upsert_integration(
 # ── Endpoints ───────────────────────────────────────────
 
 
+async def _build_provider_authorize_url(
+    provider: str,
+    request: Request,
+    tenant_id: uuid.UUID,
+    user_id: Optional[uuid.UUID],
+) -> str:
+    """Mint a state token + return the provider's hosted authorize URL.
+
+    Shared between the legacy GET /authorize redirect (which still
+    depends on a Bearer-auth'd request) and the new POST /ticket flow
+    (where the SPA does the auth and the redirect happens client-side).
+    """
+    state = secrets.token_urlsafe(32)
+    redirect_uri = _build_redirect_uri(request, provider)
+    payload: Dict[str, Any] = {
+        "tenant_id": str(tenant_id),
+        "provider": provider,
+    }
+    if user_id is not None:
+        payload["user_id"] = str(user_id)
+    await _stash_state(state, payload)
+
+    if provider == "google":
+        from google_auth_oauthlib.flow import Flow
+
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": settings.GOOGLE_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            },
+            scopes=GOOGLE_SCOPES,
+            redirect_uri=redirect_uri,
+        )
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            state=state,
+            prompt="consent",
+        )
+        return auth_url
+
+    if provider == "microsoft":
+        import msal
+
+        app = msal.ConfidentialClientApplication(
+            settings.MICROSOFT_CLIENT_ID,
+            authority="https://login.microsoftonline.com/common",
+            client_credential=settings.MICROSOFT_CLIENT_SECRET,
+        )
+        return app.get_authorization_request_url(
+            scopes=MICROSOFT_SCOPES,
+            redirect_uri=redirect_uri,
+            state=state,
+        )
+
+    spec = CRM_PROVIDERS[provider]
+    client_id = _provider_setting(spec["client_id_key"])
+    if not client_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{spec['client_id_key']} is not configured on this server",
+        )
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": spec["scope_sep"].join(spec["scopes"]),
+        "state": state,
+    }
+    return f"{spec['authorize_url']}?{urlencode(params)}"
+
+
+class OAuthTicketResponse(BaseModel):
+    authorize_url: str
+
+
+@router.post("/oauth/{provider}/ticket", response_model=OAuthTicketResponse)
+async def oauth_ticket(
+    provider: str,
+    request: Request,
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Mint a one-shot authorize URL for the SPA to redirect to.
+
+    The SPA can't open the legacy ``GET /oauth/{provider}/authorize``
+    in a new tab because that strips the ``Authorization: Bearer …``
+    header and 401s. This endpoint fetches the authorize URL on behalf
+    of the authenticated SPA caller (auth flows over the JSON API as
+    usual), so the SPA can then ``window.location =`` the result.
+
+    The returned URL embeds a fresh ``state`` token stashed in Redis
+    under the same key the callback already reads — so the rest of
+    the flow is unchanged.
+    """
+    _validate_provider(provider)
+    auth_url = await _build_provider_authorize_url(
+        provider,
+        request,
+        tenant_id=principal.tenant.id,
+        user_id=principal.user_id,
+    )
+    return OAuthTicketResponse(authorize_url=auth_url)
+
+
 @router.get("/oauth/{provider}/authorize")
 async def oauth_authorize(
     provider: str,
     request: Request,
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Generate an OAuth authorization URL and redirect the user."""
+    """Generate an OAuth authorization URL and redirect the user.
+
+    Kept for API-key callers + tooling. The SPA uses POST /ticket
+    instead because anchor-tag clicks can't carry a Bearer header.
+    """
     _validate_provider(provider)
 
     state = secrets.token_urlsafe(32)

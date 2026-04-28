@@ -93,14 +93,19 @@ export default function DashboardPage() {
                 <StatCard
                     label="AI health"
                     loading={aiHealth.isLoading}
+                    // Force the value to "—" on error so a 500 from the
+                    // analytics endpoint can never leave the card stuck
+                    // on a stale number from a prior render.
                     value={
-                        aiHealth.data?.quality_score_avg_7d != null
-                            ? aiHealth.data.quality_score_avg_7d.toFixed(1)
-                            : "—"
+                        aiHealth.error
+                            ? "—"
+                            : aiHealth.data?.quality_score_avg_7d != null
+                              ? aiHealth.data.quality_score_avg_7d.toFixed(1)
+                              : "—"
                     }
                     hint={
                         aiHealth.error
-                            ? "Available after first calls land"
+                            ? "No data yet"
                             : undefined
                     }
                 />

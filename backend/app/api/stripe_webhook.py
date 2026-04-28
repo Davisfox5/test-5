@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -228,8 +229,136 @@ async def _handle_event(
     if event_type == "customer.subscription.deleted":
         return await _cancel_subscription(db, obj)
 
+    if event_type == "customer.created":
+        return await _handle_customer_created(db, obj)
+
+    if event_type == "invoice.payment_failed":
+        return await _handle_payment_failed(db, obj)
+
+    if event_type == "invoice.payment_succeeded":
+        # Reset the failure streak so a single payment hiccup doesn't
+        # accumulate forever and silently downgrade a healthy tenant.
+        return await _handle_payment_succeeded(db, obj)
+
     # Unhandled events: return 200 so Stripe doesn't retry forever.
     return {"handled": False, "event_type": event_type}
+
+
+# ── New event handlers ───────────────────────────────────────────────
+
+
+# Stash payment-failure state on tenant.features_enabled rather than
+# a fresh column — keeps the migration surface small and the field is
+# already JSONB. Underscore-prefixed keys are reserved for system use.
+_PAYMENT_FAILURE_KEY = "_billing_payment_failure_count"
+_PAYMENT_FAILURE_AT_KEY = "_billing_payment_failure_at"
+_PAYMENT_FAILURE_DOWNGRADE_THRESHOLD = 3
+
+
+async def _handle_customer_created(
+    db: AsyncSession, obj: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Persist the Stripe customer id on a tenant whose metadata names it.
+
+    The Stripe-hosted checkout includes ``client_reference_id`` /
+    ``metadata.tenant_id``; mirroring it back via the customer.created
+    event lets later subscription events resolve to the tenant by
+    ``stripe_customer_id`` without a manual link step.
+    """
+    metadata = obj.get("metadata") or {}
+    tenant_id_raw = (
+        metadata.get("tenant_id")
+        or metadata.get("linda_tenant_id")
+        or obj.get("client_reference_id")
+    )
+    if not tenant_id_raw:
+        return {"handled": False, "reason": "no_tenant_metadata"}
+    try:
+        tenant_id = uuid.UUID(str(tenant_id_raw))
+    except (TypeError, ValueError):
+        return {"handled": False, "reason": "bad_tenant_metadata"}
+
+    tenant = await db.get(Tenant, tenant_id)
+    if tenant is None:
+        return {"handled": False, "reason": "unknown_tenant"}
+
+    customer_id = str(obj.get("id") or "")
+    if not customer_id:
+        return {"handled": False, "reason": "no_customer_id"}
+
+    # Only set if blank — never overwrite a tenant's existing link from
+    # a stray customer.created (e.g. duplicate Stripe accounts).
+    if not tenant.stripe_customer_id:
+        tenant.stripe_customer_id = customer_id
+        return {
+            "handled": True,
+            "tenant_id": str(tenant.id),
+            "stripe_customer_id": customer_id,
+            "linked": True,
+        }
+    return {
+        "handled": True,
+        "tenant_id": str(tenant.id),
+        "linked": False,
+        "reason": "already_linked",
+    }
+
+
+async def _handle_payment_failed(
+    db: AsyncSession, obj: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Increment the consecutive-failure counter and downgrade on streak.
+
+    Stripe retries failed invoices on a smart-retry cadence; each retry
+    re-fires ``invoice.payment_failed``. We count those into a small
+    counter on ``features_enabled``. After
+    ``_PAYMENT_FAILURE_DOWNGRADE_THRESHOLD`` consecutive failures we
+    drop the tenant to ``sandbox`` (same path the cancellation handler
+    takes), which gates revenue endpoints behind ``require_active_
+    subscription`` until billing is healthy again.
+    """
+    customer_id = str(obj.get("customer") or "")
+    tenant = await _tenant_by_customer(db, customer_id)
+    if tenant is None:
+        return {"handled": False, "reason": "unknown_customer", "customer": customer_id}
+
+    features = dict(tenant.features_enabled or {})
+    count = int(features.get(_PAYMENT_FAILURE_KEY, 0)) + 1
+    features[_PAYMENT_FAILURE_KEY] = count
+    features[_PAYMENT_FAILURE_AT_KEY] = datetime.now(timezone.utc).isoformat()
+    tenant.features_enabled = features
+
+    downgraded = False
+    if count >= _PAYMENT_FAILURE_DOWNGRADE_THRESHOLD:
+        # Already on sandbox? Keep counting, but no further state change.
+        if tenant.plan_tier != "sandbox":
+            apply_tier(tenant, "sandbox")
+            await reconcile_seats(db, tenant)
+            downgraded = True
+
+    return {
+        "handled": True,
+        "tenant_id": str(tenant.id),
+        "consecutive_failures": count,
+        "downgraded": downgraded,
+    }
+
+
+async def _handle_payment_succeeded(
+    db: AsyncSession, obj: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Clear the failure streak on a successful invoice."""
+    customer_id = str(obj.get("customer") or "")
+    tenant = await _tenant_by_customer(db, customer_id)
+    if tenant is None:
+        return {"handled": False, "reason": "unknown_customer"}
+
+    features = dict(tenant.features_enabled or {})
+    if _PAYMENT_FAILURE_KEY in features or _PAYMENT_FAILURE_AT_KEY in features:
+        features.pop(_PAYMENT_FAILURE_KEY, None)
+        features.pop(_PAYMENT_FAILURE_AT_KEY, None)
+        tenant.features_enabled = features
+    return {"handled": True, "tenant_id": str(tenant.id), "cleared_failure_streak": True}
 
 
 async def _tenant_by_customer(

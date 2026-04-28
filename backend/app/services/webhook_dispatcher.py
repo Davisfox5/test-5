@@ -40,6 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import Webhook, WebhookDelivery
+from backend.app.services.token_crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,11 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
         return {"status": "dead_letter", "id": str(delivery_id)}
 
     payload_str = json.dumps(delivery.payload, separators=(",", ":"), default=str)
-    signature = sign_payload(payload_str, webhook.secret)
+    # ``Webhook.secret`` is stored Fernet-encrypted; decrypt at dispatch
+    # time. ``decrypt_token`` returns legacy plaintext unchanged for any
+    # rows that predate the encryption rollout.
+    plaintext_secret = decrypt_token(webhook.secret) or webhook.secret
+    signature = sign_payload(payload_str, plaintext_secret)
 
     headers = {
         "Content-Type": "application/json",

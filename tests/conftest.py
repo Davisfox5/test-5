@@ -19,3 +19,6 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-stub")
 os.environ.setdefault("JWT_SECRET", "test-secret")
+# Allow ``encrypt_token`` to mint an ephemeral Fernet key in tests
+# (matches the local-dev branch in ``services/token_crypto.py``).
+os.environ.setdefault("DEBUG", "true")

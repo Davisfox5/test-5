@@ -287,3 +287,44 @@ def require_feature(flag: str):
         return tenant
 
     return _guard
+
+
+# ── Revenue-endpoint guard (separate from feature gating) ─────────────
+
+
+async def require_active_subscription(
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Tenant:
+    """Reject revenue-burning requests when the tenant is unpaid.
+
+    Cheaper than ``require_feature`` — doesn't care which feature flags
+    are toggled, just whether the tenant currently has a way to pay.
+    Apply this to any endpoint that triggers Deepgram / Anthropic
+    spend (uploads, ingests, analytics queries) so an expired sandbox
+    trial can't keep burning credits.
+
+    Read-only dashboard endpoints (``/me``, ``GET /interactions``)
+    deliberately stay open so the SPA can render the trial-expired
+    banner and an upgrade CTA.
+
+    Currently 402s when:
+
+    * the tenant is on ``sandbox`` AND ``trial_ends_at`` has passed; OR
+    * the tenant is on a paid tier (``starter``/``growth``/``enterprise``)
+      with no ``stripe_subscription_id`` linked — i.e., a paid plan
+      that lost its subscription (cancelled, never wired up).
+    """
+    if trial_is_expired(tenant):
+        raise HTTPException(
+            status_code=402,
+            detail="Your sandbox trial has ended. Pick a plan to keep going.",
+        )
+    if tenant.plan_tier != "sandbox" and not tenant.stripe_subscription_id:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "No active subscription on this tenant. Resolve billing "
+                "in /billing to resume usage."
+            ),
+        )
+    return tenant

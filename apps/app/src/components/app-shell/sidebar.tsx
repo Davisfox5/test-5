@@ -15,7 +15,10 @@ type NavItem = {
 
 const ROLE_RANK: Record<UserRole, number> = { agent: 1, manager: 2, admin: 3 };
 
-const NAV: NavItem[] = [
+// Single source of truth for the nav list — both the desktop sidebar
+// and the mobile drawer (in `header.tsx`) consume this so they can't
+// drift out of sync.
+export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
@@ -26,11 +29,15 @@ const NAV: NavItem[] = [
     { href: "/settings", label: "Settings", minRole: "agent" },
 ];
 
+export function navItemsForRole(role: UserRole): NavItem[] {
+    return NAV.filter((item) => ROLE_RANK[role] >= ROLE_RANK[item.minRole]);
+}
+
 export function Sidebar() {
     const pathname = usePathname();
     const { data } = useMe();
     const role: UserRole = data?.user?.role ?? "agent";
-    const items = NAV.filter((item) => ROLE_RANK[role] >= ROLE_RANK[item.minRole]);
+    const items = navItemsForRole(role);
 
     return (
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 border-r border-border bg-bg-secondary md:block">

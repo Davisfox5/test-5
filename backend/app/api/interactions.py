@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import ActionItem, Contact, CustomerOutcomeEvent, Interaction, Tenant
+from backend.app.plans import require_active_subscription
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.webhook_dispatcher import emit_event
 from backend.app.services.webhook_events import CUSTOMER_OUTCOME_EVENT_MAP
@@ -179,7 +180,15 @@ async def list_interaction_action_items(
     return list(rows)
 
 
-@router.post("/interactions", response_model=InteractionOut, status_code=201)
+@router.post(
+    "/interactions",
+    response_model=InteractionOut,
+    status_code=201,
+    # Revenue-burning: text analysis still calls Anthropic. Block
+    # expired-trial / lapsed-subscription tenants here so the cost
+    # gate matches /upload + /ingest-recording.
+    dependencies=[Depends(require_active_subscription)],
+)
 async def create_interaction(
     body: InteractionCreate,
     db: AsyncSession = Depends(get_db),
@@ -219,7 +228,14 @@ async def create_interaction(
     return interaction
 
 
-@router.post("/interactions/upload", response_model=InteractionOut, status_code=201)
+@router.post(
+    "/interactions/upload",
+    response_model=InteractionOut,
+    status_code=201,
+    # Voice uploads burn Deepgram + Anthropic credits — gate behind a
+    # paying / in-trial subscription.
+    dependencies=[Depends(require_active_subscription)],
+)
 async def upload_voice_interaction(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
@@ -340,7 +356,13 @@ class IngestRecordingIn(BaseModel):
     engine: Literal["deepgram", "whisper"] = "deepgram"
 
 
-@router.post("/interactions/ingest-recording", response_model=InteractionOut, status_code=201)
+@router.post(
+    "/interactions/ingest-recording",
+    response_model=InteractionOut,
+    status_code=201,
+    # Same reasoning as /interactions/upload — this is the JSON sibling.
+    dependencies=[Depends(require_active_subscription)],
+)
 async def ingest_recording(
     payload: Optional[IngestRecordingIn] = None,
     file: Optional[UploadFile] = File(default=None),

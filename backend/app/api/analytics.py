@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Tenant
+from backend.app.plans import require_active_subscription
 
 router = APIRouter()
 
@@ -138,7 +139,15 @@ def _interval(period: str) -> str:
 # ── Endpoints ────────────────────────────────────────────
 
 
-@router.get("/analytics/business", response_model=BusinessHealth)
+@router.get(
+    "/analytics/business",
+    response_model=BusinessHealth,
+    # Gate every analytics endpoint that runs heavy aggregations behind
+    # ``require_active_subscription``. Dashboard summaries (used by the
+    # SPA's first-paint /dashboard) intentionally stay open so an
+    # expired-trial tenant can still reach the upgrade banner.
+    dependencies=[Depends(require_active_subscription)],
+)
 async def business_health(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -223,7 +232,11 @@ async def business_health(
     )
 
 
-@router.get("/analytics/trends", response_model=List[TrendPoint])
+@router.get(
+    "/analytics/trends",
+    response_model=List[TrendPoint],
+    dependencies=[Depends(require_active_subscription)],
+)
 async def trends(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -257,7 +270,11 @@ async def trends(
     ]
 
 
-@router.get("/analytics/team", response_model=List[AgentStats])
+@router.get(
+    "/analytics/team",
+    response_model=List[AgentStats],
+    dependencies=[Depends(require_active_subscription)],
+)
 async def team_stats(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
@@ -295,7 +312,11 @@ async def team_stats(
     ]
 
 
-@router.get("/analytics/agents/{agent_id}", response_model=AgentStats)
+@router.get(
+    "/analytics/agents/{agent_id}",
+    response_model=AgentStats,
+    dependencies=[Depends(require_active_subscription)],
+)
 async def agent_detail(
     agent_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -333,7 +354,11 @@ async def agent_detail(
     )
 
 
-@router.get("/analytics/clients/{contact_id}", response_model=ClientTrends)
+@router.get(
+    "/analytics/clients/{contact_id}",
+    response_model=ClientTrends,
+    dependencies=[Depends(require_active_subscription)],
+)
 async def client_trends(
     contact_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -415,7 +440,11 @@ async def client_trends(
     )
 
 
-@router.get("/analytics/competitive", response_model=List[CompetitorRow])
+@router.get(
+    "/analytics/competitive",
+    response_model=List[CompetitorRow],
+    dependencies=[Depends(require_active_subscription)],
+)
 async def competitive_analysis(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -454,7 +483,11 @@ async def competitive_analysis(
     ]
 
 
-@router.get("/analytics/topics", response_model=List[TopicTrend])
+@router.get(
+    "/analytics/topics",
+    response_model=List[TopicTrend],
+    dependencies=[Depends(require_active_subscription)],
+)
 async def topics_trend(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -517,7 +550,11 @@ async def topics_trend(
     return out
 
 
-@router.get("/analytics/product-feedback", response_model=List[ProductFeedbackTheme])
+@router.get(
+    "/analytics/product-feedback",
+    response_model=List[ProductFeedbackTheme],
+    dependencies=[Depends(require_active_subscription)],
+)
 async def product_feedback(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -557,7 +594,11 @@ async def product_feedback(
     ]
 
 
-@router.get("/analytics/coaching", response_model=CoachingInsights)
+@router.get(
+    "/analytics/coaching",
+    response_model=CoachingInsights,
+    dependencies=[Depends(require_active_subscription)],
+)
 async def coaching_insights(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
@@ -602,7 +643,11 @@ async def coaching_insights(
     )
 
 
-@router.get("/analytics/signals", response_model=SignalBuckets)
+@router.get(
+    "/analytics/signals",
+    response_model=SignalBuckets,
+    dependencies=[Depends(require_active_subscription)],
+)
 async def risk_signals(
     period: str = Query("30d", pattern="^(7d|30d|90d)$"),
     db: AsyncSession = Depends(get_db),
