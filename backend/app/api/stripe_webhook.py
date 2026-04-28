@@ -12,9 +12,10 @@ Two surfaces:
     back to ``solo`` and clear ``stripe_subscription_id``.
   - Anything else → 200 OK, ignored. Stripe retries on non-2xx.
 
-* ``POST /admin/stripe/link`` — admin pins a ``stripe_customer_id`` on
-  their tenant. Required before the first webhook arrives, since
-  Stripe doesn't know about our tenant ids.
+* ``POST /admin/stripe/link`` — admin clicks "Manage billing" in the
+  SPA. Returns a Stripe-hosted billing portal URL for the tenant's
+  Stripe customer (creating one on the fly if needed). The SPA opens
+  the URL in a new tab.
 
 Design notes:
 
@@ -34,6 +35,7 @@ import logging
 import uuid
 from typing import Any, Dict, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -55,35 +57,112 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Admin: link Stripe customer ──────────────────────────────────────
+# ── Admin: open Stripe billing portal ────────────────────────────────
 
 
-class StripeLinkIn(BaseModel):
-    stripe_customer_id: str
+# SPA's billing page POSTs here with no body and expects ``{url}``.
+# We also surface ``portal_url`` for any other callers (the API spec
+# names it that). Both keys point at the same URL.
+STRIPE_PORTAL_RETURN_URL = "https://linda-staging-app.fly.dev/billing"
+
+
+async def _stripe_post(
+    api_key: str,
+    path: str,
+    form: Dict[str, str],
+) -> Dict[str, Any]:
+    """POST form-encoded to the Stripe REST API. Returns parsed JSON.
+
+    Stripe's API is form-urlencoded, not JSON; using httpx keeps the
+    dependency surface small (no Stripe SDK required).
+    """
+    url = f"https://api.stripe.com/v1{path}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(url, headers=headers, data=form)
+    if resp.status_code >= 400:
+        # Bubble Stripe's own error message up so the admin UI shows
+        # something actionable instead of a bare 500.
+        try:
+            err = resp.json().get("error", {})
+            msg = err.get("message") or resp.text
+        except Exception:
+            msg = resp.text
+        raise HTTPException(
+            status_code=502,
+            detail=f"Stripe error: {msg}",
+        )
+    return resp.json()
 
 
 @router.post("/admin/stripe/link")
-async def link_stripe_customer(
-    body: StripeLinkIn,
+async def open_stripe_billing_portal(
     principal: AuthPrincipal = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    """Pin a Stripe customer id onto the tenant.
+    """Return a Stripe-hosted billing portal URL for the tenant.
 
-    Call this once after creating the Stripe Customer (either manually
-    via the Stripe dashboard, or automatically in a billing flow).
-    Subsequent ``customer.subscription.*`` webhooks for that customer
-    id will resolve to this tenant.
+    If the tenant doesn't have a ``stripe_customer_id`` yet, create one
+    on the fly and persist it before opening the portal session.
+    Falls back to a 503 if Stripe isn't configured for the deployment
+    (staging may not have ``STRIPE_API_KEY`` set).
     """
-    customer_id = (body.stripe_customer_id or "").strip()
-    if not customer_id.startswith("cus_"):
+    settings = get_settings()
+    api_key = (settings.STRIPE_API_KEY or "").strip()
+    if not api_key:
         raise HTTPException(
-            status_code=400,
-            detail="stripe_customer_id should start with 'cus_'",
+            status_code=503,
+            detail="Stripe is not configured for this tenant",
         )
-    principal.tenant.stripe_customer_id = customer_id
+
+    tenant = principal.tenant
+    customer_id = (tenant.stripe_customer_id or "").strip()
+
+    # Mint a fresh customer for tenants that haven't been linked yet so
+    # the very first "Manage billing" click works without admin
+    # intervention.  We tag the customer with our tenant id so a Stripe
+    # support eyeball can reverse-map customers back to tenants.
+    if not customer_id:
+        form = {
+            "name": tenant.name or f"tenant-{tenant.id}",
+            "metadata[tenant_id]": str(tenant.id),
+            "metadata[tenant_slug]": tenant.slug or "",
+        }
+        principal_user = principal.user
+        if principal_user is not None and principal_user.email:
+            form["email"] = principal_user.email
+        created = await _stripe_post(api_key, "/customers", form)
+        customer_id = str(created.get("id") or "")
+        if not customer_id.startswith("cus_"):
+            raise HTTPException(
+                status_code=502,
+                detail="Stripe did not return a customer id",
+            )
+        tenant.stripe_customer_id = customer_id
+
+    session = await _stripe_post(
+        api_key,
+        "/billing_portal/sessions",
+        {
+            "customer": customer_id,
+            "return_url": STRIPE_PORTAL_RETURN_URL,
+        },
+    )
+    portal_url = str(session.get("url") or "")
+    if not portal_url:
+        raise HTTPException(
+            status_code=502,
+            detail="Stripe did not return a portal session url",
+        )
+
+    # Return both keys so the SPA (reads ``url``) and any other client
+    # following the API spec (``portal_url``) see the right value.
     return {
-        "tenant_id": str(principal.tenant.id),
-        "stripe_customer_id": customer_id,
+        "tenant_id": str(tenant.id),
+        "portal_url": portal_url,
+        "url": portal_url,
     }
 
 

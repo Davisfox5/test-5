@@ -11,12 +11,12 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
-from backend.app.models import Contact, CustomerOutcomeEvent, Interaction, Tenant
+from backend.app.models import ActionItem, Contact, CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.webhook_dispatcher import emit_event
 from backend.app.services.webhook_events import CUSTOMER_OUTCOME_EVENT_MAP
@@ -86,6 +86,9 @@ class InteractionUpdate(BaseModel):
 async def list_interactions(
     channel: Optional[str] = Query(None, description="Filter by channel: voice|email|chat"),
     status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, description="Free-text search across title / raw_text / caller_phone"),
+    date_from: Optional[datetime] = Query(None, description="Inclusive lower bound on created_at"),
+    date_to: Optional[datetime] = Query(None, description="Inclusive upper bound on created_at"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -102,6 +105,20 @@ async def list_interactions(
         stmt = stmt.where(Interaction.channel == channel)
     if status:
         stmt = stmt.where(Interaction.status == status)
+    if q:
+        # ILIKE across the columns the SPA list view searches over.
+        needle = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Interaction.title.ilike(needle),
+                Interaction.raw_text.ilike(needle),
+                Interaction.caller_phone.ilike(needle),
+            )
+        )
+    if date_from is not None:
+        stmt = stmt.where(Interaction.created_at >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(Interaction.created_at <= date_to)
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -121,6 +138,45 @@ async def get_interaction(
     if not interaction:
         raise HTTPException(status_code=404, detail="Interaction not found")
     return interaction
+
+
+# Imported lazily so the schema lives next to the action-items module
+# while the route shape (nested under /interactions/{id}) belongs here —
+# the SPA detail page expects to load both halves from the same shape.
+from backend.app.api.action_items import ActionItemOut  # noqa: E402
+
+
+@router.get(
+    "/interactions/{interaction_id}/action-items",
+    response_model=List[ActionItemOut],
+)
+async def list_interaction_action_items(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Action items attached to a specific interaction.
+
+    Tenant-scoped: a 404 on a stranger's interaction id, an empty list
+    when the interaction exists but has no items.
+    """
+    interaction_stmt = select(Interaction.id).where(
+        Interaction.id == interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    if (await db.execute(interaction_stmt)).scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    items_stmt = (
+        select(ActionItem)
+        .where(
+            ActionItem.tenant_id == tenant.id,
+            ActionItem.interaction_id == interaction_id,
+        )
+        .order_by(ActionItem.created_at.asc())
+    )
+    rows = (await db.execute(items_stmt)).scalars().all()
+    return list(rows)
 
 
 @router.post("/interactions", response_model=InteractionOut, status_code=201)

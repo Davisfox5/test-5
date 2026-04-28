@@ -59,6 +59,28 @@ _STATUS_EVENT_MAP = {
 }
 
 
+# SPA buckets vs. canonical statuses.  The SPA's status pills are
+# {open, done, snoozed}; the DB stores {pending, in_progress, done,
+# snoozed, dismissed, rejected, completed}.  Map either spelling
+# to the canonical set used by ActionItem.status so filtering works
+# regardless of which side of the contract the client lives on.
+_STATUS_FILTER_ALIASES: dict[str, list[str]] = {
+    "open": ["pending", "in_progress", "open"],
+    "pending": ["pending"],
+    "in_progress": ["in_progress"],
+    "done": ["done", "completed"],
+    "completed": ["done", "completed"],
+    "snoozed": ["snoozed"],
+    "dismissed": ["dismissed", "rejected"],
+    "rejected": ["dismissed", "rejected"],
+}
+
+
+def _expand_status_filter(value: str) -> list[str]:
+    """Return the list of underlying ActionItem.status values to query for."""
+    return _STATUS_FILTER_ALIASES.get(value.lower(), [value])
+
+
 def _emit_lifecycle_event(
     item: ActionItem,
     *,
@@ -147,7 +169,11 @@ async def list_action_items(
         .offset(offset)
     )
     if status is not None:
-        stmt = stmt.where(ActionItem.status == status)
+        candidates = _expand_status_filter(status)
+        if len(candidates) == 1:
+            stmt = stmt.where(ActionItem.status == candidates[0])
+        else:
+            stmt = stmt.where(ActionItem.status.in_(candidates))
     if priority is not None:
         stmt = stmt.where(ActionItem.priority == priority)
     if category is not None:

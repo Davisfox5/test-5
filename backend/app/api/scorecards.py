@@ -66,6 +66,23 @@ async def list_scorecard_templates(
     return result.scalars().all()
 
 
+@router.get("/scorecards/{template_id}", response_model=ScorecardTemplateOut)
+async def get_scorecard_template(
+    template_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Tenant-scoped detail for a single scorecard template."""
+    stmt = select(ScorecardTemplate).where(
+        ScorecardTemplate.id == template_id,
+        ScorecardTemplate.tenant_id == tenant.id,
+    )
+    template = (await db.execute(stmt)).scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail="Scorecard template not found")
+    return template
+
+
 @router.post("/scorecards", response_model=ScorecardTemplateOut, status_code=201)
 async def create_scorecard_template(
     body: ScorecardTemplateCreate,
