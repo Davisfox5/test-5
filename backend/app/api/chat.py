@@ -39,15 +39,23 @@ def _require_not_white_label(tenant: Tenant) -> None:
 async def _resolve_current_user(
     request: Request, db: AsyncSession, tenant: Tenant
 ) -> Optional[User]:
-    """Best-effort resolve the Clerk-authenticated user for logging on messages."""
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
+    """Best-effort resolve the authenticated user for logging on messages.
+
+    Tries the principal (works for session JWT + Clerk JWT). Returns
+    None for tenant-API-key callers — that's the right behaviour: chat
+    messages from key holders are recorded as tenant-attributed only.
+    Failures fall back to None rather than raising; chat itself has
+    already passed get_current_tenant by the time we get here.
+    """
+    from backend.app.auth import get_current_principal as _principal
+
+    try:
+        principal = await _principal(request, db)
+    except Exception:
         return None
-    token = auth.split(" ", 1)[1].strip()
-    if not token.startswith("clerk_"):
+    if principal.user is None or principal.tenant.id != tenant.id:
         return None
-    stmt = select(User).where(User.clerk_user_id == token, User.tenant_id == tenant.id)
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return principal.user
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────

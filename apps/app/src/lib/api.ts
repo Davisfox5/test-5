@@ -6,9 +6,15 @@ const API_BASE = "/api/v1";
 
 /**
  * Hook that returns a fetch wrapper pre-configured with the current
- * Clerk session token as an Authorization bearer. The FastAPI backend
- * recognises `Bearer clerk_<user_id>` and resolves the tenant from the
- * user's membership.
+ * Clerk session token as an Authorization bearer.
+ *
+ * Send the raw JWT (no `clerk_` prefix). The earlier `clerk_` prefix
+ * scheme confused Clerk's own Next.js middleware — it tried to
+ * base64-decode the entire `clerk_<JWT>` string as a JWT and threw
+ * `SyntaxError: Unexpected token 'r'... is not valid JSON` on every
+ * authenticated request, which the SPA then rendered as a 500. The
+ * backend's _principal_from_clerk verifies the JWT against Clerk's
+ * JWKS directly — no marker prefix needed.
  */
 export function useApi() {
     const { getToken } = useAuth();
@@ -20,7 +26,7 @@ export function useApi() {
         if (init.body && !headers.has("Content-Type")) {
             headers.set("Content-Type", "application/json");
         }
-        if (token) headers.set("Authorization", `Bearer clerk_${token}`);
+        if (token) headers.set("Authorization", `Bearer ${token}`);
 
         const resp = await fetch(`${API_BASE}${path}`, { ...init, headers });
         if (!resp.ok) {
