@@ -744,7 +744,12 @@ async def tenant_insights_list(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Periodic cross-call rollups stored by the weekly aggregation job."""
+    """Periodic cross-call rollups stored by the weekly aggregation job.
+
+    The tenant_insights table is populated by a Celery beat job; on
+    fresh tenants it may be empty (or, in some staging environments,
+    not yet migrated) — return [] rather than 500.
+    """
     tenant_id = str(tenant.id)
     query = text("""
         SELECT id, period_start, period_end, insights, created_at
@@ -753,7 +758,14 @@ async def tenant_insights_list(
         ORDER BY period_start DESC NULLS LAST, created_at DESC
         LIMIT :limit
     """)
-    rows = (await db.execute(query, {"tenant_id": tenant_id, "limit": limit})).fetchall()
+    try:
+        rows = (await db.execute(query, {"tenant_id": tenant_id, "limit": limit})).fetchall()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return []
     return [
         TenantInsightRow(
             id=row[0],
@@ -778,63 +790,97 @@ class AiHealth(BaseModel):
     flagged_for_review_count: int
 
 
+async def _scalar_or_default(db: AsyncSession, sql: str, params: Dict, default):
+    """Run ``sql`` returning a single scalar; swallow missing-table /
+    empty-row errors and return ``default`` instead.
+
+    Several of the AI-improvement tables (insight_quality_scores,
+    wer_metrics, vocabulary_candidates) are populated by background jobs
+    that don't run on a fresh sandbox tenant. A missing table or no rows
+    must surface as a zero baseline, not a 500.
+    """
+    try:
+        row = (await db.execute(text(sql), params)).fetchone()
+    except Exception as exc:  # pragma: no cover — defensive
+        import logging as _logging
+        _logging.getLogger(__name__).debug("analytics scalar fallback: %s", exc)
+        # Roll back so subsequent statements on the same session don't
+        # see "current transaction is aborted" after a relation lookup
+        # failure.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return default
+    if row is None or row[0] is None:
+        return default
+    return row[0]
+
+
 @router.get("/analytics/ai-health", response_model=AiHealth)
 async def ai_health(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Per-tenant AI health snapshot — composite quality, WER, feedback velocity."""
+    """Per-tenant AI health snapshot — composite quality, WER, feedback velocity.
+
+    Each underlying table is queried independently so a fresh tenant
+    (no insight_quality_scores rows, no wer_metrics, ...) returns a
+    zero-baseline AiHealth payload instead of a 500.
+    """
     tenant_id = str(tenant.id)
-    rows = (
-        await db.execute(
-            text(
-                """
-                WITH q7 AS (
-                    SELECT AVG(score) AS v
-                    FROM insight_quality_scores
-                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'
-                ),
-                q30 AS (
-                    SELECT AVG(score) AS v
-                    FROM insight_quality_scores
-                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '30 days'
-                ),
-                fb AS (
-                    SELECT COUNT(*) AS n
-                    FROM feedback_events
-                    WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'
-                ),
-                wer AS (
-                    SELECT AVG(word_error_rate) AS v
-                    FROM wer_metrics
-                    WHERE tenant_id = :t AND period_end >= CURRENT_DATE - INTERVAL '14 days'
-                ),
-                vocab AS (
-                    SELECT COUNT(*) AS n
-                    FROM vocabulary_candidates
-                    WHERE tenant_id = :t AND status = 'pending'
-                ),
-                flagged AS (
-                    SELECT COUNT(*) AS n
-                    FROM interactions
-                    WHERE tenant_id = :t AND status = 'flagged_for_review'
-                )
-                SELECT q7.v, q30.v, fb.n, wer.v, vocab.n, flagged.n
-                FROM q7, q30, fb, wer, vocab, flagged
-                """
-            ),
-            {"t": tenant_id},
-        )
-    ).fetchone()
-    if rows is None:
-        raise HTTPException(status_code=500, detail="ai-health query returned no rows")
+    params = {"t": tenant_id}
+
+    q7 = await _scalar_or_default(
+        db,
+        "SELECT AVG(score) FROM insight_quality_scores "
+        "WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'",
+        params,
+        None,
+    )
+    q30 = await _scalar_or_default(
+        db,
+        "SELECT AVG(score) FROM insight_quality_scores "
+        "WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '30 days'",
+        params,
+        None,
+    )
+    fb = await _scalar_or_default(
+        db,
+        "SELECT COUNT(*) FROM feedback_events "
+        "WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '7 days'",
+        params,
+        0,
+    )
+    wer = await _scalar_or_default(
+        db,
+        "SELECT AVG(word_error_rate) FROM wer_metrics "
+        "WHERE tenant_id = :t AND period_end >= CURRENT_DATE - INTERVAL '14 days'",
+        params,
+        None,
+    )
+    vocab = await _scalar_or_default(
+        db,
+        "SELECT COUNT(*) FROM vocabulary_candidates "
+        "WHERE tenant_id = :t AND status = 'pending'",
+        params,
+        0,
+    )
+    flagged = await _scalar_or_default(
+        db,
+        "SELECT COUNT(*) FROM interactions "
+        "WHERE tenant_id = :t AND status = 'flagged_for_review'",
+        params,
+        0,
+    )
+
     return AiHealth(
-        quality_score_avg_7d=float(rows[0]) if rows[0] is not None else None,
-        quality_score_avg_30d=float(rows[1]) if rows[1] is not None else None,
-        feedback_events_7d=int(rows[2] or 0),
-        asr_wer_7d=float(rows[3]) if rows[3] is not None else None,
-        pending_vocab_candidates=int(rows[4] or 0),
-        flagged_for_review_count=int(rows[5] or 0),
+        quality_score_avg_7d=float(q7) if q7 is not None else None,
+        quality_score_avg_30d=float(q30) if q30 is not None else None,
+        feedback_events_7d=int(fb or 0),
+        asr_wer_7d=float(wer) if wer is not None else None,
+        pending_vocab_candidates=int(vocab or 0),
+        flagged_for_review_count=int(flagged or 0),
     )
 
 
@@ -851,20 +897,29 @@ async def vocabulary_pending(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    rows = (
-        await db.execute(
-            text(
-                """
-                SELECT id, term, confidence, source, occurrence_count
-                FROM vocabulary_candidates
-                WHERE tenant_id = :t AND status = 'pending'
-                ORDER BY occurrence_count DESC, created_at DESC
-                LIMIT 50
-                """
-            ),
-            {"t": str(tenant.id)},
-        )
-    ).fetchall()
+    # vocabulary_candidates is populated by an async vocab discovery job
+    # — return [] on fresh tenants instead of 500ing the dashboard.
+    try:
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id, term, confidence, source, occurrence_count
+                    FROM vocabulary_candidates
+                    WHERE tenant_id = :t AND status = 'pending'
+                    ORDER BY occurrence_count DESC, created_at DESC
+                    LIMIT 50
+                    """
+                ),
+                {"t": str(tenant.id)},
+            )
+        ).fetchall()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return []
     return [
         VocabPendingRow(
             id=row[0],
@@ -890,49 +945,60 @@ async def reply_quality(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Reply edit-distance + LLM-judge quality, bucketed weekly."""
-    rows = (
-        await db.execute(
-            text(
-                """
-                WITH events AS (
+    """Reply edit-distance + LLM-judge quality, bucketed weekly.
+
+    Empty/missing feedback_events or insight_quality_scores tables on a
+    fresh tenant return [] rather than 500.
+    """
+    try:
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    WITH events AS (
+                        SELECT
+                            date_trunc('week', created_at) AS wk,
+                            COUNT(*) AS n,
+                            AVG(NULLIF((payload ->> 'similarity')::float, NULL)) AS avg_sim,
+                            AVG(
+                                CASE WHEN event_type = 'reply_sent_unchanged'
+                                     THEN 1.0 ELSE 0.0 END
+                            ) AS pct_unchanged
+                        FROM feedback_events
+                        WHERE tenant_id = :t
+                          AND event_type IN ('reply_sent_unchanged', 'reply_edited_before_send')
+                          AND created_at >= NOW() - INTERVAL '12 weeks'
+                        GROUP BY 1
+                    ),
+                    quality AS (
+                        SELECT date_trunc('week', created_at) AS wk,
+                               AVG(score) AS qavg
+                        FROM insight_quality_scores
+                        WHERE tenant_id = :t
+                          AND surface = 'email_reply'
+                          AND created_at >= NOW() - INTERVAL '12 weeks'
+                        GROUP BY 1
+                    )
                     SELECT
-                        date_trunc('week', created_at) AS wk,
-                        COUNT(*) AS n,
-                        AVG(NULLIF((payload ->> 'similarity')::float, NULL)) AS avg_sim,
-                        AVG(
-                            CASE WHEN event_type = 'reply_sent_unchanged'
-                                 THEN 1.0 ELSE 0.0 END
-                        ) AS pct_unchanged
-                    FROM feedback_events
-                    WHERE tenant_id = :t
-                      AND event_type IN ('reply_sent_unchanged', 'reply_edited_before_send')
-                      AND created_at >= NOW() - INTERVAL '12 weeks'
-                    GROUP BY 1
+                        e.wk::date,
+                        e.n,
+                        e.avg_sim,
+                        e.pct_unchanged,
+                        q.qavg
+                    FROM events e
+                    LEFT JOIN quality q USING (wk)
+                    ORDER BY e.wk ASC
+                    """
                 ),
-                quality AS (
-                    SELECT date_trunc('week', created_at) AS wk,
-                           AVG(score) AS qavg
-                    FROM insight_quality_scores
-                    WHERE tenant_id = :t
-                      AND surface = 'email_reply'
-                      AND created_at >= NOW() - INTERVAL '12 weeks'
-                    GROUP BY 1
-                )
-                SELECT
-                    e.wk::date,
-                    e.n,
-                    e.avg_sim,
-                    e.pct_unchanged,
-                    q.qavg
-                FROM events e
-                LEFT JOIN quality q USING (wk)
-                ORDER BY e.wk ASC
-                """
-            ),
-            {"t": str(tenant.id)},
-        )
-    ).fetchall()
+                {"t": str(tenant.id)},
+            )
+        ).fetchall()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return []
     return [
         ReplyQualityRow(
             period=str(row[0]),
