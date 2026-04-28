@@ -15,11 +15,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "./api";
 
+export type PlanTierKey = "sandbox" | "starter" | "growth" | "enterprise";
+
 export interface FeatureFlagSpec {
     key: string;
     default: boolean;
     label: string;
     help: string;
+}
+
+export interface TierCatalogEntry {
+    key: string;
+    label: string;
+    description: string;
+    seat_limit: number;
+    admin_seat_limit: number;
+    max_monthly_minutes: number | null;
+    max_uploads_per_day: number | null;
+    ai_model_tier: "haiku" | "sonnet" | "opus";
+    features: Record<string, unknown>;
 }
 
 export interface TenantSettings {
@@ -36,6 +50,7 @@ export interface TenantSettings {
     plan_tier?: string;
     seat_limit?: number;
     admin_seat_limit?: number;
+    tier_catalog?: TierCatalogEntry[];
 }
 
 export interface TenantSettingsPatch {
@@ -90,5 +105,28 @@ export function useUpdateTenantSettings() {
         onSettled: () => {
             qc.invalidateQueries({ queryKey: ["tenant-settings"] });
         },
+    });
+}
+
+export function useChangeTier() {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (tier: PlanTierKey) =>
+            api.post<TenantSettings>("/admin/tenant-settings/tier", { tier }),
+        // Tier change rewrites tenant.limits + tenant.plan_tier; the
+        // /me payload is the source of truth for those, so refetch both.
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["tenant-settings"] });
+            qc.invalidateQueries({ queryKey: ["me"] });
+        },
+    });
+}
+
+export function useStripePortalLink() {
+    const api = useApi();
+    return useMutation({
+        mutationFn: () =>
+            api.post<{ url: string }>("/admin/stripe/link"),
     });
 }

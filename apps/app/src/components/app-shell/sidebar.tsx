@@ -10,23 +10,19 @@ import type { UserRole } from "@/lib/me";
 type NavItem = {
     href: string;
     label: string;
-    // Minimum role required to see this item. Higher roles always see lower-role items.
     minRole: UserRole;
-    // Optional feature flag required
-    requiresFeature?: keyof import("@/lib/me").PlanLimits;
 };
 
-const ROLE_RANK: Record<UserRole, number> = { agent: 1, manager: 2, executive: 3 };
+const ROLE_RANK: Record<UserRole, number> = { agent: 1, manager: 2, admin: 3 };
 
-// Only routes that actually exist under apps/app/src/app/(app)/.
-// /scorecards, /team, /analytics, /tenant, /billing were scaffolded in
-// the nav before the page modules existed and were producing 404s for
-// every signed-in visitor — restore each link as the matching page
-// lands.
 const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
+    { href: "/scorecards", label: "Scorecards", minRole: "agent" },
+    { href: "/team", label: "Team", minRole: "manager" },
+    { href: "/analytics", label: "Analytics", minRole: "manager" },
+    { href: "/billing", label: "Billing & plan", minRole: "admin" },
     { href: "/settings", label: "Settings", minRole: "agent" },
 ];
 
