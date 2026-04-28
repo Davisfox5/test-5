@@ -6,6 +6,18 @@ import {
     useTenantSettings,
     useUpdateTenantSettings,
 } from "@/lib/tenant-settings";
+import {
+    AdminGate,
+    ErrorCard,
+    Section,
+    SkeletonCard,
+    humanizeError,
+} from "@/components/admin/section";
+import { PlanTierGrid } from "@/components/admin/plan-tier-grid";
+import { TenantContextSection } from "./_sections/tenant-context";
+import { ApiKeysSection } from "./_sections/api-keys";
+import { WebhooksSection } from "./_sections/webhooks";
+import { IntegrationsSection } from "./_sections/integrations";
 
 export default function SettingsPage() {
     const { data: me } = useMe();
@@ -23,9 +35,7 @@ export default function SettingsPage() {
                 </p>
             </header>
 
-            {error ? (
-                <ErrorCard message={humanizeError(error)} />
-            ) : null}
+            {error ? <ErrorCard message={humanizeError(error)} /> : null}
 
             {isLoading ? (
                 <SkeletonCard />
@@ -147,11 +157,56 @@ export default function SettingsPage() {
 
                     {update.isError ? (
                         <ErrorCard
-                            message={`Couldn’t save: ${humanizeError(
+                            message={`Couldn't save: ${humanizeError(
                                 update.error,
                             )}`}
                         />
                     ) : null}
+
+                    <Section
+                        title="Plan & billing"
+                        subtitle="Choose the tier that matches your team's usage. Downgrades trigger seat reconciliation."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <PlanTierGrid canChange={isAdmin} />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Tenant context"
+                        subtitle="The brief LINDA uses when reasoning about your business — goals, ICPs, products."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <TenantContextSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="API keys"
+                        subtitle="Personal access tokens for programmatic access. Keys are shown once on creation."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <ApiKeysSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Webhooks"
+                        subtitle="Outbound HTTP callbacks for tenant events. The HMAC secret is shown once."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <WebhooksSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Integrations"
+                        subtitle="Connect LINDA to your CRM and storage providers."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <IntegrationsSection />
+                        </AdminGate>
+                    </Section>
                 </>
             ) : null}
         </div>
@@ -159,28 +214,6 @@ export default function SettingsPage() {
 }
 
 /* ── Subcomponents ────────────────────────────────────────────────── */
-
-function Section({
-    title,
-    subtitle,
-    children,
-}: {
-    title: string;
-    subtitle?: string;
-    children: React.ReactNode;
-}) {
-    return (
-        <section className="rounded-lg border border-border bg-bg-card p-6">
-            <div className="mb-4">
-                <h3 className="text-lg font-semibold">{title}</h3>
-                {subtitle ? (
-                    <p className="text-sm text-text-muted mt-1">{subtitle}</p>
-                ) : null}
-            </div>
-            {children}
-        </section>
-    );
-}
 
 function FlagRow({
     spec,
@@ -261,26 +294,4 @@ function RadioGroup<T extends string>({
             </div>
         </fieldset>
     );
-}
-
-function SkeletonCard() {
-    return (
-        <div className="rounded-lg border border-border bg-bg-card p-6 animate-pulse">
-            <div className="h-4 w-40 bg-bg-raised rounded mb-3" />
-            <div className="h-3 w-64 bg-bg-raised rounded" />
-        </div>
-    );
-}
-
-function ErrorCard({ message }: { message: string }) {
-    return (
-        <div className="rounded-lg border border-accent-alert bg-accent-alert-subtle text-accent-alert-strong p-4 text-sm">
-            {message}
-        </div>
-    );
-}
-
-function humanizeError(error: unknown): string {
-    if (error instanceof Error) return error.message;
-    return "Unexpected error — see console for details.";
 }
