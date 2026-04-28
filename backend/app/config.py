@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     # Sentry DSN — empty disables error monitoring (local dev default).
     SENTRY_DSN: str = ""
     API_V1_PREFIX: str = "/api/v1"
-    ALLOWED_ORIGINS: list[str] = ["*"]
+    # Empty by default. Browsers reject ``Access-Control-Allow-Origin: *``
+    # paired with ``Access-Control-Allow-Credentials: true``, so a wildcard
+    # default would silently break every credentialed request in any
+    # deployment that forgot to set the env var. Operators MUST set
+    # explicit origins (e.g. https://linda-staging-app.fly.dev) via
+    # ``ALLOWED_ORIGINS=["https://..."]`` in fly secrets / .env.
+    ALLOWED_ORIGINS: list[str] = []
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str

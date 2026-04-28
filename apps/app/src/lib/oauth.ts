@@ -40,9 +40,18 @@ export function useRevokeIntegration() {
     });
 }
 
-// Authorize is a redirect endpoint, so the SPA opens it in a new tab
-// rather than fetching it. This helper returns the URL with the same
-// /api/v1 prefix the rest of the SPA proxies through.
-export function authorizeUrlFor(provider: OAuthProvider): string {
-    return `/api/v1/oauth/${provider}/authorize`;
+// Mint a one-shot authorize URL via the authenticated POST /ticket
+// endpoint. We can't link the user straight to GET /authorize because
+// anchor clicks don't carry the Bearer JWT — so we fetch the authorize
+// URL ourselves and then `window.location =` to the provider.
+export function useStartOAuth() {
+    const api = useApi();
+    return useMutation({
+        mutationFn: async (provider: OAuthProvider) => {
+            const { authorize_url } = await api.post<{ authorize_url: string }>(
+                `/oauth/${provider}/ticket`,
+            );
+            return authorize_url;
+        },
+    });
 }

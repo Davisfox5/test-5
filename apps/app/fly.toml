@@ -11,6 +11,14 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile"
 
+# Placeholder release hook. The SPA is a Next standalone build and
+# doesn't run DB migrations, but having a release_command wired now
+# gives us a place to bolt on Sentry source-map upload, static-asset
+# CDN cache purge, or a smoke probe later without changing fly config
+# under pressure.
+[deploy]
+  release_command = "echo 'spa release ok'"
+
 [env]
   NODE_ENV = "production"
   # Where the SPA proxies /api/* to. Keeps Clerk + cookies same-origin.

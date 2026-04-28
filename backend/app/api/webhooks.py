@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import Tenant, Webhook, WebhookDelivery
+from backend.app.services.token_crypto import decrypt_token, encrypt_token
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
 from backend.app.services.webhook_events import WEBHOOK_EVENTS
 
@@ -94,11 +95,14 @@ async def create_webhook(
     """Create a new webhook. The HMAC secret is returned once in the response."""
     hmac_secret = secrets.token_urlsafe(32)
 
+    # Store the HMAC secret encrypted at rest (Fernet) so a leaked DB
+    # backup can't be replayed against tenants' webhook receivers. The
+    # plaintext is returned exactly once in the response below.
     webhook = Webhook(
         tenant_id=tenant.id,
         url=body.url,
         events=body.events,
-        secret=hmac_secret,
+        secret=encrypt_token(hmac_secret) or hmac_secret,
         active=body.active,
     )
     db.add(webhook)
@@ -191,7 +195,10 @@ async def test_webhook(
 
     import json
     payload_str = json.dumps(test_payload, separators=(",", ":"))
-    signature = dispatcher.sign_payload(payload_str, webhook.secret)
+    # ``Webhook.secret`` is Fernet-encrypted at rest; decrypt before
+    # signing. ``decrypt_token`` is tolerant of legacy plaintext rows.
+    plaintext_secret = decrypt_token(webhook.secret) or webhook.secret
+    signature = dispatcher.sign_payload(payload_str, plaintext_secret)
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

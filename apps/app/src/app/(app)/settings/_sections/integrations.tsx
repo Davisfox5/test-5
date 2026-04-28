@@ -2,9 +2,9 @@
 
 import {
     OAuthProvider,
-    authorizeUrlFor,
     useOAuthStatus,
     useRevokeIntegration,
+    useStartOAuth,
 } from "@/lib/oauth";
 import { humanizeError } from "@/components/admin/section";
 
@@ -46,12 +46,25 @@ const PROVIDERS: ProviderSpec[] = [
 export function IntegrationsSection() {
     const { data, isLoading, error } = useOAuthStatus();
     const revoke = useRevokeIntegration();
+    const startOAuth = useStartOAuth();
     const connected = new Map<string, { id: string; created_at: string }>(
         (data?.integrations ?? []).map((i) => [
             i.provider,
             { id: i.id, created_at: i.created_at },
         ]),
     );
+
+    const handleConnect = async (provider: OAuthProvider) => {
+        try {
+            const url = await startOAuth.mutateAsync(provider);
+            // Full-page redirect — the provider's consent screen will
+            // eventually redirect back to the API callback, which redirects
+            // the user back to the SPA settings page.
+            window.location.assign(url);
+        } catch {
+            // The error renders below via startOAuth.isError.
+        }
+    };
 
     if (isLoading) {
         return (
@@ -114,14 +127,17 @@ export function IntegrationsSection() {
                                     Disconnect
                                 </button>
                             ) : (
-                                <a
-                                    href={authorizeUrlFor(p.key)}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white"
+                                <button
+                                    type="button"
+                                    onClick={() => handleConnect(p.key)}
+                                    disabled={startOAuth.isPending}
+                                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                                 >
-                                    Connect
-                                </a>
+                                    {startOAuth.isPending &&
+                                    startOAuth.variables === p.key
+                                        ? "Connecting…"
+                                        : "Connect"}
+                                </button>
                             )}
                         </div>
                     </li>
@@ -130,6 +146,11 @@ export function IntegrationsSection() {
             {revoke.isError ? (
                 <p className="text-xs text-accent-rose">
                     {humanizeError(revoke.error)}
+                </p>
+            ) : null}
+            {startOAuth.isError ? (
+                <p className="text-xs text-accent-rose">
+                    {humanizeError(startOAuth.error)}
                 </p>
             ) : null}
         </ul>

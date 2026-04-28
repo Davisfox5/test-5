@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+)
 from backend.app.models import Tenant
 from backend.app.db import get_db
 from backend.app.models import Interaction, InteractionComment
@@ -36,16 +40,6 @@ class CommentOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-# ── Placeholder user dependency ──────────────────────────
-
-DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
-
-
-def get_current_user_id() -> uuid.UUID:
-    """Placeholder — returns demo user until auth middleware is built."""
-    return DEMO_USER_ID
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -102,16 +96,26 @@ async def create_comment(
     interaction_id: uuid.UUID,
     body: CommentCreate,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ) -> CommentOut:
-    """Create a new comment on an interaction."""
-    await _verify_interaction(interaction_id, tenant.id, db)
+    """Create a new comment on an interaction.
+
+    Requires an authenticated *user* — comments need a real audit
+    trail. API-key callers (no user attached to the principal) are
+    rejected with 401 since "who said what" can't be answered.
+    """
+    if principal.user_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Comments require an authenticated user (API key auth not supported)",
+        )
+
+    await _verify_interaction(interaction_id, principal.tenant.id, db)
 
     comment = InteractionComment(
         interaction_id=interaction_id,
-        tenant_id=tenant.id,
-        user_id=user_id,
+        tenant_id=principal.tenant.id,
+        user_id=principal.user_id,
         timestamp_sec=body.timestamp_sec,
         body=body.body,
     )
