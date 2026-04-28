@@ -2,13 +2,13 @@
 
 Returns everything the frontend needs on boot to decide what to render:
 identity, plan tier, trial state, feature limits, and Ask-Linda
-availability. Mirrors the ``PlanLimits`` shape from ``backend.app.plans``.
+availability. Maps the ``TierSpec`` returned by ``limits_for(tenant)``
+into the flat-feature shape the SPA's ``useMe()`` consumes.
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 from typing import Optional
 
@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from backend.app.auth import AuthPrincipal, get_current_principal
-from backend.app.plans import limits_for, trial_is_active, trial_is_expired
+from backend.app.plans import TierSpec, limits_for, trial_is_active, trial_is_expired
 
 router = APIRouter()
 
@@ -59,13 +59,36 @@ class MeOut(BaseModel):
     user: Optional[UserOut]
 
 
+def _plan_limits_out(spec: TierSpec) -> PlanLimitsOut:
+    """Project ``TierSpec`` into the flat shape the SPA expects.
+
+    ``TierSpec.features`` is a free-form dict; the API surfaces only
+    the seven gates the dashboard actually reads (UI-facing toggles).
+    Adding a new gate? Add it both here and in
+    ``apps/app/src/lib/me.ts:PlanLimits``.
+    """
+    f = spec.features
+    return PlanLimitsOut(
+        real_time_transcription=bool(f.get("real_time_transcription", False)),
+        live_coaching=bool(f.get("live_coaching", False)),
+        crm_push=bool(f.get("crm_push", False)),
+        custom_scorecards=bool(f.get("custom_scorecards", False)),
+        custom_branding=bool(f.get("custom_branding", False)),
+        ask_linda=bool(f.get("ask_linda", False)),
+        api_access=bool(f.get("api_access", False)),
+        max_users=spec.seat_limit,
+        max_monthly_minutes=spec.max_monthly_minutes,
+        max_uploads_per_day=spec.max_uploads_per_day,
+        ai_model_tier=spec.ai_model_tier,
+    )
+
+
 @router.get("/me", response_model=MeOut)
 async def me(
     principal: AuthPrincipal = Depends(get_current_principal),
 ) -> MeOut:
     tenant = principal.tenant
     user = principal.user
-    limits = limits_for(tenant)
     return MeOut(
         tenant=TenantOut(
             id=tenant.id,
@@ -76,7 +99,7 @@ async def me(
             trial_ends_at=tenant.trial_ends_at,
             trial_active=trial_is_active(tenant),
             trial_expired=trial_is_expired(tenant),
-            limits=PlanLimitsOut(**asdict(limits)),
+            limits=_plan_limits_out(limits_for(tenant)),
         ),
         user=UserOut(
             id=user.id, email=user.email, name=user.name, role=user.role
