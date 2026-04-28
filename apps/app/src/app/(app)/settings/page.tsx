@@ -12,7 +12,7 @@ export default function SettingsPage() {
     const { data: settings, isLoading, error } = useTenantSettings();
     const update = useUpdateTenantSettings();
 
-    const isExec = me?.user?.role === "executive";
+    const isAdmin = me?.user?.role === "admin";
 
     return (
         <div className="space-y-6">
@@ -44,7 +44,7 @@ export default function SettingsPage() {
                                         settings.features_enabled[spec.key] ??
                                         spec.default
                                     }
-                                    disabled={!isExec || update.isPending}
+                                    disabled={!isAdmin || update.isPending}
                                     onChange={(next) =>
                                         update.mutate({
                                             features_enabled: { [spec.key]: next },
@@ -53,10 +53,10 @@ export default function SettingsPage() {
                                 />
                             ))}
                         </div>
-                        {!isExec ? (
+                        {!isAdmin ? (
                             <p className="mt-4 text-xs text-text-subtle">
-                                Contact an executive on your team to change
-                                these flags.
+                                Contact an admin on your team to change these
+                                flags.
                             </p>
                         ) : null}
                     </Section>
@@ -68,7 +68,7 @@ export default function SettingsPage() {
                         <RadioGroup
                             label="Engine"
                             value={settings.transcription_engine}
-                            disabled={!isExec || update.isPending}
+                            disabled={!isAdmin || update.isPending}
                             options={[
                                 {
                                     value: "deepgram",
@@ -97,7 +97,7 @@ export default function SettingsPage() {
                         <RadioGroup
                             label="Automation level"
                             value={settings.automation_level}
-                            disabled={!isExec || update.isPending}
+                            disabled={!isAdmin || update.isPending}
                             options={[
                                 {
                                     value: "approval",
@@ -138,7 +138,7 @@ export default function SettingsPage() {
                                 help: "Mask emails, phone numbers, and other direct identifiers before they land in insights.",
                             }}
                             value={settings.pii_redaction_enabled}
-                            disabled={!isExec || update.isPending}
+                            disabled={!isAdmin || update.isPending}
                             onChange={(next) =>
                                 update.mutate({ pii_redaction_enabled: next })
                             }

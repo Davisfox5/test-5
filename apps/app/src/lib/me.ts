@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useApi } from "./api";
 
 export type PlanTier = "sandbox" | "starter" | "growth" | "enterprise";
-export type UserRole = "executive" | "manager" | "agent";
+export type UserRole = "admin" | "manager" | "agent";
 
 export interface PlanLimits {
     real_time_transcription: boolean;
