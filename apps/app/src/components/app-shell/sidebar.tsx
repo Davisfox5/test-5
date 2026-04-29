@@ -15,6 +15,21 @@ type NavItem = {
 
 const ROLE_RANK: Record<UserRole, number> = { agent: 1, manager: 2, admin: 3 };
 
+// Surfaced as a tooltip on the sidebar role badge so non-admins
+// understand why some nav items are missing for them.
+const ROLE_TOOLTIPS: Record<UserRole, string> = {
+    agent: "Agents see their own calls, action items, and scorecards.",
+    manager: "Managers see team-level analytics + everything agents see.",
+    admin: "Admins manage billing, integrations, team, and tenant settings.",
+};
+
+function formatRole(role: UserRole): string {
+    // Capitalize the first letter only — `text-transform: capitalize`
+    // upper-cases every word, which would mangle multi-word roles if
+    // they're ever introduced.
+    return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
 // Single source of truth for the nav list — both the desktop sidebar
 // and the mobile drawer (in `header.tsx`) consume this so they can't
 // drift out of sync.
@@ -65,7 +80,13 @@ export function Sidebar() {
                 })}
             </nav>
             <div className="mt-auto px-5 py-3 text-xs text-text-subtle">
-                Role: <span className="font-semibold capitalize">{role}</span>
+                Role:{" "}
+                <span
+                    className="font-semibold cursor-help"
+                    title={ROLE_TOOLTIPS[role]}
+                >
+                    {formatRole(role)}
+                </span>
             </div>
         </aside>
     );

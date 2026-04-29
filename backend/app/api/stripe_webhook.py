@@ -48,7 +48,7 @@ from backend.app.db import get_db
 from backend.app.models import Tenant
 from backend.app.services.stripe_billing import (
     price_id_to_tier,
-    verify_stripe_signature,
+    verify_stripe_signature_with_rotation,
 )
 from backend.app.services.seat_reconciliation import reconcile_seats
 from backend.app.plans import apply_tier
@@ -180,19 +180,22 @@ async def stripe_webhook(
     raw = await request.body()
     signature = request.headers.get("Stripe-Signature", "")
 
-    secret = settings.STRIPE_WEBHOOK_SECRET
-    if not secret:
-        # Prod must set the secret. Refuse to accept unverified webhooks
-        # rather than silently trust them.
+    # Accept either the current or the staged-next secret so we can
+    # rotate the signing secret with no traffic interruption (see
+    # ``services/stripe_billing`` module docstring for the full procedure).
+    secrets = [settings.STRIPE_WEBHOOK_SECRET, settings.STRIPE_WEBHOOK_SECRET_NEXT]
+    if not any(secrets):
+        # Prod must set at least one secret. Refuse to accept unverified
+        # webhooks rather than silently trust them.
         raise HTTPException(
             status_code=503,
             detail="Stripe webhook secret is not configured on the server.",
         )
 
-    if not verify_stripe_signature(
+    if not verify_stripe_signature_with_rotation(
         payload_bytes=raw,
         signature_header=signature,
-        secret=secret,
+        secrets=secrets,
     ):
         raise HTTPException(status_code=400, detail="Invalid Stripe signature")
 

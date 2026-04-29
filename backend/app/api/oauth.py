@@ -107,6 +107,39 @@ CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "client_id_key": "PIPEDRIVE_CLIENT_ID",
         "client_secret_key": "PIPEDRIVE_CLIENT_SECRET",
     },
+    # ── Stubs ─────────────────────────────────────────────────
+    # Config + URL templates for providers we plan to support but
+    # haven't certified end-to-end yet. The SPA reads ``certified=False``
+    # from /oauth/providers and renders these as "Coming soon" instead
+    # of letting users start a flow that would fail at the token-exchange
+    # step. Full OAuth wiring (token refresh, contact-pull adapters) is
+    # tracked separately.
+    "zoho": {
+        "authorize_url": "https://accounts.zoho.com/oauth/v2/auth",
+        "token_url": "https://accounts.zoho.com/oauth/v2/token",
+        "scopes": [
+            "ZohoCRM.modules.contacts.READ",
+            "ZohoCRM.modules.accounts.READ",
+            "ZohoCRM.modules.deals.READ",
+        ],
+        "scope_sep": ",",
+        "client_id_key": "ZOHO_CLIENT_ID",
+        "client_secret_key": "ZOHO_CLIENT_SECRET",
+        "certified": False,
+    },
+    "microsoft_dynamics": {
+        # Microsoft Dynamics 365 — same authority root as Microsoft Graph,
+        # but the resource scope is per-tenant ("https://<org>.crm.dynamics.com/.default").
+        # Tenants will need to set the per-org resource via ``provider_config``
+        # before the flow can complete.
+        "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": ["offline_access"],
+        "scope_sep": " ",
+        "client_id_key": "MICROSOFT_DYNAMICS_CLIENT_ID",
+        "client_secret_key": "MICROSOFT_DYNAMICS_CLIENT_SECRET",
+        "certified": False,
+    },
 }
 
 
@@ -139,6 +172,22 @@ def _build_redirect_uri(request: Request, provider: str) -> str:
     return f"{base}{settings.API_V1_PREFIX}/oauth/{provider}/callback"
 
 
+def _is_certified(provider: str) -> bool:
+    """Whether a provider is fully wired end-to-end (auth + adapters).
+
+    Stub providers (currently: zoho, microsoft_dynamics) ship with config
+    slots only — the SPA renders them as "Coming soon" and the flow
+    refuses to start to keep us from leaving partial integration rows.
+    """
+    spec = CRM_PROVIDERS.get(provider)
+    if spec is None:
+        # Built-ins (google/microsoft) and any provider we don't recognise
+        # default to certified — SUPPORTED_PROVIDERS membership is the
+        # outer gate.
+        return True
+    return bool(spec.get("certified", True))
+
+
 def _validate_provider(provider: str) -> None:
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(
@@ -146,6 +195,24 @@ def _validate_provider(provider: str) -> None:
             detail=(
                 f"Unsupported provider '{provider}'. Must be one of: "
                 + ", ".join(sorted(SUPPORTED_PROVIDERS))
+            ),
+        )
+
+
+def _require_certified(provider: str) -> None:
+    """Reject flow-start on stub providers.
+
+    Used at authorize / ticket / callback only — revoke and status are
+    safe to call on any provider so a tenant can clean up an integration
+    row even if we later flagged its provider as uncertified.
+    """
+    if not _is_certified(provider):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider}' is not yet certified — full OAuth "
+                "wiring is in progress. The provider is listed for UI "
+                "discovery only."
             ),
         )
 
@@ -349,6 +416,34 @@ async def _build_provider_authorize_url(
     return f"{spec['authorize_url']}?{urlencode(params)}"
 
 
+class OAuthProviderInfo(BaseModel):
+    provider: str
+    certified: bool
+
+
+class OAuthProvidersResponse(BaseModel):
+    providers: List[OAuthProviderInfo]
+
+
+@router.get("/oauth/providers", response_model=OAuthProvidersResponse)
+async def oauth_providers() -> OAuthProvidersResponse:
+    """List every OAuth provider the SPA can offer + its certification status.
+
+    Stub providers (``certified=False``) are surfaced so the SPA can
+    render a "Coming soon" treatment instead of hiding upcoming
+    integrations entirely.
+    """
+    items: List[OAuthProviderInfo] = [
+        OAuthProviderInfo(provider="google", certified=True),
+        OAuthProviderInfo(provider="microsoft", certified=True),
+    ]
+    for name in sorted(CRM_PROVIDERS.keys()):
+        items.append(
+            OAuthProviderInfo(provider=name, certified=_is_certified(name))
+        )
+    return OAuthProvidersResponse(providers=items)
+
+
 class OAuthTicketResponse(BaseModel):
     authorize_url: str
 
@@ -372,6 +467,7 @@ async def oauth_ticket(
     the flow is unchanged.
     """
     _validate_provider(provider)
+    _require_certified(provider)
     auth_url = await _build_provider_authorize_url(
         provider,
         request,
@@ -393,6 +489,7 @@ async def oauth_authorize(
     instead because anchor-tag clicks can't carry a Bearer header.
     """
     _validate_provider(provider)
+    _require_certified(provider)
 
     state = secrets.token_urlsafe(32)
     redirect_uri = _build_redirect_uri(request, provider)
@@ -478,6 +575,7 @@ async def oauth_callback(
 ):
     """Handle OAuth callback — exchange code for tokens and store them."""
     _validate_provider(provider)
+    _require_certified(provider)
 
     if error:
         raise HTTPException(

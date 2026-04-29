@@ -23,8 +23,12 @@ router = APIRouter()
 
 class ApiKeyCreateRequest(BaseModel):
     name: Optional[str] = Field(None, description="Human-friendly label for the key")
-    scopes: Optional[List[str]] = Field(None, description="Permission scopes")
     expires_at: Optional[datetime] = Field(None, description="Expiration timestamp (UTC)")
+    # NOTE: ``scopes`` is intentionally absent from the public schema.
+    # The DB column still exists and defaults to ["read:all", "write:all"];
+    # nothing in ``auth.py`` enforces those values yet, so exposing them
+    # via the API would imply guarantees we don't make. Re-add this
+    # field once scope enforcement lands (deferred — too big for this batch).
 
 
 class ApiKeyCreateResponse(BaseModel):
@@ -32,7 +36,6 @@ class ApiKeyCreateResponse(BaseModel):
     id: uuid.UUID
     name: Optional[str]
     key: str = Field(..., description="Plaintext API key — save it now, it will not be shown again")
-    scopes: List[str]
     expires_at: Optional[datetime]
     created_at: datetime
 
@@ -40,10 +43,14 @@ class ApiKeyCreateResponse(BaseModel):
 
 
 class ApiKeyOut(BaseModel):
-    """Public representation — never includes the key itself."""
+    """Public representation — never includes the key itself.
+
+    Scopes were dropped from this shape because they were decorative —
+    the DB stored values weren't checked anywhere. Re-add when scope
+    enforcement is wired into ``auth.py``.
+    """
     id: uuid.UUID
     name: Optional[str]
-    scopes: List[str]
     last_used_at: Optional[datetime]
     expires_at: Optional[datetime]
     created_at: datetime
@@ -71,7 +78,10 @@ async def create_api_key(
         tenant_id=tenant.id,
         key_hash=hashed,
         name=body.name,
-        scopes=body.scopes or ["read:all", "write:all"],
+        # Hard-code the legacy "all access" scopes on the row. We can't
+        # drop the column without a migration, but since auth.py never
+        # reads these values, every key gets full tenant access regardless.
+        scopes=["read:all", "write:all"],
         expires_at=body.expires_at,
     )
     db.add(api_key)
@@ -81,7 +91,6 @@ async def create_api_key(
         id=api_key.id,
         name=api_key.name,
         key=plaintext,
-        scopes=api_key.scopes,
         expires_at=api_key.expires_at,
         created_at=api_key.created_at,
     )

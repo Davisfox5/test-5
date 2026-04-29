@@ -30,8 +30,17 @@ from backend.app.models import (
     TranscriptCorrection,
 )
 from backend.app.services import feedback_service
+from backend.app.services.push_rate_limiter import get_limiter
 
 router = APIRouter()
+
+
+# Per-tenant ceiling on feedback POSTs. The endpoint pushes onto a Redis
+# stream synchronously, so a malicious tab could otherwise saturate the
+# stream. 60/min/tenant comfortably covers the SPA's 5s batch cadence
+# (≤12 req/min/tab) with headroom for legitimate multi-tab usage.
+_FEEDBACK_RL_LIMIT = 60
+_FEEDBACK_RL_WINDOW = 60
 
 
 # ── Schemas ──────────────────────────────────────────────
@@ -79,6 +88,20 @@ async def feedback_batch(
     tenant: Tenant = Depends(get_current_tenant),
 ):
     """Accept a batch of UI events and push to the Redis feedback stream."""
+    # Reuse the push-notification rate limiter — same Redis fixed-window
+    # primitive, same in-process fallback when Redis is down.
+    allowed, _remaining, reset = get_limiter().check(
+        key=f"feedback:{tenant.id}",
+        limit=_FEEDBACK_RL_LIMIT,
+        window_seconds=_FEEDBACK_RL_WINDOW,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Feedback rate limit exceeded; retry shortly.",
+            headers={"Retry-After": str(reset or _FEEDBACK_RL_WINDOW)},
+        )
+
     if not body.events:
         return FeedbackBatchResponse(enqueued=0)
 

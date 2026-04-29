@@ -8,10 +8,25 @@ composes them with the database.
   ``t=<timestamp>,v1=<hex>[,v1=<hex>]`` where each ``v1`` is
   ``HMAC_SHA256(secret, "{t}.{raw_body}")``. Stripe can send multiple
   ``v1`` values during key rotation — we accept if any matches.
+* ``verify_stripe_signature_with_rotation`` — same, but accepts a list
+  of secrets so a deployment can roll the signing secret without an
+  outage window.
 * ``price_id_to_tier(price_id)`` — maps a Stripe price_id back to a
-  tier key (``solo|team|pro|enterprise``). Unknown → None. Based on
-  the ``STRIPE_PRICE_*`` env settings so the mapping is deployable
-  without code changes.
+  tier key (``sandbox|starter|growth|enterprise``). Unknown → None.
+  Based on the ``STRIPE_PRICE_*`` env settings so the mapping is
+  deployable without code changes.
+
+Webhook-secret rotation procedure
+---------------------------------
+
+1. Generate a new signing secret in the Stripe dashboard (creates a
+   second active secret on the same endpoint — Stripe signs with both).
+2. Set ``STRIPE_WEBHOOK_SECRET_NEXT`` to that new value and redeploy.
+   We now verify against either ``STRIPE_WEBHOOK_SECRET`` (old) OR
+   ``STRIPE_WEBHOOK_SECRET_NEXT`` (new). No traffic interruption.
+3. After Stripe finishes rotating (UI shows only the new secret),
+   move the new value into ``STRIPE_WEBHOOK_SECRET``, blank
+   ``STRIPE_WEBHOOK_SECRET_NEXT``, redeploy.
 """
 
 from __future__ import annotations
@@ -20,7 +35,7 @@ import hashlib
 import hmac
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 from backend.app.config import get_settings
 
@@ -72,6 +87,35 @@ def verify_stripe_signature(
 
     for candidate in v1_signatures:
         if hmac.compare_digest(expected, candidate.strip()):
+            return True
+    return False
+
+
+def verify_stripe_signature_with_rotation(
+    *,
+    payload_bytes: bytes,
+    signature_header: str,
+    secrets: Iterable[str],
+    tolerance_seconds: int = DEFAULT_SIGNATURE_TOLERANCE_SECONDS,
+    now: Optional[float] = None,
+) -> bool:
+    """Verify the Stripe signature against any one of ``secrets``.
+
+    Used during webhook signing-secret rotation: the caller passes both
+    the current and the next secret, and we accept if either validates.
+    Empty / blank entries are skipped so a missing ``..._NEXT`` env var
+    is a no-op rather than a verify failure.
+    """
+    for secret in secrets:
+        if not secret:
+            continue
+        if verify_stripe_signature(
+            payload_bytes=payload_bytes,
+            signature_header=signature_header,
+            secret=secret,
+            tolerance_seconds=tolerance_seconds,
+            now=now,
+        ):
             return True
     return False
 

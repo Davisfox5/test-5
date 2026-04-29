@@ -216,7 +216,9 @@ export default function DashboardPage() {
                     ) : (
                         <EmptyPanel
                             title="Nothing to do — yet"
-                            body="Linda will surface action items here as you process calls."
+                            // Distinct from the /action-items empty-state copy
+                            // so the two panels don't read as duplicates.
+                            body="Linda flags follow-ups from each call here once one's processed."
                         />
                     )}
                 </Panel>

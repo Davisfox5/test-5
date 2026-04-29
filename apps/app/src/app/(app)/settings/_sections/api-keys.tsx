@@ -64,7 +64,8 @@ export function ApiKeysSection() {
                     <thead>
                         <tr className="text-left text-xs uppercase tracking-wide text-text-subtle">
                             <th className="pb-2">Name</th>
-                            <th className="pb-2">Scopes</th>
+                            {/* "Scopes" column removed — values were decorative
+                                (auth.py doesn't enforce them today). */}
                             <th className="pb-2">Last used</th>
                             <th className="pb-2">Created</th>
                             <th className="pb-2 sr-only">Actions</th>
@@ -78,9 +79,6 @@ export function ApiKeysSection() {
                             >
                                 <td className="py-2">
                                     {k.name ?? <em>unnamed</em>}
-                                </td>
-                                <td className="py-2 text-xs text-text-muted">
-                                    {k.scopes.join(", ") || "—"}
                                 </td>
                                 <td className="py-2 text-xs text-text-subtle">
                                     {k.last_used_at

@@ -60,6 +60,15 @@ class Tenant(Base):
     outcomes_hmac_secret: Mapped[Optional[str]] = mapped_column(String)
     # How many hours of call audio to retain after processing.
     audio_retention_hours: Mapped[int] = mapped_column(Integer, default=24, server_default="24")
+    # Per-tenant retention thresholds for the daily event_retention_sweep.
+    # NULL means "use the system default" (90d / 365d) — overriding only
+    # for tenants with a contractual or compliance reason to differ.
+    # Audio retention reuses the existing ``audio_retention_hours`` column
+    # — keeping the unit (hours) so customers who want sub-day retention
+    # still have a knob; default of 168h (7 days) is set on new tenants
+    # via the migration that adds these columns.
+    retention_days_webhook_deliveries: Mapped[Optional[int]] = mapped_column(Integer)
+    retention_days_feedback_events: Mapped[Optional[int]] = mapped_column(Integer)
     # Seat caps (admin floor 1). Total seat_limit includes the admin(s). Set
     # by apply_tier() whenever plan_tier changes.
     seat_limit: Mapped[int] = mapped_column(Integer, default=1)
