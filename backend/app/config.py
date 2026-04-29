@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     SALESFORCE_CLIENT_SECRET: str = ""
     PIPEDRIVE_CLIENT_ID: str = ""
     PIPEDRIVE_CLIENT_SECRET: str = ""
+    # Stub providers — config slots only; the OAuth flow is marked
+    # ``certified=False`` until adapters land.
+    ZOHO_CLIENT_ID: str = ""
+    ZOHO_CLIENT_SECRET: str = ""
+    MICROSOFT_DYNAMICS_CLIENT_ID: str = ""
+    MICROSOFT_DYNAMICS_CLIENT_SECRET: str = ""
 
     # ── Contact Enrichment ───────────────────────────────
     PDL_API_KEY: str = ""
@@ -133,6 +139,11 @@ class Settings(BaseSettings):
     STRIPE_API_KEY: str = ""
     # ``whsec_...`` signing secret from the Stripe webhook endpoint.
     STRIPE_WEBHOOK_SECRET: str = ""
+    # Optional second signing secret accepted in parallel with
+    # ``STRIPE_WEBHOOK_SECRET`` while a rotation is in flight. See
+    # ``services/stripe_billing.verify_stripe_signature_with_rotation``
+    # for the rotation procedure.
+    STRIPE_WEBHOOK_SECRET_NEXT: str = ""
     # Price IDs that map 1:1 to plans.PLANS keys. Leave blank for tiers
     # you don't sell yet. Legacy STRIPE_PRICE_{SOLO,TEAM,PRO} env vars
     # are still honored as aliases for SANDBOX/STARTER/GROWTH at lookup
