@@ -130,7 +130,14 @@ _INTERVAL_MAP = {"7d": "7 days", "30d": "30 days", "90d": "90 days"}
 
 
 def _interval(period: str) -> str:
-    """Validate and map a period string to a Postgres INTERVAL literal."""
+    """Validate and map a period string to a Postgres INTERVAL literal.
+
+    Today this only flows into queries through bound :interval params (so
+    the f-string-SQL pattern that used to live in this file is now a
+    parametrized cast — ``CAST(:interval AS interval)``). Even if a future
+    caller passes a free-form period, the value never reaches SQL as a
+    string substitution.
+    """
     if period not in _INTERVAL_MAP:
         raise HTTPException(status_code=400, detail="invalid period")
     return _INTERVAL_MAP[period]
@@ -157,31 +164,33 @@ async def business_health(
     tenant_id = str(tenant.id)
     interval = _interval(period)
 
+    params = {"tenant_id": tenant_id, "interval": interval}
+
     # Total interactions & avg sentiment
-    summary_query = text(f"""
+    summary_query = text("""
         SELECT
             COUNT(*) AS total_interactions,
             AVG((insights->>'sentiment_score')::float) AS avg_sentiment
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
     """)
-    summary_row = (await db.execute(summary_query, {"tenant_id": tenant_id})).fetchone()
+    summary_row = (await db.execute(summary_query, params)).fetchone()
     total_interactions = summary_row[0] if summary_row else 0
     avg_sentiment = float(summary_row[1]) if summary_row and summary_row[1] is not None else None
 
     # Channel breakdown with sentiment per channel
-    channel_query = text(f"""
+    channel_query = text("""
         SELECT channel,
                COUNT(*) AS count,
                AVG((insights->>'sentiment_score')::float) AS avg_sentiment
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
         GROUP BY channel
         ORDER BY count DESC
     """)
-    channel_rows = (await db.execute(channel_query, {"tenant_id": tenant_id})).fetchall()
+    channel_rows = (await db.execute(channel_query, params)).fetchall()
     channels_breakdown = [
         ChannelBreakdown(
             channel=row[0],
@@ -192,14 +201,14 @@ async def business_health(
     ]
 
     # Top topics — topics are {name, relevance, mentions} objects
-    topics_query = text(f"""
+    topics_query = text("""
         SELECT topic->>'name' AS name,
                SUM(COALESCE((topic->>'mentions')::int, 1)) AS mentions,
                AVG((topic->>'relevance')::float) AS avg_relevance
         FROM interactions,
              jsonb_array_elements(insights->'topics') AS topic
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
           AND insights ? 'topics'
           AND jsonb_typeof(insights->'topics') = 'array'
           AND topic->>'name' IS NOT NULL
@@ -207,7 +216,7 @@ async def business_health(
         ORDER BY mentions DESC
         LIMIT 10
     """)
-    topic_rows = (await db.execute(topics_query, {"tenant_id": tenant_id})).fetchall()
+    topic_rows = (await db.execute(topics_query, params)).fetchall()
     top_topics = [
         TopTopic(
             name=row[0],
@@ -246,7 +255,7 @@ async def trends(
     tenant_id = str(tenant.id)
     interval = _interval(period)
 
-    query = text(f"""
+    query = text("""
         SELECT
             DATE(created_at) AS date,
             channel,
@@ -254,11 +263,11 @@ async def trends(
             AVG((insights->>'sentiment_score')::float) AS avg_sentiment
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
         GROUP BY DATE(created_at), channel
         ORDER BY date ASC, channel
     """)
-    rows = (await db.execute(query, {"tenant_id": tenant_id})).fetchall()
+    rows = (await db.execute(query, {"tenant_id": tenant_id, "interval": interval})).fetchall()
     return [
         TrendPoint(
             date=str(row[0]),
@@ -454,14 +463,14 @@ async def competitive_analysis(
     tenant_id = str(tenant.id)
     interval = _interval(period)
 
-    query = text(f"""
+    query = text("""
         SELECT cm->>'name' AS competitor,
                COUNT(*) AS mentions,
                SUM(CASE WHEN (cm->>'handled_well')::bool THEN 1 ELSE 0 END) AS handled_well
         FROM interactions,
              jsonb_array_elements(insights->'competitor_mentions') AS cm
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
           AND insights ? 'competitor_mentions'
           AND jsonb_typeof(insights->'competitor_mentions') = 'array'
           AND cm->>'name' IS NOT NULL
@@ -469,7 +478,7 @@ async def competitive_analysis(
         ORDER BY mentions DESC
         LIMIT 20
     """)
-    rows = (await db.execute(query, {"tenant_id": tenant_id})).fetchall()
+    rows = (await db.execute(query, {"tenant_id": tenant_id, "interval": interval})).fetchall()
     return [
         CompetitorRow(
             competitor=row[0],
@@ -496,16 +505,17 @@ async def topics_trend(
     """Topic frequency over a period with pct_change vs. the prior equal window."""
     tenant_id = str(tenant.id)
     interval = _interval(period)
+    params = {"tenant_id": tenant_id, "interval": interval}
 
     # Current window
-    current_q = text(f"""
+    current_q = text("""
         SELECT topic->>'name' AS name,
                SUM(COALESCE((topic->>'mentions')::int, 1)) AS mentions,
                AVG((topic->>'relevance')::float) AS avg_relevance
         FROM interactions,
              jsonb_array_elements(insights->'topics') AS topic
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
           AND insights ? 'topics'
           AND jsonb_typeof(insights->'topics') = 'array'
           AND topic->>'name' IS NOT NULL
@@ -515,18 +525,18 @@ async def topics_trend(
     """)
     current = {
         row[0]: (int(row[1]), float(row[2]) if row[2] is not None else None)
-        for row in (await db.execute(current_q, {"tenant_id": tenant_id})).fetchall()
+        for row in (await db.execute(current_q, params)).fetchall()
     }
 
     # Prior equal-length window
-    prior_q = text(f"""
+    prior_q = text("""
         SELECT topic->>'name' AS name,
                SUM(COALESCE((topic->>'mentions')::int, 1)) AS mentions
         FROM interactions,
              jsonb_array_elements(insights->'topics') AS topic
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}' * 2
-          AND created_at <  NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval) * 2
+          AND created_at <  NOW() - CAST(:interval AS interval)
           AND insights ? 'topics'
           AND jsonb_typeof(insights->'topics') = 'array'
           AND topic->>'name' IS NOT NULL
@@ -534,7 +544,7 @@ async def topics_trend(
     """)
     prior = {
         row[0]: int(row[1])
-        for row in (await db.execute(prior_q, {"tenant_id": tenant_id})).fetchall()
+        for row in (await db.execute(prior_q, params)).fetchall()
     }
 
     out: List[TopicTrend] = []
@@ -564,7 +574,7 @@ async def product_feedback(
     tenant_id = str(tenant.id)
     interval = _interval(period)
 
-    query = text(f"""
+    query = text("""
         SELECT pf->>'theme' AS theme,
                SUM(CASE WHEN pf->>'sentiment' = 'positive' THEN 1 ELSE 0 END) AS pos,
                SUM(CASE WHEN pf->>'sentiment' = 'negative' THEN 1 ELSE 0 END) AS neg,
@@ -573,7 +583,7 @@ async def product_feedback(
         FROM interactions,
              jsonb_array_elements(insights->'product_feedback') AS pf
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
           AND insights ? 'product_feedback'
           AND jsonb_typeof(insights->'product_feedback') = 'array'
           AND pf->>'theme' IS NOT NULL
@@ -581,7 +591,7 @@ async def product_feedback(
         ORDER BY (pos + neg + neu) DESC
         LIMIT 20
     """)
-    rows = (await db.execute(query, {"tenant_id": tenant_id})).fetchall()
+    rows = (await db.execute(query, {"tenant_id": tenant_id, "interval": interval})).fetchall()
     return [
         ProductFeedbackTheme(
             theme=row[0],
@@ -607,33 +617,40 @@ async def coaching_insights(
     """Tenant-wide coaching metrics: script adherence, top gaps and improvements."""
     tenant_id = str(tenant.id)
     interval = _interval(period)
+    params = {"tenant_id": tenant_id, "interval": interval}
 
-    adherence_q = text(f"""
+    adherence_q = text("""
         SELECT AVG((insights->'coaching'->>'script_adherence_score')::float)
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
           AND insights->'coaching' ? 'script_adherence_score'
     """)
-    adherence_row = (await db.execute(adherence_q, {"tenant_id": tenant_id})).fetchone()
+    adherence_row = (await db.execute(adherence_q, params)).fetchone()
     avg_adherence = float(adherence_row[0]) if adherence_row and adherence_row[0] is not None else None
 
+    # ``field`` is one of a closed allowlist (callers below) — interpolating
+    # it into the JSON path is safe; the time window comes via :interval.
+    _COACHING_FIELDS = {"compliance_gaps", "improvements", "what_went_well"}
+
     def _list_agg(field: str) -> str:
+        if field not in _COACHING_FIELDS:
+            raise ValueError(f"unknown coaching field: {field}")
         return f"""
             SELECT item AS text, COUNT(*) AS cnt
             FROM interactions,
                  jsonb_array_elements_text(insights->'coaching'->'{field}') AS item
             WHERE tenant_id = :tenant_id
-              AND created_at >= NOW() - INTERVAL '{interval}'
+              AND created_at >= NOW() - CAST(:interval AS interval)
               AND jsonb_typeof(insights->'coaching'->'{field}') = 'array'
             GROUP BY item
             ORDER BY cnt DESC
             LIMIT 10
         """
 
-    gaps_rows = (await db.execute(text(_list_agg("compliance_gaps")), {"tenant_id": tenant_id})).fetchall()
-    improvements_rows = (await db.execute(text(_list_agg("improvements")), {"tenant_id": tenant_id})).fetchall()
-    strengths_rows = (await db.execute(text(_list_agg("what_went_well")), {"tenant_id": tenant_id})).fetchall()
+    gaps_rows = (await db.execute(text(_list_agg("compliance_gaps")), params)).fetchall()
+    improvements_rows = (await db.execute(text(_list_agg("improvements")), params)).fetchall()
+    strengths_rows = (await db.execute(text(_list_agg("what_went_well")), params)).fetchall()
 
     return CoachingInsights(
         avg_script_adherence=avg_adherence,
@@ -656,45 +673,46 @@ async def risk_signals(
     """Churn and upsell signal distribution over the period."""
     tenant_id = str(tenant.id)
     interval = _interval(period)
+    params = {"tenant_id": tenant_id, "interval": interval}
 
-    bucket_q = text(f"""
+    bucket_q = text("""
         SELECT
             insights->>'churn_risk_signal' AS churn,
             insights->>'upsell_signal' AS upsell,
             COUNT(*) AS cnt
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
         GROUP BY insights->>'churn_risk_signal', insights->>'upsell_signal'
     """)
     churn_counts: Dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
     upsell_counts: Dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
-    for row in (await db.execute(bucket_q, {"tenant_id": tenant_id})).fetchall():
+    for row in (await db.execute(bucket_q, params)).fetchall():
         c, u, cnt = row[0], row[1], int(row[2])
         if c in churn_counts:
             churn_counts[c] += cnt
         if u in upsell_counts:
             upsell_counts[u] += cnt
 
-    avg_q = text(f"""
+    avg_q = text("""
         SELECT AVG((insights->>'churn_risk')::float),
                AVG((insights->>'upsell_score')::float)
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
     """)
-    avg_row = (await db.execute(avg_q, {"tenant_id": tenant_id})).fetchone()
+    avg_row = (await db.execute(avg_q, params)).fetchone()
     avg_churn = float(avg_row[0]) if avg_row and avg_row[0] is not None else None
     avg_upsell = float(avg_row[1]) if avg_row and avg_row[1] is not None else None
 
-    channel_q = text(f"""
+    channel_q = text("""
         SELECT channel,
                SUM(CASE WHEN insights->>'churn_risk_signal' IN ('high','medium') THEN 1 ELSE 0 END) AS churn_flags,
                SUM(CASE WHEN insights->>'upsell_signal'     IN ('high','medium') THEN 1 ELSE 0 END) AS upsell_flags,
                COUNT(*) AS total
         FROM interactions
         WHERE tenant_id = :tenant_id
-          AND created_at >= NOW() - INTERVAL '{interval}'
+          AND created_at >= NOW() - CAST(:interval AS interval)
         GROUP BY channel
         ORDER BY total DESC
     """)
@@ -705,7 +723,7 @@ async def risk_signals(
             "upsell_flags": int(row[2] or 0),
             "total": int(row[3]),
         }
-        for row in (await db.execute(channel_q, {"tenant_id": tenant_id})).fetchall()
+        for row in (await db.execute(channel_q, params)).fetchall()
     ]
 
     return SignalBuckets(
@@ -726,8 +744,9 @@ async def dashboard(
     """One-shot dashboard card data with vs. prior-period deltas."""
     tenant_id = str(tenant.id)
     interval = _interval(period)
+    params = {"tenant_id": tenant_id, "interval": interval}
 
-    current_q = text(f"""
+    current_q = text("""
         SELECT
             COUNT(*) AS total,
             AVG((insights->>'sentiment_score')::float) AS avg_sentiment,
@@ -735,11 +754,11 @@ async def dashboard(
         FROM interactions i
         LEFT JOIN interaction_scores s ON s.interaction_id = i.id
         WHERE i.tenant_id = :tenant_id
-          AND i.created_at >= NOW() - INTERVAL '{interval}'
+          AND i.created_at >= NOW() - CAST(:interval AS interval)
     """)
-    cur = (await db.execute(current_q, {"tenant_id": tenant_id})).fetchone()
+    cur = (await db.execute(current_q, params)).fetchone()
 
-    prior_q = text(f"""
+    prior_q = text("""
         SELECT
             COUNT(*) AS total,
             AVG((insights->>'sentiment_score')::float) AS avg_sentiment,
@@ -747,10 +766,10 @@ async def dashboard(
         FROM interactions i
         LEFT JOIN interaction_scores s ON s.interaction_id = i.id
         WHERE i.tenant_id = :tenant_id
-          AND i.created_at >= NOW() - INTERVAL '{interval}' * 2
-          AND i.created_at <  NOW() - INTERVAL '{interval}'
+          AND i.created_at >= NOW() - CAST(:interval AS interval) * 2
+          AND i.created_at <  NOW() - CAST(:interval AS interval)
     """)
-    prev = (await db.execute(prior_q, {"tenant_id": tenant_id})).fetchone()
+    prev = (await db.execute(prior_q, params)).fetchone()
 
     ai_q = text("""
         SELECT COUNT(*) FROM action_items

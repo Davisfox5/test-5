@@ -123,6 +123,21 @@ export function useChangeTier() {
     });
 }
 
+export function useResetFeaturesToTier() {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: () =>
+            api.post<TenantSettings>(
+                "/admin/tenant-settings/reset-features",
+                {},
+            ),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["tenant-settings"] });
+        },
+    });
+}
+
 export function useStripePortalLink() {
     const api = useApi();
     return useMutation({

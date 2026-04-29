@@ -194,6 +194,13 @@ celery_app.conf.update(
             "task": "crm_sync_daily",
             "schedule": crontab(minute=0, hour=3),
         },
+        # Daily trial-expiry sweep at 09:00 UTC (mid-EU day, post-US
+        # close). Emits 3/1/0-day notices for sandbox tenants and
+        # flips subscription_status="expired" on day 0.
+        "trial-expiry-daily": {
+            "task": "trial_expiry_daily",
+            "schedule": crontab(minute=0, hour=9),
+        },
     },
 )
 
@@ -2870,5 +2877,110 @@ def event_retention_sweep() -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_event_retention_sweep(db)
+
+    return asyncio.run(_runner())
+
+
+@celery_app.task(name="trial_expiry_daily")
+def trial_expiry_daily() -> Dict[str, Any]:
+    """Walk every sandbox tenant and act on the trial-end timeline.
+
+    For each tenant on the ``sandbox`` tier with a non-NULL
+    ``trial_ends_at``:
+
+    * 3 / 1 days before ``trial_ends_at``: emit an "approaching" notice
+      (logged + recorded in ``tenant_dataops_log``; if/when an email
+      provider is wired the same code can switch to that transport).
+    * On / past ``trial_ends_at``: emit an "expired" notice and flip
+      ``Tenant.subscription_status`` to ``expired``. The
+      ``require_active_subscription`` dependency already 402s
+      revenue-burning endpoints once trial_ends_at is in the past, but
+      the explicit status flag drives banners + reports.
+
+    Idempotent: a tenant already at ``subscription_status="expired"``
+    is skipped. Notices for any one (tenant, day-bucket) tuple are
+    written through a unique reason key in tenant_dataops_log so a
+    re-run of the same day doesn't double-log.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from backend.app.db import async_session
+    from backend.app.models import Tenant, TenantDataOpsLog
+
+    async def _runner() -> Dict[str, Any]:
+        emitted = {"warned_3d": 0, "warned_1d": 0, "expired": 0}
+        now = datetime.now(timezone.utc)
+
+        async with async_session() as db:
+            stmt = select(Tenant).where(
+                Tenant.plan_tier == "sandbox",
+                Tenant.trial_ends_at.is_not(None),
+            )
+            tenants = list((await db.execute(stmt)).scalars().all())
+
+            for tenant in tenants:
+                ends = tenant.trial_ends_at
+                if ends is None:
+                    continue
+                seconds_left = (ends - now).total_seconds()
+                days_left = seconds_left / 86_400
+
+                # Pick the first matching bucket. The thresholds are
+                # left-closed: anything in (1, 3] days fires the 3d
+                # bucket so the warning lands well before the 1d one.
+                bucket: Optional[str] = None
+                if seconds_left <= 0:
+                    bucket = "expired"
+                elif days_left <= 1:
+                    bucket = "warned_1d"
+                elif days_left <= 3:
+                    bucket = "warned_3d"
+                if bucket is None:
+                    continue
+
+                # Idempotency guard — skip if we already logged this
+                # bucket today.
+                day_key = now.strftime("%Y-%m-%d")
+                reason_key = f"trial_{bucket}:{day_key}"
+                already = (
+                    await db.execute(
+                        select(TenantDataOpsLog.id)
+                        .where(
+                            TenantDataOpsLog.tenant_id == tenant.id,
+                            TenantDataOpsLog.operation == "trial_notice",
+                            TenantDataOpsLog.reason == reason_key,
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if already is not None:
+                    continue
+
+                if bucket == "expired":
+                    if (
+                        getattr(tenant, "subscription_status", None)
+                        != "expired"
+                    ):
+                        tenant.subscription_status = "expired"
+                logger.info(
+                    "trial_expiry_daily: tenant=%s bucket=%s ends_at=%s",
+                    tenant.id,
+                    bucket,
+                    ends.isoformat(),
+                )
+                db.add(
+                    TenantDataOpsLog(
+                        tenant_id=tenant.id,
+                        operation="trial_notice",
+                        status="success",
+                        reason=reason_key,
+                        counts={"days_left": round(days_left, 2)},
+                    )
+                )
+                emitted[bucket] = emitted.get(bucket, 0) + 1
+
+            await db.commit()
+        return emitted
 
     return asyncio.run(_runner())

@@ -71,7 +71,9 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MeOut(BaseModel):
+# Renamed from MeOut → AuthMeOut so the OpenAPI client doesn't collide
+# with backend.app.api.me.MeOut (different shape, same legacy name).
+class AuthMeOut(BaseModel):
     user: Optional[UserOut]
     tenant_id: uuid.UUID
     role: str
@@ -140,14 +142,14 @@ async def login(
     return LoginOut(token=token, user=UserOut.model_validate(user))
 
 
-@router.get("/auth/me", response_model=MeOut)
+@router.get("/auth/me", response_model=AuthMeOut)
 async def me(
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Return the current caller's identity — used by the UI to decide
     which nav items and pages to show. For API-key callers, ``user`` is
     ``None`` and ``role`` is ``admin`` (tenant-wide scope)."""
-    return MeOut(
+    return AuthMeOut(
         user=UserOut.model_validate(principal.user) if principal.user else None,
         tenant_id=principal.tenant.id,
         role=principal.role,
@@ -204,6 +206,43 @@ async def list_users(
     stmt = stmt.order_by(User.created_at.asc())
     rows = (await db.execute(stmt)).scalars().all()
     return list(rows)
+
+
+class UserLookupOut(BaseModel):
+    """Tiny shape — id + display name only, exposed to non-admins for
+    assignee pickers in /action-items, comment @mention, etc. We do not
+    leak email or role here so a manager can't enumerate the tenant's
+    admin set."""
+
+    id: uuid.UUID
+    name: Optional[str] = None
+
+
+@router.get("/users/lookup", response_model=List[UserLookupOut])
+async def list_users_lookup(
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Non-admin "who can I assign this to" picker. Returns active tenant
+    users as id + display name only — every authenticated principal in
+    the tenant can call this. Backed by ``users`` but stripped of email,
+    role, last_login_at, etc. so it doesn't leak admin enumeration."""
+    stmt = (
+        select(User.id, User.name, User.email)
+        .where(
+            User.tenant_id == principal.tenant.id,
+            User.is_active.is_(True),
+        )
+        .order_by(User.created_at.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    # Fall back to the email-local-part so the picker label is never blank
+    # — but we still strip the @domain so the picker isn't a directory.
+    out: List[UserLookupOut] = []
+    for row in rows:
+        display = row[1] or (row[2].split("@", 1)[0] if row[2] else None)
+        out.append(UserLookupOut(id=row[0], name=display))
+    return out
 
 
 @router.post("/users", response_model=UserOut, status_code=201)

@@ -23,6 +23,59 @@ from backend.app.services.webhook_events import WEBHOOK_EVENTS
 router = APIRouter()
 
 
+def _validate_events(events: List[str]) -> List[str]:
+    """Reject typos against the canonical event catalog.
+
+    Tenants who saved ``interaction.outcom_inferred`` (typo) currently get
+    a webhook that never fires with no error. Validate against the same
+    table the ``/webhooks/events`` endpoint exposes so the UI catches
+    typos at submit time. ``*`` is the wildcard meaning "all events".
+    """
+    allowed = set(WEBHOOK_EVENTS.keys()) | {"*"}
+    invalid = [e for e in events if e not in allowed]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown event name(s): {', '.join(sorted(set(invalid)))}. "
+                "See GET /webhooks/events for the catalog."
+            ),
+        )
+    # Dedupe + preserve order. If "*" is present, drop the others — it
+    # subsumes them and the dispatcher already short-circuits on it.
+    seen: List[str] = []
+    if "*" in events:
+        return ["*"]
+    for e in events:
+        if e not in seen:
+            seen.append(e)
+    return seen
+
+
+def _validate_url(url: str) -> str:
+    """Reject loopback / RFC1918 / link-local URLs to mitigate SSRF.
+
+    Webhook delivery POSTs from inside the API process; a tenant that
+    sets ``http://169.254.169.254/`` could exfiltrate metadata-service
+    creds. ``http://`` is allowed (some self-hosted dev setups need it),
+    but the host must resolve outside the private ranges.
+    """
+    from backend.app.services.webhook_dispatcher import is_safe_webhook_url
+
+    cleaned = (url or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="webhook URL is required")
+    if not is_safe_webhook_url(cleaned):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Webhook URL must be a publicly reachable https/http URL — "
+                "loopback, link-local, and RFC1918 addresses are rejected."
+            ),
+        )
+    return cleaned
+
+
 # ── Pydantic Schemas ────────────────────────────────────
 
 
@@ -93,6 +146,8 @@ async def create_webhook(
     tenant: Tenant = Depends(get_current_tenant),
 ):
     """Create a new webhook. The HMAC secret is returned once in the response."""
+    safe_url = _validate_url(body.url)
+    safe_events = _validate_events(body.events)
     hmac_secret = secrets.token_urlsafe(32)
 
     # Store the HMAC secret encrypted at rest (Fernet) so a leaked DB
@@ -100,8 +155,8 @@ async def create_webhook(
     # plaintext is returned exactly once in the response below.
     webhook = Webhook(
         tenant_id=tenant.id,
-        url=body.url,
-        events=body.events,
+        url=safe_url,
+        events=safe_events,
         secret=encrypt_token(hmac_secret) or hmac_secret,
         active=body.active,
     )
@@ -138,9 +193,9 @@ async def update_webhook(
         raise HTTPException(status_code=404, detail="Webhook not found")
 
     if body.url is not None:
-        webhook.url = body.url
+        webhook.url = _validate_url(body.url)
     if body.events is not None:
-        webhook.events = body.events
+        webhook.events = _validate_events(body.events)
     if body.active is not None:
         webhook.active = body.active
 

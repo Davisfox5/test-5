@@ -131,23 +131,17 @@ export function useUpdateActionItem() {
 
 export interface TenantUser {
     id: string;
-    tenant_id: string;
-    email: string;
     name: string | null;
-    role: string;
-    is_active: boolean;
-    last_login_at: string | null;
-    created_at: string;
 }
 
-// /users is admin-only. Non-admin viewers will hit 403; the hook
-// surfaces that as `error` and the UI falls back to a free-form
-// assignee filter.
+// Backed by /users/lookup (id + name only) — non-admin-callable so
+// managers and agents can populate assignee pickers without 403ing
+// against the admin /users endpoint.
 export function useTenantUsers() {
     const api = useApi();
     return useQuery({
-        queryKey: ["tenant-users"],
-        queryFn: () => api.get<TenantUser[]>("/users"),
+        queryKey: ["tenant-users-lookup"],
+        queryFn: () => api.get<TenantUser[]>("/users/lookup"),
         retry: false,
         staleTime: 60_000,
     });

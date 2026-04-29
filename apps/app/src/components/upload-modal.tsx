@@ -10,6 +10,9 @@ import {
 
 type Tab = "file" | "url";
 
+// Mirrors backend/app/api/interactions.py:188 — keep in sync.
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
 export function UploadModal({
     open,
     onClose,
@@ -52,6 +55,12 @@ export function UploadModal({
             if (tab === "file") {
                 if (!file) {
                     setErr("Pick an audio file first.");
+                    return;
+                }
+                if (file.size > MAX_UPLOAD_BYTES) {
+                    setErr(
+                        `File is ${(file.size / (1024 * 1024)).toFixed(0)}MB — over the 500MB limit. Re-encode or split before uploading.`,
+                    );
                     return;
                 }
                 await upload.mutateAsync({

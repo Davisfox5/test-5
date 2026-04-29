@@ -125,13 +125,18 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                     >
                         ← Back to scorecards
                     </Link>
+                    <label htmlFor="scorecard-name" className="sr-only">
+                        Scorecard name
+                    </label>
                     <input
+                        id="scorecard-name"
                         type="text"
                         value={state.name}
                         onChange={(e) =>
                             setState((s) => ({ ...s, name: e.target.value }))
                         }
                         placeholder="Scorecard name"
+                        aria-label="Scorecard name"
                         className="block w-full bg-transparent text-2xl font-bold focus:outline-none"
                     />
                 </div>
@@ -180,6 +185,7 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                                             })
                                         }
                                         placeholder="Criterion name (e.g. Greeting)"
+                                        aria-label={`Rubric item ${idx + 1} name`}
                                         className="flex-1 rounded-md border border-border bg-bg-card px-3 py-1.5 text-sm"
                                     />
                                     <label className="flex items-center gap-1 text-xs text-text-muted">
@@ -213,6 +219,7 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                                         })
                                     }
                                     placeholder="What should the grader look for?"
+                                    aria-label={`Rubric item ${idx + 1} description`}
                                     rows={2}
                                     className="w-full rounded-md border border-border bg-bg-card px-3 py-1.5 text-sm"
                                 />
@@ -224,11 +231,17 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                 <div className="flex items-center justify-between mt-4">
                     <button
                         onClick={addCriterion}
+                        aria-label="Add rubric item"
                         className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-bg-secondary"
                     >
                         + Add item
                     </button>
+                    {/* aria-live so screen readers hear "Total weight 100/100"
+                        when the weight bucket flips from valid to invalid —
+                        the colour change alone isn't accessible. */}
                     <p
+                        role="status"
+                        aria-live="polite"
                         className={`text-sm ${
                             sumWeight === 100
                                 ? "text-accent-emerald"
@@ -236,6 +249,7 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                         }`}
                     >
                         Total weight: {sumWeight} / 100
+                        {sumWeight === 100 ? " (ready)" : " (must be 100)"}
                     </p>
                 </div>
             </Section>

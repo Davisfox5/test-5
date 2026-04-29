@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -43,6 +45,56 @@ from backend.app.models import Webhook, WebhookDelivery
 from backend.app.services.token_crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
+
+
+def is_safe_webhook_url(url: str) -> bool:
+    """Reject webhook URLs that point at internal infrastructure.
+
+    Targets the SSRF surface where a tenant can register a delivery URL
+    that resolves inside our network — loopback (127.x, ::1), link-local
+    (169.254.x — AWS/GCP IMDS), or RFC1918 private ranges.
+
+    The check is best-effort string-based: an attacker who controls a
+    public DNS name pointing at a private IP will still pass here. The
+    delivery transport itself is the line of defence in depth; this
+    function blocks the *obvious* cases at submit time.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return False
+    lowered = host.lower()
+    # Catch the obvious named loopbacks before falling through to the
+    # IP-literal check.
+    if lowered in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return False
+    if lowered.endswith(".localhost"):
+        return False
+    # Try to interpret the host as a literal IP. Only IP literals get
+    # the private-range / loopback check — DNS lookups would slow down
+    # webhook creation, so we accept the risk that a hostile DNS entry
+    # masks an internal IP.
+    try:
+        ip = ipaddress.ip_address(lowered.strip("[]"))
+    except ValueError:
+        return True
+    if (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        return False
+    return True
 
 
 # Backoff schedule in seconds — indexed by current attempt count (0-based).
@@ -155,6 +207,14 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
     if webhook is None or not webhook.active:
         delivery.status = "dead_letter"
         delivery.last_error = "webhook row missing or disabled"
+        return {"status": "dead_letter", "id": str(delivery_id)}
+
+    # Defence in depth: even though we validate at create/update time,
+    # re-check before dispatch. A row inserted directly by SQL or via a
+    # legacy API version could otherwise sneak past.
+    if not is_safe_webhook_url(webhook.url):
+        delivery.status = "dead_letter"
+        delivery.last_error = "webhook URL points at a private network"
         return {"status": "dead_letter", "id": str(delivery_id)}
 
     payload_str = json.dumps(delivery.payload, separators=(",", ":"), default=str)

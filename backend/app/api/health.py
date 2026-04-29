@@ -169,6 +169,55 @@ async def _probe_s3() -> Optional[dict]:
     return {"configured": True, "bucket": settings.AWS_S3_BUCKET}
 
 
+async def _probe_anthropic() -> Optional[dict]:
+    """Cheap auth check: hit the Anthropic ``/v1/models`` list with a
+    short timeout. Soft dep — analysis halts if Anthropic is down, but
+    transcripts still land. Surfaces the outage in dashboards before
+    the queue starts piling up."""
+    settings = get_settings()
+    if not settings.ANTHROPIC_API_KEY:
+        return {"configured": False}
+    import httpx
+
+    async with httpx.AsyncClient(timeout=2.5) as client:
+        resp = await client.get(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+    if resp.status_code in (401, 403):
+        raise RuntimeError(f"auth rejected ({resp.status_code})")
+    if resp.status_code >= 500:
+        raise RuntimeError(f"provider error ({resp.status_code})")
+    return {"configured": True}
+
+
+async def _probe_voyage() -> Optional[dict]:
+    """One-shot ``/v1/embeddings`` call with a single token. Soft dep —
+    KB retrieval degrades but the rest of the platform is fine."""
+    settings = get_settings()
+    if not settings.VOYAGE_API_KEY:
+        return {"configured": False}
+    import httpx
+
+    async with httpx.AsyncClient(timeout=2.5) as client:
+        resp = await client.post(
+            "https://api.voyageai.com/v1/embeddings",
+            headers={
+                "Authorization": f"Bearer {settings.VOYAGE_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"input": "ping", "model": settings.VOYAGE_EMBED_MODEL},
+        )
+    if resp.status_code in (401, 403):
+        raise RuntimeError(f"auth rejected ({resp.status_code})")
+    if resp.status_code >= 500:
+        raise RuntimeError(f"provider error ({resp.status_code})")
+    return {"configured": True}
+
+
 async def _probe_elasticsearch() -> Optional[dict]:
     """Cluster health. Soft dep — transcript search still falls back
     to Postgres full-text when ES is down, but it's slow."""
@@ -197,6 +246,8 @@ _HARD_PROBES: list[tuple[str, Callable[[], Awaitable[Optional[dict]]]]] = [
 _SOFT_PROBES: list[tuple[str, Callable[[], Awaitable[Optional[dict]]]]] = [
     ("qdrant", _probe_qdrant),
     ("deepgram", _probe_deepgram),
+    ("anthropic", _probe_anthropic),
+    ("voyage", _probe_voyage),
     ("s3", _probe_s3),
 ]
 

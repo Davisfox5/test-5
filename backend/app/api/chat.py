@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import ActionItem, Tenant, User, WriteProposal
+from backend.app.plans import require_feature
 from backend.app.services.linda_agent import (
     AgentContext,
     get_or_create_conversation,
@@ -117,7 +118,8 @@ async def chat_ping(
 async def chat(
     payload: ChatRequest,
     request: Request,
-    tenant: Tenant = Depends(get_current_tenant),
+    # require_feature gates on tier flag + trial-expiry; supersedes get_current_tenant.
+    tenant: Tenant = Depends(require_feature("ask_linda")),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Ask Linda. Streams SSE events: text deltas, tool_use, tool_result, proposal, done."""

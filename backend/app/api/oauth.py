@@ -184,6 +184,27 @@ async def _pop_state(state: str) -> Optional[Dict[str, Any]]:
         await r.aclose()
 
 
+def _spa_redirect(provider: str) -> RedirectResponse:
+    """Send the user back to the SPA after a successful OAuth connect.
+
+    Returning JSON leaves the user staring at ``{"status":"connected"}``
+    in a tab; the SPA's ``/oauth-status`` poll never refreshes because
+    the user never navigated back. We redirect to ``${SPA_URL}/settings``
+    with a ``?integration_connected=<provider>`` query the SPA can
+    pop into a toast.
+    """
+    base = (settings.SPA_URL or "").rstrip("/")
+    if not base and settings.ALLOWED_ORIGINS:
+        # Fall back to the first allowed origin so this works without
+        # an extra env var on existing deploys.
+        base = settings.ALLOWED_ORIGINS[0].rstrip("/")
+    if not base:
+        # Operator hasn't wired SPA_URL — keep the legacy JSON behaviour
+        # rather than redirecting somewhere unsafe.
+        return RedirectResponse(url=f"/?integration_connected={provider}")
+    return RedirectResponse(url=f"{base}/settings?integration_connected={provider}")
+
+
 def _expires_at_from_seconds(expires_in: Optional[int]) -> Optional[datetime]:
     if not expires_in:
         return None
@@ -218,7 +239,10 @@ async def _upsert_integration(
     if existing is None:
         row = Integration(
             tenant_id=tenant_id,
-            user_id=user_id or tenant_id,  # user_id is required; fall back to tenant
+            # NULL when the OAuth flow had no associated user — tenant-wide integration.
+            # Previously fell back to tenant_id, which is a UUID type-collision against
+            # the FK to users.id.
+            user_id=user_id,
             provider=provider,
             access_token=enc_access,
             refresh_token=enc_refresh,
@@ -259,9 +283,13 @@ async def _build_provider_authorize_url(
     """
     state = secrets.token_urlsafe(32)
     redirect_uri = _build_redirect_uri(request, provider)
+    # Stash redirect_uri alongside tenant_id so the callback can verify the
+    # exact URL we registered with the provider — guards against host-header
+    # injection through misconfigured proxies that change request.base_url.
     payload: Dict[str, Any] = {
         "tenant_id": str(tenant_id),
         "provider": provider,
+        "redirect_uri": redirect_uri,
     }
     if user_id is not None:
         payload["user_id"] = str(user_id)
@@ -370,8 +398,17 @@ async def oauth_authorize(
     redirect_uri = _build_redirect_uri(request, provider)
 
     # CSRF protection + tenant context: the state token keys a Redis entry
-    # carrying the tenant id, so the callback knows who to attribute.
-    await _stash_state(state, {"tenant_id": str(tenant.id), "provider": provider})
+    # carrying the tenant id, so the callback knows who to attribute. We
+    # also stash the redirect_uri so the callback compares the rebuilt URL
+    # against the one we authorized — defends against host-header injection.
+    await _stash_state(
+        state,
+        {
+            "tenant_id": str(tenant.id),
+            "provider": provider,
+            "redirect_uri": redirect_uri,
+        },
+    )
 
     if provider == "google":
         from google_auth_oauthlib.flow import Flow
@@ -458,7 +495,17 @@ async def oauth_callback(
     user_id_raw = state_payload.get("user_id")
     user_id = uuid.UUID(user_id_raw) if user_id_raw else None
 
-    redirect_uri = _build_redirect_uri(request, provider)
+    # Use the redirect_uri stashed at authorize time — defends against
+    # host-header injection that would otherwise let a misconfigured
+    # proxy change request.base_url between authorize and callback.
+    rebuilt_uri = _build_redirect_uri(request, provider)
+    redirect_uri = state_payload.get("redirect_uri") or rebuilt_uri
+    if state_payload.get("redirect_uri") and redirect_uri != rebuilt_uri:
+        logger.warning(
+            "oauth callback host mismatch: stashed=%s rebuilt=%s",
+            redirect_uri,
+            rebuilt_uri,
+        )
 
     if provider == "google":
         from google_auth_oauthlib.flow import Flow
@@ -487,7 +534,7 @@ async def oauth_callback(
             scopes=list(creds.scopes) if creds.scopes else GOOGLE_SCOPES,
             expires_at=creds.expiry,
         )
-        return {"status": "connected", "provider": provider}
+        return _spa_redirect(provider)
 
     if provider == "microsoft":
         import msal
@@ -505,6 +552,11 @@ async def oauth_callback(
                 status_code=400,
                 detail=f"Token exchange failed: {result.get('error_description', result['error'])}",
             )
+        # Read the scopes the user actually granted instead of recording the
+        # full request set — a tenant who declines a scope shouldn't show up
+        # as having granted it.
+        granted_raw = result.get("scope") or ""
+        granted_scopes = [s for s in granted_raw.split(" ") if s] or MICROSOFT_SCOPES
         await _upsert_integration(
             db,
             tenant_id=tenant_id,
@@ -512,10 +564,10 @@ async def oauth_callback(
             provider=provider,
             access_token=result.get("access_token"),
             refresh_token=result.get("refresh_token"),
-            scopes=MICROSOFT_SCOPES,
+            scopes=granted_scopes,
             expires_at=_expires_at_from_seconds(result.get("expires_in")),
         )
-        return {"status": "connected", "provider": provider}
+        return _spa_redirect(provider)
 
     # ── Generic CRM exchange ──────────────────────────────
     spec = CRM_PROVIDERS[provider]
