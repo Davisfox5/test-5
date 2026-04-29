@@ -600,7 +600,7 @@ async def product_feedback(
           AND jsonb_typeof(insights->'product_feedback') = 'array'
           AND pf->>'theme' IS NOT NULL
         GROUP BY pf->>'theme'
-        ORDER BY (pos + neg + neu) DESC
+        ORDER BY COUNT(*) DESC
         LIMIT 20
     """)
     rows = (await db.execute(query, {"tenant_id": tenant_id, "since": since, "since_prior": since_prior})).fetchall()
