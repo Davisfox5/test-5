@@ -16,8 +16,13 @@ primary_region = "iad"
   # not just as a Fly runtime secret. The publishable key is non-secret
   # by Clerk's design (it ships in every browser bundle), so persisting
   # it here keeps every deploy buildable without a CLI build-arg.
+  #
+  # LINDA_BACKEND_URL is the same story: next.config.mjs evaluates
+  # rewrites() at build time, so the destination URL gets baked in. The
+  # runtime [env] entry below is harmless but no longer load-bearing.
   [build.args]
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Z2xhZC1jaWNhZGEtMS5jbGVyay5hY2NvdW50cy5kZXYk"
+    LINDA_BACKEND_URL = "https://linda-staging.fly.dev"
 
 # Placeholder release hook. The SPA is a Next standalone build and
 # doesn't run DB migrations, but having a release_command wired now
