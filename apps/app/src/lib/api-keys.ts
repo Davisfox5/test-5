@@ -3,10 +3,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "./api";
 
+// `scopes` was dropped from the public shape — decorative until the
+// backend's `auth.py` actually enforces them. See api_keys.py for the
+// deferral note.
 export interface ApiKey {
     id: string;
     name: string | null;
-    scopes: string[];
     last_used_at: string | null;
     expires_at: string | null;
     created_at: string;
@@ -18,7 +20,6 @@ export interface ApiKeyCreated extends ApiKey {
 
 export interface ApiKeyCreatePayload {
     name?: string;
-    scopes?: string[];
     expires_at?: string;
 }
 

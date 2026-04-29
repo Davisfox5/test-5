@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -32,7 +32,11 @@ class PlanLimitsOut(BaseModel):
     max_users: Optional[int]
     max_monthly_minutes: Optional[int]
     max_uploads_per_day: Optional[int]
-    ai_model_tier: str
+    # Pin the literal so the OpenAPI client + the SPA's narrowed
+    # `"haiku"|"sonnet"|"opus"` union stay in lockstep. A future tier
+    # ("haiku-fast") needs to widen this on both sides — silently drifting
+    # would break the SPA's exhaustive-switch type-checks.
+    ai_model_tier: Literal["haiku", "sonnet", "opus"]
 
 
 class TenantOut(BaseModel):
