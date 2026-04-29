@@ -79,8 +79,18 @@ export default function BillingPage() {
                             <span className="text-text-subtle">
                                 Current tier:
                             </span>{" "}
-                            <span className="font-medium capitalize">
-                                {me?.tenant.plan_tier ?? "—"}
+                            <span className="font-medium">
+                                {/* `plan_tier` already arrives lower-case
+                                    from the backend (`sandbox`, etc.); cap
+                                    only the first letter rather than using
+                                    `text-transform: capitalize`, which
+                                    would title-case a (hypothetical)
+                                    multi-word tier and read as "Sandbox
+                                    Plus" instead of "Sandbox plus". */}
+                                {me?.tenant.plan_tier
+                                    ? me.tenant.plan_tier.charAt(0).toUpperCase() +
+                                      me.tenant.plan_tier.slice(1)
+                                    : "—"}
                             </span>
                         </li>
                         <li>

@@ -52,15 +52,10 @@ export function useScorecard(id: string | undefined) {
     const api = useApi();
     return useQuery({
         queryKey: ["scorecard", id],
-        // GET /scorecards/{id} isn't exposed on the backend; resolve
-        // the row from the list response so we get the same data
-        // without forcing a backend change.
-        queryFn: async () => {
-            const all = await api.get<ScorecardTemplate[]>("/scorecards");
-            const found = all.find((t) => t.id === id);
-            if (!found) throw new Error("Scorecard not found");
-            return found;
-        },
+        // Hits GET /scorecards/{id} directly — the previous implementation
+        // pulled the full list and filtered client-side, which was O(N)
+        // per detail render once tenants accumulate many templates.
+        queryFn: () => api.get<ScorecardTemplate>(`/scorecards/${id}`),
         enabled: Boolean(id),
     });
 }

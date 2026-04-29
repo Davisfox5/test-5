@@ -9,12 +9,14 @@ import { useApi } from "./api";
 
 /* ── Types ──────────────────────────────────────────────────────────── */
 
+// Backend writes only these four values today (`interactions.py`).
+// "new" was carried in the union historically but is never produced —
+// dropping it keeps the SPA's narrowing honest.
 export type InteractionStatus =
     | "processing"
     | "analyzed"
     | "failed"
     | "flagged_for_review"
-    | "new"
     | string;
 
 export interface InteractionInsights {

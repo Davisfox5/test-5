@@ -101,7 +101,7 @@ export default function InteractionsPage() {
                             className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
                         >
                             <option value="">All</option>
-                            <option value="new">New</option>
+                            {/* "new" removed — backend never writes it. */}
                             <option value="processing">Processing</option>
                             <option value="analyzed">Analyzed</option>
                             <option value="failed">Failed</option>
