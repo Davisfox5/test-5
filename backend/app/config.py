@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # explicit origins (e.g. https://linda-staging-app.fly.dev) via
     # ``ALLOWED_ORIGINS=["https://..."]`` in fly secrets / .env.
     ALLOWED_ORIGINS: list[str] = []
+    # Public origin of the SPA — used to build OAuth-callback redirects
+    # back into the app after a successful provider connect. Falls back
+    # to the first allowed origin when unset (so staging "just works").
+    SPA_URL: str = ""
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str

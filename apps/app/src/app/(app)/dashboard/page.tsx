@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { useMe } from "@/lib/me";
 import {
     formatRelative,
@@ -10,14 +11,32 @@ import {
     useInteractions,
     useOpenActionItems,
     type ActionItemOut,
+    type DashboardPeriod,
     type InteractionOut,
 } from "@/lib/interactions";
 
+const PERIODS: { value: DashboardPeriod; label: string }[] = [
+    { value: "7d", label: "7d" },
+    { value: "30d", label: "30d" },
+    { value: "90d", label: "90d" },
+];
+
 export default function DashboardPage() {
     const me = useMe();
-    const summary = useDashboardSummary();
+    const [period, setPeriod] = useState<DashboardPeriod>("30d");
+    const summary = useDashboardSummary(period);
     const aiHealth = useAiHealth();
-    const recent = useInteractions({ limit: 5 });
+    // The hook itself doesn't poll (it's reused on the list page). On the
+    // dashboard we want "first call landed" to appear without a manual
+    // refresh, so we attach a 60s background refetch + on-focus refetch
+    // through React Query options on the cached query.
+    const recent = useInteractions(
+        { limit: 5 },
+        {
+            refetchInterval: 60_000,
+            refetchOnWindowFocus: true,
+        },
+    );
     const actionItems = useOpenActionItems(5);
 
     if (me.isLoading) return <p className="text-text-muted">Loading…</p>;
@@ -54,6 +73,34 @@ export default function DashboardPage() {
                     )}
                 </p>
             </header>
+
+            <div
+                className="flex items-center gap-2"
+                role="group"
+                aria-label="Dashboard period"
+            >
+                <span className="text-xs uppercase tracking-wide text-text-subtle">
+                    Period
+                </span>
+                <div className="inline-flex rounded-md border border-border">
+                    {PERIODS.map((p) => (
+                        <button
+                            key={p.value}
+                            type="button"
+                            onClick={() => setPeriod(p.value)}
+                            aria-pressed={period === p.value}
+                            className={
+                                "px-3 py-1 text-xs " +
+                                (period === p.value
+                                    ? "bg-primary text-white"
+                                    : "text-text-muted hover:bg-bg-card-hover")
+                            }
+                        >
+                            {p.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
 
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <StatCard

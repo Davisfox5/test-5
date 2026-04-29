@@ -230,7 +230,12 @@ async def _principal_from_api_key(
     stmt = (
         select(ApiKey)
         .options(selectinload(ApiKey.tenant))
-        .where(ApiKey.key_hash == key_hash)
+        .where(
+            ApiKey.key_hash == key_hash,
+            # Soft-deleted keys keep their row (audit trail) but must
+            # not authenticate. See backend/app/api/api_keys.py:revoke_api_key.
+            ApiKey.revoked_at.is_(None),
+        )
     )
     api_key = (await db.execute(stmt)).scalar_one_or_none()
     if api_key is None:

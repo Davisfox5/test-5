@@ -100,12 +100,22 @@ function buildListQuery(params: InteractionListParams): string {
     return qs ? `?${qs}` : "";
 }
 
-export function useInteractions(params: InteractionListParams = {}) {
+export interface UseInteractionsOptions {
+    refetchInterval?: number | false;
+    refetchOnWindowFocus?: boolean;
+}
+
+export function useInteractions(
+    params: InteractionListParams = {},
+    options: UseInteractionsOptions = {},
+) {
     const api = useApi();
     return useQuery({
         queryKey: ["interactions", params],
         queryFn: () =>
             api.get<InteractionOut[]>(`/interactions${buildListQuery(params)}`),
+        refetchInterval: options.refetchInterval,
+        refetchOnWindowFocus: options.refetchOnWindowFocus,
     });
 }
 
@@ -243,11 +253,16 @@ export interface DashboardSummary {
     };
 }
 
-export function useDashboardSummary() {
+export type DashboardPeriod = "7d" | "30d" | "90d";
+
+export function useDashboardSummary(period: DashboardPeriod = "30d") {
     const api = useApi();
     return useQuery({
-        queryKey: ["dashboard-summary"],
-        queryFn: () => api.get<DashboardSummary>("/analytics/dashboard"),
+        queryKey: ["dashboard-summary", period],
+        queryFn: () =>
+            api.get<DashboardSummary>(
+                `/analytics/dashboard?period=${period}`,
+            ),
     });
 }
 

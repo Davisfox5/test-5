@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -89,18 +89,20 @@ async def create_api_key(
 
 @router.get("/api-keys", response_model=List[ApiKeyOut])
 async def list_api_keys(
+    include_revoked: bool = False,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
     """List all API keys for the current tenant.
 
-    Returns metadata only — the key hash/plaintext is never exposed.
+    Returns metadata only — the key hash/plaintext is never exposed. By
+    default revoked keys are filtered out; pass ``include_revoked=true``
+    for an audit-trail view of every key that ever existed.
     """
-    stmt = (
-        select(ApiKey)
-        .where(ApiKey.tenant_id == tenant.id)
-        .order_by(ApiKey.created_at.desc())
-    )
+    stmt = select(ApiKey).where(ApiKey.tenant_id == tenant.id)
+    if not include_revoked:
+        stmt = stmt.where(ApiKey.revoked_at.is_(None))
+    stmt = stmt.order_by(ApiKey.created_at.desc())
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -111,7 +113,13 @@ async def revoke_api_key(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Revoke (delete) an API key. This is irreversible."""
+    """Revoke an API key.
+
+    Soft-delete via ``revoked_at`` so the audit row survives. Auth
+    lookups exclude revoked rows so the key stops authenticating
+    immediately. Hard-deleting was the previous behaviour and meant
+    "this tenant rotated keys" was unrecoverable from logs alone.
+    """
     stmt = select(ApiKey).where(
         ApiKey.id == key_id,
         ApiKey.tenant_id == tenant.id,
@@ -121,4 +129,5 @@ async def revoke_api_key(
     if api_key is None:
         raise HTTPException(status_code=404, detail="API key not found")
 
-    await db.delete(api_key)
+    if api_key.revoked_at is None:
+        api_key.revoked_at = datetime.now(timezone.utc)

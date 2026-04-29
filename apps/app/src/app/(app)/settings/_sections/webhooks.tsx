@@ -8,6 +8,7 @@ import {
     useDeleteWebhook,
     usePatchWebhook,
     useTestWebhook,
+    useWebhookDeliveries,
     useWebhookEvents,
     useWebhooks,
 } from "@/lib/webhooks";
@@ -28,6 +29,9 @@ export function WebhooksSection() {
     const [testResult, setTestResult] = useState<
         Record<string, string | null>
     >({});
+    // Tracks which webhook rows have the deliveries panel expanded.
+    // Set rather than per-id boolean so we can fan out below.
+    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     const allEvents = eventsResp?.events ?? [];
 
@@ -98,6 +102,20 @@ export function WebhooksSection() {
                                 <div className="flex gap-2 text-xs">
                                     <button
                                         type="button"
+                                        onClick={() =>
+                                            setExpanded((prev) => ({
+                                                ...prev,
+                                                [wh.id]: !prev[wh.id],
+                                            }))
+                                        }
+                                        className="rounded-md border border-border bg-bg-card px-2 py-1"
+                                    >
+                                        {expanded[wh.id]
+                                            ? "Hide deliveries"
+                                            : "Deliveries"}
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={() => onTest(wh.id)}
                                         disabled={test.isPending}
                                         className="rounded-md border border-border bg-bg-card px-2 py-1 disabled:opacity-50"
@@ -142,6 +160,9 @@ export function WebhooksSection() {
                                     </button>
                                 </div>
                             </div>
+                            {expanded[wh.id] ? (
+                                <DeliveriesPanel webhookId={wh.id} />
+                            ) : null}
                         </li>
                     ))}
                 </ul>
@@ -267,11 +288,20 @@ function WebhookForm({
                 <input
                     type="url"
                     required
+                    // pattern enforces https:// at submit time. Server-side
+                    // also rejects loopback / RFC1918 / link-local hosts to
+                    // close the SSRF surface (see services/webhook_dispatcher).
+                    pattern="https://.*"
+                    title="Webhook URL must start with https://"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://example.com/webhooks/linda"
                     className="mt-1 w-full rounded-md border border-border bg-bg-raised px-3 py-2 text-sm"
                 />
+                <span className="mt-1 block text-xs text-text-subtle">
+                    Must be https:// — internal / RFC1918 / loopback hosts
+                    are rejected by the server.
+                </span>
             </label>
             <fieldset>
                 <legend className="text-sm font-medium">Events</legend>
@@ -338,6 +368,82 @@ function WebhookForm({
                 </button>
             </div>
         </form>
+    );
+}
+
+function DeliveriesPanel({ webhookId }: { webhookId: string }) {
+    const { data, isLoading, error } = useWebhookDeliveries(webhookId);
+    if (isLoading) {
+        return (
+            <p className="mt-3 text-xs text-text-muted">Loading deliveries…</p>
+        );
+    }
+    if (error) {
+        return (
+            <p className="mt-3 text-xs text-accent-rose">
+                {humanizeError(error)}
+            </p>
+        );
+    }
+    if (!data?.length) {
+        return (
+            <p className="mt-3 text-xs text-text-muted">
+                No deliveries recorded for this webhook yet.
+            </p>
+        );
+    }
+    return (
+        <div className="mt-3 overflow-x-auto rounded-md border border-border bg-bg-card">
+            <table className="w-full text-left text-xs">
+                <thead className="text-text-subtle">
+                    <tr>
+                        <th className="px-2 py-1">When</th>
+                        <th className="px-2 py-1">Event</th>
+                        <th className="px-2 py-1">Status</th>
+                        <th className="px-2 py-1">Code</th>
+                        <th className="px-2 py-1">Attempts</th>
+                        <th className="px-2 py-1">Next retry</th>
+                        <th className="px-2 py-1">Error</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {data.map((d) => (
+                        <tr key={d.id} className="border-t border-border">
+                            <td className="px-2 py-1 text-text-muted">
+                                {new Date(d.created_at).toLocaleString()}
+                            </td>
+                            <td className="px-2 py-1 font-mono">{d.event}</td>
+                            <td
+                                className={
+                                    "px-2 py-1 " +
+                                    (d.status === "sent"
+                                        ? "text-accent-emerald"
+                                        : d.status === "dead_letter"
+                                          ? "text-accent-rose"
+                                          : "text-accent-amber")
+                                }
+                            >
+                                {d.status}
+                            </td>
+                            <td className="px-2 py-1">
+                                {d.last_status_code ?? "—"}
+                            </td>
+                            <td className="px-2 py-1">{d.attempt_count}</td>
+                            <td className="px-2 py-1 text-text-subtle">
+                                {d.next_retry_at
+                                    ? new Date(
+                                          d.next_retry_at,
+                                      ).toLocaleString()
+                                    : "—"}
+                            </td>
+                            <td className="max-w-xs truncate px-2 py-1 text-text-subtle">
+                                {d.last_error || "—"}
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
     );
 }
 

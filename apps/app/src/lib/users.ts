@@ -74,6 +74,27 @@ export function useDeactivateUser() {
     });
 }
 
+export interface SeatReconciliation {
+    pending: boolean;
+    seat_limit: number;
+    admin_seat_limit: number;
+    active_users: number;
+    active_admins: number;
+    suspended_users: TeamUser[];
+}
+
+export function useSeatReconciliation() {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["seat-reconciliation"],
+        queryFn: () =>
+            api.get<SeatReconciliation>("/admin/seat-reconciliation"),
+        // Non-admins 403 here; SPA hides the banner in that case.
+        retry: false,
+        staleTime: 30_000,
+    });
+}
+
 export function useReactivateUser() {
     const api = useApi();
     const qc = useQueryClient();
@@ -90,6 +111,7 @@ export function useReactivateUser() {
             }),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ["users"] });
+            qc.invalidateQueries({ queryKey: ["seat-reconciliation"] });
         },
     });
 }

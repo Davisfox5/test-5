@@ -99,3 +99,27 @@ export function useTestWebhook() {
             api.post<WebhookTestResult>(`/webhooks/${id}/test`),
     });
 }
+
+export interface WebhookDelivery {
+    id: string;
+    webhook_id: string;
+    event: string;
+    status: string;
+    attempt_count: number;
+    last_status_code: number | null;
+    last_error: string | null;
+    next_retry_at: string | null;
+    delivered_at: string | null;
+    created_at: string;
+}
+
+export function useWebhookDeliveries(id: string | null, enabled = true) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["webhook-deliveries", id],
+        queryFn: () =>
+            api.get<WebhookDelivery[]>(`/webhooks/${id}/deliveries`),
+        enabled: !!id && enabled,
+        staleTime: 10_000,
+    });
+}

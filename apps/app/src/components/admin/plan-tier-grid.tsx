@@ -5,6 +5,7 @@ import {
     PlanTierKey,
     TierCatalogEntry,
     useChangeTier,
+    useResetFeaturesToTier,
     useTenantSettings,
 } from "@/lib/tenant-settings";
 import { humanizeError } from "./section";
@@ -61,6 +62,7 @@ export function PlanTierGrid({ canChange }: { canChange: boolean }) {
     const { data: me } = useMe();
     const { data: settings } = useTenantSettings();
     const change = useChangeTier();
+    const reset = useResetFeaturesToTier();
 
     const catalog = settings?.tier_catalog?.length
         ? settings.tier_catalog
@@ -151,6 +153,38 @@ export function PlanTierGrid({ canChange }: { canChange: boolean }) {
                     {humanizeError(change.error)}
                 </p>
             ) : null}
+            <div className="rounded-md border border-border bg-bg-raised p-3 text-xs text-text-muted">
+                <p>
+                    Manual feature toggles in Settings survive a tier change —
+                    upgrading only adds the new tier's defaults, it doesn't
+                    overwrite your existing flags. Click below to drop every
+                    override and snap back to the current tier's defaults.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                    <button
+                        type="button"
+                        disabled={!canChange || reset.isPending}
+                        onClick={() => {
+                            if (
+                                confirm(
+                                    "Reset every feature toggle on this tenant to the current tier's defaults? Existing manual overrides will be lost.",
+                                )
+                            )
+                                reset.mutate();
+                        }}
+                        className="rounded-md border border-border bg-bg-card px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-bg-card-hover disabled:opacity-50"
+                    >
+                        {reset.isPending
+                            ? "Resetting…"
+                            : "Reset to tier defaults"}
+                    </button>
+                    {reset.isError ? (
+                        <span className="text-accent-rose">
+                            {humanizeError(reset.error)}
+                        </span>
+                    ) : null}
+                </div>
+            </div>
         </div>
     );
 }

@@ -75,6 +75,14 @@ class Tenant(Base):
     # plan_tier: sandbox | starter | growth | enterprise
     plan_tier: Mapped[str] = mapped_column(String, nullable=False, default="sandbox", server_default="sandbox")
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Lifecycle marker driven by Stripe webhooks + the trial-expiry sweep.
+    # Values: "active" (default — paying or healthy trial), "expired"
+    # (trial ended), "past_due" (Stripe payment failure cooldown). The
+    # require_active_subscription dependency is the load-bearing gate;
+    # this column drives banners + reporting.
+    subscription_status: Mapped[str] = mapped_column(
+        String, default="active", server_default="active", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[List["User"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -128,6 +136,10 @@ class ApiKey(Base):
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Soft-delete: ``DELETE /api-keys/{id}`` sets this so the audit trail
+    # of "this key existed and was revoked at X" survives. Authentication
+    # treats any row with revoked_at != NULL as invalid.
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped[Tenant] = relationship(back_populates="api_keys")
 
@@ -690,7 +702,10 @@ class Integration(Base):
     __tablename__ = "integrations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    # Nullable: tenant-wide integrations (no specific authorizing user) leave this NULL.
+    # Previously the upsert fell back to tenant_id, which would FK-violate when the
+    # tenant id wasn't a valid users.id.
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     provider: Mapped[str] = mapped_column(String, nullable=False)
     access_token: Mapped[Optional[str]] = mapped_column(Text)  # AES-256 encrypted

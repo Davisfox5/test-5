@@ -127,7 +127,7 @@ export default function ActionItemsPage() {
                                 <option value="">Anyone</option>
                                 {usersQuery.data.map((u) => (
                                     <option key={u.id} value={u.id}>
-                                        {u.name || u.email}
+                                        {u.name || u.id.slice(0, 8)}
                                     </option>
                                 ))}
                             </select>

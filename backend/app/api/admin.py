@@ -484,8 +484,16 @@ async def patch_tenant_settings(
         allowed = {spec["key"] for spec in _FEATURE_FLAG_SPEC}
         for k, v in (updates["features_enabled"] or {}).items():
             if k not in allowed:
-                # Ignore unknown flags rather than 400 — keeps the API
-                # forwards-compatible with newer UIs calling older servers.
+                # Forwards-compatible: keep accepting the request rather than
+                # 400-ing newer UIs against older servers, but log a warning
+                # so silent drops show up in operator logs instead of "the
+                # toggle didn't stick" tickets.
+                logger.warning(
+                    "patch_tenant_settings: dropping unknown features_enabled key %r "
+                    "(tenant=%s)",
+                    k,
+                    tenant.id,
+                )
                 continue
             merged[k] = bool(v) if isinstance(v, bool) else v
         tenant.features_enabled = merged
@@ -539,4 +547,26 @@ async def change_plan_tier(
         )
     apply_tier(tenant, normalized)
     await reconcile_seats(db, tenant, protect_user_id=principal.user_id)
+    return _tenant_settings_payload(tenant)
+
+
+@router.post(
+    "/admin/tenant-settings/reset-features",
+    response_model=TenantSettingsOut,
+)
+async def reset_features_to_tier(
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Reset ``features_enabled`` to the current tier's defaults.
+
+    ``apply_tier`` only *merges* the tier's flags so manual overrides
+    survive an upgrade by design. This endpoint surfaces a way to flip
+    that switch — admins click it when they want to forget every prior
+    toggle and start clean from the tier catalog.
+    """
+    from backend.app.plans import get_tier
+
+    tenant = principal.tenant
+    spec = get_tier(getattr(tenant, "plan_tier", None))
+    tenant.features_enabled = dict(spec.features)
     return _tenant_settings_payload(tenant)

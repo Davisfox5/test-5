@@ -21,25 +21,30 @@ export default function InteractionsPage() {
     const [to, setTo] = useState("");
     const [uploadOpen, setUploadOpen] = useState(false);
 
+    // Overfetch by 1 row so we can answer "is there a next page?" without
+    // a separate count query. The extra row is trimmed before render.
     const list = useInteractions({
-        limit: PAGE_SIZE,
+        limit: PAGE_SIZE + 1,
         offset: page * PAGE_SIZE,
         q: q || undefined,
         status: status || undefined,
     });
 
+    const rawRows = list.data ?? [];
+    const hasMore = rawRows.length > PAGE_SIZE;
+    const visibleRows = hasMore ? rawRows.slice(0, PAGE_SIZE) : rawRows;
+
     const filteredRows = useMemo(() => {
-        const rows = list.data ?? [];
-        if (!from && !to) return rows;
+        if (!from && !to) return visibleRows;
         // Backend doesn't accept date-range filters yet; clip locally so
         // the UI honors the picker until the endpoint grows them.
         const fromTs = from ? new Date(from).getTime() : -Infinity;
         const toTs = to ? new Date(to).getTime() + 86_400_000 : Infinity;
-        return rows.filter((r) => {
+        return visibleRows.filter((r) => {
             const t = new Date(r.created_at).getTime();
             return t >= fromTs && t < toTs;
         });
-    }, [list.data, from, to]);
+    }, [visibleRows, from, to]);
 
     const isFiltered = !!(q || status || from || to);
     const isEmpty =
@@ -149,7 +154,7 @@ export default function InteractionsPage() {
 
             <Pagination
                 page={page}
-                hasMore={(list.data?.length ?? 0) === PAGE_SIZE}
+                hasMore={hasMore}
                 onPrev={() => setPage((p) => Math.max(0, p - 1))}
                 onNext={() => setPage((p) => p + 1)}
             />
