@@ -5,6 +5,46 @@ Both models assume a **5,000 audio-minute/seat/month cap**, billed monthly with 
 commit discounts. Ranges below are **low / high**; pick a point inside the band based
 on segment, sales motion, and channel margin requirements.
 
+> **Tier names — code is the source of truth.** This doc was drafted with
+> the marketing names *Starter / Professional / Business / Enterprise*.
+> The product (`backend/app/plans.py`, the SPA, and Stripe price IDs) uses
+> **Sandbox / Starter / Growth / Enterprise** instead. They map 1:1 by
+> position; dollar amounts and feature bundles below are unchanged. The
+> recommended-launch-pricing tables in §0.1 below restate every band
+> using the canonical names. Inline prose still uses the legacy names —
+> read them as their canonical equivalents.
+>
+> | Doc legacy name | Canonical (code) name |
+> |---|---|
+> | Starter | **Sandbox** |
+> | Professional | **Starter** |
+> | Business | **Growth** |
+> | Enterprise | **Enterprise** |
+
+## 0.1 Recommended launch pricing — canonical tier names
+
+Same dollar amounts as §4.2 / §6.1 below, restated under the names the
+backend and Stripe actually use. Use this section for any artifact that
+needs to match the running product.
+
+### Month-to-month list price ($/seat/mo)
+
+| Tier (code) | 1–10 seats (SMB) | 11–25 seats (Mid-Market) | 25+ seats (Growth band) |
+|---|---|---|---|
+| **Sandbox** | $39 | $34 | $29 |
+| **Starter** | $89 | $79 | $69 |
+| **Growth** | $179 | $159 | $139 |
+| **Enterprise** | Custom | Custom | Custom (from $299/seat) |
+
+### Annual-commit price (20% off; 25% off 2-year)
+
+| Tier (code) | 1–10 (1-yr) | 11–25 (1-yr) | 25+ (1-yr) | 25+ (2-yr) |
+|---|---|---|---|---|
+| **Sandbox** | $31 | $27 | $23 | $22 |
+| **Starter** | $71 | $63 | $55 | $52 |
+| **Growth** | $143 | $127 | $111 | $104 |
+| **Enterprise** | — | — | $239+ | $224+ |
+
 - **Model A — Cost-Plus (competitor-agnostic):** what it will realistically cost us to
   deliver each tier, marked up to a 75–80% gross-margin target.
 - **Model B — Competitor-Anchored:** what comparable channel-partner / white-label

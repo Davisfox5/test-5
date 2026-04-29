@@ -59,12 +59,17 @@ primary_region = "iad"
   min_machines_running = 1
   processes = ["api"]
 
+  # Cheap liveness probe (no I/O). Previously pointed at /api/v1/ready,
+  # which runs SELECT 1 + Redis PING + Qdrant /readyz + Deepgram /projects
+  # + S3 head_bucket on every tick — that's ~120k Deepgram round-trips a
+  # month just for healthchecks. /api/v1/health returns instantly with
+  # no upstream calls; deep readiness still runs on deploy via /ready/deep.
   [[http_service.checks]]
     interval = "30s"
     timeout = "5s"
     grace_period = "60s"
     method = "GET"
-    path = "/api/v1/ready"
+    path = "/api/v1/health"
 
 [[vm]]
   size = "shared-cpu-1x"
