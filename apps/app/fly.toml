@@ -11,6 +11,14 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile"
 
+  # NEXT_PUBLIC_* env vars are inlined by Next.js at build time, so the
+  # Clerk publishable key has to be present during `npm run build` —
+  # not just as a Fly runtime secret. The publishable key is non-secret
+  # by Clerk's design (it ships in every browser bundle), so persisting
+  # it here keeps every deploy buildable without a CLI build-arg.
+  [build.args]
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Z2xhZC1jaWNhZGEtMS5jbGVyay5hY2NvdW50cy5kZXYk"
+
 # Placeholder release hook. The SPA is a Next standalone build and
 # doesn't run DB migrations, but having a release_command wired now
 # gives us a place to bolt on Sentry source-map upload, static-asset
