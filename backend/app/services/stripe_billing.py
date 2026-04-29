@@ -145,9 +145,6 @@ def _parse_signature_header(header: str) -> Optional[tuple[int, list[str]]]:
 # ── Price → tier mapping ─────────────────────────────────────────────
 
 
-_PRICE_TIER_CACHE: Dict[str, Dict[str, str]] = {}
-
-
 def _price_tier_pairs() -> Dict[str, str]:
     """Return the current env price_id → plan tier key mapping.
 
@@ -158,9 +155,9 @@ def _price_tier_pairs() -> Dict[str, str]:
     keys are inserted last in the loop, so they overwrite any legacy
     alias that happens to share a price_id).
 
-    Memoized per (settings-id) — settings is a singleton in production
-    so the dict is materialized once per process; tests that monkey-patch
-    ``get_settings()`` re-key on the new instance and rebuild.
+    Rebuilt on every call. The legacy id-keyed cache was racy under
+    test runners that GC + reuse SimpleNamespace addresses across
+    monkey-patched fixtures, and the dict-build cost is microseconds.
 
     Precedence example::
 
@@ -194,14 +191,7 @@ def _price_tier_pairs() -> Dict[str, str]:
         >>> _build_price_tier_pairs(s2)["price_dual"]
         'sandbox'
     """
-    settings = get_settings()
-    cache_key = str(id(settings))
-    cached = _PRICE_TIER_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    pairs = _build_price_tier_pairs(settings)
-    _PRICE_TIER_CACHE[cache_key] = pairs
-    return pairs
+    return _build_price_tier_pairs(get_settings())
 
 
 def _build_price_tier_pairs(settings) -> Dict[str, str]:
