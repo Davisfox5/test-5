@@ -374,12 +374,22 @@ async def _tenant_by_customer(
 
 
 def _active_price_id(subscription_obj: Dict[str, Any]) -> Optional[str]:
-    """Pull the first active item's price id out of a subscription object.
+    """Find the subscription item whose price maps to a known tier.
 
-    Stripe subscriptions can have multiple items (pro with add-ons, etc.),
-    but for our single-tier model we just grab the first one.
+    Subscriptions are now multi-item: a tier "base" line (Starter/Growth/
+    Enterprise pack) plus optional per-seat overage and à-la-carte add-ons
+    (Scorecards, Live Coaching). Iterate every item and return the first
+    price_id that resolves through ``price_id_to_tier`` so add-ons and
+    overage lines don't disturb tier resolution. Falls back to the first
+    item if nothing maps — preserves the legacy single-item flow for any
+    tenant on the old SKU layout.
     """
     items = (subscription_obj.get("items") or {}).get("data") or []
+    for item in items:
+        price = item.get("price") or {}
+        price_id = price.get("id")
+        if price_id and price_id_to_tier(str(price_id)):
+            return str(price_id)
     for item in items:
         price = item.get("price") or {}
         price_id = price.get("id")
