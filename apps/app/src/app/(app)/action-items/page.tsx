@@ -60,7 +60,7 @@ export default function ActionItemsPage() {
     const usersById = useMemo(() => {
         const map = new Map<string, string>();
         for (const u of usersQuery.data ?? []) {
-            map.set(u.id, u.name || u.email);
+            map.set(u.id, u.name ?? u.id);
         }
         return map;
     }, [usersQuery.data]);
