@@ -48,6 +48,10 @@ class TenantOut(BaseModel):
     trial_ends_at: Optional[datetime]
     trial_active: bool
     trial_expired: bool
+    # True iff the tenant has an active Stripe subscription. The SPA
+    # uses this to decide between the first-time plan picker (false)
+    # and the Stripe billing portal (true) on /billing.
+    has_subscription: bool
     limits: PlanLimitsOut
 
 
@@ -103,6 +107,12 @@ async def me(
             trial_ends_at=tenant.trial_ends_at,
             trial_active=trial_is_active(tenant),
             trial_expired=trial_is_expired(tenant),
+            # Treat a whitespace-only id as "no subscription" — guards
+            # against a stale string that survived a cancel webhook.
+            has_subscription=bool(
+                tenant.stripe_subscription_id
+                and tenant.stripe_subscription_id.strip()
+            ),
             limits=_plan_limits_out(limits_for(tenant)),
         ),
         user=UserOut(
