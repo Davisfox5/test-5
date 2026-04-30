@@ -8,13 +8,18 @@ import { UserButton } from "@clerk/nextjs";
 import { useMe } from "@/lib/me";
 import { LindaMark } from "@/components/brand/linda-mark";
 import { navItemsForRole } from "@/components/app-shell/sidebar";
-import type { UserRole } from "@/lib/me";
+
+const KNOWN_ROLES = new Set<string>(["agent", "manager", "admin"]);
 
 export function Header() {
     const { data } = useMe();
     const [drawerOpen, setDrawerOpen] = useState(false);
     const pathname = usePathname();
-    const role: UserRole = data?.user?.role ?? "agent";
+    const rawRole = data?.user?.role;
+    const role =
+        typeof rawRole === "string" && KNOWN_ROLES.has(rawRole)
+            ? (rawRole as "agent" | "manager" | "admin")
+            : ("agent" as const);
     const items = navItemsForRole(role);
 
     // Close the drawer whenever the route changes — Next.js doesn't do

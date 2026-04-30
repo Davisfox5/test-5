@@ -16,7 +16,16 @@ anthropic>=0.28                   # Claude Haiku/Sonnet/Opus
 # === Speech-to-Text ===
 deepgram-sdk>=3                   # Live + batch ASR + diarization
 faster-whisper>=1.0               # Self-hosted batch ASR
-pyannote.audio>=3.1               # Self-hosted speaker diarization
+pyannote.audio>=3.1,<4            # Self-hosted speaker diarization
+# pyannote.audio depends on `lightning>=2.0.1`, but the `lightning`
+# distribution on PyPI is quarantined as of 2026-04-30 (404 from PyPI
+# JSON for every version; project-status `quarantined` on the simple
+# index). Install the pre-built wheel from the upstream GitHub release
+# instead — installing from source via `git+...` hits a setuptools
+# `pkg_resources` import error in Lightning's build helper script on
+# Python 3.12 + recent setuptools. Roll back to the plain PyPI pin
+# once Lightning-AI gets the package un-quarantined.
+lightning @ https://github.com/Lightning-AI/pytorch-lightning/releases/download/2.3.3/lightning-2.3.3-py3-none-any.whl
 
 # === Paralinguistic + Emotion ===
 # SpeechBrain's IEMOCAP wav2vec2 model powers the optional emotion
