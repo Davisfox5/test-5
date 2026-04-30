@@ -29,6 +29,10 @@ export interface Tenant {
     trial_ends_at: string | null;
     trial_active: boolean;
     trial_expired: boolean;
+    // True iff the tenant has an active Stripe subscription; drives
+    // whether /billing shows the first-time plan picker or the
+    // Stripe billing portal CTA.
+    has_subscription: boolean;
     limits: PlanLimits;
 }
 

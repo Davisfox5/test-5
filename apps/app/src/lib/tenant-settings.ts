@@ -145,3 +145,33 @@ export function useStripePortalLink() {
             api.post<{ url: string }>("/admin/stripe/link"),
     });
 }
+
+export type CheckoutTier = "starter" | "growth" | "enterprise";
+export type CheckoutCycle = "monthly" | "annual";
+
+export interface CheckoutRequest {
+    tier: CheckoutTier;
+    cycle: CheckoutCycle;
+    // Self-serve always sends false — partner pricing is sales-led.
+    is_partner: boolean;
+    addl_seats: number;
+    live_coaching_seats: number;
+    extra_scorecards: number;
+    success_url: string;
+    cancel_url: string;
+}
+
+export interface CheckoutResponse {
+    tenant_id: string;
+    url: string;
+    expires_at: number | null;
+    session_id: string | null;
+}
+
+export function useStripeCheckout() {
+    const api = useApi();
+    return useMutation({
+        mutationFn: (payload: CheckoutRequest) =>
+            api.post<CheckoutResponse>("/admin/stripe/checkout", payload),
+    });
+}
