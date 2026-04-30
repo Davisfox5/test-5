@@ -195,7 +195,7 @@ def _line_items(form: Dict[str, str]) -> List[Dict[str, str]]:
 
 def _invoice_items(form: Dict[str, str]) -> List[Dict[str, str]]:
     items: Dict[int, Dict[str, str]] = {}
-    prefix = "subscription_data[add_invoice_items]["
+    prefix = "add_invoice_items["
     for k, v in form.items():
         if not k.startswith(prefix):
             continue

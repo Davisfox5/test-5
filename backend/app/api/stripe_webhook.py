@@ -362,13 +362,14 @@ async def create_stripe_checkout_session(
     if body.extra_scorecards > 0 and extra_scorecard_price:
         _add_line(extra_scorecard_price, body.extra_scorecards)
 
-    # One-time onboarding fee on the first invoice. Stripe's
-    # ``subscription_data[add_invoice_items]`` lives on the *subscription*
-    # creation, applied to invoice 1 only. (The legacy top-level
-    # ``add_invoice_items`` is for setup-mode sessions; subscription
-    # mode requires the nested form.)
-    form["subscription_data[add_invoice_items][0][price]"] = onboarding_price  # type: ignore[assignment]
-    form["subscription_data[add_invoice_items][0][quantity]"] = "1"
+    # One-time onboarding fee on the first invoice. Stripe accepts
+    # ``add_invoice_items`` at the top level of the session create when
+    # ``mode=subscription`` — they're applied to the very first invoice
+    # only. (The nested ``subscription_data[add_invoice_items]`` form is
+    # not a real parameter; Stripe rejects it with "Received unknown
+    # parameter".)
+    form["add_invoice_items[0][price]"] = onboarding_price  # type: ignore[assignment]
+    form["add_invoice_items[0][quantity]"] = "1"
 
     session = await _stripe_post(api_key, "/checkout/sessions", form)
     session_url = str(session.get("url") or "")
