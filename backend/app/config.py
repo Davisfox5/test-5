@@ -155,6 +155,20 @@ class Settings(BaseSettings):
     STRIPE_PRICE_SOLO: str = ""  # legacy alias → sandbox
     STRIPE_PRICE_TEAM: str = ""  # legacy alias → starter
     STRIPE_PRICE_PRO: str = ""  # legacy alias → growth
+    # JSON blob with every per-tier add-on price ID (extra scorecards,
+    # additional seats, live coaching, onboarding fees). Drives the
+    # ``/admin/stripe/checkout`` endpoint and the scorecard entitlement
+    # check. Empty / missing / malformed → checkout disabled (503) and
+    # paid-extra scorecards count as zero. Shape:
+    #   {
+    #     "starter": {"base": {"monthly":"price_..","annual":".."},
+    #                 "addl_seat": {...}, "extra_scorecard": {...},
+    #                 "onboarding": {"direct":"..","partner":".."}},
+    #     "growth":  {... same shape ...},
+    #     "enterprise": {... same shape ...},
+    #     "starter_addons": {"live_coaching": {"monthly":"..","annual":".."}}
+    #   }
+    STRIPE_PRICE_CATALOG: str = ""
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_S3_BUCKET: str = ""
