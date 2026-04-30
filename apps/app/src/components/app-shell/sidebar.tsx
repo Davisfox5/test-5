@@ -14,6 +14,19 @@ type NavItem = {
 };
 
 const ROLE_RANK: Record<UserRole, number> = { agent: 1, manager: 2, admin: 3 };
+const KNOWN_ROLES = new Set<string>(Object.keys(ROLE_RANK));
+
+// Coerce whatever shape the backend returns into a known UserRole.
+// Falls back to "agent" if the field is missing, null, or carries an
+// unexpected value — without this, an unrecognized role bypassed every
+// rank comparison (`undefined >= 1` is `false`) and emptied the entire
+// nav. Initial render uses the default before /me resolves, so the
+// sidebar is never empty during a hydration race.
+function normalizeRole(raw: unknown): UserRole {
+    return typeof raw === "string" && KNOWN_ROLES.has(raw)
+        ? (raw as UserRole)
+        : "agent";
+}
 
 // Surfaced as a tooltip on the sidebar role badge so non-admins
 // understand why some nav items are missing for them.
@@ -45,13 +58,14 @@ export const NAV: NavItem[] = [
 ];
 
 export function navItemsForRole(role: UserRole): NavItem[] {
-    return NAV.filter((item) => ROLE_RANK[role] >= ROLE_RANK[item.minRole]);
+    const rank = ROLE_RANK[role] ?? ROLE_RANK.agent;
+    return NAV.filter((item) => rank >= ROLE_RANK[item.minRole]);
 }
 
 export function Sidebar() {
     const pathname = usePathname();
     const { data } = useMe();
-    const role: UserRole = data?.user?.role ?? "agent";
+    const role = normalizeRole(data?.user?.role);
     const items = navItemsForRole(role);
 
     return (
