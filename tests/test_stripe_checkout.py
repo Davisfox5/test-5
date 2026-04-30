@@ -193,18 +193,6 @@ def _line_items(form: Dict[str, str]) -> List[Dict[str, str]]:
     return [items[i] for i in sorted(items)]
 
 
-def _invoice_items(form: Dict[str, str]) -> List[Dict[str, str]]:
-    items: Dict[int, Dict[str, str]] = {}
-    prefix = "add_invoice_items["
-    for k, v in form.items():
-        if not k.startswith(prefix):
-            continue
-        idx_part, _, rest = k[len(prefix) :].partition("]")
-        field = rest.split("[")[1].rstrip("]")
-        items.setdefault(int(idx_part), {})[field] = v
-    return [items[i] for i in sorted(items)]
-
-
 @pytest.mark.asyncio
 async def test_checkout_plain_starter_monthly_direct(monkeypatch):
     monkeypatch.setattr(stripe_webhook, "get_settings", lambda: _settings())
@@ -225,12 +213,15 @@ async def test_checkout_plain_starter_monthly_direct(monkeypatch):
     assert [p for p, _ in captured] == ["/checkout/sessions"]
     _, form = captured[0]
 
+    # One-time onboarding rides as another line item — Stripe Checkout
+    # in mode=subscription doesn't accept add_invoice_items, but a
+    # one-time Price alongside recurring Prices is documented + works.
     lines = _line_items(form)
-    assert len(lines) == 1
-    assert lines[0] == {"price": "price_starter_base_m", "quantity": "1"}
-
-    invoice_items = _invoice_items(form)
-    assert invoice_items == [{"price": "price_starter_onb_direct", "quantity": "1"}]
+    assert lines == [
+        {"price": "price_starter_base_m", "quantity": "1"},
+        {"price": "price_starter_onb_direct", "quantity": "1"},
+    ]
+    assert all(not k.startswith("add_invoice_items[") for k in form)
 
 
 @pytest.mark.asyncio
@@ -256,15 +247,13 @@ async def test_checkout_growth_annual_partner_with_seats_and_scorecards(monkeypa
 
     _, form = captured[-1]
     lines = _line_items(form)
+    # Partner audience → partner onboarding price (last line).
     assert lines == [
         {"price": "price_growth_base_a", "quantity": "1"},
         {"price": "price_growth_seat_a", "quantity": "5"},
         {"price": "price_growth_sc_a", "quantity": "2"},
+        {"price": "price_growth_onb_partner", "quantity": "1"},
     ]
-
-    invoice_items = _invoice_items(form)
-    # Partner audience → partner onboarding price.
-    assert invoice_items == [{"price": "price_growth_onb_partner", "quantity": "1"}]
 
 
 @pytest.mark.asyncio
@@ -290,6 +279,7 @@ async def test_checkout_starter_with_live_coaching_seats(monkeypatch):
     assert lines == [
         {"price": "price_starter_base_m", "quantity": "1"},
         {"price": "price_starter_coach_m", "quantity": "3"},
+        {"price": "price_starter_onb_direct", "quantity": "1"},
     ]
 
 
@@ -314,7 +304,10 @@ async def test_checkout_growth_silently_drops_live_coaching(monkeypatch):
 
     _, form = captured[-1]
     lines = _line_items(form)
-    assert lines == [{"price": "price_growth_base_m", "quantity": "1"}]
+    assert lines == [
+        {"price": "price_growth_base_m", "quantity": "1"},
+        {"price": "price_growth_onb_direct", "quantity": "1"},
+    ]
 
 
 @pytest.mark.asyncio
