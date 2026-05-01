@@ -1,8 +1,9 @@
 """Interactions API — unified CRUD for voice, email, chat.
 
-SMS and WhatsApp channels are stubbed out — see
-``backend/app/services/sms_ingest.py``.  Existing rows with those channel
-values remain queryable but new ones cannot be created through the API.
+SMS and WhatsApp channels are not supported. Old rows with those values
+from prior backfills remain readable (the column is a free-form string),
+but the create endpoint rejects them with a 400 carrying a human-friendly
+message.
 """
 
 import uuid
@@ -28,11 +29,16 @@ router = APIRouter()
 # ── Pydantic Schemas ─────────────────────────────────────
 
 
-# SMS / WhatsApp intentionally excluded from the accepted channel list.
-# They confound email/voice analysis during early tenant onboarding and
-# are re-enabled by adding them back to this Literal.
+_SUPPORTED_CHANNELS = ("voice", "email", "chat")
+_REJECTED_CHANNELS = ("sms", "whatsapp")
+
+
 class InteractionCreate(BaseModel):
-    channel: Literal["voice", "email", "chat"]
+    # ``channel`` is a free-form string at the schema level so the
+    # handler can surface a friendly 400 for the explicitly-removed
+    # SMS / WhatsApp values (rather than the generic 422 from a
+    # ``Literal``). The route checks the value before insert.
+    channel: str
     source: Optional[str] = None
     direction: Optional[Literal["inbound", "outbound", "internal"]] = None
     title: Optional[str] = None
@@ -196,13 +202,27 @@ async def create_interaction(
 ):
     """Create a text-based interaction (email, chat).
 
-    For voice uploads, use POST /interactions/upload instead.  Email
+    For voice uploads, use POST /interactions/upload instead. Email
     ingestion normally runs through the OAuth poller, not this endpoint.
-    SMS/WhatsApp are disabled (see services/sms_ingest.py).
+    SMS / WhatsApp are not supported — those values are rejected with a
+    400 carrying the exact ``detail`` the SPA renders inline.
     """
+    channel = (body.channel or "").strip().lower()
+    if channel in _REJECTED_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"channel '{channel}' not supported",
+        )
+    if channel not in _SUPPORTED_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"channel must be one of {', '.join(_SUPPORTED_CHANNELS)}"
+            ),
+        )
     interaction = Interaction(
         tenant_id=tenant.id,
-        channel=body.channel,
+        channel=channel,
         source=body.source or "api",
         direction=body.direction,
         title=body.title,

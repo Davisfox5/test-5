@@ -327,8 +327,10 @@ class Contact(Base):
 # ──────────────────────────────────────────────────────────
 # INTERACTIONS (omnichannel — voice, email, chat)
 #
-# SMS and WhatsApp rows may exist from earlier backfills; they remain
-# readable but no new rows with those channels are created.
+# Old SMS / WhatsApp rows from prior backfills remain readable (the
+# ``channel`` column is a free-form string), but the API only accepts
+# voice / email / chat. See ``backend/app/api/interactions.py`` for the
+# create-side rejection.
 # ──────────────────────────────────────────────────────────
 
 
@@ -346,7 +348,8 @@ class Interaction(Base):
         ForeignKey("campaigns.id", ondelete="SET NULL")
     )
 
-    # Type and source — voice|email|chat (sms/whatsapp stubbed)
+    # Type and source — voice|email|chat. The API rejects any other
+    # value with a 400 (see backend/app/api/interactions.py).
     channel: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound|internal

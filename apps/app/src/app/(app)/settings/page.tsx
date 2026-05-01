@@ -19,6 +19,7 @@ import { ApiKeysSection } from "./_sections/api-keys";
 import { WebhooksSection } from "./_sections/webhooks";
 import { IntegrationsSection } from "./_sections/integrations";
 import { DataManagementSection } from "./_sections/data-management";
+import { RetentionSection } from "./_sections/retention";
 
 export default function SettingsPage() {
     const { data: me } = useMe();
@@ -206,6 +207,15 @@ export default function SettingsPage() {
                     >
                         <AdminGate role={me?.user?.role}>
                             <IntegrationsSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Data retention"
+                        subtitle="Per-tenant overrides for the nightly retention sweep."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <RetentionSection />
                         </AdminGate>
                     </Section>
 

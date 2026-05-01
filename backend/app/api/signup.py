@@ -69,6 +69,11 @@ class TrialSignupIn(BaseModel):
     role: Optional[str] = Field(default=None, max_length=120)
     company_size: Optional[str] = Field(default=None, max_length=32)
     use_case: Optional[str] = Field(default=None, max_length=64)
+    # Whether to populate the new tenant with sample dashboards / data.
+    # Default true so the trial dashboard renders something on first
+    # login; the SPA can pass false from a "production-grade trial"
+    # checkbox to start clean.
+    seed_demo_data: bool = True
 
 
 class TrialSignupOut(BaseModel):
@@ -154,6 +159,23 @@ async def trial_signup(
         .values(converted_tenant_id=tenant.id)
     )
     await db.commit()
+
+    # Seed sample data so the dashboard isn't empty on first login. The
+    # seeder is idempotent — safe even if /trial/signup runs twice for
+    # the same tenant (the duplicate-prevention path above also
+    # short-circuits before reaching here, so this is belt + braces).
+    if payload.seed_demo_data:
+        try:
+            from backend.app.services.demo_seeder import seed_demo_data
+
+            await seed_demo_data(db, tenant=tenant, admin_user=user)
+        except Exception:  # noqa: BLE001 — seeding must never block signup
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "trial_signup: demo seed failed for tenant=%s — continuing",
+                tenant.id,
+            )
 
     return TrialSignupOut(
         tenant_id=tenant.id,

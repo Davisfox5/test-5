@@ -1677,10 +1677,8 @@
 }
 
 .channel-icon-svg.voice { background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); }
-.channel-icon-svg.sms { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); }
 .channel-icon-svg.email { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
 .channel-icon-svg.chat { background: rgba(139, 92, 246, 0.15); color: var(--secondary); }
-.channel-icon-svg.whatsapp { background: rgba(16, 185, 129, 0.15); color: #25D366; }
 
 /* Topic pills */
 .topic-pill {

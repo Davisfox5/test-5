@@ -392,6 +392,14 @@ class TenantSettingsOut(BaseModel):
     feature_flag_spec: List[Dict[str, Any]]
 
 
+# Sentinel — distinguishes "field omitted" from "field set to null". Using
+# Pydantic's exclude_unset semantics on the patch model works for scalar
+# fields generally, but we want callers to be able to PATCH a retention
+# override back to null (= "fall back to platform default") explicitly,
+# which exclude_none would swallow.
+_UNSET: Any = object()
+
+
 class TenantSettingsPatch(BaseModel):
     transcription_engine: Optional[str] = None
     automation_level: Optional[str] = None
@@ -402,15 +410,30 @@ class TenantSettingsPatch(BaseModel):
     question_keyterms: Optional[List[str]] = None
     # Partial merge — only keys present here update features_enabled.
     features_enabled: Optional[Dict[str, Any]] = None
+    # Retention overrides. Sending ``null`` clears the override (so the
+    # tenant falls back to the platform default during the nightly
+    # event_retention sweep); omitting the field leaves it untouched.
+    audio_retention_hours_override: Optional[int] = None
+    feedback_retention_days_override: Optional[int] = None
 
 
 def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
     from backend.app.plans import list_tiers, normalize_tier_key
+    from backend.app.services.event_retention import (
+        FEEDBACK_EVENT_RAW_RETENTION_DAYS,
+    )
 
     features = dict(tenant.features_enabled or {})
     # Fill defaults for known flags so the UI always has something to render.
     for spec in _FEATURE_FLAG_SPEC:
         features.setdefault(spec["key"], spec["default"])
+    # Audio retention is stored as a non-nullable column with a
+    # platform-default of 168h (7 days). The "override" surface is purely
+    # UX — anything other than 168 is treated as a custom value by the UI.
+    audio_default_hours = 168
+    audio_hours = (
+        getattr(tenant, "audio_retention_hours", None) or audio_default_hours
+    )
     return {
         "tenant_id": str(tenant.id),
         "transcription_engine": tenant.transcription_engine or "deepgram",
@@ -422,6 +445,17 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
         "question_keyterms": list(tenant.question_keyterms or []),
         "features_enabled": features,
         "feature_flag_spec": _FEATURE_FLAG_SPEC,
+        # Retention surface — the UI renders two number inputs and shows
+        # the platform defaults as placeholders.
+        "audio_retention_hours": audio_hours,
+        "audio_retention_hours_default": audio_default_hours,
+        # ``retention_days_feedback_events`` is nullable; null means the
+        # tenant inherits the platform default. The UI shows null as
+        # "no override".
+        "feedback_retention_days_override": getattr(
+            tenant, "retention_days_feedback_events", None
+        ),
+        "feedback_retention_days_default": FEEDBACK_EVENT_RAW_RETENTION_DAYS,
         # Plan surface. Seats are controlled by the tier; the UI
         # shows the tier picker + the current limits as read-only.
         "plan_tier": normalize_tier_key(getattr(tenant, "plan_tier", None)),
@@ -452,8 +486,14 @@ async def patch_tenant_settings(
 
     ``features_enabled`` is merged key-by-key so unspecified flags keep
     their current value. All other scalar fields replace when present.
+
+    Retention overrides are special-cased: callers can PATCH them to
+    ``null`` to clear the override (fall back to the platform default).
+    Distinguishing "omitted" from "set to null" requires looking at
+    ``model_fields_set`` rather than ``exclude_none``.
     """
     updates = body.model_dump(exclude_none=True)
+    fields_set = body.model_fields_set
 
     if "transcription_engine" in updates:
         val = str(updates["transcription_engine"])
@@ -497,6 +537,32 @@ async def patch_tenant_settings(
                 continue
             merged[k] = bool(v) if isinstance(v, bool) else v
         tenant.features_enabled = merged
+
+    # Retention overrides — explicitly check fields_set so PATCH'ing the
+    # field to ``null`` clears the override (vs. omitting which leaves it).
+    if "audio_retention_hours_override" in fields_set:
+        raw = body.audio_retention_hours_override
+        if raw is None:
+            # Clear override — fall back to the platform default of 168h.
+            tenant.audio_retention_hours = 168
+        else:
+            if not isinstance(raw, int) or raw < 1 or raw > 24 * 365:
+                raise HTTPException(
+                    status_code=400,
+                    detail="audio_retention_hours_override must be 1..8760",
+                )
+            tenant.audio_retention_hours = int(raw)
+    if "feedback_retention_days_override" in fields_set:
+        raw = body.feedback_retention_days_override
+        if raw is None:
+            tenant.retention_days_feedback_events = None
+        else:
+            if not isinstance(raw, int) or raw < 1 or raw > 3650:
+                raise HTTPException(
+                    status_code=400,
+                    detail="feedback_retention_days_override must be 1..3650",
+                )
+            tenant.retention_days_feedback_events = int(raw)
 
     return _tenant_settings_payload(tenant)
 
@@ -570,3 +636,30 @@ async def reset_features_to_tier(
     spec = get_tier(getattr(tenant, "plan_tier", None))
     tenant.features_enabled = dict(spec.features)
     return _tenant_settings_payload(tenant)
+
+
+# ── Demo data seeder ──────────────────────────────────────────────────
+
+
+class SeedDemoDataOut(BaseModel):
+    tenant_id: str
+    created: Dict[str, int]
+
+
+@router.post("/admin/seed-demo-data", response_model=SeedDemoDataOut)
+async def seed_demo_data_endpoint(
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> SeedDemoDataOut:
+    """Populate the calling tenant with sample dashboards / data.
+
+    Idempotent: re-running on a tenant that already has interactions
+    skips the interactions section but tops up missing scorecards / KB
+    docs / webhooks. Returns the per-resource created counts.
+    """
+    from backend.app.services.demo_seeder import seed_demo_data
+
+    counts = await seed_demo_data(
+        db, tenant=principal.tenant, admin_user=principal.user
+    )
+    return SeedDemoDataOut(tenant_id=str(principal.tenant.id), created=counts)

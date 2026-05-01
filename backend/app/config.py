@@ -105,10 +105,6 @@ class Settings(BaseSettings):
     # ── Meeting Bots (Recall.ai) ─────────────────────────
     RECALL_AI_API_KEY: str = ""
 
-    # ── WhatsApp (Meta Cloud API) ────────────────────────
-    META_WHATSAPP_TOKEN: str = ""
-    META_VERIFY_TOKEN: str = ""
-
     # ── OAuth — Google Workspace ─────────────────────────
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
