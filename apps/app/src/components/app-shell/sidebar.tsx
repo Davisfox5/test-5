@@ -50,6 +50,10 @@ export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
+    // Live coaching sits between items and communications: it's the
+    // synchronous companion to the async follow-up workflow, and the
+    // ordering reads as items → coaching → communications.
+    { href: "/coaching", label: "Live Coaching", minRole: "manager" },
     // Action items become emails — slot the outbox right after items so
     // the workflow reads top-to-bottom. Manager+ only: agents shouldn't
     // see the whole tenant's outgoing email history.

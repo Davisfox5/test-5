@@ -105,6 +105,7 @@ from backend.app.api.outcomes import router as outcomes_router  # noqa: E402
 from backend.app.api.corrections import router as corrections_router  # noqa: E402
 from backend.app.api.quality import router as quality_router  # noqa: E402
 from backend.app.api.ws_tickets import router as ws_tickets_router  # noqa: E402
+from backend.app.api.coaching import router as coaching_router  # noqa: E402
 from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.conversations import router as conversations_router  # noqa: E402
 from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
@@ -143,6 +144,7 @@ app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcom
 app.include_router(corrections_router, prefix=settings.API_V1_PREFIX, tags=["corrections"])
 app.include_router(quality_router, prefix=settings.API_V1_PREFIX, tags=["quality"])
 app.include_router(ws_tickets_router, prefix=settings.API_V1_PREFIX, tags=["ws-tickets"])
+app.include_router(coaching_router, prefix=settings.API_V1_PREFIX, tags=["coaching"])
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
 app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
