@@ -1,6 +1,7 @@
 import { Sidebar } from "@/components/app-shell/sidebar";
 import { Header } from "@/components/app-shell/header";
 import { TrialBanner } from "@/components/app-shell/trial-banner";
+import { PreviewRoleBanner } from "@/components/app-shell/preview-role-pill";
 
 // Authenticated app shell — every route under (app) is gated on a Clerk
 // session and the per-tenant /api/v1/me payload, so static prerender is
@@ -15,6 +16,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="flex flex-1 flex-col">
                 <Header />
                 <TrialBanner />
+                <PreviewRoleBanner />
                 <main className="flex-1 px-6 py-4">{children}</main>
             </div>
         </div>

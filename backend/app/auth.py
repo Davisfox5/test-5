@@ -269,6 +269,13 @@ class AuthPrincipal:
     Session and Clerk principals get a ``["*"]`` placeholder so the
     dependency is a no-op for human callers (their gates are role-based
     via ``require_role``).
+
+    ``is_previewing`` is True iff the sandbox role-preview override is
+    being applied — i.e. ``role`` was overridden from
+    ``user.preview_role`` rather than coming straight from
+    ``user.role``. The SPA reads this to render the "preview mode"
+    banner. Preview is render-time only; the underlying ``users.role``
+    row is never mutated by the override path.
     """
 
     tenant: Tenant
@@ -276,10 +283,24 @@ class AuthPrincipal:
     role: str  # agent | manager | admin
     source: str  # "api_key" | "session" | "clerk"
     scopes: list[str] = field(default_factory=lambda: ["*"])
+    is_previewing: bool = False
 
     @property
     def user_id(self) -> Optional[uuid.UUID]:
         return self.user.id if self.user else None
+
+    @property
+    def real_role(self) -> str:
+        """The user's actual ``users.role`` value (no preview overlay).
+
+        Falls back to ``"agent"`` when no user is attached (e.g. an
+        API-key principal) or when the column is NULL (legacy rows).
+        Useful for the SPA to render "Switch back to admin" when the
+        preview role differs from the real one.
+        """
+        if self.user is None:
+            return self.role
+        return self.user.role or "agent"
 
     def has_scope(self, scope: str) -> bool:
         """Return True if this principal carries the named scope.
@@ -291,6 +312,58 @@ class AuthPrincipal:
         if "*" in self.scopes:
             return True
         return scope in self.scopes
+
+
+# ── Sandbox preview-role overlay ──────────────────────────────────────
+
+
+_PREVIEW_ROLE_VALUES = frozenset({"agent", "manager", "admin"})
+
+
+def _now_aware_for(dt: datetime) -> datetime:
+    """Return ``datetime.now()`` matched to ``dt``'s tz-awareness.
+
+    Postgres returns ``trial_ends_at`` as a tz-aware UTC datetime, but
+    SQLite (used in tests) returns it naive. Matching the comparator
+    avoids the ``can't compare offset-naive and offset-aware datetimes``
+    TypeError without relaxing the production code path.
+    """
+    if dt.tzinfo is None:
+        return datetime.utcnow()
+    return datetime.now(timezone.utc)
+
+
+def _resolve_effective_role(user: User, tenant: Tenant) -> Tuple[str, bool]:
+    """Return ``(effective_role, is_previewing)`` for an interactive user.
+
+    The sandbox preview overlay applies only when *all three* gates
+    pass:
+
+    1. The tenant is on the sandbox tier (the only free trial tier).
+    2. The trial is still active (``trial_ends_at > now()``).
+    3. ``user.preview_role`` is one of the three valid role names.
+
+    On any failure the user's real ``users.role`` is returned (with a
+    safe ``"agent"`` fallback for legacy NULL rows). The DB row is never
+    mutated — preview is a render-time overlay, never a security
+    boundary.
+    """
+    real = user.role or "agent"
+    # ``getattr`` rather than direct access so legacy / mocked User and
+    # Tenant objects (e.g. in tests, or hypothetical pre-migration
+    # rows) don't explode here. The defaults all fall through to "no
+    # preview" exactly as the production NULL / non-sandbox state would.
+    preview = getattr(user, "preview_role", None)
+    if preview not in _PREVIEW_ROLE_VALUES:
+        return real, False
+    if getattr(tenant, "plan_tier", None) != "sandbox":
+        return real, False
+    trial_ends_at = getattr(tenant, "trial_ends_at", None)
+    if trial_ends_at is None:
+        return real, False
+    if trial_ends_at <= _now_aware_for(trial_ends_at):
+        return real, False
+    return preview, True
 
 
 # ── FastAPI dependencies ───────────────────────────────────────────────
@@ -335,11 +408,13 @@ async def _principal_from_session_jwt(
     user = (await db.execute(stmt)).scalar_one_or_none()
     if user is None:
         return None
+    effective_role, is_previewing = _resolve_effective_role(user, user.tenant)
     return AuthPrincipal(
         tenant=user.tenant,
         user=user,
-        role=user.role or "agent",
+        role=effective_role,
         source="session",
+        is_previewing=is_previewing,
     )
 
 
@@ -499,11 +574,13 @@ async def _principal_from_clerk(
     user = (await db.execute(stmt)).scalar_one_or_none()
     if user is None:
         return None
+    effective_role, is_previewing = _resolve_effective_role(user, user.tenant)
     return AuthPrincipal(
         tenant=user.tenant,
         user=user,
-        role=user.role or "agent",
+        role=effective_role,
         source="clerk",
+        is_previewing=is_previewing,
     )
 
 

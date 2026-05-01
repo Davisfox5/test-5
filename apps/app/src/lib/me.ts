@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "./api";
 
 export type PlanTier = "sandbox" | "starter" | "growth" | "enterprise";
@@ -40,7 +40,20 @@ export interface MeUser {
     id: string;
     email: string;
     name: string | null;
+    // The *effective* role: the preview-role overlay if it's currently
+    // applied, otherwise the user's real role. Sidebar nav + role-gated
+    // UI should read this directly — no double-processing.
     role: UserRole;
+    // The user's stored override. NULL means "no preview, use real
+    // role". Surfaced so the switcher can render which option is
+    // checked even when the override isn't being applied.
+    preview_role: UserRole | null;
+    // The user's underlying ``users.role`` (no preview overlay). Lets
+    // the SPA render "Switch back to <real>" when preview differs.
+    real_role: UserRole;
+    // True iff the principal resolver applied the preview overlay on
+    // this request — drives the "preview mode" banner.
+    is_previewing: boolean;
 }
 
 export interface Me {
@@ -53,5 +66,31 @@ export function useMe() {
     return useQuery({
         queryKey: ["me"],
         queryFn: () => api.request<Me>("/me"),
+    });
+}
+
+export interface SetPreviewRoleResponse {
+    role: UserRole | null;
+    real_role: UserRole;
+}
+
+/**
+ * Tanstack mutation that sets or clears the calling user's preview
+ * role. Sandbox-tier tenants only — the backend enforces the same
+ * three-layer gate the principal resolver uses (tier + trial-active +
+ * role validity), so a non-sandbox call returns 403. Invalidates the
+ * ``["me"]`` query on success so the header pill, sidebar, and any
+ * role-gated route immediately re-render against the new effective
+ * role.
+ */
+export function useSetPreviewRole() {
+    const api = useApi();
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (body: { role: UserRole | null }) =>
+            api.post<SetPreviewRoleResponse>("/me/preview-role", body),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["me"] });
+        },
     });
 }

@@ -8,6 +8,7 @@ import { UserButton } from "@clerk/nextjs";
 import { useMe } from "@/lib/me";
 import { LindaMark } from "@/components/brand/linda-mark";
 import { navItemsForRole } from "@/components/app-shell/sidebar";
+import { PreviewRolePill } from "@/components/app-shell/preview-role-pill";
 
 const KNOWN_ROLES = new Set<string>(["agent", "manager", "admin"]);
 
@@ -64,7 +65,10 @@ export function Header() {
                         </p>
                     </div>
                 </div>
-                <UserButton afterSignOutUrl="/" />
+                <div className="flex items-center gap-3">
+                    <PreviewRolePill />
+                    <UserButton afterSignOutUrl="/" />
+                </div>
             </header>
 
             {/* Mobile nav drawer — only rendered when open so the

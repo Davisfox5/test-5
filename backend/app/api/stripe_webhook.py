@@ -39,13 +39,13 @@ from typing import Any, Dict, List, Literal, Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import AuthPrincipal, require_role
 from backend.app.config import get_settings
 from backend.app.db import get_db
-from backend.app.models import Tenant
+from backend.app.models import Tenant, User
 from backend.app.services.scorecard_entitlement import parse_price_catalog
 from backend.app.services.stripe_billing import (
     price_id_to_tier,
@@ -593,6 +593,25 @@ async def _tenant_by_customer(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def _clear_preview_roles_for_tenant(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> None:
+    """Clear ``users.preview_role`` for every user in a tenant.
+
+    Run after a Stripe transition that lands the tenant on a non-sandbox
+    plan_tier. The sandbox role-preview switcher is a sandbox-only
+    feature; once a tenant becomes a paying customer (or the
+    subscription is canceled and they land on something other than
+    sandbox), every override on every user must be cleared — there's no
+    grandfathering. Idempotent: safe to run when no rows match.
+    """
+    await db.execute(
+        update(User)
+        .where(User.tenant_id == tenant_id, User.preview_role.is_not(None))
+        .values(preview_role=None)
+    )
+
+
 def _active_price_id(subscription_obj: Dict[str, Any]) -> Optional[str]:
     """Find the subscription item whose price maps to a known tier.
 
@@ -654,6 +673,11 @@ async def _apply_subscription_to_tenant(
 
     tenant.stripe_subscription_id = str(subscription_obj.get("id") or "")
     apply_tier(tenant, tier_key)
+    # The sandbox role-preview switcher is a sandbox-only feature; if
+    # this transition lands the tenant on anything else, every user's
+    # ``preview_role`` is cleared. No grandfathering.
+    if tenant.plan_tier != "sandbox":
+        await _clear_preview_roles_for_tenant(db, tenant.id)
     # Enforce the new caps — auto-suspend excess users with
     # suspension_reason="tier_downgrade". Admin must reconcile via the
     # seat-reconciliation UI before the banner clears.
@@ -685,6 +709,12 @@ async def _cancel_subscription(
 
     tenant.stripe_subscription_id = None
     apply_tier(tenant, "sandbox")
+    # Defensive: ``apply_tier`` lands the tenant on sandbox here, so the
+    # preview switcher remains valid and we don't clear. Kept as an
+    # explicit guard so a future caller that routes elsewhere still
+    # clears the override consistently with the upgrade path above.
+    if tenant.plan_tier != "sandbox":
+        await _clear_preview_roles_for_tenant(db, tenant.id)
     reconcile = await reconcile_seats(db, tenant)
     return {
         "handled": True,
