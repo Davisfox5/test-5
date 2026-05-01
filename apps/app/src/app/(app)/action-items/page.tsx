@@ -336,12 +336,22 @@ function Row({
                                 <span>Priority: {item.priority}</span>
                                 <span>Automation: {item.automation_status}</span>
                             </div>
-                            <Link
-                                href={`/interactions/${item.interaction_id}`}
-                                className="inline-flex items-center gap-1 text-primary text-sm hover:underline"
-                            >
-                                Open source interaction →
-                            </Link>
+                            <div className="flex flex-wrap items-center gap-3">
+                                <Link
+                                    href={`/interactions/${item.interaction_id}`}
+                                    className="inline-flex items-center gap-1 text-primary text-sm hover:underline"
+                                >
+                                    Open source interaction →
+                                </Link>
+                                {item.email_draft ? (
+                                    <Link
+                                        href={`/interactions/${item.interaction_id}#follow-up`}
+                                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-primary hover:bg-bg-card"
+                                    >
+                                        Compose follow-up
+                                    </Link>
+                                ) : null}
+                            </div>
                         </div>
                     </td>
                 </tr>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useApi } from "@/lib/api";
 import {
@@ -15,6 +15,12 @@ import {
     type ActionItemOut,
     type TranscriptTurn,
 } from "@/lib/interactions";
+import {
+    useFollowUpDraft,
+    useSendFollowUp,
+    type EmailSendOut,
+} from "@/lib/communications";
+import { useOAuthStatus } from "@/lib/oauth";
 
 export default function InteractionDetailPage() {
     const params = useParams<{ id: string }>();
@@ -263,6 +269,8 @@ export default function InteractionDetailPage() {
                 </aside>
             </div>
 
+            <FollowUpPanel interactionId={i.id} />
+
             <section className="flex items-center justify-between rounded-lg border border-border bg-bg-card p-5">
                 <div>
                     <h3 className="text-sm font-semibold text-accent-rose">
@@ -372,6 +380,448 @@ function ScoreRow({
                 ) : null}
             </dd>
         </div>
+    );
+}
+
+type ProviderChoice = "auto" | "google" | "microsoft";
+
+const PROVIDER_LABELS: Record<ProviderChoice, string> = {
+    auto: "Auto",
+    google: "Gmail",
+    microsoft: "Outlook",
+};
+
+function FollowUpPanel({ interactionId }: { interactionId: string }) {
+    const draft = useFollowUpDraft(interactionId);
+    const send = useSendFollowUp(interactionId);
+    const oauth = useOAuthStatus();
+    const sectionRef = useRef<HTMLElement | null>(null);
+
+    const [collapsed, setCollapsed] = useState(false);
+    const [subject, setSubject] = useState("");
+    const [body, setBody] = useState("");
+    const [recipients, setRecipients] = useState<string[]>([""]);
+    const [showCcBcc, setShowCcBcc] = useState(false);
+    const [cc, setCc] = useState("");
+    const [bcc, setBcc] = useState("");
+    const [provider, setProvider] = useState<ProviderChoice>("auto");
+    const [lastSent, setLastSent] = useState<EmailSendOut | null>(null);
+    const [hydrated, setHydrated] = useState(false);
+
+    // Hydrate the form from the AI draft once it arrives. Don't keep
+    // overwriting the user's edits if they keep editing while the query
+    // refetches in the background.
+    useEffect(() => {
+        if (!draft.data || hydrated) return;
+        setSubject(draft.data.draft_subject ?? "");
+        setBody(draft.data.draft_body ?? "");
+        setRecipients(
+            draft.data.suggested_to ? [draft.data.suggested_to] : [""],
+        );
+        setHydrated(true);
+    }, [draft.data, hydrated]);
+
+    // Auto-scroll into view when the URL hash is #follow-up — used by
+    // the action-items page deep link.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        if (window.location.hash === "#follow-up" && sectionRef.current) {
+            sectionRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [draft.data]);
+
+    const integrations = oauth.data?.integrations ?? [];
+    const hasGoogle = integrations.some((i) => i.provider === "google");
+    const hasMicrosoft = integrations.some((i) => i.provider === "microsoft");
+    const hasAnyProvider = hasGoogle || hasMicrosoft;
+
+    if (collapsed) {
+        return (
+            <section
+                id="follow-up"
+                ref={sectionRef}
+                className="rounded-lg border border-border bg-bg-card p-5"
+            >
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Follow-up email</h3>
+                    <button
+                        type="button"
+                        onClick={() => setCollapsed(false)}
+                        className="text-xs text-primary hover:underline"
+                    >
+                        Show draft
+                    </button>
+                </div>
+            </section>
+        );
+    }
+
+    if (lastSent) {
+        return (
+            <section
+                id="follow-up"
+                ref={sectionRef}
+                className="rounded-lg border border-accent-emerald/40 bg-bg-card p-5"
+            >
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h3 className="text-sm font-semibold text-accent-emerald">
+                            Follow-up sent
+                        </h3>
+                        <p className="mt-1 text-xs text-text-muted">
+                            via{" "}
+                            {PROVIDER_LABELS[
+                                (lastSent.provider as ProviderChoice) ?? "auto"
+                            ] ?? lastSent.provider}{" "}
+                            • {lastSent.to_address} •{" "}
+                            {lastSent.sent_at
+                                ? new Date(lastSent.sent_at).toLocaleString()
+                                : "just now"}
+                        </p>
+                        <p className="mt-1 text-xs text-text-subtle font-mono">
+                            #{lastSent.id.slice(0, 8)}
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setLastSent(null);
+                            setHydrated(false);
+                            draft.refetch();
+                        }}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary"
+                    >
+                        Compose another
+                    </button>
+                </div>
+            </section>
+        );
+    }
+
+    if (draft.isLoading) {
+        return (
+            <section
+                id="follow-up"
+                ref={sectionRef}
+                className="rounded-lg border border-border bg-bg-card p-5"
+            >
+                <h3 className="text-sm font-semibold">Follow-up email</h3>
+                <p className="mt-2 text-sm text-text-muted">
+                    Loading the AI draft…
+                </p>
+            </section>
+        );
+    }
+
+    if (draft.error) {
+        return (
+            <section
+                id="follow-up"
+                ref={sectionRef}
+                className="rounded-lg border border-border bg-bg-card p-5"
+            >
+                <h3 className="text-sm font-semibold">Follow-up email</h3>
+                <p className="mt-2 text-sm text-text-muted">
+                    No AI follow-up draft yet for this interaction. Drafts
+                    appear after Linda finishes processing the call.
+                </p>
+                <button
+                    type="button"
+                    onClick={() => draft.refetch()}
+                    className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary"
+                >
+                    Try again
+                </button>
+            </section>
+        );
+    }
+
+    const validRecipients = recipients
+        .map((r) => r.trim())
+        .filter((r) => r.length > 0);
+    const canSend =
+        hasAnyProvider &&
+        subject.trim().length > 0 &&
+        body.trim().length > 0 &&
+        validRecipients.length > 0 &&
+        !send.isPending;
+
+    function updateRecipient(idx: number, value: string) {
+        setRecipients((cur) => cur.map((r, i) => (i === idx ? value : r)));
+    }
+
+    function addRecipient() {
+        setRecipients((cur) => [...cur, ""]);
+    }
+
+    function removeRecipient(idx: number) {
+        setRecipients((cur) =>
+            cur.length > 1 ? cur.filter((_, i) => i !== idx) : cur,
+        );
+    }
+
+    async function handleSend() {
+        const to = validRecipients[0];
+        if (!to) return;
+        // Backend's current EmailSendIn accepts only single `to` + `cc`.
+        // Extra recipients are appended into CC so they still receive the
+        // mail; surfacing this in the input help text would require a
+        // schema change to accept arrays.
+        const extraTo = validRecipients.slice(1);
+        const ccCombined = [
+            ...extraTo,
+            ...(cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : []),
+            ...(bcc ? bcc.split(",").map((s) => s.trim()).filter(Boolean) : []),
+        ].join(", ");
+        try {
+            const result = await send.mutateAsync({
+                subject: subject.trim(),
+                body,
+                to,
+                cc: ccCombined || undefined,
+                provider: provider === "auto" ? undefined : provider,
+            });
+            setLastSent(result);
+        } catch {
+            // surfaced inline below
+        }
+    }
+
+    function handleRegenerate() {
+        setHydrated(false);
+        draft.refetch();
+    }
+
+    return (
+        <section
+            id="follow-up"
+            ref={sectionRef}
+            className="rounded-lg border border-border bg-bg-card p-5"
+        >
+            <div className="flex items-start justify-between gap-4">
+                <div>
+                    <h3 className="text-sm font-semibold">Follow-up email</h3>
+                    <p className="mt-1 text-xs text-text-muted">
+                        Linda drafted this from the call. Edit anything before
+                        sending.
+                    </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                    <button
+                        type="button"
+                        onClick={handleRegenerate}
+                        disabled={draft.isFetching}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary disabled:opacity-50"
+                    >
+                        {draft.isFetching ? "Regenerating…" : "Regenerate"}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setCollapsed(true)}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary"
+                    >
+                        Discard draft
+                    </button>
+                </div>
+            </div>
+
+            {!hasAnyProvider ? (
+                <div className="mt-4 rounded-md border border-accent-amber/40 bg-accent-amber/10 p-3 text-xs text-text-muted">
+                    No Gmail or Outlook integration is connected for this
+                    tenant.{" "}
+                    <Link
+                        href="/settings#integrations"
+                        className="text-primary hover:underline"
+                    >
+                        Connect one in Settings
+                    </Link>{" "}
+                    to send this follow-up.
+                </div>
+            ) : null}
+
+            <div className="mt-4 space-y-3">
+                <label className="block text-sm">
+                    <span className="text-xs uppercase tracking-wide text-text-subtle">
+                        Subject
+                    </span>
+                    <input
+                        type="text"
+                        value={subject}
+                        onChange={(e) => setSubject(e.target.value)}
+                        className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+                    />
+                </label>
+
+                <div className="block text-sm">
+                    <span className="text-xs uppercase tracking-wide text-text-subtle">
+                        To
+                    </span>
+                    <div className="mt-1 space-y-2">
+                        {recipients.map((r, idx) => (
+                            <div key={idx} className="flex gap-2">
+                                <input
+                                    type="email"
+                                    value={r}
+                                    onChange={(e) =>
+                                        updateRecipient(idx, e.target.value)
+                                    }
+                                    placeholder="recipient@example.com"
+                                    className="flex-1 rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+                                />
+                                {recipients.length > 1 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => removeRecipient(idx)}
+                                        className="rounded-md border border-border px-2 py-1 text-xs text-text-muted hover:bg-bg-secondary"
+                                    >
+                                        Remove
+                                    </button>
+                                ) : null}
+                            </div>
+                        ))}
+                        <button
+                            type="button"
+                            onClick={addRecipient}
+                            className="text-xs text-primary hover:underline"
+                        >
+                            + Add recipient
+                        </button>
+                    </div>
+                </div>
+
+                {showCcBcc ? (
+                    <>
+                        <label className="block text-sm">
+                            <span className="text-xs uppercase tracking-wide text-text-subtle">
+                                CC
+                            </span>
+                            <input
+                                type="text"
+                                value={cc}
+                                onChange={(e) => setCc(e.target.value)}
+                                placeholder="comma-separated"
+                                className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+                            />
+                        </label>
+                        <label className="block text-sm">
+                            <span className="text-xs uppercase tracking-wide text-text-subtle">
+                                BCC
+                            </span>
+                            <input
+                                type="text"
+                                value={bcc}
+                                onChange={(e) => setBcc(e.target.value)}
+                                placeholder="comma-separated"
+                                className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+                            />
+                        </label>
+                    </>
+                ) : (
+                    <button
+                        type="button"
+                        onClick={() => setShowCcBcc(true)}
+                        className="text-xs text-primary hover:underline"
+                    >
+                        + Add CC / BCC
+                    </button>
+                )}
+
+                <label className="block text-sm">
+                    <span className="text-xs uppercase tracking-wide text-text-subtle">
+                        Body
+                    </span>
+                    <textarea
+                        value={body}
+                        onChange={(e) => setBody(e.target.value)}
+                        rows={10}
+                        className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+                    />
+                </label>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                    <label className="flex items-center gap-2 text-xs text-text-muted">
+                        Send via
+                        <select
+                            value={provider}
+                            onChange={(e) =>
+                                setProvider(
+                                    e.target.value as ProviderChoice,
+                                )
+                            }
+                            className="rounded-md border border-border bg-bg-secondary px-2 py-1 text-xs"
+                        >
+                            <option value="auto">Auto</option>
+                            <option value="google" disabled={!hasGoogle}>
+                                Gmail{hasGoogle ? " (connected)" : " (not connected)"}
+                            </option>
+                            <option
+                                value="microsoft"
+                                disabled={!hasMicrosoft}
+                            >
+                                Outlook
+                                {hasMicrosoft
+                                    ? " (connected)"
+                                    : " (not connected)"}
+                            </option>
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        onClick={handleSend}
+                        disabled={!canSend}
+                        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+                    >
+                        {send.isPending ? "Sending…" : "Send"}
+                    </button>
+                </div>
+
+                {send.isError ? (
+                    <p className="text-xs text-accent-rose">
+                        Couldn&apos;t send:{" "}
+                        {send.error instanceof Error
+                            ? send.error.message
+                            : "unknown error"}
+                    </p>
+                ) : null}
+            </div>
+
+            {draft.data?.recent_sends &&
+            draft.data.recent_sends.length > 0 ? (
+                <div className="mt-5 border-t border-border pt-3">
+                    <h4 className="text-xs uppercase tracking-wide text-text-subtle">
+                        Recent sends
+                    </h4>
+                    <ul className="mt-2 space-y-1 text-xs text-text-muted">
+                        {draft.data.recent_sends.slice(0, 5).map((s) => (
+                            <li
+                                key={s.id}
+                                className="flex flex-wrap items-center gap-2"
+                            >
+                                <span
+                                    className={
+                                        s.status === "sent"
+                                            ? "text-accent-emerald"
+                                            : s.status === "failed"
+                                              ? "text-accent-rose"
+                                              : "text-accent-amber"
+                                    }
+                                >
+                                    {s.status}
+                                </span>
+                                <span>→ {s.to_address}</span>
+                                <span className="text-text-subtle">
+                                    {s.sent_at
+                                        ? new Date(s.sent_at).toLocaleString()
+                                        : new Date(
+                                              s.created_at,
+                                          ).toLocaleString()}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            ) : null}
+        </section>
     );
 }
 

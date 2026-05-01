@@ -14,6 +14,10 @@ Endpoints:
 * ``POST /interactions/{id}/send-follow-up`` — send the draft (optionally
   edited) via the caller's preferred provider. Logs an ``EmailSend`` row
   either way.
+* ``GET  /emails`` — tenant-wide outbox (manager+) for the SPA's
+  Communications page, with status / date / search filters and
+  pagination. Joins Interaction + User so the table renders without a
+  fan-out.
 """
 
 from __future__ import annotations
@@ -23,18 +27,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal
+from backend.app.auth import AuthPrincipal, get_current_principal, require_role
 from backend.app.db import get_db
 from backend.app.models import (
     Contact,
     EmailSend,
     Integration,
     Interaction,
+    User,
 )
 from backend.app.services.email.base import (
     EmailAuthError,
@@ -86,6 +91,39 @@ class FollowUpDraftOut(BaseModel):
     draft_body: str
     action_item_drafts: List[dict]
     recent_sends: List[EmailSendOut]
+
+
+class EmailSendListItem(BaseModel):
+    """Outbox row for the tenant-wide /emails listing.
+
+    Embeds the small handful of join fields the UI needs so it doesn't
+    have to fan out to the interactions / users endpoints per row.
+    """
+
+    id: uuid.UUID
+    interaction_id: Optional[uuid.UUID]
+    interaction_title: Optional[str]
+    interaction_channel: Optional[str]
+    sender_user_id: Optional[uuid.UUID]
+    sender_name: Optional[str]
+    sender_email: Optional[str]
+    provider: str
+    to_address: str
+    cc_address: Optional[str]
+    subject: str
+    body: str
+    status: str
+    provider_message_id: Optional[str]
+    error: Optional[str]
+    sent_at: Optional[datetime]
+    created_at: datetime
+
+
+class EmailSendListOut(BaseModel):
+    items: List[EmailSendListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
@@ -216,6 +254,86 @@ async def send_follow_up(
         await _close_sender(sender)
 
     return EmailSendOut.model_validate(record)
+
+
+@router.get("/emails", response_model=EmailSendListOut)
+async def list_emails(
+    status: Optional[Literal["sent", "failed", "pending"]] = None,
+    date_from: Optional[datetime] = Query(None, alias="date_from"),
+    date_to: Optional[datetime] = Query(None, alias="date_to"),
+    q: Optional[str] = Query(None, description="Search by recipient or subject"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_role("manager")),
+) -> EmailSendListOut:
+    """Tenant-wide outbox of follow-up email sends.
+
+    Manager+ scoped — agents shouldn't be able to see the whole
+    tenant's outgoing email history. Always filtered by
+    ``principal.tenant.id``; cross-tenant rows are never returned.
+
+    Joins :class:`Interaction` (title + channel for context) and
+    :class:`User` (sender's name/email) so the SPA can render the
+    table in one round-trip.
+    """
+    base_filters = [EmailSend.tenant_id == principal.tenant.id]
+    if status is not None:
+        base_filters.append(EmailSend.status == status)
+    if date_from is not None:
+        base_filters.append(EmailSend.created_at >= date_from)
+    if date_to is not None:
+        base_filters.append(EmailSend.created_at <= date_to)
+    if q:
+        needle = f"%{q.lower()}%"
+        base_filters.append(
+            or_(
+                func.lower(EmailSend.to_address).like(needle),
+                func.lower(EmailSend.subject).like(needle),
+            )
+        )
+
+    # Total — separate query so pagination metadata stays accurate even
+    # when the page is short.
+    count_stmt = select(func.count()).select_from(EmailSend).where(*base_filters)
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    stmt = (
+        select(EmailSend, Interaction, User)
+        .where(*base_filters)
+        .join(Interaction, Interaction.id == EmailSend.interaction_id, isouter=True)
+        .join(User, User.id == EmailSend.sender_user_id, isouter=True)
+        .order_by(EmailSend.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    items: List[EmailSendListItem] = []
+    for send, interaction, user in rows:
+        items.append(
+            EmailSendListItem(
+                id=send.id,
+                interaction_id=send.interaction_id,
+                interaction_title=interaction.title if interaction else None,
+                interaction_channel=interaction.channel if interaction else None,
+                sender_user_id=send.sender_user_id,
+                sender_name=user.name if user else None,
+                sender_email=user.email if user else None,
+                provider=send.provider,
+                to_address=send.to_address,
+                cc_address=send.cc_address,
+                subject=send.subject,
+                body=send.body,
+                status=send.status,
+                provider_message_id=send.provider_message_id,
+                error=send.error,
+                sent_at=send.sent_at,
+                created_at=send.created_at,
+            )
+        )
+
+    return EmailSendListOut(items=items, total=int(total), limit=limit, offset=offset)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
