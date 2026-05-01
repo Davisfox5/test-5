@@ -50,6 +50,10 @@ export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
+    // Action items become emails — slot the outbox right after items so
+    // the workflow reads top-to-bottom. Manager+ only: agents shouldn't
+    // see the whole tenant's outgoing email history.
+    { href: "/communications", label: "Communications", minRole: "manager" },
     { href: "/scorecards", label: "Scorecards", minRole: "agent" },
     { href: "/team", label: "Team", minRole: "manager" },
     { href: "/analytics", label: "Analytics", minRole: "manager" },
