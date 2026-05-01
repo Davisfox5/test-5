@@ -30,7 +30,15 @@ primary_region = "iad"
   PYTHONPATH = "/home/linda/app"
 
 [processes]
-  api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+  # `--proxy-headers --forwarded-allow-ips=*` makes uvicorn honor Fly's
+  # X-Forwarded-Proto / X-Forwarded-Host / X-Forwarded-For. Without these
+  # flags, `request.base_url` reports `http://...` (Fly terminates TLS
+  # at the proxy), which breaks any absolute URL the backend mints —
+  # OAuth redirect_uri being the load-bearing example: Azure AD enforces
+  # strict scheme matching and rejects http→https mismatches with
+  # AADSTS50011. The `*` allow list is fine here because nothing
+  # external reaches uvicorn directly; Fly's edge is the only hop.
+  api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"
   worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2"
   beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
 
