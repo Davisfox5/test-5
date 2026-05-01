@@ -4,21 +4,36 @@ Returns everything the frontend needs on boot to decide what to render:
 identity, plan tier, trial state, feature limits, and Ask-Linda
 availability. Maps the ``TierSpec`` returned by ``limits_for(tenant)``
 into the flat-feature shape the SPA's ``useMe()`` consumes.
+
+Also hosts the sandbox-only preview-role switcher
+(``POST /me/preview-role``). The override is a render-time overlay
+gated at three layers (tier + trial-active + role validity); the
+underlying ``users.role`` column is never mutated by this endpoint, so
+the override never relaxes a security boundary. See the principal
+resolver in :mod:`backend.app.auth` for the load-bearing gate.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Literal, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal
+from backend.app.auth import AuthPrincipal, _now_aware_for, get_current_principal
+from backend.app.db import get_db
+from backend.app.models import User
 from backend.app.plans import TierSpec, limits_for, trial_is_active, trial_is_expired
+from backend.app.services.audit_log import audit_log
 
 router = APIRouter()
+
+
+PreviewRole = Literal["agent", "manager", "admin"]
 
 
 class PlanLimitsOut(BaseModel):
@@ -59,12 +74,36 @@ class UserOut(BaseModel):
     id: uuid.UUID
     email: str
     name: Optional[str]
+    # The *effective* role: the preview-role overlay if it's currently
+    # being applied, otherwise the user's real ``users.role``. Sidebar
+    # nav + role-gated UI should read this directly.
     role: str
+    # The user's stored override (``users.preview_role``). Surfaced so
+    # the switcher can render which option is checked even when the
+    # override isn't being applied (e.g. a sandbox tenant whose trial
+    # just expired — the row stays put until the user clears it).
+    preview_role: Optional[PreviewRole]
+    # The user's underlying ``users.role`` (no preview overlay). Lets
+    # the SPA render "Switch back to admin" when the preview differs.
+    real_role: str
+    # True iff the principal resolver applied the preview overlay on
+    # this request — drives the "you're in preview mode" banner.
+    is_previewing: bool
 
 
 class MeOut(BaseModel):
     tenant: TenantOut
     user: Optional[UserOut]
+
+
+class PreviewRoleIn(BaseModel):
+    """Body for ``POST /me/preview-role``.
+
+    ``role: null`` clears the override. Anything outside the literal
+    set is rejected by Pydantic with HTTP 422.
+    """
+
+    role: Optional[PreviewRole] = None
 
 
 def _plan_limits_out(spec: TierSpec) -> PlanLimitsOut:
@@ -91,12 +130,30 @@ def _plan_limits_out(spec: TierSpec) -> PlanLimitsOut:
     )
 
 
+def _user_out(principal: AuthPrincipal) -> Optional[UserOut]:
+    user = principal.user
+    if user is None:
+        return None
+    raw_preview = user.preview_role
+    preview_role: Optional[PreviewRole] = (
+        raw_preview if raw_preview in {"agent", "manager", "admin"} else None
+    )
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        role=principal.role,
+        preview_role=preview_role,
+        real_role=principal.real_role,
+        is_previewing=principal.is_previewing,
+    )
+
+
 @router.get("/me", response_model=MeOut)
 async def me(
     principal: AuthPrincipal = Depends(get_current_principal),
 ) -> MeOut:
     tenant = principal.tenant
-    user = principal.user
     return MeOut(
         tenant=TenantOut(
             id=tenant.id,
@@ -115,9 +172,70 @@ async def me(
             ),
             limits=_plan_limits_out(limits_for(tenant)),
         ),
-        user=UserOut(
-            id=user.id, email=user.email, name=user.name, role=user.role
-        )
-        if user is not None
-        else None,
+        user=_user_out(principal),
     )
+
+
+@router.post("/me/preview-role")
+async def set_preview_role(
+    body: PreviewRoleIn,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Set or clear the calling user's preview role for the sandbox UI.
+
+    Sandbox-tier tenants only, and only while the trial is still active.
+    The override is render-time only — the user's real role is unchanged
+    and remains the source of truth for security. ``role: null`` clears.
+    """
+    # API-key callers don't have a human user behind them; preview is
+    # an interactive-session feature only.
+    if principal.source == "api_key" or principal.user is None:
+        raise HTTPException(
+            status_code=403,
+            detail="preview role only applies to interactive sessions",
+        )
+
+    tenant = principal.tenant
+    if tenant.plan_tier != "sandbox":
+        raise HTTPException(
+            status_code=403,
+            detail="preview role is sandbox-only",
+        )
+
+    # Same trial-active gate as the principal resolver. We re-check
+    # here rather than relying on resolver state so a sandbox tenant
+    # whose trial expired between requests can't sneak a write through.
+    trial_ends_at = tenant.trial_ends_at
+    if trial_ends_at is None or trial_ends_at <= _now_aware_for(trial_ends_at):
+        raise HTTPException(
+            status_code=403,
+            detail="trial expired; preview role is unavailable",
+        )
+
+    # Look the user up in *this* request's DB session — the principal's
+    # ``.user`` came from the principal-resolver's session and isn't
+    # attached here, so mutations on it wouldn't reach this commit.
+    db_user = (
+        await db.execute(select(User).where(User.id == principal.user.id))
+    ).scalar_one()
+
+    before_value = db_user.preview_role
+    new_value = body.role  # Pydantic already validated the literal set.
+
+    db_user.preview_role = new_value
+    await audit_log(
+        db,
+        principal,
+        action="user.preview_role_set",
+        resource_type="user",
+        resource_id=str(db_user.id),
+        before={"preview_role": before_value},
+        after={"preview_role": new_value},
+    )
+    await db.commit()
+
+    return {
+        "role": new_value,
+        "real_role": db_user.role or "agent",
+    }

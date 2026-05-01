@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -105,6 +106,16 @@ class Tenant(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # Pin ``preview_role`` to the same role-name vocabulary as
+        # ``role`` (or NULL = no preview). Defense-in-depth alongside
+        # the Pydantic ``Literal`` on ``POST /me/preview-role`` — a
+        # raw SQL UPDATE that tries to write 'owner' will be rejected.
+        CheckConstraint(
+            "preview_role IS NULL OR preview_role IN ('agent', 'manager', 'admin')",
+            name="ck_users_preview_role",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
@@ -115,6 +126,13 @@ class User(Base):
     # integrations, webhooks; managers can monitor calls + approve most
     # things agents can't; agents are the call-handling role.
     role: Mapped[str] = mapped_column(String, default="agent")
+    # Sandbox-only render-time role override. NULL means "no preview,
+    # use the real role". Honored by the principal resolver only when
+    # the tenant is on sandbox AND the trial is still active — see the
+    # three-layer gate in :mod:`backend.app.auth`. The DB-level CHECK
+    # constraint pins the vocabulary to ``{agent, manager, admin}``;
+    # this column never relaxes ``users.role`` for security purposes.
+    preview_role: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
