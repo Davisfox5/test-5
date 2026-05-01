@@ -55,6 +55,11 @@ export const NAV: NavItem[] = [
     // see the whole tenant's outgoing email history.
     { href: "/communications", label: "Communications", minRole: "manager" },
     { href: "/scorecards", label: "Scorecards", minRole: "agent" },
+    {
+        href: "/knowledge-base",
+        label: "Knowledge Base",
+        minRole: "manager",
+    },
     { href: "/team", label: "Team", minRole: "manager" },
     { href: "/analytics", label: "Analytics", minRole: "manager" },
     { href: "/billing", label: "Billing & plan", minRole: "admin" },
