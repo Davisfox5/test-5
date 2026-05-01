@@ -104,6 +104,26 @@ async def trial_signup(
                     select(Tenant).where(Tenant.id == existing_user.tenant_id)
                 )
             ).scalar_one()
+            # Heal the "/sign-up before /signup" trap. The Clerk lazy-create
+            # path defaults role='agent' because it can't know if this is
+            # the first user of the tenant; the trial-signup flow is the
+            # source of truth that says "this is the founding admin." If
+            # we land here as the sole active user of a sandbox tenant
+            # without admin role, fix it before returning — otherwise the
+            # caller is locked out of Settings / API keys / inviting team.
+            if existing_user.role != "admin" and tenant_row.plan_tier == "sandbox":
+                from sqlalchemy import func as _func
+
+                active_user_count = (
+                    await db.execute(
+                        select(_func.count())
+                        .select_from(User)
+                        .where(User.tenant_id == tenant_row.id, User.is_active.is_(True))
+                    )
+                ).scalar_one()
+                if active_user_count == 1:
+                    existing_user.role = "admin"
+                    await db.commit()
             return TrialSignupOut(
                 tenant_id=tenant_row.id,
                 tenant_slug=tenant_row.slug,
