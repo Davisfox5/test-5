@@ -61,8 +61,11 @@ MICROSOFT_SCOPES = [
     "Mail.Read",
     "Calendars.ReadWrite",
     "Contacts.Read",
-    "offline_access",
 ]
+# msal's ConfidentialClientApplication injects offline_access / openid /
+# profile itself and refuses any caller-supplied entry from that reserved
+# set (see msal.application._decorate_scope). Keep these scopes implicit;
+# the refresh-token + sign-in claims still come back at consent time.
 
 
 def _provider_setting(attr: str) -> str:
