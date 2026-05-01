@@ -250,9 +250,9 @@ def main() -> int:
             # ───── Interactions view: channel tabs, pagination, date picker ─────
             switch_view(page, "interactions")
 
-            with step("Channel tabs: SMS tab becomes active"):
-                page.locator(".channel-tab[data-channel=sms]").click()
-                assert "active" in (page.locator(".channel-tab[data-channel=sms]").get_attribute("class") or "")
+            with step("Channel tabs: Email tab becomes active"):
+                page.locator(".channel-tab[data-channel=email]").click()
+                assert "active" in (page.locator(".channel-tab[data-channel=email]").get_attribute("class") or "")
 
             with step("Channel tabs: back to All"):
                 page.locator(".channel-tab[data-channel=all]").click()

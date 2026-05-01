@@ -1555,10 +1555,6 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
     Similar to :func:`process_voice_interaction` but skips audio download
     and transcription (steps 3–4).  Uses ``raw_text`` from the interaction
     directly, converting it into a single-segment transcript.
-
-    SMS/WhatsApp paths are stubbed (see services/sms_ingest.py) but this
-    function remains channel-agnostic — if those channels are re-enabled
-    they'll flow through here unchanged.
     """
     from backend.app.models import Interaction, Tenant
 

@@ -42,7 +42,7 @@ router = APIRouter()
 
 class CampaignCreate(BaseModel):
     name: str
-    channel: Literal["email", "sms", "push", "other"] = "email"
+    channel: Literal["email", "push", "other"] = "email"
     provider: Optional[str] = None
     external_id: Optional[str] = None
     subject: Optional[str] = None

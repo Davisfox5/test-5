@@ -47,6 +47,12 @@ export interface TenantSettings {
     question_keyterms: string[];
     features_enabled: Record<string, boolean>;
     feature_flag_spec: FeatureFlagSpec[];
+    // Retention surface. Audio is stored as a non-nullable hours int;
+    // feedback retention is nullable (null = inherit platform default).
+    audio_retention_hours: number;
+    audio_retention_hours_default: number;
+    feedback_retention_days_override: number | null;
+    feedback_retention_days_default: number;
     plan_tier?: string;
     seat_limit?: number;
     admin_seat_limit?: number;
@@ -62,6 +68,9 @@ export interface TenantSettingsPatch {
     keyterm_boost_list?: string[];
     question_keyterms?: string[];
     features_enabled?: Record<string, boolean>;
+    // Retention overrides. Send ``null`` to clear; omit to leave alone.
+    audio_retention_hours_override?: number | null;
+    feedback_retention_days_override?: number | null;
 }
 
 export function useTenantSettings() {

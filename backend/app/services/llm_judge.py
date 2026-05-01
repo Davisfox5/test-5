@@ -10,7 +10,6 @@ Design choices:
 - **Caching:** rubric system prompt uses ``cache_control: ephemeral`` like the
   producers — same cross-tenant cache hit pattern.
 - **Skip rules** (per plan):
-    - SMS interactions under 3 segments → skip entirely
     - Email replies under 50 chars → skip LLM dimensions; edit-distance is
       computed inline in :func:`backend.app.services.feedback_service`.
 
@@ -245,8 +244,6 @@ def evaluate_analysis(session: Session, interaction_id: str) -> Dict[str, Any]:
     )
     if interaction is None:
         return {"status": "not_found", "scores_written": 0, "composite": None}
-    if interaction.channel == "sms" and len(interaction.transcript or []) < 3:
-        return {"status": "skipped_short_sms", "scores_written": 0, "composite": None}
     if not interaction.insights:
         return {"status": "no_insights", "scores_written": 0, "composite": None}
 
