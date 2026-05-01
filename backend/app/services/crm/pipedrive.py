@@ -31,6 +31,8 @@ from backend.app.services.crm.base import (
     CrmDeal,
     CrmError,
     CrmRateLimitError,
+    CrmTransientError,
+    retry_transient,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,8 @@ class PipedriveAdapter:
         self._field_map: Dict[str, str] = dict(field_map or {})
         self._on_token_refresh = on_token_refresh
         self._client = httpx.AsyncClient(timeout=30.0)
+        # Sleep hook for retry_transient — tests override.
+        self._sleep = None
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -136,6 +140,10 @@ class PipedriveAdapter:
             )
 
     # ── Write-back ────────────────────────────────────────────────
+    #
+    # Public write-back methods wrap their I/O in :func:`retry_transient`
+    # so 5xx blips and rate-limits get up to three attempts with
+    # exponential backoff before failing.
 
     async def create_note(
         self,
@@ -165,11 +173,14 @@ class PipedriveAdapter:
         if customer_external_id:
             payload["org_id"] = int(customer_external_id)
 
-        data = await self._post("/v1/notes", json=payload)
-        note_id = ((data.get("data") or {}).get("id"))
-        if note_id is None:
-            raise CrmError("Pipedrive note response missing id")
-        return str(note_id)
+        async def _do() -> str:
+            data = await self._post("/v1/notes", json=payload)
+            note_id = ((data.get("data") or {}).get("id"))
+            if note_id is None:
+                raise CrmError("Pipedrive note response missing id")
+            return str(note_id)
+
+        return await retry_transient(_do, sleep=self._sleep)
 
     async def create_activity(
         self,
@@ -201,11 +212,14 @@ class PipedriveAdapter:
         if contact_external_id:
             payload["person_id"] = int(contact_external_id)
 
-        data = await self._post("/v1/activities", json=payload)
-        act_id = ((data.get("data") or {}).get("id"))
-        if act_id is None:
-            raise CrmError("Pipedrive activity response missing id")
-        return str(act_id)
+        async def _do() -> str:
+            data = await self._post("/v1/activities", json=payload)
+            act_id = ((data.get("data") or {}).get("id"))
+            if act_id is None:
+                raise CrmError("Pipedrive activity response missing id")
+            return str(act_id)
+
+        return await retry_transient(_do, sleep=self._sleep)
 
     async def update_deal_stage(
         self,
@@ -214,10 +228,14 @@ class PipedriveAdapter:
         stage_external_id: str,
     ) -> None:
         """Move a deal to a different stage via ``PUT /v1/deals/{id}``."""
-        await self._put(
-            f"/v1/deals/{int(deal_external_id)}",
-            json={"stage_id": int(stage_external_id)},
-        )
+
+        async def _do() -> None:
+            await self._put(
+                f"/v1/deals/{int(deal_external_id)}",
+                json={"stage_id": int(stage_external_id)},
+            )
+
+        await retry_transient(_do, sleep=self._sleep)
 
     async def update_deal_custom_fields(
         self,
@@ -245,10 +263,14 @@ class PipedriveAdapter:
             mapped[pd_hash] = value
         if not mapped:
             return
-        await self._put(
-            f"/v1/deals/{int(deal_external_id)}",
-            json=mapped,
-        )
+
+        async def _do() -> None:
+            await self._put(
+                f"/v1/deals/{int(deal_external_id)}",
+                json=mapped,
+            )
+
+        await retry_transient(_do, sleep=self._sleep)
 
     async def _paginate(self, path: str) -> AsyncIterator[Dict[str, Any]]:
         start = 0
@@ -314,6 +336,10 @@ class PipedriveAdapter:
             raise CrmAuthError("Pipedrive rejected the token after refresh")
         if resp.status_code == 429:
             raise CrmRateLimitError("Pipedrive rate limit hit")
+        if 500 <= resp.status_code < 600:
+            raise CrmTransientError(
+                f"Pipedrive POST {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
         if resp.status_code >= 400:
             raise CrmError(
                 f"Pipedrive POST {path} failed: {resp.status_code} {resp.text[:200]}"
@@ -329,6 +355,10 @@ class PipedriveAdapter:
             raise CrmAuthError("Pipedrive rejected the token after refresh")
         if resp.status_code == 429:
             raise CrmRateLimitError("Pipedrive rate limit hit")
+        if 500 <= resp.status_code < 600:
+            raise CrmTransientError(
+                f"Pipedrive PUT {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
         if resp.status_code >= 400:
             raise CrmError(
                 f"Pipedrive PUT {path} failed: {resp.status_code} {resp.text[:200]}"

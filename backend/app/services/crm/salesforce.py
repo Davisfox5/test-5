@@ -23,6 +23,8 @@ from backend.app.services.crm.base import (
     CrmDeal,
     CrmError,
     CrmRateLimitError,
+    CrmTransientError,
+    retry_transient,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,9 @@ class SalesforceAdapter:
         self._field_map: Dict[str, str] = dict(field_map or {})
         self._on_token_refresh = on_token_refresh
         self._client = httpx.AsyncClient(timeout=30.0)
+        # Sleep hook for the retry helper. Tests override to avoid real
+        # waits; production uses asyncio.sleep via retry_transient's default.
+        self._sleep = None
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -119,6 +124,11 @@ class SalesforceAdapter:
             )
 
     # ── Write-back ───────────────────────────────────────────────
+    #
+    # Each public write-back method wraps its inner I/O with
+    # :func:`retry_transient` so 5xx blips and rate limits get up to
+    # three attempts with exponential backoff before failing the
+    # write. Permanent 4xx surfaces immediately.
 
     async def create_note(
         self,
@@ -143,35 +153,33 @@ class SalesforceAdapter:
                 "Salesforce notes require at least one parent (deal/contact/customer)"
             )
 
-        note_payload = {
-            "Title": _truncate(content.split("\n", 1)[0], 80),
-            "Content": _base64_utf8(content),
-        }
-        note_resp = await self._post(
-            f"/services/data/{_API_VERSION}/sobjects/ContentNote", note_payload
-        )
-        note_id = note_resp.get("id")
-        if not note_id:
-            raise CrmError("Salesforce note response missing id")
+        async def _do() -> str:
+            note_payload = {
+                "Title": _truncate(content.split("\n", 1)[0], 80),
+                "Content": _base64_utf8(content),
+            }
+            note_resp = await self._post(
+                f"/services/data/{_API_VERSION}/sobjects/ContentNote", note_payload
+            )
+            note_id = note_resp.get("id")
+            if not note_id:
+                raise CrmError("Salesforce note response missing id")
 
-        # Link the note to its parent. ShareType=V gives viewer access
-        # to everyone who can see the parent — the usual CRM default.
-        link_payload = {
-            "ContentDocumentId": note_id,
-            "LinkedEntityId": parent_id,
-            "ShareType": "V",
-            "Visibility": "AllUsers",
-        }
-        try:
+            # Link the note to its parent. ShareType=V gives viewer access
+            # to everyone who can see the parent — the usual CRM default.
+            link_payload = {
+                "ContentDocumentId": note_id,
+                "LinkedEntityId": parent_id,
+                "ShareType": "V",
+                "Visibility": "AllUsers",
+            }
             await self._post(
                 f"/services/data/{_API_VERSION}/sobjects/ContentDocumentLink",
                 link_payload,
             )
-        except CrmError:
-            # The note itself exists; re-raise so the caller sees the link
-            # failure rather than silently orphaning the note.
-            raise
-        return str(note_id)
+            return str(note_id)
+
+        return await retry_transient(_do, sleep=self._sleep)
 
     async def create_activity(
         self,
@@ -201,13 +209,17 @@ class SalesforceAdapter:
             body["WhatId"] = deal_external_id
         if contact_external_id:
             body["WhoId"] = contact_external_id
-        data = await self._post(
-            f"/services/data/{_API_VERSION}/sobjects/Task", body
-        )
-        task_id = data.get("id")
-        if not task_id:
-            raise CrmError("Salesforce task response missing id")
-        return str(task_id)
+
+        async def _do() -> str:
+            data = await self._post(
+                f"/services/data/{_API_VERSION}/sobjects/Task", body
+            )
+            task_id = data.get("id")
+            if not task_id:
+                raise CrmError("Salesforce task response missing id")
+            return str(task_id)
+
+        return await retry_transient(_do, sleep=self._sleep)
 
     async def update_deal_stage(
         self,
@@ -215,10 +227,13 @@ class SalesforceAdapter:
         deal_external_id: str,
         stage_external_id: str,
     ) -> None:
-        await self._patch(
-            f"/services/data/{_API_VERSION}/sobjects/Opportunity/{deal_external_id}",
-            {"StageName": stage_external_id},
-        )
+        async def _do() -> None:
+            await self._patch(
+                f"/services/data/{_API_VERSION}/sobjects/Opportunity/{deal_external_id}",
+                {"StageName": stage_external_id},
+            )
+
+        await retry_transient(_do, sleep=self._sleep)
 
     async def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         resp = await self._request("POST", path, json_body=body)
@@ -229,6 +244,13 @@ class SalesforceAdapter:
             raise CrmAuthError("Salesforce rejected the token after refresh")
         if resp.status_code == 429:
             raise CrmRateLimitError("Salesforce rate limit hit")
+        if 500 <= resp.status_code < 600:
+            # Transient: bubble as a retryable so retry_transient can pick
+            # it up. Permanent 4xx (other than 401/429) raise CrmError so
+            # we don't waste retries on bad payloads.
+            raise CrmTransientError(
+                f"Salesforce POST {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
         if resp.status_code >= 400:
             raise CrmError(
                 f"Salesforce POST {path} failed: {resp.status_code} {resp.text[:200]}"
@@ -244,6 +266,10 @@ class SalesforceAdapter:
             raise CrmAuthError("Salesforce rejected the token after refresh")
         if resp.status_code == 429:
             raise CrmRateLimitError("Salesforce rate limit hit")
+        if 500 <= resp.status_code < 600:
+            raise CrmTransientError(
+                f"Salesforce PATCH {path} failed: {resp.status_code} {resp.text[:200]}"
+            )
         if resp.status_code >= 400:
             raise CrmError(
                 f"Salesforce PATCH {path} failed: {resp.status_code} {resp.text[:200]}"

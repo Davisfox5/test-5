@@ -107,13 +107,11 @@ CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "client_id_key": "PIPEDRIVE_CLIENT_ID",
         "client_secret_key": "PIPEDRIVE_CLIENT_SECRET",
     },
-    # ── Stubs ─────────────────────────────────────────────────
-    # Config + URL templates for providers we plan to support but
-    # haven't certified end-to-end yet. The SPA reads ``certified=False``
-    # from /oauth/providers and renders these as "Coming soon" instead
-    # of letting users start a flow that would fail at the token-exchange
-    # step. Full OAuth wiring (token refresh, contact-pull adapters) is
-    # tracked separately.
+    # Zoho CRM. Zoho uses regional accounts hosts (US/EU/IN/AU/CN/JP);
+    # the auth + token URLs differ per region. We pick the host at
+    # authorize time from a ``region`` query param the SPA passes through,
+    # default ``us``, and persist the region on the Integration row so
+    # token refresh later targets the same host.
     "zoho": {
         "authorize_url": "https://accounts.zoho.com/oauth/v2/auth",
         "token_url": "https://accounts.zoho.com/oauth/v2/token",
@@ -121,26 +119,52 @@ CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
             "ZohoCRM.modules.contacts.READ",
             "ZohoCRM.modules.accounts.READ",
             "ZohoCRM.modules.deals.READ",
+            "ZohoCRM.users.READ",
+            "AaaServer.profile.READ",
         ],
         "scope_sep": ",",
         "client_id_key": "ZOHO_CLIENT_ID",
         "client_secret_key": "ZOHO_CLIENT_SECRET",
-        "certified": False,
+        # Static config flag. Runtime certification still requires
+        # client_id/secret to be set (see ``_runtime_certified``).
+        "certified": True,
     },
     "microsoft_dynamics": {
-        # Microsoft Dynamics 365 — same authority root as Microsoft Graph,
-        # but the resource scope is per-tenant ("https://<org>.crm.dynamics.com/.default").
-        # Tenants will need to set the per-org resource via ``provider_config``
-        # before the flow can complete.
+        # Microsoft Dynamics 365 — Azure AD common endpoint; the resource
+        # scope is per-org ("https://<org>.crm.dynamics.com/.default") and
+        # collected at connect time via the ``org_url`` query param. We
+        # persist the org URL on provider_config so refresh + adapter calls
+        # target the right org.
         "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-        "scopes": ["offline_access"],
+        # Base scopes only — the per-org resource scope is appended at
+        # authorize time once we know the org URL.
+        "scopes": ["offline_access", "openid", "profile"],
         "scope_sep": " ",
-        "client_id_key": "MICROSOFT_DYNAMICS_CLIENT_ID",
-        "client_secret_key": "MICROSOFT_DYNAMICS_CLIENT_SECRET",
-        "certified": False,
+        "client_id_key": "MS_DYNAMICS_CLIENT_ID",
+        "client_secret_key": "MS_DYNAMICS_CLIENT_SECRET",
+        "certified": True,
     },
 }
+
+
+# ── Zoho region map ───────────────────────────────────────
+# Zoho hosts authorize, token, and user info on regionally-separated
+# domains. Adding a new region = adding a row here.
+_ZOHO_REGION_HOSTS: Dict[str, str] = {
+    "us": "accounts.zoho.com",
+    "eu": "accounts.zoho.eu",
+    "in": "accounts.zoho.in",
+    "au": "accounts.zoho.com.au",
+    "jp": "accounts.zoho.jp",
+    "cn": "accounts.zoho.com.cn",
+    "ca": "accounts.zohocloud.ca",
+}
+
+
+def _zoho_host(region: Optional[str]) -> str:
+    region_key = (region or "us").strip().lower()
+    return _ZOHO_REGION_HOSTS.get(region_key, _ZOHO_REGION_HOSTS["us"])
 
 
 SUPPORTED_PROVIDERS = {"google", "microsoft"} | set(CRM_PROVIDERS.keys())
@@ -173,19 +197,35 @@ def _build_redirect_uri(request: Request, provider: str) -> str:
 
 
 def _is_certified(provider: str) -> bool:
-    """Whether a provider is fully wired end-to-end (auth + adapters).
+    """Static-config gate — has the provider been integrated end-to-end?
 
-    Stub providers (currently: zoho, microsoft_dynamics) ship with config
-    slots only — the SPA renders them as "Coming soon" and the flow
-    refuses to start to keep us from leaving partial integration rows.
+    Built-ins (google/microsoft) and any provider not in CRM_PROVIDERS
+    default to certified — ``SUPPORTED_PROVIDERS`` membership is the
+    outer gate. CRM providers consult their catalog ``certified`` flag.
     """
     spec = CRM_PROVIDERS.get(provider)
     if spec is None:
-        # Built-ins (google/microsoft) and any provider we don't recognise
-        # default to certified — SUPPORTED_PROVIDERS membership is the
-        # outer gate.
         return True
     return bool(spec.get("certified", True))
+
+
+def _runtime_certified(provider: str) -> bool:
+    """Runtime gate — is the provider both certified and configured?
+
+    Reported via ``/oauth/providers`` so the SPA can render a "configure
+    secrets" treatment for code-complete providers whose credentials
+    haven't been set yet, separate from "Coming soon" for providers
+    that aren't fully integrated. Callback handlers don't read this —
+    they raise their own 500 with the missing-key name.
+    """
+    if not _is_certified(provider):
+        return False
+    spec = CRM_PROVIDERS.get(provider)
+    if spec is None:
+        return True
+    client_id = _provider_setting(spec.get("client_id_key", ""))
+    client_secret = _provider_setting(spec.get("client_secret_key", ""))
+    return bool(client_id and client_secret)
 
 
 def _validate_provider(provider: str) -> None:
@@ -341,12 +381,21 @@ async def _build_provider_authorize_url(
     request: Request,
     tenant_id: uuid.UUID,
     user_id: Optional[uuid.UUID],
+    *,
+    region: Optional[str] = None,
+    org_url: Optional[str] = None,
 ) -> str:
     """Mint a state token + return the provider's hosted authorize URL.
 
     Shared between the legacy GET /authorize redirect (which still
     depends on a Bearer-auth'd request) and the new POST /ticket flow
     (where the SPA does the auth and the redirect happens client-side).
+
+    ``region`` is used by Zoho to route the flow to the right regional
+    accounts host (US/EU/IN/...). ``org_url`` is used by Microsoft
+    Dynamics to drive the per-org ``.default`` resource scope and is
+    persisted on the Integration row so the adapter knows where to send
+    REST calls after connect.
     """
     state = secrets.token_urlsafe(32)
     redirect_uri = _build_redirect_uri(request, provider)
@@ -360,6 +409,19 @@ async def _build_provider_authorize_url(
     }
     if user_id is not None:
         payload["user_id"] = str(user_id)
+    if provider == "zoho":
+        payload["region"] = (region or "us").strip().lower()
+    if provider == "microsoft_dynamics":
+        if not org_url:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Microsoft Dynamics requires an 'org_url' parameter "
+                    "(your Dynamics environment URL, e.g. "
+                    "https://contoso.crm.dynamics.com)"
+                ),
+            )
+        payload["org_url"] = _normalize_dynamics_org_url(org_url)
     await _stash_state(state, payload)
 
     if provider == "google":
@@ -406,14 +468,156 @@ async def _build_provider_authorize_url(
             status_code=500,
             detail=f"{spec['client_id_key']} is not configured on this server",
         )
+
+    # ── Provider-specific URL surgery ──────────────────────
+    authorize_url = spec["authorize_url"]
+    scopes = list(spec["scopes"])
+
+    if provider == "zoho":
+        host = _zoho_host(payload.get("region"))
+        authorize_url = f"https://{host}/oauth/v2/auth"
+        # Zoho needs ``access_type=offline`` + ``prompt=consent`` to return
+        # a refresh token on every connect.
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": spec["scope_sep"].join(scopes),
+            "state": state,
+            "access_type": "offline",
+            "prompt": "consent",
+        }
+        return f"{authorize_url}?{urlencode(params)}"
+
+    if provider == "microsoft_dynamics":
+        org = payload["org_url"]  # validated above
+        # Per-org resource scope. ``offline_access`` keeps the refresh
+        # token; the ``.default`` scope grabs whatever Dynamics permissions
+        # the AAD app registration has granted.
+        scopes = scopes + [f"{org}/.default"]
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": spec["scope_sep"].join(scopes),
+            "state": state,
+            "response_mode": "query",
+        }
+        return f"{authorize_url}?{urlencode(params)}"
+
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": spec["scope_sep"].join(spec["scopes"]),
+        "scope": spec["scope_sep"].join(scopes),
         "state": state,
     }
-    return f"{spec['authorize_url']}?{urlencode(params)}"
+    return f"{authorize_url}?{urlencode(params)}"
+
+
+def _normalize_dynamics_org_url(org_url: str) -> str:
+    """Trim trailing slash + tolerate bare hostnames the SPA might send."""
+    value = (org_url or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="org_url cannot be empty")
+    if not value.startswith(("http://", "https://")):
+        value = f"https://{value}"
+    return value.rstrip("/")
+
+
+async def _fetch_provider_user_id(
+    client: httpx.AsyncClient,
+    *,
+    provider: str,
+    access_token: str,
+    state_payload: Dict[str, Any],
+    provider_config: Dict[str, Any],
+) -> Optional[str]:
+    """Look up the third-party user id behind the access token.
+
+    Best-effort. We surface a stable id (Zoho ZUID, Dynamics WhoAmI
+    UserId, HubSpot user_id, Pipedrive user.id, Salesforce user_id) so
+    later flows can render "connected as …" and so a tenant who
+    re-authorizes the same CRM account upserts onto the same Integration
+    row instead of leaving orphaned ones behind.
+
+    Any HTTP failure is swallowed — the integration is still useful even
+    if the userinfo lookup is flaky.
+    """
+    if not access_token:
+        return None
+    try:
+        if provider == "zoho":
+            host = _zoho_host(state_payload.get("region"))
+            resp = await client.get(
+                f"https://{host}/oauth/user/info",
+                headers={"Authorization": f"Zoho-oauthtoken {access_token}"},
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            zuid = data.get("ZUID") or data.get("zuid") or data.get("user_id")
+            return str(zuid) if zuid is not None else None
+
+        if provider == "microsoft_dynamics":
+            org_url = state_payload.get("org_url") or provider_config.get("org_url")
+            if not org_url:
+                return None
+            resp = await client.get(
+                f"{org_url}/api/data/v9.2/WhoAmI",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                    "OData-Version": "4.0",
+                },
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            user_id = data.get("UserId") or data.get("userId")
+            return str(user_id) if user_id else None
+
+        if provider == "hubspot":
+            resp = await client.get(
+                f"https://api.hubapi.com/oauth/v1/access-tokens/{access_token}"
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            uid = data.get("user_id") or data.get("user")
+            return str(uid) if uid is not None else None
+
+        if provider == "salesforce":
+            instance = (provider_config.get("instance_url") or "").rstrip("/")
+            url = (
+                f"{instance}/services/oauth2/userinfo"
+                if instance
+                else "https://login.salesforce.com/services/oauth2/userinfo"
+            )
+            resp = await client.get(
+                url, headers={"Authorization": f"Bearer {access_token}"}
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            uid = data.get("user_id") or data.get("sub")
+            return str(uid) if uid else None
+
+        if provider == "pipedrive":
+            api_domain = (provider_config.get("api_domain") or "").rstrip("/")
+            base = api_domain or "https://api.pipedrive.com"
+            resp = await client.get(
+                f"{base}/v1/users/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if resp.status_code >= 400:
+                return None
+            data = resp.json() or {}
+            uid = (data.get("data") or {}).get("id")
+            return str(uid) if uid is not None else None
+    except Exception:  # pragma: no cover — best-effort
+        logger.debug("provider userinfo lookup failed for %s", provider, exc_info=True)
+    return None
 
 
 class OAuthProviderInfo(BaseModel):
@@ -438,8 +642,11 @@ async def oauth_providers() -> OAuthProvidersResponse:
         OAuthProviderInfo(provider="microsoft", certified=True),
     ]
     for name in sorted(CRM_PROVIDERS.keys()):
+        # Listing-side certified flag: AND of "we've integrated this"
+        # (static catalog) and "operator has set the secrets" (env). The
+        # SPA disables the connect button when this is False.
         items.append(
-            OAuthProviderInfo(provider=name, certified=_is_certified(name))
+            OAuthProviderInfo(provider=name, certified=_runtime_certified(name))
         )
     return OAuthProvidersResponse(providers=items)
 
@@ -453,6 +660,16 @@ async def oauth_ticket(
     provider: str,
     request: Request,
     principal: AuthPrincipal = Depends(get_current_principal),
+    region: Optional[str] = Query(
+        None, description="Zoho regional accounts host (us/eu/in/au/jp/cn/ca)"
+    ),
+    org_url: Optional[str] = Query(
+        None,
+        description=(
+            "Microsoft Dynamics environment URL "
+            "(https://<org>.crm.dynamics.com)"
+        ),
+    ),
 ):
     """Mint a one-shot authorize URL for the SPA to redirect to.
 
@@ -462,9 +679,9 @@ async def oauth_ticket(
     of the authenticated SPA caller (auth flows over the JSON API as
     usual), so the SPA can then ``window.location =`` the result.
 
-    The returned URL embeds a fresh ``state`` token stashed in Redis
-    under the same key the callback already reads — so the rest of
-    the flow is unchanged.
+    Some providers need per-tenant context to build the right URL —
+    Zoho's regional accounts host (``region``) and Dynamics' env URL
+    (``org_url``). The SPA passes those alongside the provider name.
     """
     _validate_provider(provider)
     _require_certified(provider)
@@ -473,6 +690,8 @@ async def oauth_ticket(
         request,
         tenant_id=principal.tenant.id,
         user_id=principal.user_id,
+        region=region,
+        org_url=org_url,
     )
     return OAuthTicketResponse(authorize_url=auth_url)
 
@@ -482,6 +701,8 @@ async def oauth_authorize(
     provider: str,
     request: Request,
     tenant: Tenant = Depends(get_current_tenant),
+    region: Optional[str] = Query(None),
+    org_url: Optional[str] = Query(None),
 ):
     """Generate an OAuth authorization URL and redirect the user.
 
@@ -490,6 +711,19 @@ async def oauth_authorize(
     """
     _validate_provider(provider)
     _require_certified(provider)
+
+    # Zoho/Dynamics need extra context — defer to the shared builder for
+    # those rather than repeating the per-provider URL surgery here.
+    if provider in ("zoho", "microsoft_dynamics"):
+        auth_url = await _build_provider_authorize_url(
+            provider,
+            request,
+            tenant_id=tenant.id,
+            user_id=None,
+            region=region,
+            org_url=org_url,
+        )
+        return RedirectResponse(url=auth_url)
 
     state = secrets.token_urlsafe(32)
     redirect_uri = _build_redirect_uri(request, provider)
@@ -677,9 +911,15 @@ async def oauth_callback(
             detail=f"{provider} client credentials are not configured",
         )
 
+    # Zoho's token URL is regional — pull the host from the stashed state
+    # payload (set at authorize time). Falls back to the catalog default.
+    token_url = spec["token_url"]
+    if provider == "zoho":
+        token_url = f"https://{_zoho_host(state_payload.get('region'))}/oauth/v2/token"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
-            spec["token_url"],
+            token_url,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -689,19 +929,41 @@ async def oauth_callback(
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-    if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{provider} token exchange failed: {resp.status_code} {resp.text[:300]}",
-        )
-    body = resp.json()
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider} token exchange failed: {resp.status_code} {resp.text[:300]}",
+            )
+        body = resp.json()
 
-    # Provider-specific extras we need to carry on provider_config.
-    provider_config: Dict[str, Any] = {}
-    if provider == "salesforce" and body.get("instance_url"):
-        provider_config["instance_url"] = body["instance_url"].rstrip("/")
-    if provider == "pipedrive" and body.get("api_domain"):
-        provider_config["api_domain"] = body["api_domain"].rstrip("/")
+        # Provider-specific extras we need to carry on provider_config.
+        provider_config: Dict[str, Any] = {}
+        if provider == "salesforce" and body.get("instance_url"):
+            provider_config["instance_url"] = body["instance_url"].rstrip("/")
+        if provider == "pipedrive" and body.get("api_domain"):
+            provider_config["api_domain"] = body["api_domain"].rstrip("/")
+        if provider == "zoho":
+            provider_config["region"] = state_payload.get("region") or "us"
+            # Zoho's /oauth/v2/token sometimes returns ``api_domain`` (the
+            # data-center API host the SPA should hit, e.g. www.zohoapis.eu).
+            if body.get("api_domain"):
+                provider_config["api_domain"] = body["api_domain"].rstrip("/")
+        if provider == "microsoft_dynamics" and state_payload.get("org_url"):
+            provider_config["org_url"] = state_payload["org_url"]
+
+        # Look up the third-party user identity so the SPA can render
+        # "connected as <name>" and so we can dedupe future re-authorizes
+        # against the right provider account. Best-effort: a userinfo
+        # failure shouldn't block a successful token exchange.
+        provider_user_id = await _fetch_provider_user_id(
+            client,
+            provider=provider,
+            access_token=body.get("access_token") or "",
+            state_payload=state_payload,
+            provider_config=provider_config,
+        )
+        if provider_user_id:
+            provider_config["provider_user_id"] = provider_user_id
 
     await _upsert_integration(
         db,

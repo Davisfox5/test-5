@@ -8,20 +8,42 @@ can pause that provider and surface a user-facing prompt to re-authorize.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 class CrmError(RuntimeError):
-    """Base class for adapter failures."""
+    """Base class for adapter failures.
+
+    The ``transient`` flag tells :func:`retry_transient` whether the
+    failure is worth retrying. Adapters set it to True for 5xx / network
+    errors and False for 4xx user errors.
+    """
+
+    transient: bool = False
 
 
 class CrmAuthError(CrmError):
     """Token invalid / refresh failed. Surfaced to the UI as re-auth."""
 
+    transient: bool = False
+
 
 class CrmRateLimitError(CrmError):
     """Provider rate-limited us. The sync service should back off + retry."""
+
+    transient: bool = True
+
+
+class CrmTransientError(CrmError):
+    """Transient upstream failure (5xx, network blip). Eligible for retry."""
+
+    transient: bool = True
 
 
 @dataclass
@@ -68,6 +90,66 @@ class CrmDeal:
     contact_external_id: Optional[str] = None
     owner_name: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ── Shared retry helper ────────────────────────────────────────────
+#
+# Write-backs hit a remote CRM that may be flaky. We retry transient
+# failures (5xx, network errors, 429) up to ``max_attempts`` times with
+# exponential backoff; permanent failures (4xx other than 429) bubble
+# immediately so callers don't waste time + log noise on user errors.
+
+
+async def retry_transient(
+    fn: Callable[[], Awaitable[Any]],
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 0.5,
+    max_delay: float = 8.0,
+    sleep: Optional[Callable[[float], Awaitable[None]]] = None,
+) -> Any:
+    """Run ``fn`` and retry up to ``max_attempts`` on transient errors.
+
+    Transient = ``CrmRateLimitError`` (provider rate-limited) or any
+    ``CrmError`` whose ``transient`` attribute is truthy. ``CrmAuthError``
+    is *not* retried — adapters refresh inline and a persistent auth
+    failure means the tenant must re-authorize.
+
+    Backoff is exponential with full jitter: ``min(max_delay,
+    base_delay * 2 ** attempt) * random()``. ``sleep`` defaults to
+    ``asyncio.sleep`` and is parametrised so tests can run without
+    real waits.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    sleeper = sleep or asyncio.sleep
+    last_exc: Optional[BaseException] = None
+    for attempt in range(max_attempts):
+        try:
+            return await fn()
+        except CrmAuthError:
+            # Auth failures don't get retried at this layer — let the
+            # adapter's inline refresh path handle them, and surface as
+            # re-auth if that didn't work.
+            raise
+        except CrmRateLimitError as exc:
+            last_exc = exc
+        except CrmError as exc:
+            if not getattr(exc, "transient", False):
+                raise
+            last_exc = exc
+
+        # Don't sleep after the last attempt — bubble the failure.
+        if attempt + 1 >= max_attempts:
+            break
+        delay = min(max_delay, base_delay * (2 ** attempt))
+        # Full-jitter so a fleet of workers don't all retry at the same
+        # tick after a provider blip.
+        jittered = delay * (0.5 + random.random() * 0.5)
+        await sleeper(jittered)
+
+    assert last_exc is not None  # only reached when retries exhausted
+    raise last_exc
 
 
 class CrmCapabilityMissing(CrmError):
