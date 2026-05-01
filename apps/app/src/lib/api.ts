@@ -60,8 +60,18 @@ export function useApi() {
                 method: "PATCH",
                 body: body === undefined ? undefined : JSON.stringify(body),
             }),
-        del: <T>(path: string, init: RequestInit = {}) =>
-            request<T>(path, { ...init, method: "DELETE" }),
+        put: <T>(path: string, body?: unknown, init: RequestInit = {}) =>
+            request<T>(path, {
+                ...init,
+                method: "PUT",
+                body: body === undefined ? undefined : JSON.stringify(body),
+            }),
+        del: <T>(path: string, body?: unknown, init: RequestInit = {}) =>
+            request<T>(path, {
+                ...init,
+                method: "DELETE",
+                body: body === undefined ? undefined : JSON.stringify(body),
+            }),
     };
 }
 

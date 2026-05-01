@@ -18,6 +18,7 @@ import { TenantContextSection } from "./_sections/tenant-context";
 import { ApiKeysSection } from "./_sections/api-keys";
 import { WebhooksSection } from "./_sections/webhooks";
 import { IntegrationsSection } from "./_sections/integrations";
+import { DataManagementSection } from "./_sections/data-management";
 
 export default function SettingsPage() {
     const { data: me } = useMe();
@@ -205,6 +206,15 @@ export default function SettingsPage() {
                     >
                         <AdminGate role={me?.user?.role}>
                             <IntegrationsSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Data management"
+                        subtitle="GDPR-compliant exports and tenant deletion. Admin only — actions here are recorded on the audit log."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <DataManagementSection />
                         </AdminGate>
                     </Section>
                 </>
