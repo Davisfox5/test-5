@@ -11,9 +11,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import Contact, KBChunk, KBDocument, PinnedKBCard, Tenant
+from backend.app.services.audit_log import audit_log
 from backend.app.services.kb import RetrievalService, ingest_document, reindex_tenant
 from backend.app.services.kb.context_dispatch import schedule_context_rebuild
 from backend.app.services.kb.embedder import VoyageEmbedderError
@@ -100,11 +106,17 @@ async def get_kb_doc(
     return doc
 
 
-@router.post("/kb/docs", response_model=KBDocOut, status_code=201)
+@router.post(
+    "/kb/docs",
+    response_model=KBDocOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def create_kb_doc(
     body: KBDocCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     doc = KBDocument(
         tenant_id=tenant.id,
@@ -127,15 +139,28 @@ async def create_kb_doc(
             detail="Document saved, but embedding failed. Retry reindex when available.",
         )
     await schedule_context_rebuild(tenant.id)
+    await audit_log(
+        db,
+        principal,
+        action="kb_doc.created",
+        resource_type="kb_doc",
+        resource_id=str(doc.id),
+        after={"title": doc.title, "source_type": doc.source_type},
+    )
     return doc
 
 
-@router.put("/kb/docs/{doc_id}", response_model=KBDocOut)
+@router.put(
+    "/kb/docs/{doc_id}",
+    response_model=KBDocOut,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def update_kb_doc(
     doc_id: uuid.UUID,
     body: KBDocUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(KBDocument).where(KBDocument.id == doc_id, KBDocument.tenant_id == tenant.id)
     result = await db.execute(stmt)
@@ -143,6 +168,7 @@ async def update_kb_doc(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    before = {"title": doc.title, "tags": list(doc.tags or [])}
     content_changed = body.content is not None and body.content != doc.content
 
     if body.title is not None:
@@ -163,14 +189,28 @@ async def update_kb_doc(
             )
         await schedule_context_rebuild(tenant.id)
 
+    await audit_log(
+        db,
+        principal,
+        action="kb_doc.updated",
+        resource_type="kb_doc",
+        resource_id=str(doc.id),
+        before=before,
+        after={"title": doc.title, "tags": list(doc.tags or [])},
+    )
     return doc
 
 
-@router.delete("/kb/docs/{doc_id}", status_code=204)
+@router.delete(
+    "/kb/docs/{doc_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def delete_kb_doc(
     doc_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(KBDocument).where(KBDocument.id == doc_id, KBDocument.tenant_id == tenant.id)
     result = await db.execute(stmt)
@@ -186,14 +226,28 @@ async def delete_kb_doc(
     except Exception:
         logger.exception("Vector store delete_doc failed for %s — row delete continues", doc.id)
 
+    snapshot = {"title": doc.title, "source_type": doc.source_type}
     await db.delete(doc)
     # Schedule a *full* rebuild on delete — the incremental merge prompt can
     # only add/update facts, not retract them. A full rebuild reflects the
     # deletion by re-summarizing the remaining docs.
     await schedule_context_rebuild(tenant.id, full=True)
+    await audit_log(
+        db,
+        principal,
+        action="kb_doc.deleted",
+        resource_type="kb_doc",
+        resource_id=str(doc_id),
+        before=snapshot,
+    )
 
 
-@router.post("/kb/upload", response_model=KBDocOut, status_code=201)
+@router.post(
+    "/kb/upload",
+    response_model=KBDocOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def upload_kb_file(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -237,7 +291,11 @@ async def upload_kb_file(
     return doc
 
 
-@router.post("/kb/docs/{doc_id}/reindex", status_code=202)
+@router.post(
+    "/kb/docs/{doc_id}/reindex",
+    status_code=202,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def reindex_kb_doc(
     doc_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -255,7 +313,11 @@ async def reindex_kb_doc(
     return {"doc_id": str(doc_id), "chunks_written": chunks}
 
 
-@router.post("/kb/reindex", status_code=202)
+@router.post(
+    "/kb/reindex",
+    status_code=202,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def reindex_all_kb(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
@@ -356,7 +418,12 @@ class PinnedCardOut(BaseModel):
     source_url: Optional[str] = None
 
 
-@router.post("/kb/pins", response_model=PinOut, status_code=201)
+@router.post(
+    "/kb/pins",
+    response_model=PinOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def pin_card(
     body: PinRequest,
     db: AsyncSession = Depends(get_db),
@@ -393,7 +460,11 @@ async def pin_card(
     return pin
 
 
-@router.delete("/kb/pins/{pin_id}", status_code=204)
+@router.delete(
+    "/kb/pins/{pin_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def unpin_card(
     pin_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -441,7 +512,11 @@ async def list_pins_for_contact(
     return out
 
 
-@router.post("/kb/sync/{provider}", status_code=202)
+@router.post(
+    "/kb/sync/{provider}",
+    status_code=202,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def sync_kb_provider(
     provider: str,
     db: AsyncSession = Depends(get_db),
@@ -504,7 +579,11 @@ class KBExternalIngestIn(BaseModel):
     tags: Optional[List[str]] = None
 
 
-@router.post("/kb/ingest", status_code=202)
+@router.post(
+    "/kb/ingest",
+    status_code=202,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def ingest_external_document(
     body: KBExternalIngestIn,
     db: AsyncSession = Depends(get_db),
@@ -572,7 +651,11 @@ class KBMcpIngestIn(BaseModel):
     )
 
 
-@router.post("/kb/mcp/sync", status_code=202)
+@router.post(
+    "/kb/mcp/sync",
+    status_code=202,
+    dependencies=[Depends(require_scope("kb:write"))],
+)
 async def sync_kb_via_mcp(
     body: KBMcpIngestIn,
     db: AsyncSession = Depends(get_db),

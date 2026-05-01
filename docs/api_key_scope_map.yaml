@@ -1,0 +1,93 @@
+# API key scope map
+#
+# Source of truth for which canonical scope (see
+# ``backend.app.auth.API_KEY_SCOPES``) gates each mutating route. Sync
+# this file when adding new write surfaces — it's both runtime
+# documentation and the SPA's reference for the scope multi-select.
+#
+# Conventions:
+#   - GET endpoints are not listed unless the data is sensitive (audit
+#     logs, GDPR exports). Read scopes are reserved for future
+#     fine-grained access control on the read side.
+#   - Scope ``*`` is the legacy "all access" opt-in. New keys default to
+#     a small read-only canonical set; admins must opt into write
+#     surfaces explicitly.
+#   - Session-JWT and Clerk-JWT principals bypass scope enforcement
+#     (they're already gated by ``require_role``).
+
+scopes:
+  interactions:write:
+    - POST   /api/v1/interactions
+    - POST   /api/v1/interactions/upload
+    - POST   /api/v1/interactions/ingest-recording
+    - PATCH  /api/v1/interactions/{interaction_id}
+    - DELETE /api/v1/interactions/{interaction_id}
+
+  action_items:write:
+    - PATCH  /api/v1/action-items/{action_item_id}
+
+  contacts:write:
+    - POST   /api/v1/contacts
+    - PATCH  /api/v1/contacts/{contact_id}
+    - DELETE /api/v1/contacts/{contact_id}
+    - POST   /api/v1/customers
+    - PATCH  /api/v1/customers/{customer_id}
+    - DELETE /api/v1/customers/{customer_id}
+
+  webhooks:write:
+    - POST   /api/v1/webhooks
+    - PATCH  /api/v1/webhooks/{webhook_id}
+    - DELETE /api/v1/webhooks/{webhook_id}
+    - POST   /api/v1/webhooks/{webhook_id}/test
+
+  kb:write:
+    - POST   /api/v1/kb/docs
+    - PUT    /api/v1/kb/docs/{doc_id}
+    - DELETE /api/v1/kb/docs/{doc_id}
+    - POST   /api/v1/kb/upload
+    - POST   /api/v1/kb/docs/{doc_id}/reindex
+    - POST   /api/v1/kb/reindex
+    - POST   /api/v1/kb/pins
+    - DELETE /api/v1/kb/pins/{pin_id}
+    - POST   /api/v1/kb/sync/{provider}
+    - POST   /api/v1/kb/ingest
+    - POST   /api/v1/kb/mcp/sync
+
+  scorecards:write:
+    - POST   /api/v1/scorecards
+    - PUT    /api/v1/scorecards/{template_id}
+    - DELETE /api/v1/scorecards/{template_id}
+
+  users:write:
+    - POST   /api/v1/users
+    - PATCH  /api/v1/users/{user_id}
+    - POST   /api/v1/users/{user_id}/set-password
+    - DELETE /api/v1/users/{user_id}
+    - POST   /api/v1/users/{user_id}/reactivate
+
+  api_keys:write:
+    - POST   /api/v1/api-keys
+    - PATCH  /api/v1/api-keys/{key_id}
+    - DELETE /api/v1/api-keys/{key_id}
+
+  crm:sync:
+    - POST   /api/v1/crm/sync/{provider}
+
+  onboarding:write:
+    - POST   /api/v1/onboarding/sessions
+    - POST   /api/v1/onboarding/sessions/{session_id}/reply
+    - POST   /api/v1/onboarding/sessions/{session_id}/complete
+    - POST   /api/v1/onboarding/sessions/{session_id}/abandon
+
+  gdpr:export:
+    - GET    /api/v1/tenants/{tenant_id}/export
+
+  gdpr:delete:
+    - DELETE /api/v1/tenants/{tenant_id}
+
+# Sensitive read endpoints (admin-only at the role level; not gated by
+# scopes today because admin-role API keys haven't been a thing — every
+# API key resolves to an admin principal). Listed here for completeness.
+read_only_admin:
+  audit_log:read:
+    - GET    /api/v1/admin/audit-logs

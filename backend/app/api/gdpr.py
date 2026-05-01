@@ -27,9 +27,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal
+from backend.app.auth import AuthPrincipal, get_current_principal, require_scope
 from backend.app.db import get_db
 from backend.app.models import TenantDataOpsLog
+from backend.app.services.audit_log import audit_log
 from backend.app.services.tenant_dataops import export_tenant, hard_delete_tenant
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,10 @@ class HardDeleteIn(BaseModel):
     )
 
 
-@router.get("/tenants/{tenant_id}/export")
+@router.get(
+    "/tenants/{tenant_id}/export",
+    dependencies=[Depends(require_scope("gdpr:export"))],
+)
 async def export_tenant_data(
     tenant_id: uuid.UUID,
     reason: Optional[str] = Query(None, max_length=500),
@@ -85,6 +89,18 @@ async def export_tenant_data(
     )
     db.add(log_entry)
     await db.flush()
+
+    # Mirror into the comprehensive audit log so the unified admin view
+    # sees GDPR ops alongside everything else. The legacy TenantDataOpsLog
+    # row above keeps its delete-specific bookkeeping (counts, finished_at).
+    await audit_log(
+        db,
+        principal,
+        action="gdpr.export",
+        resource_type="tenant",
+        resource_id=str(tenant_id),
+        after={"reason": reason},
+    )
 
     async def _stream():
         row_count = 0
@@ -115,7 +131,11 @@ async def export_tenant_data(
     )
 
 
-@router.delete("/tenants/{tenant_id}", status_code=200)
+@router.delete(
+    "/tenants/{tenant_id}",
+    status_code=200,
+    dependencies=[Depends(require_scope("gdpr:delete"))],
+)
 async def hard_delete_tenant_endpoint(
     tenant_id: uuid.UUID,
     body: HardDeleteIn,
@@ -153,6 +173,18 @@ async def hard_delete_tenant_endpoint(
     )
     db.add(log_entry)
     await db.flush()
+
+    # Mirror into the unified audit log. Persist the row *before* the
+    # cascade kicks in so the row survives even if the delete crashes
+    # mid-flight (we lose the tenant but keep the audit).
+    await audit_log(
+        db,
+        principal,
+        action="gdpr.hard_delete",
+        resource_type="tenant",
+        resource_id=str(tenant_id),
+        before={"name": principal.tenant.name, "reason": body.reason},
+    )
 
     try:
         summary = await hard_delete_tenant(db, tenant_id)

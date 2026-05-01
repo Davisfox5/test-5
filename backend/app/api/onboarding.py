@@ -25,7 +25,13 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant, require_role
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_role,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import OnboardingSession, Tenant
 from backend.app.services.kb.onboarding_interview import (
@@ -88,7 +94,11 @@ async def _latest_active_session(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
-@router.post("/onboarding/sessions", response_model=OnboardingSessionOut)
+@router.post(
+    "/onboarding/sessions",
+    response_model=OnboardingSessionOut,
+    dependencies=[Depends(require_scope("onboarding:write"))],
+)
 async def start_or_resume(
     db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(require_role("admin")),
@@ -137,6 +147,7 @@ async def get_current(
 @router.post(
     "/onboarding/sessions/{session_id}/reply",
     response_model=OnboardingSessionOut,
+    dependencies=[Depends(require_scope("onboarding:write"))],
 )
 async def submit_reply(
     session_id: uuid.UUID,
@@ -158,7 +169,10 @@ async def submit_reply(
     return _serialise(sess, last_assistant=turn.assistant_message)
 
 
-@router.post("/onboarding/sessions/{session_id}/complete")
+@router.post(
+    "/onboarding/sessions/{session_id}/complete",
+    dependencies=[Depends(require_scope("onboarding:write"))],
+)
 async def complete_session(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -179,7 +193,11 @@ async def complete_session(
     }
 
 
-@router.post("/onboarding/sessions/{session_id}/abandon", status_code=204)
+@router.post(
+    "/onboarding/sessions/{session_id}/abandon",
+    status_code=204,
+    dependencies=[Depends(require_scope("onboarding:write"))],
+)
 async def abandon_session(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

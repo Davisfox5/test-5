@@ -35,10 +35,12 @@ from backend.app.auth import (
     hash_password,
     issue_session_token,
     require_role,
+    require_scope,
     verify_password,
 )
 from backend.app.db import get_db
 from backend.app.models import User
+from backend.app.services.audit_log import audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +247,12 @@ async def list_users_lookup(
     return out
 
 
-@router.post("/users", response_model=UserOut, status_code=201)
+@router.post(
+    "/users",
+    response_model=UserOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("users:write"))],
+)
 async def create_user(
     body: UserCreate,
     db: AsyncSession = Depends(get_db),
@@ -290,10 +297,22 @@ async def create_user(
     )
     db.add(user)
     await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="user.created",
+        resource_type="user",
+        resource_id=str(user.id),
+        after={"email": user.email, "role": user.role, "name": user.name},
+    )
     return user
 
 
-@router.patch("/users/{user_id}", response_model=UserOut)
+@router.patch(
+    "/users/{user_id}",
+    response_model=UserOut,
+    dependencies=[Depends(require_scope("users:write"))],
+)
 async def patch_user(
     user_id: uuid.UUID,
     body: UserPatch,
@@ -310,6 +329,7 @@ async def patch_user(
     if user is None or user.tenant_id != principal.tenant.id:
         raise HTTPException(status_code=404, detail="User not found")
 
+    before = {"role": user.role, "is_active": user.is_active, "name": user.name}
     updates = body.model_dump(exclude_none=True)
     total, admins = await _active_user_counts(db, principal.tenant.id)
 
@@ -342,10 +362,24 @@ async def patch_user(
 
     for k, v in updates.items():
         setattr(user, k, v)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="user.updated",
+        resource_type="user",
+        resource_id=str(user.id),
+        before=before,
+        after={"role": user.role, "is_active": user.is_active, "name": user.name},
+    )
     return user
 
 
-@router.post("/users/{user_id}/set-password", status_code=204)
+@router.post(
+    "/users/{user_id}/set-password",
+    status_code=204,
+    dependencies=[Depends(require_scope("users:write"))],
+)
 async def set_password(
     user_id: uuid.UUID,
     body: SetPasswordIn,

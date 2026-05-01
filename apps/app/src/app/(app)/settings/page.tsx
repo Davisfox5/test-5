@@ -20,6 +20,7 @@ import { WebhooksSection } from "./_sections/webhooks";
 import { IntegrationsSection } from "./_sections/integrations";
 import { DataManagementSection } from "./_sections/data-management";
 import { RetentionSection } from "./_sections/retention";
+import { AuditLogSection } from "./_sections/audit-log";
 
 export default function SettingsPage() {
     const { data: me } = useMe();
@@ -216,6 +217,15 @@ export default function SettingsPage() {
                     >
                         <AdminGate role={me?.user?.role}>
                             <RetentionSection />
+                        </AdminGate>
+                    </Section>
+
+                    <Section
+                        title="Audit log"
+                        subtitle="Every create / update / delete on your tenant. Admin only. Filter by action, resource, actor, or time range."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <AuditLogSection />
                         </AdminGate>
                     </Section>
 

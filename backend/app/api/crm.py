@@ -16,7 +16,13 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
+from backend.app.services.audit_log import audit_log
 from backend.app.db import get_db
 from backend.app.models import CrmSyncLog, Integration, Tenant
 from backend.app.services.crm.sync_service import (
@@ -52,12 +58,17 @@ class CrmSyncLogOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.post("/crm/sync/{provider}", response_model=CrmSyncSummaryOut)
+@router.post(
+    "/crm/sync/{provider}",
+    response_model=CrmSyncSummaryOut,
+    dependencies=[Depends(require_scope("crm:sync"))],
+)
 async def trigger_crm_sync(
     provider: str,
     sync: bool = True,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Pull customers + contacts from the CRM into LINDA.
 
@@ -79,6 +90,14 @@ async def trigger_crm_sync(
         summary = await sync_crm_for_tenant(db, tenant.id, provider)
         if summary.status == "failed" and summary.error and "not implemented" in (summary.error or "").lower():
             raise HTTPException(status_code=501, detail=summary.error)
+        await audit_log(
+            db,
+            principal,
+            action="crm.sync_triggered",
+            resource_type="crm_sync",
+            resource_id=provider,
+            after={"provider": provider, "status": summary.status, "customers_upserted": summary.customers_upserted, "contacts_upserted": summary.contacts_upserted},
+        )
         return summary
 
     # Enqueue the Celery fan-out.

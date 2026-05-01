@@ -8,9 +8,11 @@ tenant with an API key can inspect / edit their own signals.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +25,7 @@ from backend.app.auth import (
 )
 from backend.app.config import get_settings
 from backend.app.db import get_db
-from backend.app.models import KBChunk, Tenant, TenantBriefSuggestion
+from backend.app.models import AuditLog, KBChunk, Tenant, TenantBriefSuggestion
 from backend.app.services.kb import ContextBuilderService, format_brief_for_prompt
 from backend.app.services.kb.context_builder import _validate_brief
 from backend.app.services.kb.context_dispatch import schedule_context_rebuild
@@ -663,3 +665,122 @@ async def seed_demo_data_endpoint(
         db, tenant=principal.tenant, admin_user=principal.user
     )
     return SeedDemoDataOut(tenant_id=str(principal.tenant.id), created=counts)
+
+
+# ── Audit log ────────────────────────────────────────────
+
+
+class AuditLogOut(BaseModel):
+    """One row from ``audit_log`` for the admin UI.
+
+    Sensitive fields (request_id, IP, user-agent) live under ``meta`` and
+    are admin-only — non-admins never see this endpoint at all because
+    every ``/admin/*`` path is gated by ``require_role("admin")`` at the
+    router level.
+    """
+
+    id: str
+    tenant_id: str
+    actor_user_id: Optional[str]
+    actor_principal: str
+    action: str
+    resource_type: str
+    resource_id: Optional[str]
+    before: Optional[Dict[str, Any]]
+    after: Optional[Dict[str, Any]]
+    meta: Dict[str, Any]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AuditLogPage(BaseModel):
+    items: List[AuditLogOut]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/admin/audit-logs", response_model=AuditLogPage)
+async def list_audit_logs(
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    actor: Optional[str] = None,
+    from_: Optional[datetime] = Query(None, alias="from"),
+    to: Optional[datetime] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> AuditLogPage:
+    """Tenant-scoped audit log feed for the admin UI.
+
+    Filters:
+
+    * ``action`` — exact match against the dot-namespaced verb
+      (``"interaction.deleted"``).
+    * ``resource_type`` — exact match (``"webhook"``, ``"user"`` …).
+    * ``actor`` — UUID of the user that performed the action; pass
+      ``"api_key"`` to filter to API-key calls (rows where
+      ``actor_principal = 'api_key'``) and ``"system"`` for cron writes.
+    * ``from`` / ``to`` — inclusive bounds on ``created_at``.
+
+    Pagination is offset/limit. Newest first.
+    """
+    from datetime import datetime as _dt  # local alias avoids shadowing
+    from sqlalchemy import func as _func
+
+    base_filters = [AuditLog.tenant_id == principal.tenant.id]
+    if action:
+        base_filters.append(AuditLog.action == action)
+    if resource_type:
+        base_filters.append(AuditLog.resource_type == resource_type)
+    if actor:
+        if actor in {"api_key", "user", "system"}:
+            base_filters.append(AuditLog.actor_principal == actor)
+        else:
+            try:
+                actor_uuid = uuid.UUID(actor)
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "actor must be a user UUID or one of: "
+                        "'user', 'api_key', 'system'"
+                    ),
+                )
+            base_filters.append(AuditLog.actor_user_id == actor_uuid)
+    if from_ is not None:
+        base_filters.append(AuditLog.created_at >= from_)
+    if to is not None:
+        base_filters.append(AuditLog.created_at <= to)
+
+    count_stmt = select(_func.count()).select_from(AuditLog).where(*base_filters)
+    total = int((await db.execute(count_stmt)).scalar_one())
+
+    stmt = (
+        select(AuditLog)
+        .where(*base_filters)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+
+    items = [
+        AuditLogOut(
+            id=str(r.id),
+            tenant_id=str(r.tenant_id),
+            actor_user_id=str(r.actor_user_id) if r.actor_user_id else None,
+            actor_principal=r.actor_principal,
+            action=r.action,
+            resource_type=r.resource_type,
+            resource_id=r.resource_id,
+            before=r.before,
+            after=r.after,
+            meta=r.meta or {},
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+    return AuditLogPage(items=items, total=total, limit=limit, offset=offset)
