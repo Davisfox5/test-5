@@ -14,10 +14,43 @@ The FastAPI deps:
 * ``get_current_tenant`` — legacy; resolves the tenant from either credential.
   Keeps existing endpoints working untouched.
 * ``get_current_principal`` — new; resolves ``AuthPrincipal(tenant, user,
-  role, source)``. Endpoints that need to know *which human* is calling
-  (audit, role gates) depend on this.
+  role, source, scopes)``. Endpoints that need to know *which human* is
+  calling (audit, role gates) depend on this.
 * ``require_role("admin")`` — factory that returns a dep asserting the
   current principal has at least that role. Order: admin > manager > agent.
+* ``require_scope("foo:bar")`` — factory that returns a dep asserting the
+  current principal carries the named scope. Only enforced when
+  ``source == "api_key"``; session-JWT and Clerk-JWT principals bypass
+  the check (they're already gated by ``require_role``).
+
+Canonical API-key scopes (see :data:`API_KEY_SCOPES`):
+
+* ``interactions:read`` / ``interactions:write`` — call records, transcripts.
+* ``action_items:read`` / ``action_items:write`` — follow-up items.
+* ``analytics:read`` — dashboards, metrics, exports.
+* ``webhooks:read`` / ``webhooks:write`` — outbound webhook config.
+* ``kb:read`` / ``kb:write`` — knowledge-base docs and pins.
+* ``crm:sync`` — trigger CRM sync runs.
+* ``gdpr:export`` / ``gdpr:delete`` — data-subject endpoints.
+* ``contacts:read`` / ``contacts:write`` — contacts + customers.
+* ``scorecards:read`` / ``scorecards:write`` — scorecard templates.
+* ``users:read`` / ``users:write`` — directory + role changes.
+* ``api_keys:write`` — create / revoke API keys (rare — tenants usually
+  do this from the dashboard).
+* ``settings:write`` — tenant settings + feature flags.
+* ``onboarding:write`` — onboarding session lifecycle.
+* ``corrections:write`` / ``feedback:write`` — model-improvement signals.
+* ``campaigns:write`` / ``experiments:write`` / ``evaluation:write`` —
+  research surfaces.
+* ``library:write`` — call library snippet promotion.
+* ``oauth:write`` — start/revoke 3rd-party OAuth grants.
+* ``audit_log:read`` — read the new admin audit log.
+* ``*`` — every scope (the legacy "all access" opt-in).
+
+A blank scope list (``[]``) grants no write access at all — read-only
+GET endpoints don't require a scope, but every POST/PATCH/PUT/DELETE
+will 403. This is intentional: keys created without explicit scopes
+should fail closed.
 """
 
 from __future__ import annotations
@@ -28,7 +61,7 @@ import logging
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Callable, Optional, Tuple
@@ -50,6 +83,80 @@ logger = logging.getLogger(__name__)
 
 ROLES = ("agent", "manager", "admin")
 _ROLE_RANK = {"agent": 1, "manager": 2, "admin": 3}
+
+
+# Canonical scope namespace for API keys. Anything outside this set is
+# rejected on key creation/update with HTTP 422. ``"*"`` is the wildcard
+# meaning "every scope" — it's preserved as the explicit opt-in for the
+# legacy "all-access" semantics. Add scopes here as new write surfaces
+# land; keep this in sync with the per-route scope map at
+# ``docs/api_key_scope_map.yaml``.
+API_KEY_SCOPES: frozenset[str] = frozenset(
+    {
+        # data
+        "interactions:read",
+        "interactions:write",
+        "action_items:read",
+        "action_items:write",
+        "contacts:read",
+        "contacts:write",
+        "analytics:read",
+        "library:write",
+        # config
+        "webhooks:read",
+        "webhooks:write",
+        "kb:read",
+        "kb:write",
+        "scorecards:read",
+        "scorecards:write",
+        "settings:write",
+        "users:read",
+        "users:write",
+        "api_keys:write",
+        # integrations
+        "crm:sync",
+        "oauth:write",
+        # GDPR
+        "gdpr:export",
+        "gdpr:delete",
+        # workflow
+        "onboarding:write",
+        "corrections:write",
+        "feedback:write",
+        "campaigns:write",
+        "experiments:write",
+        "evaluation:write",
+        # admin / observability
+        "audit_log:read",
+        # wildcard
+        "*",
+    }
+)
+
+
+def validate_scopes(scopes: list[str]) -> list[str]:
+    """Validate + normalize a scope list.
+
+    Strips whitespace, dedupes (preserving order), and rejects unknown
+    values with ``ValueError``. ``"*"`` collapses to a single-element
+    list (it subsumes everything else).
+    """
+    if not isinstance(scopes, list):
+        raise ValueError("scopes must be a list of strings")
+    seen: list[str] = []
+    for raw in scopes:
+        if not isinstance(raw, str):
+            raise ValueError("scopes must be strings")
+        s = raw.strip()
+        if not s:
+            continue
+        if s not in API_KEY_SCOPES:
+            raise ValueError(f"unknown scope: {s}")
+        if s not in seen:
+            seen.append(s)
+    if "*" in seen:
+        return ["*"]
+    return seen
 
 
 # ── Credential helpers ─────────────────────────────────────────────────
@@ -156,16 +263,34 @@ class AuthPrincipal:
     user row has been associated (the normal case today). In that mode
     we still treat the caller as tenant-admin — API keys are programmatic
     tenant credentials, not end-user credentials.
+
+    ``scopes`` is only meaningful when ``source == "api_key"``; the
+    ``require_scope`` dependency uses it to gate write endpoints.
+    Session and Clerk principals get a ``["*"]`` placeholder so the
+    dependency is a no-op for human callers (their gates are role-based
+    via ``require_role``).
     """
 
     tenant: Tenant
     user: Optional[User]
     role: str  # agent | manager | admin
     source: str  # "api_key" | "session" | "clerk"
+    scopes: list[str] = field(default_factory=lambda: ["*"])
 
     @property
     def user_id(self) -> Optional[uuid.UUID]:
         return self.user.id if self.user else None
+
+    def has_scope(self, scope: str) -> bool:
+        """Return True if this principal carries the named scope.
+
+        Session/Clerk principals are unaffected (their default ``["*"]``
+        scopes always satisfy the check). API-key principals match
+        against their granted scopes; ``"*"`` always wins.
+        """
+        if "*" in self.scopes:
+            return True
+        return scope in self.scopes
 
 
 # ── FastAPI dependencies ───────────────────────────────────────────────
@@ -247,11 +372,15 @@ async def _principal_from_api_key(
             raise HTTPException(status_code=401, detail="API key expired")
 
     api_key.last_used_at = datetime.now(timezone.utc)
+    # Defensive: ``scopes`` defaults to ``[]`` at the column level, but
+    # legacy rows from before the q4e5f6a7b8c9 migration may have NULL.
+    raw_scopes = api_key.scopes or []
     return AuthPrincipal(
         tenant=api_key.tenant,
         user=None,
         role="admin",  # tenant-wide key → tenant-admin scope
         source="api_key",
+        scopes=list(raw_scopes),
     )
 
 
@@ -443,6 +572,46 @@ def require_role(minimum: str) -> Callable[..., AuthPrincipal]:
         return principal
 
     _dep.__name__ = f"require_role_{minimum}"
+    return _dep
+
+
+def require_scope(scope: str) -> Callable[..., AuthPrincipal]:
+    """Return a dependency that asserts the API-key principal has ``scope``.
+
+    Behaviour:
+
+    * ``source == "api_key"``: scope must be in ``principal.scopes`` or
+      ``"*"`` must be present, else 403 ``{"detail": "missing scope: …"}``.
+    * ``source == "session"`` or ``"clerk"``: bypass the check. Human
+      callers are gated by ``require_role``; mixing scope checks in
+      would force admins to also grant themselves API-key scopes, which
+      is never the intent.
+
+    Usage on a route::
+
+        @router.post("/webhooks", dependencies=[Depends(require_scope("webhooks:write"))])
+        async def create_webhook(...): ...
+
+    The unknown-scope guard is intentional — typos in the source code
+    fail loudly at import-time rather than silently letting every key
+    through.
+    """
+    if scope not in API_KEY_SCOPES:
+        raise ValueError(f"require_scope: unknown scope {scope!r}")
+
+    async def _dep(
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
+        if principal.source != "api_key":
+            return principal
+        if principal.has_scope(scope):
+            return principal
+        raise HTTPException(
+            status_code=403,
+            detail=f"missing scope: {scope}",
+        )
+
+    _dep.__name__ = f"require_scope_{scope.replace(':', '_')}"
     return _dep
 
 

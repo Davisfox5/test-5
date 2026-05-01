@@ -9,9 +9,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import ScorecardTemplate, Tenant
+from backend.app.services.audit_log import audit_log
 from backend.app.services.scorecard_entitlement import compute_entitlement
 
 router = APIRouter()
@@ -84,11 +90,17 @@ async def get_scorecard_template(
     return template
 
 
-@router.post("/scorecards", response_model=ScorecardTemplateOut, status_code=201)
+@router.post(
+    "/scorecards",
+    response_model=ScorecardTemplateOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("scorecards:write"))],
+)
 async def create_scorecard_template(
     body: ScorecardTemplateCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     # Entitlement gate: each tenant gets ``ceil(seats/10)`` included
     # scorecards (one per admin seat), plus any *Extra Scorecard* add-on
@@ -126,15 +138,28 @@ async def create_scorecard_template(
     )
     db.add(template)
     await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="scorecard.created",
+        resource_type="scorecard",
+        resource_id=str(template.id),
+        after={"name": template.name, "is_default": template.is_default},
+    )
     return template
 
 
-@router.put("/scorecards/{template_id}", response_model=ScorecardTemplateOut)
+@router.put(
+    "/scorecards/{template_id}",
+    response_model=ScorecardTemplateOut,
+    dependencies=[Depends(require_scope("scorecards:write"))],
+)
 async def update_scorecard_template(
     template_id: uuid.UUID,
     body: ScorecardTemplateUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(ScorecardTemplate).where(
         ScorecardTemplate.id == template_id,
@@ -145,6 +170,7 @@ async def update_scorecard_template(
     if not template:
         raise HTTPException(status_code=404, detail="Scorecard template not found")
 
+    before = {"name": template.name, "is_default": template.is_default}
     if body.name is not None:
         template.name = body.name
     if body.criteria is not None:
@@ -167,14 +193,29 @@ async def update_scorecard_template(
                 existing.is_default = False
         template.is_default = body.is_default
 
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="scorecard.updated",
+        resource_type="scorecard",
+        resource_id=str(template.id),
+        before=before,
+        after={"name": template.name, "is_default": template.is_default},
+    )
     return template
 
 
-@router.delete("/scorecards/{template_id}", status_code=204)
+@router.delete(
+    "/scorecards/{template_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("scorecards:write"))],
+)
 async def delete_scorecard_template(
     template_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(ScorecardTemplate).where(
         ScorecardTemplate.id == template_id,
@@ -184,4 +225,14 @@ async def delete_scorecard_template(
     template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Scorecard template not found")
+    snapshot = {"name": template.name, "is_default": template.is_default}
     await db.delete(template)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="scorecard.deleted",
+        resource_type="scorecard",
+        resource_id=str(template_id),
+        before=snapshot,
+    )

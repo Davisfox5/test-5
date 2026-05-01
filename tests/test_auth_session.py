@@ -234,6 +234,8 @@ async def test_api_key_path_builds_synthetic_admin():
         tenant=tenant_obj,
         expires_at=None,
         last_used_at=None,
+        # ``scopes`` lands on the principal now; legacy rows may have None.
+        scopes=["*"],
     )
 
     class FakeResult:

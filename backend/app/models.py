@@ -141,7 +141,13 @@ class ApiKey(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     key_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
-    scopes: Mapped[list] = mapped_column(JSONB, default=lambda: ["read:all", "write:all"])
+    # Granular scopes (e.g. ``["interactions:read", "action_items:write"]``).
+    # Closed-by-default: an empty list grants no write access. ``["*"]``
+    # grants every scope and is preserved as the explicit "all access"
+    # opt-in. The canonical scope namespace lives on
+    # ``backend.app.auth.API_KEY_SCOPES``; the ``require_scope`` factory
+    # enforces it on every mutating route.
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -758,6 +764,52 @@ class TenantDataOpsLog(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class AuditLog(Base):
+    """Generic audit log: one row per successful mutating operation.
+
+    The pre-existing :class:`TenantDataOpsLog` is GDPR-specific (export,
+    hard-delete) and stays untouched. ``AuditLog`` covers everything else
+    — interaction edits, user role changes, API key creation, webhook
+    deletes, etc. — and is the single table the admin "Audit log" UI
+    queries against.
+
+    Fields:
+
+    * ``actor_principal`` — ``user`` / ``api_key`` / ``system``.
+    * ``actor_user_id`` is null for ``api_key`` and ``system`` actors.
+    * ``before`` / ``after`` are JSONB snapshots so a security review can
+      diff a change without rejoining the live row.
+    * ``meta`` (the column is ``metadata`` in SQL — renamed in Python
+      because SQLAlchemy reserves ``metadata`` on declarative bases)
+      carries the request_id / IP / user-agent.
+
+    Indexed on ``(tenant_id, created_at desc)`` because the admin list
+    query pages over rows newest-first within a single tenant.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    # user | api_key | system
+    actor_principal: Mapped[str] = mapped_column(String, nullable=False)
+    # Dot-namespaced action e.g. "interaction.created", "user.deactivated".
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Stored as a string so we accept both UUIDs (most rows) and
+    # synthetic ids ("tenant:settings:features") without type juggling.
+    resource_id: Mapped[Optional[str]] = mapped_column(String)
+    before: Mapped[Optional[dict]] = mapped_column(JSONB)
+    after: Mapped[Optional[dict]] = mapped_column(JSONB)
+    # SQLAlchemy declarative reserves ``metadata`` — store it as ``meta``
+    # in Python and expose the SQL column name via ``name="metadata"``.
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class CrmSyncLog(Base):

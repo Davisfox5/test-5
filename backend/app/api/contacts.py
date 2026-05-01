@@ -10,9 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import Customer, CustomerNote, Contact, Interaction, Tenant
+from backend.app.services.audit_log import audit_log
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
 
@@ -215,11 +221,17 @@ async def get_contact(
     )
 
 
-@router.post("/contacts", response_model=ContactOut, status_code=201)
+@router.post(
+    "/contacts",
+    response_model=ContactOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def create_contact(
     body: ContactCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     contact = Contact(
         tenant_id=tenant.id,
@@ -233,21 +245,36 @@ async def create_contact(
     )
     db.add(contact)
     await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="contact.created",
+        resource_type="contact",
+        resource_id=str(contact.id),
+        after={"name": contact.name, "email": contact.email},
+    )
     return _contact_to_out(contact)
 
 
-@router.patch("/contacts/{contact_id}", response_model=ContactOut)
+@router.patch(
+    "/contacts/{contact_id}",
+    response_model=ContactOut,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def update_contact(
     contact_id: uuid.UUID,
     body: ContactUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Contact).where(Contact.id == contact_id, Contact.tenant_id == tenant.id)
     result = await db.execute(stmt)
     contact = result.scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
+
+    before = {"name": contact.name, "email": contact.email, "phone": contact.phone}
 
     if body.name is not None:
         contact.name = body.name
@@ -264,21 +291,46 @@ async def update_contact(
     if body.metadata is not None:
         contact.metadata_ = body.metadata
 
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="contact.updated",
+        resource_type="contact",
+        resource_id=str(contact.id),
+        before=before,
+        after={"name": contact.name, "email": contact.email, "phone": contact.phone},
+    )
     return _contact_to_out(contact)
 
 
-@router.delete("/contacts/{contact_id}", status_code=204)
+@router.delete(
+    "/contacts/{contact_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def delete_contact(
     contact_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Contact).where(Contact.id == contact_id, Contact.tenant_id == tenant.id)
     result = await db.execute(stmt)
     contact = result.scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
+    snapshot = {"name": contact.name, "email": contact.email}
     await db.delete(contact)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="contact.deleted",
+        resource_type="contact",
+        resource_id=str(contact_id),
+        before=snapshot,
+    )
 
 
 @router.get("/contacts/{contact_id}/interactions", response_model=List[InteractionSummary])
@@ -328,11 +380,17 @@ async def list_customers(
     return [_customer_to_out(c) for c in customers]
 
 
-@router.post("/customers", response_model=CustomerOut, status_code=201)
+@router.post(
+    "/customers",
+    response_model=CustomerOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def create_customer(
     body: CustomerCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     customer = Customer(
         tenant_id=tenant.id,
@@ -344,21 +402,36 @@ async def create_customer(
     )
     db.add(customer)
     await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="customer.created",
+        resource_type="customer",
+        resource_id=str(customer.id),
+        after={"name": customer.name, "domain": customer.domain},
+    )
     return _customer_to_out(customer)
 
 
-@router.patch("/customers/{customer_id}", response_model=CustomerOut)
+@router.patch(
+    "/customers/{customer_id}",
+    response_model=CustomerOut,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def update_customer(
     customer_id: uuid.UUID,
     body: CustomerUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant.id)
     result = await db.execute(stmt)
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    before = {"name": customer.name, "domain": customer.domain, "industry": customer.industry}
 
     if body.name is not None:
         customer.name = body.name
@@ -371,21 +444,46 @@ async def update_customer(
     if body.metadata is not None:
         customer.metadata_ = body.metadata
 
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="customer.updated",
+        resource_type="customer",
+        resource_id=str(customer.id),
+        before=before,
+        after={"name": customer.name, "domain": customer.domain, "industry": customer.industry},
+    )
     return _customer_to_out(customer)
 
 
-@router.delete("/customers/{customer_id}", status_code=204)
+@router.delete(
+    "/customers/{customer_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
 async def delete_customer(
     customer_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant.id)
     result = await db.execute(stmt)
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+    snapshot = {"name": customer.name, "domain": customer.domain}
     await db.delete(customer)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="customer.deleted",
+        resource_type="customer",
+        resource_id=str(customer_id),
+        before=snapshot,
+    )
 
 
 # ── Customer brief (LINDA's per-customer dossier) ─────────────────────

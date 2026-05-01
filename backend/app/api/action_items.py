@@ -9,10 +9,16 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import ActionItem, Tenant
 from backend.app.services import feedback_service
+from backend.app.services.audit_log import audit_log
 
 router = APIRouter()
 
@@ -202,12 +208,17 @@ async def get_action_item(
     return item
 
 
-@router.patch("/action-items/{action_item_id}", response_model=ActionItemOut)
+@router.patch(
+    "/action-items/{action_item_id}",
+    response_model=ActionItemOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
 async def update_action_item(
     action_item_id: uuid.UUID,
     body: ActionItemUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(ActionItem).where(
         ActionItem.id == action_item_id,
@@ -259,6 +270,26 @@ async def update_action_item(
         new_automation=body.automation_status,
         title_diff=title_diff,
         description_diff=description_diff,
+    )
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.updated",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        before={
+            "status": old_status,
+            "automation_status": old_automation,
+            "title": old_title,
+            "description": old_description,
+        },
+        after={
+            "status": item.status,
+            "automation_status": item.automation_status,
+            "title": item.title,
+            "description": item.description,
+        },
     )
 
     return item

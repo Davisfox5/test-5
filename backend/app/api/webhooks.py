@@ -13,9 +13,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
 from backend.app.db import get_db
 from backend.app.models import Tenant, Webhook, WebhookDelivery
+from backend.app.services.audit_log import audit_log
 from backend.app.services.token_crypto import decrypt_token, encrypt_token
 from backend.app.services.webhook_dispatcher import WebhookDispatcher
 from backend.app.services.webhook_events import WEBHOOK_EVENTS
@@ -139,11 +145,16 @@ async def list_webhooks(
     return result.scalars().all()
 
 
-@router.post("/webhooks", response_model=WebhookCreateResponse, status_code=201)
+@router.post(
+    "/webhooks",
+    response_model=WebhookCreateResponse,
+    status_code=201,
+    dependencies=[Depends(require_scope("webhooks:write"))],
+)
 async def create_webhook(
     body: WebhookCreate,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Create a new webhook. The HMAC secret is returned once in the response."""
     safe_url = _validate_url(body.url)
@@ -154,7 +165,7 @@ async def create_webhook(
     # backup can't be replayed against tenants' webhook receivers. The
     # plaintext is returned exactly once in the response below.
     webhook = Webhook(
-        tenant_id=tenant.id,
+        tenant_id=principal.tenant.id,
         url=safe_url,
         events=safe_events,
         secret=encrypt_token(hmac_secret) or hmac_secret,
@@ -162,6 +173,15 @@ async def create_webhook(
     )
     db.add(webhook)
     await db.flush()
+
+    await audit_log(
+        db,
+        principal,
+        action="webhook.created",
+        resource_type="webhook",
+        resource_id=str(webhook.id),
+        after={"url": webhook.url, "events": list(webhook.events), "active": webhook.active},
+    )
 
     return WebhookCreateResponse(
         id=webhook.id,
@@ -174,23 +194,29 @@ async def create_webhook(
     )
 
 
-@router.patch("/webhooks/{webhook_id}", response_model=WebhookOut)
+@router.patch(
+    "/webhooks/{webhook_id}",
+    response_model=WebhookOut,
+    dependencies=[Depends(require_scope("webhooks:write"))],
+)
 async def update_webhook(
     webhook_id: uuid.UUID,
     body: WebhookUpdate,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Update a webhook's URL, events, or active status."""
     stmt = select(Webhook).where(
         Webhook.id == webhook_id,
-        Webhook.tenant_id == tenant.id,
+        Webhook.tenant_id == principal.tenant.id,
     )
     result = await db.execute(stmt)
     webhook = result.scalar_one_or_none()
 
     if webhook is None:
         raise HTTPException(status_code=404, detail="Webhook not found")
+
+    before = {"url": webhook.url, "events": list(webhook.events), "active": webhook.active}
 
     if body.url is not None:
         webhook.url = _validate_url(body.url)
@@ -200,19 +226,34 @@ async def update_webhook(
         webhook.active = body.active
 
     await db.flush()
+
+    after = {"url": webhook.url, "events": list(webhook.events), "active": webhook.active}
+    await audit_log(
+        db,
+        principal,
+        action="webhook.updated",
+        resource_type="webhook",
+        resource_id=str(webhook.id),
+        before=before,
+        after=after,
+    )
     return webhook
 
 
-@router.delete("/webhooks/{webhook_id}", status_code=204)
+@router.delete(
+    "/webhooks/{webhook_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("webhooks:write"))],
+)
 async def delete_webhook(
     webhook_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Delete a webhook."""
     stmt = select(Webhook).where(
         Webhook.id == webhook_id,
-        Webhook.tenant_id == tenant.id,
+        Webhook.tenant_id == principal.tenant.id,
     )
     result = await db.execute(stmt)
     webhook = result.scalar_one_or_none()
@@ -220,10 +261,24 @@ async def delete_webhook(
     if webhook is None:
         raise HTTPException(status_code=404, detail="Webhook not found")
 
+    snapshot = {"url": webhook.url, "events": list(webhook.events), "active": webhook.active}
     await db.delete(webhook)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="webhook.deleted",
+        resource_type="webhook",
+        resource_id=str(webhook_id),
+        before=snapshot,
+    )
 
 
-@router.post("/webhooks/{webhook_id}/test", response_model=WebhookTestResponse)
+@router.post(
+    "/webhooks/{webhook_id}/test",
+    response_model=WebhookTestResponse,
+    dependencies=[Depends(require_scope("webhooks:write"))],
+)
 async def test_webhook(
     webhook_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

@@ -15,7 +15,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import (
+    AuthPrincipal,
+    get_current_principal,
+    get_current_tenant,
+    require_scope,
+)
+from backend.app.services.audit_log import audit_log
 from backend.app.db import get_db
 from backend.app.models import ActionItem, Contact, CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.plans import require_active_subscription
@@ -193,12 +199,16 @@ async def list_interaction_action_items(
     # Revenue-burning: text analysis still calls Anthropic. Block
     # expired-trial / lapsed-subscription tenants here so the cost
     # gate matches /upload + /ingest-recording.
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_active_subscription),
+        Depends(require_scope("interactions:write")),
+    ],
 )
 async def create_interaction(
     body: InteractionCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     """Create a text-based interaction (email, chat).
 
@@ -237,6 +247,15 @@ async def create_interaction(
     db.add(interaction)
     await db.flush()
 
+    await audit_log(
+        db,
+        principal,
+        action="interaction.created",
+        resource_type="interaction",
+        resource_id=str(interaction.id),
+        after={"channel": interaction.channel, "source": interaction.source, "title": interaction.title},
+    )
+
     # Dispatch the text-analysis pipeline (email/chat share the same branch).
     try:
         from backend.app.tasks import process_text_interaction
@@ -254,7 +273,10 @@ async def create_interaction(
     status_code=201,
     # Voice uploads burn Deepgram + Anthropic credits — gate behind a
     # paying / in-trial subscription.
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_active_subscription),
+        Depends(require_scope("interactions:write")),
+    ],
 )
 async def upload_voice_interaction(
     file: UploadFile = File(...),
@@ -381,7 +403,10 @@ class IngestRecordingIn(BaseModel):
     response_model=InteractionOut,
     status_code=201,
     # Same reasoning as /interactions/upload — this is the JSON sibling.
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_active_subscription),
+        Depends(require_scope("interactions:write")),
+    ],
 )
 async def ingest_recording(
     payload: Optional[IngestRecordingIn] = None,
@@ -507,12 +532,17 @@ async def ingest_recording(
     return interaction
 
 
-@router.patch("/interactions/{interaction_id}", response_model=InteractionOut)
+@router.patch(
+    "/interactions/{interaction_id}",
+    response_model=InteractionOut,
+    dependencies=[Depends(require_scope("interactions:write"))],
+)
 async def update_interaction(
     interaction_id: uuid.UUID,
     body: InteractionUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Interaction).where(
         Interaction.id == interaction_id,
@@ -522,20 +552,37 @@ async def update_interaction(
     interaction = result.scalar_one_or_none()
     if not interaction:
         raise HTTPException(status_code=404, detail="Interaction not found")
+
+    before = {"title": interaction.title, "contact_id": str(interaction.contact_id) if interaction.contact_id else None}
 
     if body.title is not None:
         interaction.title = body.title
     if body.contact_id is not None:
         interaction.contact_id = body.contact_id
 
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="interaction.updated",
+        resource_type="interaction",
+        resource_id=str(interaction.id),
+        before=before,
+        after={"title": interaction.title, "contact_id": str(interaction.contact_id) if interaction.contact_id else None},
+    )
     return interaction
 
 
-@router.delete("/interactions/{interaction_id}", status_code=204)
+@router.delete(
+    "/interactions/{interaction_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("interactions:write"))],
+)
 async def delete_interaction(
     interaction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = select(Interaction).where(
         Interaction.id == interaction_id,
@@ -546,7 +593,17 @@ async def delete_interaction(
     if not interaction:
         raise HTTPException(status_code=404, detail="Interaction not found")
 
+    snapshot = {"title": interaction.title, "channel": interaction.channel}
     await db.delete(interaction)
+    await db.flush()
+    await audit_log(
+        db,
+        principal,
+        action="interaction.deleted",
+        resource_type="interaction",
+        resource_id=str(interaction_id),
+        before=snapshot,
+    )
 
 
 # ── Outcome logging ─────────────────────────────────────────────────
