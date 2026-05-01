@@ -255,33 +255,44 @@ async def test_per_tenant_feedback_overrides_loaded(
 # ── OAuth provider listing ─────────────────────────────────────────
 
 
-def test_oauth_provider_stubs_are_marked_uncertified():
+def test_oauth_providers_static_certified_flag():
+    """All CRM providers are integrated end-to-end — the static catalog
+    flag is True. Runtime certification (env-secret presence) is a
+    separate concern checked elsewhere.
+    """
     from backend.app.api.oauth import CRM_PROVIDERS, _is_certified
 
     assert "zoho" in CRM_PROVIDERS
     assert "microsoft_dynamics" in CRM_PROVIDERS
-    assert _is_certified("zoho") is False
-    assert _is_certified("microsoft_dynamics") is False
-    # Existing CRM providers stay certified.
-    assert _is_certified("hubspot") is True
-    assert _is_certified("salesforce") is True
-    assert _is_certified("pipedrive") is True
+    for name in ("zoho", "microsoft_dynamics", "hubspot", "salesforce", "pipedrive"):
+        assert _is_certified(name) is True, f"{name} should be statically certified"
 
 
-def test_oauth_authorize_refuses_uncertified():
-    """``_require_certified`` must raise on stubs so we never start a
-    flow that the (missing) adapter can't finish.
-    ``_validate_provider`` keeps accepting them so revoke/cleanup paths
-    on stale rows still work.
+def test_oauth_runtime_certified_requires_env_secrets():
+    """Runtime certification reflects "operator wired up the secrets",
+    so the SPA can render an integrated-but-not-yet-configured provider
+    differently from a "Coming soon" stub.
     """
-    from fastapi import HTTPException
+    from unittest.mock import patch
 
-    from backend.app.api.oauth import _require_certified, _validate_provider
+    from backend.app.api import oauth as oauth_module
 
-    # Validation alone is permissive — stubs are still recognised providers.
+    # No secrets set → runtime-uncertified, even though static is True.
+    with patch.object(oauth_module, "_provider_setting", lambda attr: ""):
+        assert oauth_module._runtime_certified("zoho") is False
+        assert oauth_module._runtime_certified("microsoft_dynamics") is False
+
+    # Secrets set → runtime-certified
+    with patch.object(oauth_module, "_provider_setting", lambda attr: "stub"):
+        assert oauth_module._runtime_certified("zoho") is True
+        assert oauth_module._runtime_certified("microsoft_dynamics") is True
+
+
+def test_oauth_validate_provider_accepts_all_known():
+    """Validation is permissive — revoke/cleanup paths on stale rows
+    must keep working even for providers we'd never start a flow for."""
+    from backend.app.api.oauth import _validate_provider
+
     _validate_provider("zoho")  # must not raise
     _validate_provider("microsoft_dynamics")  # must not raise
-    # Flow-start gate rejects stubs.
-    with pytest.raises(HTTPException) as exc:
-        _require_certified("zoho")
-    assert exc.value.status_code == 400
+    _validate_provider("hubspot")  # must not raise
