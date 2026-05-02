@@ -132,6 +132,72 @@ def _event_matches(filters: List[str], event: str) -> bool:
     return False
 
 
+def dispatch_sync(
+    db: Any,
+    tenant_id: uuid.UUID,
+    event: str,
+    payload: Dict[str, Any],
+    *,
+    dispatch_now: bool = True,
+) -> List[WebhookDelivery]:
+    """Synchronous analogue of :func:`emit_event` for Celery workers.
+
+    Celery tasks own a synchronous SQLAlchemy ``Session`` (see
+    ``backend.app.tasks._get_sync_session``); they cannot await the async
+    ``emit_event``. This mirrors that function exactly: write a
+    ``WebhookDelivery`` row per matching active Webhook, then enqueue the
+    Celery delivery task for each so the HTTP POST happens out-of-band.
+
+    The callers wrap this in ``try/except Exception`` and treat any
+    failure as non-fatal, so even if no webhooks are configured (the
+    common case in fresh tenants) this is a fast no-op.
+    """
+    from sqlalchemy.orm import Session as _SyncSession  # local import to avoid cycle
+
+    assert isinstance(db, _SyncSession), "dispatch_sync requires a sync SQLAlchemy Session"
+
+    webhooks = list(
+        db.query(Webhook)
+        .filter(Webhook.tenant_id == tenant_id, Webhook.active.is_(True))
+        .all()
+    )
+
+    deliveries: List[WebhookDelivery] = []
+    full_payload = _envelope(event, tenant_id, payload)
+
+    for wh in webhooks:
+        if not _event_matches(list(wh.events or []), event):
+            continue
+        delivery = WebhookDelivery(
+            webhook_id=wh.id,
+            tenant_id=tenant_id,
+            event=event,
+            payload=full_payload,
+            status="pending",
+            attempts=[],
+            attempt_count=0,
+        )
+        db.add(delivery)
+        deliveries.append(delivery)
+
+    if deliveries:
+        db.flush()
+
+    if dispatch_now:
+        for d in deliveries:
+            try:
+                from backend.app.tasks import webhook_deliver
+
+                webhook_deliver.delay(str(d.id))
+            except Exception:
+                # Celery not available (local dev, tests) — the row is
+                # still in the DB and a future retry sweep will pick it up.
+                logger.debug(
+                    "Failed to enqueue webhook_deliver for %s", d.id, exc_info=True
+                )
+    return deliveries
+
+
 async def emit_event(
     db: AsyncSession,
     tenant_id: uuid.UUID,
