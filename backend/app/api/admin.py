@@ -784,3 +784,48 @@ async def list_audit_logs(
         for r in rows
     ]
     return AuditLogPage(items=items, total=total, limit=limit, offset=offset)
+
+
+# ── Celery worker introspection ──────────────────────────────────────────
+# Admin-only debug endpoint that round-trips through the Celery control
+# plane (broadcast over Redis) to ask every connected worker for its
+# stats / active / reserved task lists. If no worker responds within the
+# timeout, the result keys are None — definitive signal that the worker
+# fleet is offline even though the API is healthy. We also peek at the
+# Redis broker queue length so a "no workers + tasks piling up" state
+# is obvious without leaving the JSON.
+
+
+@router.get("/admin/celery/inspect")
+async def celery_inspect(
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    from backend.app.tasks import celery_app
+
+    insp = celery_app.control.inspect(timeout=2.5)
+    stats = insp.stats()
+    active = insp.active()
+    reserved = insp.reserved()
+
+    queue_depth: Optional[int] = None
+    queue_error: Optional[str] = None
+    try:
+        import redis as _redis
+
+        r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        queue_depth = int(r.llen("celery"))
+        try:
+            r.close()
+        except Exception:
+            pass
+    except Exception as exc:  # noqa: BLE001 — debug-only
+        queue_error = str(exc)[:200]
+
+    return {
+        "workers_online": list(stats.keys()) if stats else [],
+        "stats": stats,
+        "active": active,
+        "reserved": reserved,
+        "default_queue_depth": queue_depth,
+        "default_queue_error": queue_error,
+    }
