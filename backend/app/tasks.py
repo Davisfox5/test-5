@@ -440,6 +440,15 @@ _sync_engine = create_engine(
     pool_size=5,
     max_overflow=5,
     pool_pre_ping=True,
+    # Recycle pooled connections after 4 minutes. Neon (managed Postgres)
+    # closes long-idle connections from the server side; pool_pre_ping
+    # catches the corpse on checkout, but a connection that goes idle
+    # *after* checkout (between sync ORM calls in the middle of one
+    # task) can be killed mid-pipeline. The trace caught this as
+    # "psycopg2.OperationalError: SSL connection has been closed
+    # unexpectedly" during analysis_prep. 240s is comfortably below
+    # Neon's idle cap with margin for one full pipeline run.
+    pool_recycle=240,
     connect_args=_sync_connect_args,
 )
 _SyncSessionFactory = sessionmaker(bind=_sync_engine, expire_on_commit=False)
@@ -1382,6 +1391,7 @@ def _run_pipeline_impl(
         )
 
     # ── Step 19: Fire outbound webhooks ──────────────────────────────
+    _trace_step("webhook_step_start", interaction_id=interaction_id)
     from backend.app.services.webhook_dispatcher import dispatch_sync
 
     analyzed_payload = {
