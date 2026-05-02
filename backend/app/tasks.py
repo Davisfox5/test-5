@@ -306,115 +306,6 @@ def _on_task_postrun(
         logger.debug("task metrics emission failed", exc_info=True)
 
 
-# ── Pipeline tracing (debug instrumentation) ────────────────────────────
-#
-# We've been chasing a "task disappears mid-pipeline without raising"
-# bug — fly logs aren't readable from where this is being investigated,
-# so step-boundary logs alone aren't enough. Each call to ``_trace_step``
-# both writes a structured WARNING log line AND pushes a JSON entry to
-# a Redis-backed circular buffer (cap 500). The buffer is then served
-# by ``/admin/celery/inspect?include_trace=1`` so the trail can be
-# read back via curl. Cheap, localized, no new deps.
-#
-# Memory comes from ``resource.getrusage(RUSAGE_SELF).ru_maxrss`` —
-# stdlib, Linux units are KB. If a step hits the OOM killer the next
-# step never logs and the previous step's RSS will be at the high-water
-# mark. If a step hangs forever the trace stops mid-stride.
-
-_TRACE_REDIS_KEY = "linda:pipeline:trace"
-_TRACE_MAX_ENTRIES = 500
-
-
-def _trace_step(stage: str, interaction_id: Optional[str] = None, **extra: Any) -> None:
-    import json as _json
-    import os as _os
-    import time as _time
-
-    rss_kb: Optional[int] = None
-    try:
-        import resource as _resource
-
-        rss_kb = int(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
-    except Exception:
-        pass
-
-    entry: Dict[str, Any] = {
-        "ts": _time.time(),
-        "stage": stage,
-        "interaction_id": interaction_id,
-        "pid": _os.getpid(),
-        "rss_kb": rss_kb,
-    }
-    if extra:
-        entry.update(extra)
-
-    logger.warning(
-        "pipeline_trace stage=%s interaction=%s pid=%d rss_kb=%s extra=%s",
-        stage, interaction_id or "-", entry["pid"], rss_kb, extra or {},
-    )
-
-    try:
-        from backend.app.config import get_settings as _gs
-        import redis as _redis
-
-        client = _redis.from_url(_gs().REDIS_URL, decode_responses=True)
-        try:
-            client.lpush(_TRACE_REDIS_KEY, _json.dumps(entry))
-            client.ltrim(_TRACE_REDIS_KEY, 0, _TRACE_MAX_ENTRIES - 1)
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
-    except Exception:
-        # Trace must never break the task — best-effort only.
-        pass
-
-
-# Catch the "child process died" path too. Celery's worker_process_shutdown
-# fires when a prefork child is being torn down, regardless of whether the
-# parent killed it (clean shutdown) or it died on its own (SIGKILL/OOM).
-# Pairs with the per-step trace: if the last trace entry is "step_X started"
-# and the next entry is "child_shutdown", we know exactly which step blew up.
-from celery.signals import (
-    task_failure as _task_failure_signal,
-    worker_process_shutdown as _worker_process_shutdown_signal,
-)
-
-
-@_worker_process_shutdown_signal.connect
-def _on_worker_process_shutdown(  # noqa: D401
-    pid: Optional[int] = None,
-    exitcode: Optional[int] = None,
-    **_: Any,
-) -> None:
-    _trace_step(
-        "child_shutdown",
-        interaction_id=None,
-        child_pid=pid,
-        exitcode=exitcode,
-    )
-
-
-@_task_failure_signal.connect
-def _on_task_failure(
-    sender: Any = None,
-    task_id: Optional[str] = None,
-    exception: Optional[BaseException] = None,
-    einfo: Any = None,
-    **_: Any,
-) -> None:
-    name = getattr(sender, "name", "unknown")
-    _trace_step(
-        "task_failure",
-        interaction_id=None,
-        task_name=name,
-        task_id=task_id,
-        exc_type=type(exception).__name__ if exception else None,
-        exc_msg=str(exception)[:300] if exception else None,
-    )
-
-
 # ── Synchronous SQLAlchemy session for Celery tasks ──────────────────────
 
 _sync_db_url = settings.DATABASE_URL
@@ -813,8 +704,6 @@ def _run_pipeline_impl(
     tenant_id = str(tenant.id)
     agent_id = str(interaction.agent_id) if interaction.agent_id else ""
 
-    _trace_step("pipeline_impl_entered", interaction_id=interaction_id, channel=interaction.channel)
-
     # ── Step 5: PII redaction ────────────────────────────────────────
     # Catch BaseException (not just Exception): heavy ML init paths
     # (spaCy/transformers/presidio) can raise SystemExit on internal
@@ -824,29 +713,19 @@ def _run_pipeline_impl(
     # text and pii_redacted=False if init misbehaves.
     pii_redacted = False
     if tenant.pii_redaction_enabled:
-        _trace_step("pii_step_start", interaction_id=interaction_id)
         try:
             pii_config = tenant.pii_redaction_config or {}
             segments_dicts = _get_pii_service().redact_segments(
                 segments_dicts, config=pii_config
             )
             pii_redacted = True
-            _trace_step("pii_step_done", interaction_id=interaction_id)
             logger.info("PII redaction complete for interaction %s", interaction_id)
-        except BaseException as exc:  # noqa: BLE001 — guards against SystemExit
-            _trace_step(
-                "pii_step_failed_continuing",
-                interaction_id=interaction_id,
-                exc_type=type(exc).__name__,
-                exc_msg=str(exc)[:200],
-            )
+        except BaseException:  # noqa: BLE001 — guards against SystemExit
             logger.exception(
                 "PII redaction failed for interaction %s — continuing with non-redacted text",
                 interaction_id,
             )
             pii_redacted = False
-    else:
-        _trace_step("pii_step_skipped", interaction_id=interaction_id)
 
     # ── Step 6: Call metrics ─────────────────────────────────────────
     # Convert dicts back to Segment objects for the metrics service.
@@ -860,17 +739,13 @@ def _run_pipeline_impl(
             confidence=sd.get("confidence"),
         ))
 
-    _trace_step("metrics_step_start", interaction_id=interaction_id, n_segments=len(segment_objects))
     call_metrics = _get_metrics_service().compute(segment_objects)
-    _trace_step("metrics_step_done", interaction_id=interaction_id)
     logger.info("Call metrics computed for interaction %s", interaction_id)
 
     # ── Step 7: Compress transcript for LLM ──────────────────────────
-    _trace_step("compress_step_start", interaction_id=interaction_id)
     compressed_segments = _get_compressor().compress(segment_objects)
     compressed_text = _compressed_segments_to_text(compressed_segments)
     compressed_for_llm = _segments_for_llm(compressed_segments)
-    _trace_step("compress_step_done", interaction_id=interaction_id, compressed_chars=len(compressed_text))
     logger.info("Transcript compressed for interaction %s", interaction_id)
 
     # ── Step 8: Triage — complexity scoring ──────────────────────────
@@ -879,13 +754,11 @@ def _run_pipeline_impl(
         "duration": interaction.duration_seconds,
         "caller_info": interaction.caller_phone or "",
     }
-    _trace_step("triage_step_start", interaction_id=interaction_id)
     triage_result: Dict[str, Any] = _loop.run(
         _get_triage_service().score_complexity(compressed_text, metadata)
     )
     complexity_score = float(triage_result.get("complexity_score", 0.5))
     recommended_tier = triage_result.get("recommended_tier", "sonnet")
-    _trace_step("triage_step_done", interaction_id=interaction_id, tier=recommended_tier, complexity=complexity_score)
     logger.info(
         "Triage complete for interaction %s: score=%.2f tier=%s",
         interaction_id, complexity_score, recommended_tier,
@@ -904,7 +777,6 @@ def _run_pipeline_impl(
         to_uuid as _variant_to_uuid,
     )
 
-    _trace_step("analysis_prep_start", interaction_id=interaction_id)
     variant = select_variant_sync(
         session,
         tenant,
@@ -913,15 +785,11 @@ def _run_pipeline_impl(
         channel=interaction.channel,
         fallback_template=ANALYSIS_SYSTEM_PROMPT,
     )
-    _trace_step("analysis_variant_selected", interaction_id=interaction_id, variant=variant.name)
     tenant_block = build_analysis_context_block(session, tenant)
-    _trace_step("analysis_tenant_block_built", interaction_id=interaction_id)
     rag_block = build_rag_context_block(
         session, tenant, triage_result, channel=interaction.channel
     )
-    _trace_step("analysis_rag_block_built", interaction_id=interaction_id)
     overrides = get_parameter_overrides(session, tenant, surface="analysis")
-    _trace_step("analysis_overrides_loaded", interaction_id=interaction_id)
 
     # Tenant + per-customer brief assembled by LINDA agents (complements the
     # prompt-variant tenant_block above — kept as structured dicts so the
@@ -941,7 +809,6 @@ def _run_pipeline_impl(
             if _customer:
                 customer_brief = dict(_customer.customer_brief or {})
 
-    _trace_step("analysis_step_start", interaction_id=interaction_id)
     insights: Dict[str, Any] = _loop.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
@@ -955,7 +822,6 @@ def _run_pipeline_impl(
             customer_brief=customer_brief,
         )
     )
-    _trace_step("analysis_step_done", interaction_id=interaction_id)
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
     logger.info(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
@@ -1081,7 +947,6 @@ def _run_pipeline_impl(
         )
 
     transcript_for_scoring = _segments_for_llm(segments_dicts)
-    _trace_step("scorecard_step_start", interaction_id=interaction_id, n_templates=len(applicable_templates))
     if applicable_templates:
         scorecard_results = _loop.run(
             _get_scorecard_service().score_many(
@@ -1090,18 +955,15 @@ def _run_pipeline_impl(
         )
     else:
         scorecard_results = []
-    _trace_step("scorecard_step_done", interaction_id=interaction_id, n_results=len(scorecard_results))
     logger.info(
         "Scored %d scorecard templates for interaction %s",
         len(scorecard_results), interaction_id,
     )
 
     # ── Step 11: Snippet identification ──────────────────────────────
-    _trace_step("snippet_step_start", interaction_id=interaction_id)
     snippet_dicts = _get_snippet_service().identify_notable_segments(
         insights, agent_id, tenant_id
     )
-    _trace_step("snippet_step_done", interaction_id=interaction_id, n_snippets=len(snippet_dicts))
     logger.info(
         "Identified %d snippets for interaction %s",
         len(snippet_dicts), interaction_id,
@@ -1123,29 +985,20 @@ def _run_pipeline_impl(
             if interaction.created_at else None
         ),
     }
-    _trace_step("search_index_step_start", interaction_id=interaction_id)
     try:
         _loop.run(
             _get_search_service().index_interaction(
                 interaction_id, tenant_id, search_data
             )
         )
-        _trace_step("search_index_step_done", interaction_id=interaction_id)
         logger.info("Search indexed interaction %s", interaction_id)
-    except Exception as exc:
-        _trace_step(
-            "search_index_step_failed_nonfatal",
-            interaction_id=interaction_id,
-            exc_type=type(exc).__name__,
-            exc_msg=str(exc)[:200],
-        )
+    except Exception:
         logger.exception(
             "Search indexing failed for interaction %s (non-fatal)",
             interaction_id,
         )
 
     # ── Step 13: Update interaction row ──────────────────────────────
-    _trace_step("status_set_analyzed_start", interaction_id=interaction_id)
     interaction.status = "analyzed"
     interaction.transcript = segments_dicts
     interaction.insights = insights
@@ -1391,7 +1244,6 @@ def _run_pipeline_impl(
         )
 
     # ── Step 19: Fire outbound webhooks ──────────────────────────────
-    _trace_step("webhook_step_start", interaction_id=interaction_id)
     from backend.app.services.webhook_dispatcher import dispatch_sync
 
     analyzed_payload = {
@@ -1443,9 +1295,7 @@ def _run_pipeline_impl(
             except Exception:
                 logger.exception("Conversation webhook dispatch raised (non-fatal)")
 
-    _trace_step("final_commit_start", interaction_id=interaction_id)
     session.commit()
-    _trace_step("final_commit_done", interaction_id=interaction_id)
     logger.info("Pipeline complete for interaction %s", interaction_id)
 
     # ── Step 18: Schedule LLM-judge evaluation (Layer 2) ─────────────
@@ -1786,9 +1636,7 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
     from backend.app.models import Interaction, Tenant
 
     logger.info("Starting text pipeline for interaction %s", interaction_id)
-    _trace_step("text_task_entered", interaction_id=interaction_id)
     session = _get_sync_session()
-    _trace_step("sync_session_acquired", interaction_id=interaction_id)
 
     try:
         # ── Step 1: Load interaction ─────────────────────────────────
@@ -1836,9 +1684,7 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             return {"status": "error", "detail": "No text content"}
 
         # ── Steps 5–17: Run shared pipeline ──────────────────────────
-        _trace_step("calling_run_pipeline", interaction_id=interaction_id)
         _run_pipeline(session, interaction_id, segments_dicts, tenant, interaction)
-        _trace_step("run_pipeline_returned", interaction_id=interaction_id)
 
         try:
             from backend.app.services.metrics import PIPELINE_RUNS
@@ -1849,16 +1695,9 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             ).inc()
         except Exception:
             pass
-        _trace_step("text_task_returning_success", interaction_id=interaction_id)
         return {"status": "analyzed", "interaction_id": interaction_id}
 
     except Exception as exc:
-        _trace_step(
-            "text_task_outer_except",
-            interaction_id=interaction_id,
-            exc_type=type(exc).__name__,
-            exc_msg=str(exc)[:300],
-        )
         session.rollback()
         logger.exception(
             "Text pipeline failed for interaction %s", interaction_id
@@ -1872,14 +1711,7 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             if interaction:
                 interaction.status = "failed"
                 session.commit()
-                _trace_step("status_set_failed", interaction_id=interaction_id)
-        except Exception as inner:
-            _trace_step(
-                "status_set_failed_errored",
-                interaction_id=interaction_id,
-                exc_type=type(inner).__name__,
-                exc_msg=str(inner)[:300],
-            )
+        except Exception:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
     finally:

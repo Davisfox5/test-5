@@ -787,22 +787,20 @@ async def list_audit_logs(
 
 
 # ── Celery worker introspection ──────────────────────────────────────────
-# Admin-only debug endpoint that round-trips through the Celery control
+# Admin-only ops endpoint that round-trips through the Celery control
 # plane (broadcast over Redis) to ask every connected worker for its
 # stats / active / reserved task lists. If no worker responds within the
-# timeout, the result keys are None — definitive signal that the worker
-# fleet is offline even though the API is healthy. We also peek at the
+# timeout, the result keys are empty — definitive signal that the worker
+# fleet is offline even though the API is healthy. Also peeks at the
 # Redis broker queue length so a "no workers + tasks piling up" state
 # is obvious without leaving the JSON.
 
 
 @router.get("/admin/celery/inspect")
 async def celery_inspect(
-    include_trace: int = 0,
-    trace_limit: int = 200,
     _principal: AuthPrincipal = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    from backend.app.tasks import celery_app, _TRACE_REDIS_KEY
+    from backend.app.tasks import celery_app
 
     insp = celery_app.control.inspect(timeout=2.5)
     stats = insp.stats()
@@ -811,24 +809,12 @@ async def celery_inspect(
 
     queue_depth: Optional[int] = None
     queue_error: Optional[str] = None
-    trace: Optional[List[Dict[str, Any]]] = None
     try:
         import redis as _redis
 
         r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
         try:
             queue_depth = int(r.llen("celery"))
-            if include_trace:
-                import json as _json
-
-                limit = max(1, min(int(trace_limit), 500))
-                raw = r.lrange(_TRACE_REDIS_KEY, 0, limit - 1) or []
-                trace = []
-                for item in raw:
-                    try:
-                        trace.append(_json.loads(item))
-                    except Exception:
-                        trace.append({"raw": item})
         finally:
             try:
                 r.close()
@@ -837,7 +823,7 @@ async def celery_inspect(
     except Exception as exc:  # noqa: BLE001 — debug-only
         queue_error = str(exc)[:200]
 
-    out: Dict[str, Any] = {
+    return {
         "workers_online": list(stats.keys()) if stats else [],
         "stats": stats,
         "active": active,
@@ -845,6 +831,3 @@ async def celery_inspect(
         "default_queue_depth": queue_depth,
         "default_queue_error": queue_error,
     }
-    if include_trace:
-        out["trace"] = trace
-    return out
