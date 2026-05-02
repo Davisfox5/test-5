@@ -315,11 +315,23 @@ if _sync_db_url.startswith("postgresql+asyncpg://"):
 elif _sync_db_url.startswith("postgres://"):
     pass  # already sync-compatible
 
+# asyncpg accepts ``?ssl=true|require|...``; psycopg2 doesn't — it uses
+# ``?sslmode=...``. The async engine in ``db.py`` strips the asyncpg-style
+# query params and passes an SSLContext through ``connect_args``; we have
+# to do the equivalent for the sync engine. Without this, every Celery
+# task fails before its first DB read with "invalid connection option
+# 'ssl'", which is silent because tasks just retry forever.
+_sync_connect_args: Dict[str, Any] = {}
+if "ssl=" in _sync_db_url or "sslmode=" in _sync_db_url:
+    _sync_db_url = _sync_db_url.split("?")[0]
+    _sync_connect_args["sslmode"] = "require"
+
 _sync_engine = create_engine(
     _sync_db_url,
     pool_size=5,
     max_overflow=5,
     pool_pre_ping=True,
+    connect_args=_sync_connect_args,
 )
 _SyncSessionFactory = sessionmaker(bind=_sync_engine, expire_on_commit=False)
 
