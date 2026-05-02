@@ -568,6 +568,49 @@ def _cleanup_staged_audio(
             )
 
 
+def _coerce_seconds(value: Any) -> float:
+    """Best-effort convert a snippet/segment time to float seconds.
+
+    The analysis LLM occasionally returns timestamps as ``"MM:SS"`` or
+    ``"HH:MM:SS"`` strings instead of float seconds. A naive ``float()``
+    raises ``ValueError`` and used to fail step 16 of the pipeline (snippet
+    insert), wasting an entire successful Sonnet analysis. Accepts:
+
+    * ``None`` / empty / non-string-non-number → 0.0
+    * int / float → coerced to float
+    * numeric strings (``"123"``, ``"123.4"``) → float
+    * ``"MM:SS"`` / ``"M:SS"`` → minutes * 60 + seconds
+    * ``"HH:MM:SS"`` → hours * 3600 + minutes * 60 + seconds
+
+    Anything unparseable returns 0.0 — snippet rows are still useful even
+    without precise offsets, and the alternative (raising) takes the
+    whole pipeline down.
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return 0.0
+    if ":" in s:
+        try:
+            parts = [float(p) for p in s.split(":")]
+        except ValueError:
+            return 0.0
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
 def _segments_to_dicts(segments: list) -> List[Dict[str, Any]]:
     """Convert transcription Segment objects to plain dicts."""
     result: List[Dict[str, Any]] = []
@@ -1167,8 +1210,8 @@ def _run_pipeline_impl(
         snippet_row = InteractionSnippet(
             interaction_id=interaction.id,
             tenant_id=tenant.id,
-            start_time=float(sn.get("start_time", 0) or 0),
-            end_time=float(sn.get("end_time", 0) or 0),
+            start_time=_coerce_seconds(sn.get("start_time")),
+            end_time=_coerce_seconds(sn.get("end_time")),
             snippet_type=sn.get("snippet_type"),
             quality=sn.get("quality"),
             title=sn.get("title"),
