@@ -39,7 +39,8 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip wheel setuptools \
     && /opt/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
            "torch>=2.1" "torchaudio>=2.1" \
-    && /opt/venv/bin/pip install -r requirements.txt
+    && /opt/venv/bin/pip install -r requirements.txt \
+    && /opt/venv/bin/python -m spacy download en_core_web_sm
 
 # ─── Runtime ────────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
