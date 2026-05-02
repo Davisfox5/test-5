@@ -764,16 +764,35 @@ def _run_pipeline_impl(
     _trace_step("pipeline_impl_entered", interaction_id=interaction_id, channel=interaction.channel)
 
     # ── Step 5: PII redaction ────────────────────────────────────────
+    # Catch BaseException (not just Exception): heavy ML init paths
+    # (spaCy/transformers/presidio) can raise SystemExit on internal
+    # failure, which would otherwise terminate the prefork child with
+    # exitcode=1 and infinite-loop the task via Celery's acks_late
+    # redelivery. PII is a soft step — fall through with the original
+    # text and pii_redacted=False if init misbehaves.
     pii_redacted = False
     if tenant.pii_redaction_enabled:
         _trace_step("pii_step_start", interaction_id=interaction_id)
-        pii_config = tenant.pii_redaction_config or {}
-        segments_dicts = _get_pii_service().redact_segments(
-            segments_dicts, config=pii_config
-        )
-        pii_redacted = True
-        _trace_step("pii_step_done", interaction_id=interaction_id)
-        logger.info("PII redaction complete for interaction %s", interaction_id)
+        try:
+            pii_config = tenant.pii_redaction_config or {}
+            segments_dicts = _get_pii_service().redact_segments(
+                segments_dicts, config=pii_config
+            )
+            pii_redacted = True
+            _trace_step("pii_step_done", interaction_id=interaction_id)
+            logger.info("PII redaction complete for interaction %s", interaction_id)
+        except BaseException as exc:  # noqa: BLE001 — guards against SystemExit
+            _trace_step(
+                "pii_step_failed_continuing",
+                interaction_id=interaction_id,
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:200],
+            )
+            logger.exception(
+                "PII redaction failed for interaction %s — continuing with non-redacted text",
+                interaction_id,
+            )
+            pii_redacted = False
     else:
         _trace_step("pii_step_skipped", interaction_id=interaction_id)
 

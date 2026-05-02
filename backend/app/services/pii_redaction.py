@@ -55,24 +55,34 @@ class PIIRedactionService:
         if not _PRESIDIO_AVAILABLE:
             return
 
-        # Ensure the spacy model is available.
+        # We catch BaseException (not just Exception) here because spaCy /
+        # transformers / presidio init paths can call ``sys.exit()`` on
+        # internal failure (e.g. spaCy's ``cli.download`` is a Typer
+        # command that exits the process when invoked as a library).
+        # SystemExit/KeyboardInterrupt don't inherit from Exception, so
+        # without this guard the entire Celery prefork child terminates
+        # silently with exitcode=1 and the task gets redelivered into an
+        # infinite loop. The right behavior on init failure is to leave
+        # the service inert (text returned unchanged), not to take the
+        # worker down.
         try:
+            # Verify the spaCy model is loadable; do NOT try to download
+            # it at runtime — the CLI helper sys.exits and is the
+            # original source of this bug. The model is baked into the
+            # image at build time (see Dockerfile builder stage).
             import spacy
-            try:
-                spacy.load("en_core_web_sm")
-            except OSError:
-                logger.info("Downloading spacy model en_core_web_sm ...")
-                import spacy.cli
-                spacy.cli.download("en_core_web_sm")
-        except ImportError:
-            logger.warning(
-                "spacy is not installed. PII redaction will be disabled. "
-                "Install with: pip install spacy"
-            )
-            return
 
-        self._analyzer = AnalyzerEngine()
-        self._anonymizer = AnonymizerEngine()
+            spacy.load("en_core_web_sm")
+            self._analyzer = AnalyzerEngine()
+            self._anonymizer = AnonymizerEngine()
+        except BaseException as exc:  # noqa: BLE001 — see comment above
+            logger.warning(
+                "PII redaction service init failed (%s: %s). "
+                "Falling back to no-op — text will be returned unchanged.",
+                type(exc).__name__, str(exc)[:200],
+            )
+            self._analyzer = None
+            self._anonymizer = None
 
     # ------------------------------------------------------------------
     # Public API
