@@ -263,6 +263,65 @@ class Customer(Base):
     # LINDA's agents at call time to ground live coaching in what we know
     # about this specific customer.
     customer_brief: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Self-FK for enterprise hierarchy (Acme parent → Acme Logistics +
+    # Acme Cloud subsidiaries). No editing UI in v1; populated from CRM
+    # sync when the source CRM exposes a parent relationship.
+    parent_customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
+    # IANA timezone string (e.g. "America/New_York"). Auto-default from
+    # the CRM-synced HQ address or a known contact's email-signature TZ;
+    # editable. Drives meeting-scheduling features later.
+    timezone: Mapped[Optional[str]] = mapped_column(String)
+    # Denormalized result of the nightly "strongest connection" job:
+    # the Linda user with the most call airtime + email volume on this
+    # customer's interactions over the trailing 90 days. NULL until the
+    # first job run produces a signal.
+    strongest_connection_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class CustomerOwner(Base):
+    """Many-to-many: which Linda users own a Customer.
+
+    One ``primary`` per customer; secondary owners accumulate as different
+    reps appear on subsequent calls. Distinct from the ``agent_id`` on a
+    single interaction — that's per-call attribution; this is per-account
+    accountability for routing, action-item assignment, and notification
+    fan-out.
+    """
+
+    __tablename__ = "customer_owners"
+    __table_args__ = (
+        UniqueConstraint(
+            "customer_id", "user_id", name="uq_customer_owners_customer_user"
+        ),
+        CheckConstraint(
+            "role IN ('primary', 'secondary')",
+            name="ck_customer_owners_role",
+        ),
+        CheckConstraint(
+            "assigned_via IN ('first_uploader', 'speaker_tag', 'manual')",
+            name="ck_customer_owners_assigned_via",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    assigned_via: Mapped[str] = mapped_column(String, nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # ──────────────────────────────────────────────────────────
@@ -341,6 +400,16 @@ class CustomerOutcomeEvent(Base):
 
 class Contact(Base):
     __tablename__ = "contacts"
+    __table_args__ = (
+        # Pin the buying-group role vocabulary at the DB level so a
+        # rogue value (e.g. legacy "decision_maker") can't sneak in via
+        # raw SQL or a bad migration; the enum is mirrored in the LLM
+        # output schema and the SPA's chip styles.
+        CheckConstraint(
+            "role IS NULL OR role IN ('champion', 'economic_buyer', 'user', 'blocker', 'coach')",
+            name="ck_contacts_role",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
@@ -350,6 +419,13 @@ class Contact(Base):
     customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("customers.id"))
     crm_id: Mapped[Optional[str]] = mapped_column(String)
     crm_source: Mapped[Optional[str]] = mapped_column(String)
+    # Buying-group role inferred from call dialogue. NULL until the
+    # entity-resolution step has enough confidence to populate it.
+    # ``role_confidence`` carries the LLM's most-recent confidence so
+    # the SPA can render confirmed (≥0.8) vs suggested (0.6–0.8) chip
+    # styling without recomputing.
+    role: Mapped[Optional[str]] = mapped_column(String)
+    role_confidence: Mapped[Optional[float]] = mapped_column(Float)
     interaction_count: Mapped[int] = mapped_column(Integer, default=0)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     sentiment_trend: Mapped[list] = mapped_column(JSONB, default=list)
@@ -376,6 +452,16 @@ class Interaction(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id"))
+    # Direct FK to the resolved customer. Populated by the entity-
+    # resolution step in ``_run_pipeline_impl`` even when no specific
+    # contact is identified (cold outbound, multi-party calls, calls
+    # where the org name is inferred but no individual is named).
+    # ``customer_id`` and ``contact_id`` are independent — the resolver
+    # may set one, both, or neither; downstream code should not assume
+    # ``contact.customer_id`` matches.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL")
     )

@@ -95,6 +95,14 @@ presidio-analyzer>=2
 presidio-anonymizer>=2
 spacy>=3.7                        # NLP model for PII detection
 
+# === Entity resolution ===
+# RapidFuzz is the entity-resolution fuzzy-match library — Rust-backed,
+# substantially faster than fuzzywuzzy + python-Levenshtein on the
+# customer-name candidate sets we deal with (low thousands per tenant).
+# Used by ``backend.app.services.entity_resolution`` for name + domain
+# matching against existing customers and CRM-synced candidates.
+rapidfuzz>=3.0
+
 # === Config ===
 python-dotenv>=1.0
 pydantic-settings>=2.0

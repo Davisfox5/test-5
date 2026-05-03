@@ -68,6 +68,13 @@ class TenantContextFields(BaseModel):
     strategies: Optional[List[str]] = None
     org_structure: Optional[Dict[str, Any]] = None
     personal_touches: Optional[Dict[str, Any]] = None
+    # The tenant's own organisation name — captured at onboarding so
+    # entity_resolution knows which side of any call is "us" and stays
+    # off it as a customer candidate. Editable later from /settings.
+    # Free-form String; we don't enforce it has to match the Tenant.name
+    # since brand vs legal entity often differ ("Beacon Software" vs
+    # "Beacon Technologies, Inc.").
+    own_org_name: Optional[str] = None
 
 
 @router.put("/admin/tenant-context/fields")
