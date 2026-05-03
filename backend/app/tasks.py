@@ -998,10 +998,62 @@ def _run_pipeline_impl(
             interaction_id,
         )
 
+    # ── Step 12b: Entity resolution ──────────────────────────────────
+    # Plug Customer + Contact + role inference into the row before we
+    # flip status to "analyzed". The resolver is best-effort: any
+    # exception becomes a logged warning, the interaction still lands
+    # as analyzed, and the orphan can be reprocessed later. Runs the
+    # contact-rollup step (13b) against the freshly-resolved contact.
+    try:
+        from backend.app.services.entity_resolution import resolve_interaction_entities
+
+        resolution = _loop.run(
+            resolve_interaction_entities(
+                session=session,
+                interaction=interaction,
+                tenant=tenant,
+                insights=insights,
+                compressed_transcript=compressed_text,
+            )
+        )
+        if resolution.customer_action != "none":
+            logger.info(
+                "Entity resolution for interaction %s: %s (score=%.2f, customer_id=%s)",
+                interaction_id,
+                resolution.customer_action,
+                resolution.customer_score,
+                resolution.customer_id,
+            )
+        if resolution.suggestions:
+            # Stash suggestions on the interaction so the SPA can
+            # render the inline match-candidate card. The
+            # notification-tray surface plugs into the same data via
+            # a dedicated endpoint in the Suggestions phase.
+            existing_meta = (
+                getattr(interaction, "insights", None) or {}
+            )
+            existing_meta = dict(existing_meta)
+            existing_meta["entity_resolution_suggestions"] = resolution.suggestions
+            interaction.insights = existing_meta
+    except Exception:
+        logger.exception(
+            "Entity resolution failed for interaction %s — continuing as orphan",
+            interaction_id,
+        )
+
     # ── Step 13: Update interaction row ──────────────────────────────
     interaction.status = "analyzed"
     interaction.transcript = segments_dicts
-    interaction.insights = insights
+    # ``interaction.insights`` may already have been mutated above
+    # (entity_resolution stashes suggestions there); merge rather than
+    # overwrite when we replace the dict here.
+    merged_insights = dict(insights)
+    existing_extras = getattr(interaction, "insights", None) or {}
+    if isinstance(existing_extras, dict):
+        for k in ("entity_resolution_suggestions",):
+            if k in existing_extras:
+                merged_insights[k] = existing_extras[k]
+    interaction.insights = merged_insights
     interaction.call_metrics = call_metrics
     interaction.complexity_score = complexity_score
     interaction.analysis_tier = recommended_tier

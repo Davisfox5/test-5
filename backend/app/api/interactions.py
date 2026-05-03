@@ -72,6 +72,11 @@ class InteractionOut(BaseModel):
     insights: dict
     pii_redacted: bool
     detected_language: Optional[str]
+    # Resolved customer FK populated by the entity-resolution step.
+    # Independent from ``contact_id``: a call with no specific contact
+    # identified can still resolve to a customer.
+    customer_id: Optional[uuid.UUID] = None
+    contact_id: Optional[uuid.UUID] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -84,7 +89,6 @@ class InteractionDetail(InteractionOut):
     thread_id: Optional[str]
     participants: list
     agent_id: Optional[uuid.UUID]
-    contact_id: Optional[uuid.UUID]
 
 
 class InteractionUpdate(BaseModel):

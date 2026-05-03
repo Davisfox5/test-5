@@ -44,6 +44,9 @@ class CustomerOut(BaseModel):
     crm_id: Optional[str]
     industry: Optional[str]
     metadata: Optional[Dict]
+    parent_customer_id: Optional[uuid.UUID] = None
+    timezone: Optional[str] = None
+    strongest_connection_user_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 
@@ -54,6 +57,8 @@ class CustomerUpdate(BaseModel):
     crm_id: Optional[str] = None
     industry: Optional[str] = None
     metadata: Optional[Dict] = None
+    parent_customer_id: Optional[uuid.UUID] = None
+    timezone: Optional[str] = None
 
 
 class ContactCreate(BaseModel):
@@ -75,6 +80,12 @@ class ContactOut(BaseModel):
     customer_id: Optional[uuid.UUID]
     crm_id: Optional[str]
     crm_source: Optional[str]
+    # Buying-group role inferred from call dialogue. ``role`` is null
+    # until entity_resolution gets enough confidence; ``role_confidence``
+    # carries the LLM's most-recent score so the SPA can render
+    # confirmed (>=0.8) vs suggested (0.6-0.8) chip styling.
+    role: Optional[str] = None
+    role_confidence: Optional[float] = None
     interaction_count: int
     last_seen_at: Optional[datetime]
     sentiment_trend: list
@@ -121,6 +132,9 @@ def _customer_to_out(c: Customer) -> CustomerOut:
         crm_id=c.crm_id,
         industry=c.industry,
         metadata=c.metadata_,
+        parent_customer_id=c.parent_customer_id,
+        timezone=c.timezone,
+        strongest_connection_user_id=c.strongest_connection_user_id,
     )
 
 

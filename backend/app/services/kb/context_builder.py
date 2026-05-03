@@ -139,6 +139,12 @@ def _empty_brief() -> Dict:
         "strategies": [],
         "org_structure": {},      # {"teams": [...], "escalation_path": [...], "territories": [...]}
         "personal_touches": _empty_personal_touches(),
+        # The tenant's own organisation name. Read by entity_resolution
+        # to know which side of any call is "us" so we don't auto-create
+        # ourselves as a customer. Captured at onboarding via
+        # ``PUT /admin/tenant-context/fields`` and persisted in the
+        # brief alongside the other onboarding-owned fields.
+        "own_org_name": "",
         # Learned from outcomes
         "playbook_insights": _empty_playbook_insights(),
     }
