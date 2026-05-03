@@ -107,6 +107,17 @@ class Tenant(Base):
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
+        # Pin ``role`` to the canonical vocabulary (or NULL = legacy row,
+        # treated as "agent" by the auth resolver). A free-form String
+        # column previously let an early-draft 'executive' value slip in,
+        # which silently failed every role-rank lookup and confused three
+        # different SPA surfaces. Migration u8c9d0e1f2a3 promotes any
+        # rogue value to 'admin' and installs this constraint to fail
+        # loud on future drift.
+        CheckConstraint(
+            "role IS NULL OR role IN ('agent', 'manager', 'admin')",
+            name="ck_users_role",
+        ),
         # Pin ``preview_role`` to the same role-name vocabulary as
         # ``role`` (or NULL = no preview). Defense-in-depth alongside
         # the Pydantic ``Literal`` on ``POST /me/preview-role`` — a

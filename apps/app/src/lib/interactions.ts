@@ -241,6 +241,27 @@ export function useUpdateInteraction() {
     });
 }
 
+/**
+ * Re-enqueue a stuck or failed interaction through the analysis
+ * pipeline. Backend resets transcript/insights/metrics to a clean
+ * state and dispatches the right Celery task for the channel.
+ * Surfaced as a button on failed/processing interactions only — the
+ * server enforces that gate too with a 400 if status is anything else.
+ */
+export function useRedriveInteraction() {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (id: string) =>
+            api.post<InteractionOut>(`/interactions/${id}/redrive`, {}),
+        onSuccess: (_data, id) => {
+            qc.invalidateQueries({ queryKey: ["interactions"] });
+            qc.invalidateQueries({ queryKey: ["interaction", id] });
+            qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
+        },
+    });
+}
+
 /* ── Dashboard / action items ───────────────────────────────────────── */
 
 export interface DashboardSummary {

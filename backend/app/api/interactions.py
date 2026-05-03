@@ -573,6 +573,93 @@ async def update_interaction(
     return interaction
 
 
+@router.post(
+    "/interactions/{interaction_id}/redrive",
+    response_model=InteractionOut,
+    dependencies=[Depends(require_scope("interactions:write"))],
+)
+async def redrive_interaction(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Re-enqueue an interaction through the analysis pipeline.
+
+    Useful for two cases:
+
+    * ``status='failed'`` — the original analysis raised; user wants to
+      retry now that whatever upstream issue is resolved.
+    * ``status='processing'`` for an unreasonable duration (worker died
+      mid-task in the past, message was lost or stuck in a redelivery
+      window). The endpoint resets state and re-dispatches.
+
+    Reset semantics: status flips back to ``processing`` and any prior
+    ``insights`` / ``transcript`` / ``call_metrics`` produced by a
+    half-completed previous run are cleared so the next pipeline pass
+    has a clean slate. The interaction's ``raw_text`` /
+    ``audio_s3_key`` are preserved.
+    """
+    stmt = select(Interaction).where(
+        Interaction.id == interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    result = await db.execute(stmt)
+    interaction = result.scalar_one_or_none()
+    if not interaction:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    if interaction.status not in ("failed", "processing", "transcription_failed", "transcription_pending"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Re-drive only valid for failed/processing rows; this one is "
+                f"'{interaction.status}'. Delete and re-ingest if you want to "
+                "rerun an already-analyzed interaction."
+            ),
+        )
+
+    before = {"status": interaction.status}
+    interaction.status = "processing"
+    interaction.transcript = []
+    interaction.insights = {}
+    interaction.call_metrics = {}
+    interaction.complexity_score = None
+    interaction.analysis_tier = None
+    interaction.pii_redacted = False
+    await db.flush()
+
+    # Pick the right pipeline task. Voice goes to the audio path, every
+    # other channel goes through the text pipeline. The tasks themselves
+    # handle the source data lookup (raw_text vs audio_s3_key).
+    try:
+        if interaction.channel == "voice":
+            from backend.app.tasks import process_voice_interaction
+            process_voice_interaction.delay(str(interaction.id))
+        else:
+            from backend.app.tasks import process_text_interaction
+            process_text_interaction.delay(str(interaction.id))
+    except Exception:
+        # Celery unavailable (local dev / tests) — row is reset, the
+        # admin can dispatch later. Don't fail the API call.
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Celery dispatch failed for redrive of interaction %s",
+            interaction.id, exc_info=True,
+        )
+
+    await audit_log(
+        db,
+        principal,
+        action="interaction.redriven",
+        resource_type="interaction",
+        resource_id=str(interaction.id),
+        before=before,
+        after={"status": interaction.status, "channel": interaction.channel},
+    )
+    return interaction
+
+
 @router.delete(
     "/interactions/{interaction_id}",
     status_code=204,

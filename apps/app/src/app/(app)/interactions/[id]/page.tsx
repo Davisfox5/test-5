@@ -11,6 +11,7 @@ import {
     sentimentLabel,
     useDeleteInteraction,
     useInteraction,
+    useRedriveInteraction,
     useUpdateInteraction,
     type ActionItemOut,
     type TranscriptTurn,
@@ -29,6 +30,7 @@ export default function InteractionDetailPage() {
     const detail = useInteraction(id);
     const update = useUpdateInteraction();
     const del = useDeleteInteraction();
+    const redrive = useRedriveInteraction();
 
     const [editing, setEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
@@ -88,6 +90,15 @@ export default function InteractionDetailPage() {
             router.push("/interactions");
         } catch {
             setConfirmingDelete(false);
+        }
+    }
+
+    async function handleRedrive() {
+        if (!id) return;
+        try {
+            await redrive.mutateAsync(id);
+        } catch {
+            // surfaced inline below
         }
     }
 
@@ -168,8 +179,30 @@ export default function InteractionDetailPage() {
                         <span className="rounded-full border border-border px-3 py-1 text-xs capitalize text-text-muted">
                             {i.status}
                         </span>
+                        {(i.status === "failed" ||
+                            i.status === "processing" ||
+                            i.status === "transcription_failed" ||
+                            i.status === "transcription_pending") && (
+                            <button
+                                type="button"
+                                onClick={handleRedrive}
+                                disabled={redrive.isPending}
+                                title="Re-run analysis. Useful for stuck or failed interactions."
+                                className="rounded-md border border-border px-3 py-1 text-xs text-text-muted hover:bg-bg-card-hover disabled:opacity-60"
+                            >
+                                {redrive.isPending ? "Re-driving…" : "Re-drive"}
+                            </button>
+                        )}
                     </div>
                 </div>
+                {redrive.isError ? (
+                    <p className="mt-3 text-sm text-accent-rose">
+                        Couldn&apos;t re-drive:{" "}
+                        {redrive.error instanceof Error
+                            ? redrive.error.message
+                            : "unknown error"}
+                    </p>
+                ) : null}
                 {update.isError ? (
                     <p className="mt-3 text-sm text-accent-rose">
                         Couldn&apos;t save:{" "}
