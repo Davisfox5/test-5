@@ -11,18 +11,25 @@ import { useState } from "react";
 import type { CustomerDetail } from "@/lib/customers";
 import {
     ActionItemsCard,
+    CommitmentsCard,
     ContactsCard,
     InteractionsCard,
     OverviewHeader,
+    WarningsCard,
 } from "./shared";
 
-type SubTab = "overview" | "interactions" | "actions";
+type SubTab = "overview" | "interactions" | "actions" | "commitments";
 
 export function Layout3Sections({ c }: { c: CustomerDetail }) {
     const [tab, setTab] = useState<SubTab>("overview");
+    const openCommitments = c.commitments.filter(
+        (x) => x.status === "pending" || x.status === "overdue",
+    ).length;
     return (
         <div className="space-y-6">
             <OverviewHeader c={c} />
+
+            <WarningsCard c={c} />
 
             <div className="flex gap-2 border-b border-border">
                 <SubTabButton
@@ -38,6 +45,12 @@ export function Layout3Sections({ c }: { c: CustomerDetail }) {
                     count={c.recent_interactions.length}
                 />
                 <SubTabButton
+                    active={tab === "commitments"}
+                    onClick={() => setTab("commitments")}
+                    label="Commitments"
+                    count={openCommitments}
+                />
+                <SubTabButton
                     active={tab === "actions"}
                     onClick={() => setTab("actions")}
                     label="Action Items"
@@ -47,6 +60,7 @@ export function Layout3Sections({ c }: { c: CustomerDetail }) {
 
             {tab === "overview" ? <ContactsCard c={c} /> : null}
             {tab === "interactions" ? <InteractionsCard c={c} /> : null}
+            {tab === "commitments" ? <CommitmentsCard c={c} /> : null}
             {tab === "actions" ? <ActionItemsCard c={c} /> : null}
         </div>
     );

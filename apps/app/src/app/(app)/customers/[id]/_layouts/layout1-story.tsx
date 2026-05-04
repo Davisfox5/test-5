@@ -12,17 +12,22 @@ import { useState } from "react";
 import type { CustomerDetail } from "@/lib/customers";
 import {
     ActionItemsCard,
+    CommitmentsCard,
     ContactsCard,
     InteractionsCard,
     OverviewHeader,
+    WarningsCard,
 } from "./shared";
 
 export function Layout1Story({ c }: { c: CustomerDetail }) {
     const [showContacts, setShowContacts] = useState(false);
     const [showActions, setShowActions] = useState(false);
+    const [showCommitments, setShowCommitments] = useState(false);
     return (
         <div className="space-y-6">
             <OverviewHeader c={c} />
+
+            <WarningsCard c={c} />
 
             <div className="flex flex-wrap gap-3 text-xs text-text-muted">
                 <button
@@ -35,6 +40,17 @@ export function Layout1Story({ c }: { c: CustomerDetail }) {
                 </button>
                 <button
                     type="button"
+                    onClick={() => setShowCommitments((v) => !v)}
+                    className="rounded-md border border-border px-3 py-1.5 hover:bg-bg-card-hover"
+                >
+                    {showCommitments ? "Hide" : "Show"} commitments (
+                    {c.commitments.filter(
+                        (x) => x.status === "pending" || x.status === "overdue",
+                    ).length}
+                    )
+                </button>
+                <button
+                    type="button"
                     onClick={() => setShowActions((v) => !v)}
                     className="rounded-md border border-border px-3 py-1.5 hover:bg-bg-card-hover"
                 >
@@ -44,6 +60,7 @@ export function Layout1Story({ c }: { c: CustomerDetail }) {
             </div>
 
             {showContacts ? <ContactsCard c={c} /> : null}
+            {showCommitments ? <CommitmentsCard c={c} /> : null}
             {showActions ? <ActionItemsCard c={c} /> : null}
 
             <InteractionsCard

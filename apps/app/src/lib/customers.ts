@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "./api";
 
 export type CustomerOwnerOut = {
@@ -113,6 +113,52 @@ export type CustomerContactOut = {
     created_at: string;
 };
 
+export type WarningKind =
+    | "single_threaded"
+    | "champion_silent"
+    | "competitor_mentioned"
+    | "no_next_step"
+    | "exec_disengaged"
+    | "pricing_unapproved"
+    | "stalled_renewal"
+    | "negative_sentiment_trend"
+    | "other";
+
+export type WarningSeverity = "low" | "medium" | "high";
+
+export type CustomerWarningOut = {
+    id: string;
+    kind: WarningKind;
+    severity: WarningSeverity;
+    label: string | null;
+    evidence_text: string | null;
+    evidence_interaction_id: string | null;
+    first_detected_at: string;
+    last_detected_at: string;
+    dismissed_at: string | null;
+};
+
+export type CommitmentStatus = "pending" | "done" | "overdue" | "dismissed";
+
+export type CommitmentOut = {
+    id: string;
+    interaction_id: string;
+    actor_side: "rep" | "customer" | "unknown";
+    actor_user_id: string | null;
+    actor_user_name: string | null;
+    actor_contact_id: string | null;
+    actor_contact_name: string | null;
+    target_user_id: string | null;
+    target_contact_id: string | null;
+    text: string;
+    evidence_excerpt: string | null;
+    due_date: string | null;
+    status: CommitmentStatus;
+    completed_at: string | null;
+    completed_via: string | null;
+    created_at: string;
+};
+
 export type CustomerDetail = {
     id: string;
     tenant_id: string;
@@ -131,6 +177,8 @@ export type CustomerDetail = {
     churn_risk: number | null;
     upsell_score: number | null;
     customer_brief: Record<string, unknown> | null;
+    warnings: CustomerWarningOut[];
+    commitments: CommitmentOut[];
 };
 
 export function useCustomerDetail(id: string | undefined) {
@@ -139,6 +187,65 @@ export function useCustomerDetail(id: string | undefined) {
         queryKey: ["customer-detail", id ?? ""],
         queryFn: () => api.get<CustomerDetail>(`/customers/${id}/detail`),
         enabled: !!id,
+    });
+}
+
+/** Display label for a Deal Warning kind. */
+export function warningKindLabel(kind: WarningKind, label?: string | null): string {
+    switch (kind) {
+        case "single_threaded":
+            return "Single-threaded";
+        case "champion_silent":
+            return "Champion silent";
+        case "competitor_mentioned":
+            return "Competitor mentioned";
+        case "no_next_step":
+            return "No next step";
+        case "exec_disengaged":
+            return "Exec disengaged";
+        case "pricing_unapproved":
+            return "Pricing unapproved";
+        case "stalled_renewal":
+            return "Renewal stalled";
+        case "negative_sentiment_trend":
+            return "Sentiment declining";
+        case "other":
+            return label?.trim() || "Other risk";
+        default:
+            return kind;
+    }
+}
+
+export function useDismissWarning(customerId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (warningId: string) =>
+            api.post<CustomerWarningOut>(
+                `/customers/${customerId}/warnings/${warningId}/dismiss`,
+                {},
+            ),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["customer-detail", customerId] });
+        },
+    });
+}
+
+export function useUpdateCommitment(customerId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            commitmentId,
+            status,
+        }: {
+            commitmentId: string;
+            status: CommitmentStatus;
+        }) =>
+            api.patch<CommitmentOut>(`/commitments/${commitmentId}`, { status }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["customer-detail", customerId] });
+        },
     });
 }
 
