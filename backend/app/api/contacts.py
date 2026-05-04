@@ -282,6 +282,16 @@ def _contact_to_out(c: Contact) -> ContactOut:
         customer_id=c.customer_id,
         crm_id=c.crm_id,
         crm_source=c.crm_source,
+        # role + role_confidence were added to the ContactOut schema in
+        # PR #65 but forgotten here in _contact_to_out. The fields had
+        # ``Optional[...] = None`` defaults, so every API response
+        # returned role=None even though the DB column was correctly
+        # populated by entity_resolution. The Phase 3.5 v3 SQL readback
+        # nailed this: trace["role_before"] showed "champion" pulled
+        # via SQLAlchemy, but the SPA still saw null. Fix is one line
+        # per field.
+        role=c.role,
+        role_confidence=c.role_confidence,
         interaction_count=c.interaction_count,
         last_seen_at=c.last_seen_at,
         sentiment_trend=c.sentiment_trend,
