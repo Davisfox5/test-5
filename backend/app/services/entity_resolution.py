@@ -369,15 +369,30 @@ async def resolve_interaction_entities(
     # Skip rep-side contacts (those map to Linda Users, not Contact rows).
     # Skip the unknown-side too — too noisy. Customer-side only.
     contact_ids: List[uuid.UUID] = []
+    contact_traces: List[Dict[str, Any]] = []
     for c in extraction.contacts:
         if c.side != "customer":
+            contact_traces.append(
+                {"name": c.name, "skipped": f"side={c.side}"}
+            )
             continue
+        # Capture per-contact resolution trace so we can see exactly
+        # what _resolve_contact + _apply_role did. The role-NULL bug
+        # in Phase 3B made this trace mandatory: extraction returned
+        # role=champion at conf=0.75 but the persisted contact row
+        # had role=NULL — we couldn't distinguish "_apply_role wasn't
+        # called" from "_apply_role was called but the write was
+        # lost" without this surface.
+        trace: Dict[str, Any] = {"name": c.name, "role_in": c.role, "role_conf_in": c.role_confidence}
         contact_id = _resolve_contact(
             session=session,
             tenant_id=tenant.id,
             customer_id=outcome.customer_id,
             extraction=c,
+            trace=trace,
         )
+        trace["resolved_id"] = str(contact_id) if contact_id else None
+        contact_traces.append(trace)
         if contact_id is not None:
             contact_ids.append(contact_id)
 
@@ -398,6 +413,7 @@ async def resolve_interaction_entities(
     debug["resolved_customer_id"] = (
         str(outcome.customer_id) if outcome.customer_id else None
     )
+    debug["contact_traces"] = contact_traces
     existing_meta = getattr(interaction, "insights", None) or {}
     if isinstance(existing_meta, dict):
         existing_meta = dict(existing_meta)
@@ -740,6 +756,7 @@ def _resolve_contact(
     tenant_id: uuid.UUID,
     customer_id: Optional[uuid.UUID],
     extraction: ContactExtraction,
+    trace: Optional[Dict[str, Any]] = None,
 ) -> Optional[uuid.UUID]:
     """Find or create a Contact for one extracted person.
 
@@ -752,6 +769,8 @@ def _resolve_contact(
     """
     raw_name = extraction.name.strip()
     if not raw_name:
+        if trace is not None:
+            trace["path"] = "rejected_empty_name"
         return None
 
     # Reject role-title-only entries. The LLM is told to skip these in
@@ -759,6 +778,8 @@ def _resolve_contact(
     # any that slipped through. Anything matching the title set is
     # treated as a mention, not a contact.
     if raw_name.lower() in _ROLE_TITLE_REJECT:
+        if trace is not None:
+            trace["path"] = "rejected_role_title"
         logger.info(
             "entity_resolution: rejecting role-title-as-name '%s' (no proper name)",
             raw_name,
@@ -772,6 +793,8 @@ def _resolve_contact(
     # outputs like "Champion" that don't match the explicit reject
     # list but obviously aren't names.
     if not _looks_like_personal_name(raw_name):
+        if trace is not None:
+            trace["path"] = "rejected_non_name"
         logger.info(
             "entity_resolution: rejecting non-name '%s'", raw_name
         )
@@ -793,12 +816,22 @@ def _resolve_contact(
             best_score = s
 
     if best_match is not None and best_score >= AUTO_THRESHOLD:
+        if trace is not None:
+            trace["path"] = "match_existing"
+            trace["match_score"] = round(best_score, 3)
+            trace["role_before"] = best_match.role
+            trace["role_conf_before"] = best_match.role_confidence
         _apply_role(best_match, extraction)
+        if trace is not None:
+            trace["role_after"] = best_match.role
+            trace["role_conf_after"] = best_match.role_confidence
         return best_match.id
 
     # Create a new Contact only when we have a customer to attach to —
     # orphan contacts pollute the table and rarely earn their keep.
     if customer_id is None:
+        if trace is not None:
+            trace["path"] = "skipped_no_customer"
         return None
 
     contact = Contact(
@@ -807,8 +840,15 @@ def _resolve_contact(
         name=extraction.name,
     )
     _apply_role(contact, extraction)
+    if trace is not None:
+        trace["path"] = "create_new"
+        trace["role_after"] = contact.role
+        trace["role_conf_after"] = contact.role_confidence
     session.add(contact)
     session.flush()
+    if trace is not None:
+        trace["role_after_flush"] = contact.role
+        trace["role_conf_after_flush"] = contact.role_confidence
     return contact.id
 
 
