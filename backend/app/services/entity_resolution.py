@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from rapidfuzz import fuzz, process
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.app.models import Contact, Customer, CustomerOwner, Interaction
@@ -203,6 +204,30 @@ async def resolve_interaction_entities(
 
     # ── Customer side ───────────────────────────────────────────────
     if extraction.customer_name:
+        # Serialize concurrent customer-create attempts for the same
+        # (tenant, normalized name). pg_advisory_xact_lock holds for the
+        # duration of the transaction; a second pipeline running the
+        # same call (or a different call about the same customer at the
+        # same time) waits here until the first commits, then re-queries
+        # candidates and finds the freshly-committed row. Without this
+        # lock, two concurrent tasks both observed "no Acme exists" and
+        # each created a duplicate Acme Logistics row in the 2026-05-03
+        # backfill. The hashtext() narrows the lock space to one int4
+        # per (tenant, name) pair so the lock table stays bounded.
+        lock_key = f"er:{tenant.id}:{extraction.customer_name.lower().strip()}"
+        try:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": lock_key},
+            )
+        except Exception:
+            # SQLite (used in tests) doesn't have advisory locks.
+            # Tests run single-threaded so the dedupe race doesn't apply
+            # there; just continue without the lock.
+            logger.debug(
+                "entity_resolution: advisory lock unavailable; continuing"
+            )
+
         candidates = _score_candidates(
             session=session,
             tenant_id=tenant.id,
