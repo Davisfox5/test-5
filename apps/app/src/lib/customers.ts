@@ -69,6 +69,99 @@ export function useCustomerList(params?: {
     });
 }
 
+// ── Detail page ─────────────────────────────────────────────────────────
+
+export type CustomerOwnerOutLike = CustomerOwnerOut;
+
+export type CustomerInteractionSummary = {
+    id: string;
+    title: string | null;
+    channel: string;
+    direction: string | null;
+    status: string;
+    created_at: string;
+    sentiment_score: number | null;
+    summary_excerpt: string | null;
+};
+
+export type CustomerActionItemSummary = {
+    id: string;
+    interaction_id: string;
+    title: string;
+    description: string | null;
+    category: string | null;
+    priority: string | null;
+    status: string;
+    created_at: string;
+};
+
+export type CustomerContactOut = {
+    id: string;
+    tenant_id: string;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    customer_id: string | null;
+    crm_id: string | null;
+    crm_source: string | null;
+    role: "champion" | "economic_buyer" | "user" | "blocker" | "coach" | null;
+    role_confidence: number | null;
+    interaction_count: number;
+    last_seen_at: string | null;
+    sentiment_trend: number[];
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+};
+
+export type CustomerDetail = {
+    id: string;
+    tenant_id: string;
+    name: string;
+    domain: string | null;
+    industry: string | null;
+    parent_customer_id: string | null;
+    timezone: string | null;
+    metadata: Record<string, unknown> | null;
+    owners: CustomerOwnerOut[];
+    contacts: CustomerContactOut[];
+    multithreading_90d: number;
+    recent_interactions: CustomerInteractionSummary[];
+    open_action_items: CustomerActionItemSummary[];
+    sentiment_score: number | null;
+    churn_risk: number | null;
+    upsell_score: number | null;
+    customer_brief: Record<string, unknown> | null;
+};
+
+export function useCustomerDetail(id: string | undefined) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["customer-detail", id ?? ""],
+        queryFn: () => api.get<CustomerDetail>(`/customers/${id}/detail`),
+        enabled: !!id,
+    });
+}
+
+/** Display label for a contact role enum value. */
+export function contactRoleLabel(
+    role: CustomerContactOut["role"],
+): string {
+    switch (role) {
+        case "champion":
+            return "Champion";
+        case "economic_buyer":
+            return "Economic buyer";
+        case "user":
+            return "User";
+        case "blocker":
+            return "Blocker";
+        case "coach":
+            return "Coach";
+        default:
+            return "";
+    }
+}
+
 /** Auto-favicon URL via Google's favicon service.
  *
  * Cheap, anonymous, returns a 1×1 transparent PNG when the domain has no

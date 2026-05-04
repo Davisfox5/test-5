@@ -52,6 +52,39 @@ logger = logging.getLogger(__name__)
 AUTO_THRESHOLD = 0.80
 SUGGEST_THRESHOLD = 0.60
 
+# Lower threshold specifically for *contact roles*. Roles are softer
+# signals than customer identity — a clear "champion" hint in dialogue
+# rarely lands above 0.6 from Haiku because the model hedges. The
+# 2026-05-03 backfill produced 12 contacts, all with NULL roles,
+# because every confidence sat in the 0.4–0.55 range. A 0.45 floor
+# surfaces the role with a "suggested" visual treatment in the SPA
+# (dashed border + hover prompt) while still rejecting outright
+# guesses below 0.45.
+ROLE_SUGGEST_THRESHOLD = 0.45
+
+# A name that's actually a role title rather than a person. The
+# 2026-05-03 backfill created Contact rows for "CFO" and "IT Director"
+# because the LLM listed them when the speaker mentioned them by
+# title — even though no proper name was used and they didn't
+# actually participate. Anything matching this set (case-insensitive,
+# whole-string after strip) is rejected before a Contact row is
+# created. The prompt also tells the LLM to skip these now, but the
+# server-side guard makes the fix two-layered.
+_ROLE_TITLE_REJECT = frozenset(
+    s.lower()
+    for s in (
+        "ceo", "cfo", "cto", "coo", "cmo", "cro", "ciso", "cpo", "chro",
+        "vp", "svp", "evp", "avp",
+        "vp engineering", "vp sales", "vp ops", "vp marketing", "vp product",
+        "director", "manager", "lead",
+        "it director", "engineering director", "sales director",
+        "legal team", "legal", "compliance", "finance team", "finance",
+        "the cfo", "the cto", "the ceo", "the legal team",
+        "rep", "agent", "csm", "ae", "sdr", "sales rep",
+        "customer", "prospect", "buyer",
+    )
+)
+
 # Buying-group role vocabulary mirrored from the DB CHECK constraint
 # (``ck_contacts_role``). The LLM is instructed to pick from this list
 # only; anything outside is dropped.
@@ -109,6 +142,11 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "- Skip people who are only mentioned by name without participating "
     "  (e.g. 'I'll loop in Brendan' — Brendan is not a contact unless "
     "  he speaks). Mentioned-but-not-present people belong elsewhere.\n"
+    "- Skip people referred to ONLY by role/title with no proper name "
+    "  ('my CFO', 'our IT director', 'the legal team'). A contact "
+    "  needs an actual personal name like 'David Aluko' or 'Maria'; "
+    "  if the speaker mentions 'my CFO' but never names them, do NOT "
+    "  return them.\n"
     "- If the call has no identifiable customer (purely internal call, "
     "  spam, etc.) return ``customer.name = null`` and an empty contacts "
     "  list. Do not guess.\n\n"
@@ -645,7 +683,31 @@ def _resolve_contact(
     don't get promoted — they'll stay in the interaction's transcript
     and the customer page's "mentions" view (built later).
     """
-    if not extraction.name.strip():
+    raw_name = extraction.name.strip()
+    if not raw_name:
+        return None
+
+    # Reject role-title-only entries. The LLM is told to skip these in
+    # the prompt; this is the belt-and-braces validator that catches
+    # any that slipped through. Anything matching the title set is
+    # treated as a mention, not a contact.
+    if raw_name.lower() in _ROLE_TITLE_REJECT:
+        logger.info(
+            "entity_resolution: rejecting role-title-as-name '%s' (no proper name)",
+            raw_name,
+        )
+        return None
+
+    # Heuristic: a real personal name has at least one letter and
+    # isn't a single short token that's all-lowercase / matches
+    # generic words. "Andrei" is valid. "the team" is not. "Maria"
+    # is valid. "buyer" is not (caught above). This catches odd
+    # outputs like "Champion" that don't match the explicit reject
+    # list but obviously aren't names.
+    if not _looks_like_personal_name(raw_name):
+        logger.info(
+            "entity_resolution: rejecting non-name '%s'", raw_name
+        )
         return None
 
     base_query = session.query(Contact).filter(Contact.tenant_id == tenant_id)
@@ -684,16 +746,58 @@ def _resolve_contact(
 
 
 def _apply_role(contact: Contact, extraction: ContactExtraction) -> None:
-    """Set role + role_confidence on the contact when the LLM is confident.
+    """Set role + role_confidence on the contact when the LLM is confident
+    enough.
 
-    Below the suggest threshold the role stays untouched. We never
-    *clear* an existing role here — the user's manual edits should
-    survive a noisy follow-up call where the LLM was less sure.
+    Roles use ``ROLE_SUGGEST_THRESHOLD`` (0.45), which is lower than the
+    customer/contact-creation suggest band (0.60). Reason: Haiku
+    routinely returns 0.45–0.55 confidence on clear role signals
+    because it hedges, and the SPA renders sub-0.6 roles as a
+    "suggested" chip (dashed border + hover prompt to confirm) — that
+    UX is exactly the right surface for this confidence band, so we
+    accept and let the user decide.
+
+    Below 0.45 the role stays untouched. We never *clear* an existing
+    role here — the user's manual edits should survive a noisy
+    follow-up call where the LLM was less sure.
     """
-    if extraction.role and extraction.role_confidence >= SUGGEST_THRESHOLD:
+    if extraction.role and extraction.role_confidence >= ROLE_SUGGEST_THRESHOLD:
         # Only overwrite if the new signal beats the stored one (or
         # there's no stored one yet).
         existing_conf = contact.role_confidence or 0.0
         if extraction.role_confidence >= existing_conf:
             contact.role = extraction.role
             contact.role_confidence = extraction.role_confidence
+
+
+def _looks_like_personal_name(s: str) -> bool:
+    """Heuristic: does this look like a real person's name?
+
+    Trues: "Maria", "David Aluko", "Allison Park", "Andrei", "Jean-Luc".
+    Falses: "the team", "buyer", "Champion", short single-word
+    common-noun strings.
+
+    The check is intentionally permissive — we'd rather keep a
+    questionable name and let the user delete it than reject "Andrei"
+    and lose a real participant. The reject list above catches the
+    common false positives; this is the catch-all for the weird
+    outputs.
+    """
+    t = s.strip()
+    if len(t) < 2:
+        return False
+    # Must contain a letter.
+    if not any(ch.isalpha() for ch in t):
+        return False
+    # Reject obvious common-noun phrases starting with "the ".
+    if t.lower().startswith(("the ", "a ", "an ")):
+        return False
+    # If the first character is a letter, it ought to be capitalised
+    # (proper names almost always are). Allow lowercase if it's a
+    # multi-word string — "jean-luc" still passes — but reject single
+    # all-lowercase words ("champion", "buyer").
+    first_alpha = next((ch for ch in t if ch.isalpha()), None)
+    if first_alpha and first_alpha.islower():
+        if " " not in t and "-" not in t:
+            return False
+    return True
