@@ -1041,6 +1041,43 @@ def _run_pipeline_impl(
             interaction_id,
         )
 
+    # ── Step 12c: Warnings + commitments ─────────────────────────────
+    # Run after entity_resolution so we have ``interaction.customer_id``
+    # populated (the warnings engine needs it to attach rows). Same
+    # best-effort posture as 12b: any flake becomes a logged warning,
+    # the interaction still lands as analyzed.
+    try:
+        from backend.app.services.warnings_commitments import detect_and_persist
+
+        wc_outcome = _loop.run(
+            detect_and_persist(
+                session=session,
+                interaction=interaction,
+                tenant=tenant,
+                insights=insights,
+                compressed_transcript=compressed_text,
+            )
+        )
+        if (
+            wc_outcome.warnings_upserted
+            or wc_outcome.commitments_created
+            or wc_outcome.commitments_marked_done
+        ):
+            logger.info(
+                "Phase 4 detect for interaction %s: warnings=%d (re-raised %d) "
+                "commitments=%d done=%d",
+                interaction_id,
+                wc_outcome.warnings_upserted,
+                wc_outcome.warnings_re_raised,
+                wc_outcome.commitments_created,
+                wc_outcome.commitments_marked_done,
+            )
+    except Exception:
+        logger.exception(
+            "Warnings/commitments detection failed for interaction %s — continuing",
+            interaction_id,
+        )
+
     # ── Step 13: Update interaction row ──────────────────────────────
     interaction.status = "analyzed"
     interaction.transcript = segments_dicts
@@ -1050,7 +1087,11 @@ def _run_pipeline_impl(
     merged_insights = dict(insights)
     existing_extras = getattr(interaction, "insights", None) or {}
     if isinstance(existing_extras, dict):
-        for k in ("entity_resolution_suggestions", "entity_resolution_debug"):
+        for k in (
+            "entity_resolution_suggestions",
+            "entity_resolution_debug",
+            "warnings_commitments_debug",
+        ):
             if k in existing_extras:
                 merged_insights[k] = existing_extras[k]
     interaction.insights = merged_insights

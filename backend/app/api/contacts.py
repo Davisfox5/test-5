@@ -19,10 +19,12 @@ from backend.app.auth import (
 from backend.app.db import get_db
 from backend.app.models import (
     ActionItem,
+    Commitment,
     Contact,
     Customer,
     CustomerNote,
     CustomerOwner,
+    CustomerWarning,
     Interaction,
     Tenant,
     User,
@@ -138,6 +140,45 @@ class CustomerActionItemSummary(BaseModel):
     created_at: datetime
 
 
+class CustomerWarningOut(BaseModel):
+    """A Deal Warning chip on the customer page (Phase 4)."""
+
+    id: uuid.UUID
+    kind: str
+    severity: str
+    label: Optional[str] = None
+    evidence_text: Optional[str]
+    evidence_interaction_id: Optional[uuid.UUID]
+    first_detected_at: datetime
+    last_detected_at: datetime
+    dismissed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class CommitmentOut(BaseModel):
+    """One row in the commitments list on the customer detail page."""
+
+    id: uuid.UUID
+    interaction_id: uuid.UUID
+    actor_side: str  # rep | customer | unknown
+    actor_user_id: Optional[uuid.UUID] = None
+    actor_user_name: Optional[str] = None
+    actor_contact_id: Optional[uuid.UUID] = None
+    actor_contact_name: Optional[str] = None
+    target_user_id: Optional[uuid.UUID] = None
+    target_contact_id: Optional[uuid.UUID] = None
+    text: str
+    evidence_excerpt: Optional[str]
+    due_date: Optional[datetime]
+    status: str  # pending | done | overdue | dismissed
+    completed_at: Optional[datetime] = None
+    completed_via: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class CustomerDetail(BaseModel):
     """Full customer record for the detail page (Layout 1-4 all consume this).
 
@@ -175,6 +216,10 @@ class CustomerDetail(BaseModel):
 
     # Customer brief (for the dossier-style layout)
     customer_brief: Optional[Dict] = None
+
+    # Phase 4 surfaces — Deal Warnings + Commitments
+    warnings: List[CustomerWarningOut] = []
+    commitments: List[CommitmentOut] = []
 
 
 class CustomerUpdate(BaseModel):
@@ -911,6 +956,76 @@ async def get_customer_detail(
         churn_risk = latest_insights.get("churn_risk")
         upsell_score = latest_insights.get("upsell_score")
 
+    # Phase 4 — active (non-dismissed) Deal Warnings, severity-then-recency.
+    warning_rows = (
+        await db.execute(
+            select(CustomerWarning)
+            .where(
+                CustomerWarning.tenant_id == tenant.id,
+                CustomerWarning.customer_id == customer_id,
+                CustomerWarning.dismissed_at.is_(None),
+            )
+            .order_by(
+                # Manual severity order so 'high' > 'medium' > 'low' beats
+                # alphabetical. ``case`` would be cleaner but we keep the
+                # order client-side too — sort here is best-effort.
+                CustomerWarning.last_detected_at.desc(),
+            )
+        )
+    ).scalars().all()
+    warnings = [_warning_to_out(w) for w in warning_rows]
+    # Stable severity sort (high → medium → low) on top of recency.
+    _SEV_RANK = {"high": 0, "medium": 1, "low": 2}
+    warnings.sort(key=lambda w: _SEV_RANK.get(w.severity, 3))
+
+    # Phase 4 — open + recent-done commitments. Limit to 50; the
+    # detail page's commitments section paginates older ones from
+    # the dedicated /commitments endpoint.
+    commit_rows = (
+        await db.execute(
+            select(Commitment)
+            .where(
+                Commitment.tenant_id == tenant.id,
+                Commitment.customer_id == customer_id,
+                Commitment.status.in_(("pending", "overdue", "done")),
+            )
+            .order_by(
+                # Pending/overdue first (NULL completed_at) then by due
+                # date ascending — overdue surfaces above future-pending.
+                Commitment.completed_at.asc().nullsfirst(),
+                Commitment.due_date.asc().nullslast(),
+                Commitment.created_at.desc(),
+            )
+            .limit(50)
+        )
+    ).scalars().all()
+    actor_user_ids = {c.actor_user_id for c in commit_rows if c.actor_user_id}
+    actor_contact_ids = {c.actor_contact_id for c in commit_rows if c.actor_contact_id}
+    user_name_map: Dict[uuid.UUID, str] = {}
+    if actor_user_ids:
+        rows = (
+            await db.execute(
+                select(User.id, User.name).where(User.id.in_(actor_user_ids))
+            )
+        ).all()
+        user_name_map = {r.id: (r.name or "") for r in rows}
+    contact_name_map: Dict[uuid.UUID, str] = {}
+    if actor_contact_ids:
+        rows = (
+            await db.execute(
+                select(Contact.id, Contact.name).where(Contact.id.in_(actor_contact_ids))
+            )
+        ).all()
+        contact_name_map = {r.id: (r.name or "") for r in rows}
+    commitments = [
+        _commitment_to_out(
+            c,
+            actor_user_name=user_name_map.get(c.actor_user_id),
+            actor_contact_name=contact_name_map.get(c.actor_contact_id),
+        )
+        for c in commit_rows
+    ]
+
     return CustomerDetail(
         id=cust.id,
         tenant_id=cust.tenant_id,
@@ -929,6 +1044,52 @@ async def get_customer_detail(
         churn_risk=churn_risk,
         upsell_score=upsell_score,
         customer_brief=cust.customer_brief or {},
+        warnings=warnings,
+        commitments=commitments,
+    )
+
+
+def _warning_to_out(w: CustomerWarning) -> CustomerWarningOut:
+    label = None
+    meta = w.metadata_ or {}
+    if isinstance(meta, dict):
+        label = meta.get("label")
+    return CustomerWarningOut(
+        id=w.id,
+        kind=w.kind,
+        severity=w.severity,
+        label=label if isinstance(label, str) else None,
+        evidence_text=w.evidence_text,
+        evidence_interaction_id=w.evidence_interaction_id,
+        first_detected_at=w.first_detected_at,
+        last_detected_at=w.last_detected_at,
+        dismissed_at=w.dismissed_at,
+    )
+
+
+def _commitment_to_out(
+    c: Commitment,
+    *,
+    actor_user_name: Optional[str] = None,
+    actor_contact_name: Optional[str] = None,
+) -> CommitmentOut:
+    return CommitmentOut(
+        id=c.id,
+        interaction_id=c.interaction_id,
+        actor_side=c.actor_side,
+        actor_user_id=c.actor_user_id,
+        actor_user_name=actor_user_name or None,
+        actor_contact_id=c.actor_contact_id,
+        actor_contact_name=actor_contact_name or None,
+        target_user_id=c.target_user_id,
+        target_contact_id=c.target_contact_id,
+        text=c.text,
+        evidence_excerpt=c.evidence_excerpt,
+        due_date=c.due_date,
+        status=c.status,
+        completed_at=c.completed_at,
+        completed_via=c.completed_via,
+        created_at=c.created_at,
     )
 
 
@@ -1189,3 +1350,193 @@ async def get_contact_sentiment_history(
         "points": list(contact.sentiment_trend or []),
         "interaction_count": contact.interaction_count or 0,
     }
+
+
+# ── Phase 4 — Deal Warnings ───────────────────────────────────────
+
+
+@router.get(
+    "/customers/{customer_id}/warnings",
+    response_model=List[CustomerWarningOut],
+)
+async def list_customer_warnings(
+    customer_id: uuid.UUID,
+    include_dismissed: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """List Deal Warnings on a customer (Phase 4)."""
+    cust = await db.get(Customer, customer_id)
+    if cust is None or cust.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    stmt = select(CustomerWarning).where(
+        CustomerWarning.tenant_id == tenant.id,
+        CustomerWarning.customer_id == customer_id,
+    )
+    if not include_dismissed:
+        stmt = stmt.where(CustomerWarning.dismissed_at.is_(None))
+    stmt = stmt.order_by(CustomerWarning.last_detected_at.desc())
+    rows = (await db.execute(stmt)).scalars().all()
+    out = [_warning_to_out(w) for w in rows]
+    _SEV = {"high": 0, "medium": 1, "low": 2}
+    out.sort(key=lambda w: _SEV.get(w.severity, 3))
+    return out
+
+
+@router.post(
+    "/customers/{customer_id}/warnings/{warning_id}/dismiss",
+    response_model=CustomerWarningOut,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
+async def dismiss_customer_warning(
+    customer_id: uuid.UUID,
+    warning_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Dismiss a Deal Warning. Re-detection by the pipeline can re-raise it."""
+    w = await db.get(CustomerWarning, warning_id)
+    if (
+        w is None
+        or w.tenant_id != tenant.id
+        or w.customer_id != customer_id
+    ):
+        raise HTTPException(status_code=404, detail="Warning not found")
+    w.dismissed_at = datetime.now(timezone.utc)
+    w.dismissed_by = principal.user_id
+    await db.commit()
+    await db.refresh(w)
+    return _warning_to_out(w)
+
+
+@router.post(
+    "/customers/{customer_id}/warnings/{warning_id}/restore",
+    response_model=CustomerWarningOut,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
+async def restore_customer_warning(
+    customer_id: uuid.UUID,
+    warning_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Reverse a dismissal — useful if a user clicked dismiss by mistake."""
+    w = await db.get(CustomerWarning, warning_id)
+    if (
+        w is None
+        or w.tenant_id != tenant.id
+        or w.customer_id != customer_id
+    ):
+        raise HTTPException(status_code=404, detail="Warning not found")
+    w.dismissed_at = None
+    w.dismissed_by = None
+    await db.commit()
+    await db.refresh(w)
+    return _warning_to_out(w)
+
+
+# ── Phase 4 — Commitments ─────────────────────────────────────────
+
+
+@router.get(
+    "/customers/{customer_id}/commitments",
+    response_model=List[CommitmentOut],
+)
+async def list_customer_commitments(
+    customer_id: uuid.UUID,
+    status: Optional[str] = Query(
+        None, description="Filter: pending | done | overdue | dismissed"
+    ),
+    limit: int = Query(100, le=500),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    cust = await db.get(Customer, customer_id)
+    if cust is None or cust.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    stmt = select(Commitment).where(
+        Commitment.tenant_id == tenant.id,
+        Commitment.customer_id == customer_id,
+    )
+    if status:
+        stmt = stmt.where(Commitment.status == status)
+    stmt = stmt.order_by(
+        Commitment.completed_at.asc().nullsfirst(),
+        Commitment.due_date.asc().nullslast(),
+        Commitment.created_at.desc(),
+    ).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    user_ids = {c.actor_user_id for c in rows if c.actor_user_id}
+    contact_ids = {c.actor_contact_id for c in rows if c.actor_contact_id}
+    user_map: Dict[uuid.UUID, str] = {}
+    if user_ids:
+        urows = (
+            await db.execute(
+                select(User.id, User.name).where(User.id.in_(user_ids))
+            )
+        ).all()
+        user_map = {r.id: (r.name or "") for r in urows}
+    contact_map: Dict[uuid.UUID, str] = {}
+    if contact_ids:
+        crows = (
+            await db.execute(
+                select(Contact.id, Contact.name).where(Contact.id.in_(contact_ids))
+            )
+        ).all()
+        contact_map = {r.id: (r.name or "") for r in crows}
+    return [
+        _commitment_to_out(
+            c,
+            actor_user_name=user_map.get(c.actor_user_id),
+            actor_contact_name=contact_map.get(c.actor_contact_id),
+        )
+        for c in rows
+    ]
+
+
+class CommitmentStatusUpdate(BaseModel):
+    status: str  # done | dismissed | pending
+
+
+@router.patch(
+    "/commitments/{commitment_id}",
+    response_model=CommitmentOut,
+    dependencies=[Depends(require_scope("contacts:write"))],
+)
+async def update_commitment_status(
+    commitment_id: uuid.UUID,
+    body: CommitmentStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Mark a commitment done / dismissed / re-open. ``overdue`` is computed,
+    not user-set — restore goes to ``pending`` and the daily job
+    re-derives overdue based on ``due_date``."""
+    if body.status not in ("done", "dismissed", "pending"):
+        raise HTTPException(
+            status_code=400,
+            detail="status must be one of: done, dismissed, pending",
+        )
+    c = await db.get(Commitment, commitment_id)
+    if c is None or c.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Commitment not found")
+    c.status = body.status
+    if body.status == "done":
+        c.completed_at = datetime.now(timezone.utc)
+        c.completed_via = "manual"
+    elif body.status == "pending":
+        c.completed_at = None
+        c.completed_via = None
+        c.completed_evidence_interaction_id = None
+    await db.commit()
+    await db.refresh(c)
+    user_name = None
+    contact_name = None
+    if c.actor_user_id:
+        u = await db.get(User, c.actor_user_id)
+        user_name = u.name if u else None
+    if c.actor_contact_id:
+        ct = await db.get(Contact, c.actor_contact_id)
+        contact_name = ct.name if ct else None
+    return _commitment_to_out(c, actor_user_name=user_name, actor_contact_name=contact_name)

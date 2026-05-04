@@ -707,6 +707,142 @@ class CustomerNote(Base):
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
+class CustomerWarning(Base):
+    """Named, explainable risk finding on a Customer (Gong-style).
+
+    Replaces the opaque numeric "risk score" with a finite-vocabulary
+    list of warnings — single_threaded, champion_silent, competitor_
+    mentioned, etc. Each row has an evidence excerpt + originating
+    interaction so a click on the chip can show "Linda flagged this
+    because of *this* call".
+
+    Re-detection updates an existing row (clears ``dismissed_at``,
+    bumps ``last_detected_at``) rather than spawning duplicates — see
+    the ``uq_customer_warnings_customer_kind`` constraint.
+    """
+
+    __tablename__ = "customer_warnings"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('single_threaded', 'champion_silent', "
+            "'competitor_mentioned', 'no_next_step', 'exec_disengaged', "
+            "'pricing_unapproved', 'stalled_renewal', "
+            "'negative_sentiment_trend', 'other')",
+            name="ck_customer_warnings_kind",
+        ),
+        CheckConstraint(
+            "severity IN ('low', 'medium', 'high')",
+            name="ck_customer_warnings_severity",
+        ),
+        UniqueConstraint(
+            "customer_id", "kind", name="uq_customer_warnings_customer_kind"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    evidence_text: Mapped[Optional[str]] = mapped_column(Text)
+    evidence_interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
+    )
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    first_detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismissed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class Commitment(Base):
+    """A promise extracted from a transcript — either side.
+
+    Distinct from ActionItem (which is a rep-side TODO). Commitments
+    track both rep ("I'll send pricing Friday") and customer-side
+    ("David will loop in CTO Tuesday") promises.
+
+    ``actor_user_id`` and ``actor_contact_id`` are mutually exclusive
+    (CHECK enforced); same for the target side. ``actor_side`` records
+    rep/customer/unknown so the UI can render the appropriate avatar
+    even when neither User nor Contact could be matched.
+
+    ``due_date`` is anchored at extraction time to the originating
+    interaction's ``created_at`` so phrases like "by Friday" stay
+    meaningful when viewed weeks later.
+    """
+
+    __tablename__ = "commitments"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'done', 'overdue', 'dismissed')",
+            name="ck_commitments_status",
+        ),
+        CheckConstraint(
+            "actor_side IN ('rep', 'customer', 'unknown')",
+            name="ck_commitments_actor_side",
+        ),
+        CheckConstraint(
+            "(actor_user_id IS NULL) OR (actor_contact_id IS NULL)",
+            name="ck_commitments_actor_xor",
+        ),
+        CheckConstraint(
+            "(target_user_id IS NULL) OR (target_contact_id IS NULL)",
+            name="ck_commitments_target_xor",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE"), index=True
+    )
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    actor_contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL")
+    )
+    target_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    target_contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL")
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_excerpt: Mapped[Optional[str]] = mapped_column(Text)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    actor_side: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_via: Mapped[Optional[str]] = mapped_column(String)
+    completed_evidence_interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class TenantBriefSuggestion(Base):
     """A proposed update to a tenant's onboarding-owned brief section.
 
