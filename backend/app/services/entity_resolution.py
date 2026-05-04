@@ -625,16 +625,25 @@ def _fuse_score(
 
     The weights here were chosen so that:
     - A perfect name match (>=95) with a confident extraction (>=0.8)
-      and matching domain → ~0.95 (auto)
+      and matching domain → ~0.99 (auto-link)
     - A perfect name match without domain corroboration on a confident
-      extraction → ~0.82 (still auto, just barely)
-    - A typo'd name (token_set 70) with a confident extraction → ~0.62
+      extraction → ~0.99 (auto-link, beats the 'create new' candidate)
+    - A typo'd name (token_set 70) with a confident extraction → ~0.77
       (suggest, not auto)
-    - The "create-new" candidate → exactly the LLM's confidence (no
-      similarity to itself, no existing-row lookup boost)
+    - The "create-new" candidate → ``extracted_confidence * 0.85``,
+      slightly discounted from the LLM's raw confidence so existing
+      perfect-name matches always beat creating a duplicate when no
+      domain is available to corroborate either side. Without this
+      discount, the 2026-05-04 dedupe diagnostic showed a perfect-
+      match existing Acme row scoring 0.887 against the extracted
+      candidate's 0.95 — the LLM's confidence was beating the
+      already-known customer. The discount makes the ranking match
+      the obvious user expectation: link before create.
     """
     if is_new:
-        return extracted_confidence
+        # Tiny discount on raw LLM confidence so we don't auto-create
+        # a duplicate when an existing row matches well.
+        return extracted_confidence * 0.85
 
     # rapidfuzz returns 0–100; normalise to 0–1.
     token_set = fuzz.token_set_ratio(extracted_name, candidate_name) / 100.0
@@ -648,8 +657,16 @@ def _fuse_score(
         elif _domain_root(extracted_domain) == _domain_root(candidate_domain):
             domain_boost = 0.10
 
-    # 65% name similarity, 25% LLM confidence, 10% domain boost.
-    fused = (name_sim * 0.65) + (extracted_confidence * 0.25) + domain_boost
+    # An "existing" candidate (already in our DB) gets a small bonus
+    # reflecting the fact that we've seen this customer before. The
+    # bonus is large enough to win the tie against the discounted
+    # "create new" candidate when names match exactly without a
+    # corroborating domain, but small enough that a clearly-different
+    # existing row can still lose to a confident new extraction.
+    existing_bonus = 0.10
+
+    # 65% name similarity, 25% LLM confidence, +bonus + domain boost.
+    fused = (name_sim * 0.65) + (extracted_confidence * 0.25) + domain_boost + existing_bonus
     return min(fused, 1.0)
 
 
