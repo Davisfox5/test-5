@@ -110,6 +110,65 @@ class CustomerListResponse(BaseModel):
     total: int
 
 
+class CustomerInteractionSummary(BaseModel):
+    """A row in the customer detail page's recent-interactions list."""
+
+    id: uuid.UUID
+    title: Optional[str]
+    channel: str
+    direction: Optional[str]
+    status: str
+    created_at: datetime
+    sentiment_score: Optional[float] = None
+    summary_excerpt: Optional[str] = None  # First 240 chars of insights.summary
+
+    model_config = {"from_attributes": True}
+
+
+class CustomerActionItemSummary(BaseModel):
+    """One pending action item rolled up to the customer detail page."""
+
+    id: uuid.UUID
+    interaction_id: uuid.UUID
+    title: str
+    description: Optional[str]
+    category: Optional[str]
+    priority: Optional[str]
+    status: str
+    created_at: datetime
+
+
+class CustomerDetail(BaseModel):
+    """Full customer record for the detail page (Layout 1-4 all consume this)."""
+
+    # Base
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    domain: Optional[str]
+    industry: Optional[str]
+    parent_customer_id: Optional[uuid.UUID]
+    timezone: Optional[str]
+    metadata: Optional[Dict]
+
+    # People
+    owners: List[CustomerOwnerOut] = []
+    contacts: List[ContactOut] = []
+    multithreading_90d: int = 0
+
+    # Activity
+    recent_interactions: List[CustomerInteractionSummary] = []
+    open_action_items: List[CustomerActionItemSummary] = []
+
+    # Health (latest call)
+    sentiment_score: Optional[float] = None
+    churn_risk: Optional[float] = None
+    upsell_score: Optional[float] = None
+
+    # Customer brief (for the dossier-style layout)
+    customer_brief: Optional[Dict] = None
+
+
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     domain: Optional[str] = None
@@ -680,6 +739,171 @@ async def list_customers_rich(
     # 'name' uses the SQL order already.
 
     return CustomerListResponse(items=items, total=total)
+
+
+@router.get("/customers/{customer_id}/detail", response_model=CustomerDetail)
+async def get_customer_detail(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Full customer record for the detail page (all 4 layout variants).
+
+    Returns the customer plus rolled-up people / activity / health
+    signals so the SPA can render any of the four layout variants
+    without further fetches. Pagination is fixed at the most-recent
+    25 interactions and 50 open action items — anything more is the
+    Interactions and Action Items lists' job.
+    """
+    cust = (
+        await db.execute(
+            select(Customer).where(
+                Customer.id == customer_id,
+                Customer.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if cust is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    cutoff_90d = datetime.now(timezone.utc) - timedelta(days=90)
+
+    # Owners
+    owners_rows = (
+        await db.execute(
+            select(
+                CustomerOwner.user_id,
+                CustomerOwner.role,
+                CustomerOwner.assigned_via,
+                User.name,
+                User.email,
+            )
+            .join(User, User.id == CustomerOwner.user_id)
+            .where(CustomerOwner.customer_id == customer_id)
+            .order_by(CustomerOwner.role.desc(), CustomerOwner.assigned_at)
+        )
+    ).all()
+    owners = [
+        CustomerOwnerOut(
+            user_id=row.user_id,
+            name=row.name,
+            email=row.email,
+            role=row.role,
+            assigned_via=row.assigned_via,
+        )
+        for row in owners_rows
+    ]
+
+    # Contacts
+    contact_rows = (
+        await db.execute(
+            select(Contact)
+            .where(
+                Contact.tenant_id == tenant.id,
+                Contact.customer_id == customer_id,
+            )
+            .order_by(Contact.last_seen_at.desc().nullslast(), Contact.created_at.desc())
+        )
+    ).scalars().all()
+    contacts = [_contact_to_out(c) for c in contact_rows]
+
+    # Recent interactions (max 25)
+    interaction_rows = (
+        await db.execute(
+            select(Interaction)
+            .where(
+                Interaction.tenant_id == tenant.id,
+                Interaction.customer_id == customer_id,
+            )
+            .order_by(Interaction.created_at.desc())
+            .limit(25)
+        )
+    ).scalars().all()
+    recent_interactions = [
+        CustomerInteractionSummary(
+            id=ix.id,
+            title=ix.title,
+            channel=ix.channel,
+            direction=ix.direction,
+            status=ix.status,
+            created_at=ix.created_at,
+            sentiment_score=(ix.insights or {}).get("sentiment_score"),
+            summary_excerpt=(((ix.insights or {}).get("summary")) or None) and (
+                ((ix.insights or {}).get("summary") or "")[:240]
+            ),
+        )
+        for ix in interaction_rows
+    ]
+
+    # Multithreading: distinct contacts on this customer's calls in 90d
+    multithreading_90d = (
+        await db.execute(
+            select(func.count(func.distinct(Interaction.contact_id))).where(
+                Interaction.tenant_id == tenant.id,
+                Interaction.customer_id == customer_id,
+                Interaction.contact_id.is_not(None),
+                Interaction.created_at >= cutoff_90d,
+            )
+        )
+    ).scalar_one() or 0
+
+    # Open action items rolled up via interaction → customer (max 50)
+    action_item_rows = (
+        await db.execute(
+            select(ActionItem)
+            .join(Interaction, ActionItem.interaction_id == Interaction.id)
+            .where(
+                Interaction.tenant_id == tenant.id,
+                Interaction.customer_id == customer_id,
+                ActionItem.status == "pending",
+            )
+            .order_by(ActionItem.created_at.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    open_action_items = [
+        CustomerActionItemSummary(
+            id=ai.id,
+            interaction_id=ai.interaction_id,
+            title=ai.title,
+            description=ai.description,
+            category=ai.category,
+            priority=ai.priority,
+            status=ai.status,
+            created_at=ai.created_at,
+        )
+        for ai in action_item_rows
+    ]
+
+    # Latest-call health signals
+    latest_health = recent_interactions[0] if recent_interactions else None
+    sentiment_score = latest_health.sentiment_score if latest_health else None
+    churn_risk = None
+    upsell_score = None
+    if interaction_rows:
+        latest_insights = interaction_rows[0].insights or {}
+        churn_risk = latest_insights.get("churn_risk")
+        upsell_score = latest_insights.get("upsell_score")
+
+    return CustomerDetail(
+        id=cust.id,
+        tenant_id=cust.tenant_id,
+        name=cust.name,
+        domain=cust.domain,
+        industry=cust.industry,
+        parent_customer_id=cust.parent_customer_id,
+        timezone=cust.timezone,
+        metadata=cust.metadata_,
+        owners=owners,
+        contacts=contacts,
+        multithreading_90d=int(multithreading_90d),
+        recent_interactions=recent_interactions,
+        open_action_items=open_action_items,
+        sentiment_score=sentiment_score,
+        churn_risk=churn_risk,
+        upsell_score=upsell_score,
+        customer_brief=cust.customer_brief or {},
+    )
 
 
 @router.post(
