@@ -10,9 +10,11 @@
 import type { CustomerDetail } from "@/lib/customers";
 import {
     ActionItemsCard,
+    CommitmentsCard,
     ContactsCard,
     InteractionsCard,
     OverviewHeader,
+    WarningsCard,
 } from "./shared";
 
 export function Layout2Dossier({ c }: { c: CustomerDetail }) {
@@ -20,9 +22,12 @@ export function Layout2Dossier({ c }: { c: CustomerDetail }) {
         <div className="space-y-6">
             <OverviewHeader c={c} />
 
+            <WarningsCard c={c} />
+
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <div className="lg:col-span-1">
+                <div className="lg:col-span-1 space-y-6">
                     <ContactsCard c={c} />
+                    <CommitmentsCard c={c} />
                 </div>
                 <div className="lg:col-span-2">
                     <InteractionsCard c={c} />

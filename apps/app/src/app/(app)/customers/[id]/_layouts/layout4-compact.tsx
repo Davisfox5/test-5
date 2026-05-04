@@ -11,20 +11,37 @@ import { useState, type ReactNode } from "react";
 import type { CustomerDetail } from "@/lib/customers";
 import {
     ActionItemsCard,
+    CommitmentsCard,
     ContactsCard,
     InteractionsCard,
     OverviewHeader,
+    WarningsCard,
 } from "./shared";
 
 export function Layout4Compact({ c }: { c: CustomerDetail }) {
+    const openWarnings = c.warnings.filter((w) => !w.dismissed_at).length;
+    const openCommitments = c.commitments.filter(
+        (x) => x.status === "pending" || x.status === "overdue",
+    ).length;
     return (
         <div className="space-y-3">
             <OverviewHeader c={c} compact />
+            <Collapsible
+                title={`Deal warnings (${openWarnings})`}
+                defaultOpen={openWarnings > 0}
+            >
+                <WarningsCard c={c} />
+            </Collapsible>
             <Collapsible
                 title={`Contacts (${c.contacts.length})`}
                 defaultOpen
             >
                 <ContactsCard c={c} />
+            </Collapsible>
+            <Collapsible
+                title={`Commitments (${openCommitments})`}
+            >
+                <CommitmentsCard c={c} />
             </Collapsible>
             <Collapsible
                 title={`Recent interactions (${c.recent_interactions.length})`}

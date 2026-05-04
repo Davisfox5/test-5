@@ -11,13 +11,19 @@
  */
 
 import Link from "next/link";
+import { useState } from "react";
 import {
     contactRoleLabel,
     faviconFor,
+    useDismissWarning,
+    useUpdateCommitment,
+    warningKindLabel,
+    type CommitmentOut,
     type CustomerActionItemSummary,
     type CustomerContactOut,
     type CustomerDetail,
     type CustomerInteractionSummary,
+    type CustomerWarningOut,
 } from "@/lib/customers";
 import { formatRelative, sentimentLabel } from "@/lib/interactions";
 
@@ -409,5 +415,264 @@ export function ActionItemRow({ ai }: { ai: CustomerActionItemSummary }) {
                 </span>
             ) : null}
         </Link>
+    );
+}
+
+// ─── Phase 4: Deal Warnings ────────────────────────────────────────────
+
+const SEV_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+function severityChipClasses(sev: string): string {
+    if (sev === "high")
+        return "border-accent-rose/60 bg-accent-rose/10 text-accent-rose";
+    if (sev === "medium")
+        return "border-accent-amber/60 bg-accent-amber/10 text-accent-amber";
+    return "border-border bg-bg-secondary text-text-muted";
+}
+
+export function WarningsCard({ c }: { c: CustomerDetail }) {
+    const sorted = [...c.warnings].sort(
+        (a, b) => (SEV_RANK[a.severity] ?? 3) - (SEV_RANK[b.severity] ?? 3),
+    );
+    return (
+        <section className="rounded-lg border border-border bg-bg-card">
+            <div className="flex items-baseline justify-between border-b border-border px-5 py-3">
+                <h2 className="text-sm font-semibold">
+                    Deal warnings ({sorted.length})
+                </h2>
+                <span className="text-[11px] text-text-subtle">
+                    Linda’s open findings on this account
+                </span>
+            </div>
+            {sorted.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-text-subtle">
+                    No active warnings — nothing concerning surfaced on the
+                    last few calls.
+                </p>
+            ) : (
+                <ul className="divide-y divide-border">
+                    {sorted.map((w) => (
+                        <li key={w.id} className="px-5 py-3">
+                            <WarningRow warning={w} customerId={c.id} />
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </section>
+    );
+}
+
+function WarningRow({
+    warning,
+    customerId,
+}: {
+    warning: CustomerWarningOut;
+    customerId: string;
+}) {
+    const [open, setOpen] = useState(false);
+    const dismiss = useDismissWarning(customerId);
+    const sevCls = severityChipClasses(warning.severity);
+    return (
+        <div>
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-3 text-left"
+            >
+                <span className="flex flex-wrap items-center gap-2">
+                    <span
+                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${sevCls}`}
+                    >
+                        {warningKindLabel(warning.kind, warning.label)}
+                    </span>
+                    <span className="text-[11px] uppercase tracking-wide text-text-subtle">
+                        {warning.severity}
+                    </span>
+                    <span className="text-[11px] text-text-subtle">
+                        first seen {formatRelative(warning.first_detected_at)}
+                    </span>
+                </span>
+                <span className="text-xs text-text-subtle">
+                    {open ? "Hide" : "Why?"}
+                </span>
+            </button>
+            {open && (
+                <div className="mt-2 rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm">
+                    {warning.evidence_text ? (
+                        <p className="text-text-muted">
+                            “{warning.evidence_text}”
+                        </p>
+                    ) : (
+                        <p className="text-text-subtle">
+                            No evidence excerpt was captured.
+                        </p>
+                    )}
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                        {warning.evidence_interaction_id ? (
+                            <Link
+                                href={`/interactions/${warning.evidence_interaction_id}`}
+                                className="text-xs text-primary hover:underline"
+                            >
+                                View source call →
+                            </Link>
+                        ) : (
+                            <span />
+                        )}
+                        <button
+                            type="button"
+                            disabled={dismiss.isPending}
+                            onClick={() => dismiss.mutate(warning.id)}
+                            className="text-xs text-text-subtle hover:text-text"
+                        >
+                            {dismiss.isPending ? "Dismissing…" : "Dismiss"}
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ─── Phase 4: Commitments (both-sides promises) ───────────────────────
+
+export function CommitmentsCard({ c }: { c: CustomerDetail }) {
+    const open = c.commitments.filter(
+        (x) => x.status === "pending" || x.status === "overdue",
+    );
+    const done = c.commitments.filter((x) => x.status === "done").slice(0, 5);
+    return (
+        <section className="rounded-lg border border-border bg-bg-card">
+            <div className="flex items-baseline justify-between border-b border-border px-5 py-3">
+                <h2 className="text-sm font-semibold">
+                    Commitments ({open.length} open)
+                </h2>
+                <span className="text-[11px] text-text-subtle">
+                    Promises made on calls — both sides
+                </span>
+            </div>
+            {open.length === 0 && done.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-text-subtle">
+                    No commitments captured yet.
+                </p>
+            ) : (
+                <ul className="divide-y divide-border">
+                    {open.map((cm) => (
+                        <li key={cm.id} className="px-5 py-3">
+                            <CommitmentRow c={cm} customerId={c.id} />
+                        </li>
+                    ))}
+                    {done.map((cm) => (
+                        <li
+                            key={cm.id}
+                            className="px-5 py-3 opacity-70"
+                        >
+                            <CommitmentRow c={cm} customerId={c.id} />
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </section>
+    );
+}
+
+function CommitmentRow({
+    c,
+    customerId,
+}: {
+    c: CommitmentOut;
+    customerId: string;
+}) {
+    const update = useUpdateCommitment(customerId);
+    const isCustomerSide = c.actor_side === "customer";
+    const actorName =
+        c.actor_user_name ||
+        c.actor_contact_name ||
+        (isCustomerSide ? "Customer" : "Rep");
+    const initials = (actorName || "?")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((t) => t[0]?.toUpperCase() ?? "")
+        .join("");
+    const overdue =
+        c.status === "pending" &&
+        c.due_date &&
+        new Date(c.due_date).getTime() < Date.now();
+    return (
+        <div className="flex items-start gap-3">
+            <div
+                className={
+                    isCustomerSide
+                        ? "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-emerald/15 text-xs font-medium text-accent-emerald"
+                        : "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-xs font-medium text-primary"
+                }
+                title={isCustomerSide ? "Customer-side promise" : "Rep-side promise"}
+            >
+                {initials || "·"}
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-sm font-medium text-text">
+                        {actorName}
+                    </span>
+                    <span className="text-[11px] uppercase tracking-wide text-text-subtle">
+                        {isCustomerSide ? "customer" : "rep"}
+                    </span>
+                    {c.status === "done" ? (
+                        <span className="rounded-full border border-accent-emerald/50 bg-accent-emerald/10 px-2 py-0.5 text-[11px] text-accent-emerald">
+                            done
+                        </span>
+                    ) : overdue ? (
+                        <span className="rounded-full border border-accent-rose/50 bg-accent-rose/10 px-2 py-0.5 text-[11px] text-accent-rose">
+                            overdue
+                        </span>
+                    ) : null}
+                </div>
+                <p className="mt-0.5 text-sm text-text-muted">{c.text}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-text-subtle">
+                    {c.due_date ? (
+                        <span>due {formatRelative(c.due_date)}</span>
+                    ) : (
+                        <span>no due date</span>
+                    )}
+                    <Link
+                        href={`/interactions/${c.interaction_id}`}
+                        className="text-primary hover:underline"
+                    >
+                        source call
+                    </Link>
+                    {c.status === "pending" && !isCustomerSide ? (
+                        <button
+                            type="button"
+                            disabled={update.isPending}
+                            onClick={() =>
+                                update.mutate({
+                                    commitmentId: c.id,
+                                    status: "done",
+                                })
+                            }
+                            className="text-text-subtle hover:text-text"
+                        >
+                            {update.isPending ? "…" : "Mark done"}
+                        </button>
+                    ) : null}
+                    {c.status === "done" ? (
+                        <button
+                            type="button"
+                            disabled={update.isPending}
+                            onClick={() =>
+                                update.mutate({
+                                    commitmentId: c.id,
+                                    status: "pending",
+                                })
+                            }
+                            className="text-text-subtle hover:text-text"
+                        >
+                            {update.isPending ? "…" : "Reopen"}
+                        </button>
+                    ) : null}
+                </div>
+            </div>
+        </div>
     );
 }
