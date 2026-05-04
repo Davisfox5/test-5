@@ -863,25 +863,6 @@ def _resolve_contact(
         trace["role_conf_after"] = contact.role_confidence
     session.add(contact)
     session.flush()
-    if trace is not None:
-        trace["role_after_flush"] = contact.role
-        trace["role_conf_after_flush"] = contact.role_confidence
-        # Direct SQL readback right after flush to confirm what's
-        # actually in the DB row (within the same transaction).
-        # If trace["role_in_db_after_flush"] != role_after_flush,
-        # then the INSERT didn't include the role column. If they
-        # match, something between flush and final commit is
-        # nulling the role on the row.
-        try:
-            row = session.execute(
-                text("SELECT role, role_confidence FROM contacts WHERE id = :id"),
-                {"id": contact.id},
-            ).first()
-            if row is not None:
-                trace["role_in_db_after_flush"] = row[0]
-                trace["role_conf_in_db_after_flush"] = row[1]
-        except Exception as exc:
-            trace["role_db_readback_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     return contact.id
 
 
@@ -914,30 +895,33 @@ def _looks_like_personal_name(s: str) -> bool:
     """Heuristic: does this look like a real person's name?
 
     Trues: "Maria", "David Aluko", "Allison Park", "Andrei", "Jean-Luc".
-    Falses: "the team", "buyer", "Champion", short single-word
-    common-noun strings.
+    Falses: "the team", "buyer", "Champion", "senior dispatcher",
+    "engineering manager", short single-word common-noun strings.
 
-    The check is intentionally permissive — we'd rather keep a
-    questionable name and let the user delete it than reject "Andrei"
-    and lose a real participant. The reject list above catches the
-    common false positives; this is the catch-all for the weird
-    outputs.
+    Rule: a real name has at least one *capitalised* word. Proper
+    names follow this convention almost universally — if every word
+    in a string is lowercase ("senior dispatcher", "the legal team"),
+    it's a job description, not a person.
+
+    The 2026-05-04 backfill surfaced "senior dispatcher" as a Contact
+    row — the LLM emitted it from a transcript line where the rep
+    confirmed "senior dispatcher involvement in Thursday meeting".
+    The previous heuristic accepted it because multi-word strings
+    bypassed the lowercase guard. Tightened to require at least one
+    capitalized word.
+
+    Permissive about hyphens ("Jean-Luc" splits to ["Jean", "Luc"],
+    both capitalised) and single capitalised names ("Andrei" passes).
     """
     t = s.strip()
     if len(t) < 2:
         return False
-    # Must contain a letter.
     if not any(ch.isalpha() for ch in t):
         return False
-    # Reject obvious common-noun phrases starting with "the ".
     if t.lower().startswith(("the ", "a ", "an ")):
         return False
-    # If the first character is a letter, it ought to be capitalised
-    # (proper names almost always are). Allow lowercase if it's a
-    # multi-word string — "jean-luc" still passes — but reject single
-    # all-lowercase words ("champion", "buyer").
-    first_alpha = next((ch for ch in t if ch.isalpha()), None)
-    if first_alpha and first_alpha.islower():
-        if " " not in t and "-" not in t:
-            return False
-    return True
+    # At least one word must start with an uppercase letter. Splitting
+    # on whitespace AND hyphens covers "Jean-Luc" properly.
+    words = re.split(r"[\s\-]+", t)
+    has_capitalised_word = any(w and w[0].isupper() for w in words)
+    return has_capitalised_word
