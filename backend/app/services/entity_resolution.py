@@ -232,11 +232,41 @@ async def resolve_interaction_entities(
     """
     own_org = (getattr(tenant, "tenant_context", None) or {}).get("own_org_name")
 
+    # Debug trace stashed on interaction.insights so we can read decisions
+    # back via the existing GET /interactions/{id} surface without
+    # standing up new endpoints. Two bugs survived the Phase 3B verify
+    # pass — contact roles always NULL and Acme dupes despite the
+    # advisory lock — so this PR makes every entity_resolution decision
+    # observable from the row itself. Cheap to keep around long-term:
+    # one dict per analyzed interaction, useful for "why did Linda
+    # decide this?" support questions.
+    debug: Dict[str, Any] = {
+        "own_org_name": own_org,
+        "lock_acquired": False,
+        "lock_error": None,
+    }
+
     extraction = await _extract(
         insights=insights,
         compressed_transcript=compressed_transcript,
         own_org_name=own_org,
     )
+    debug["extraction"] = {
+        "customer_name": extraction.customer_name,
+        "customer_name_confidence": extraction.customer_name_confidence,
+        "customer_domain_hint": extraction.customer_domain_hint,
+        "contact_count": len(extraction.contacts),
+        "contacts": [
+            {
+                "name": c.name,
+                "side": c.side,
+                "role": c.role,
+                "role_confidence": c.role_confidence,
+                "title": c.title,
+            }
+            for c in extraction.contacts
+        ],
+    }
 
     outcome = ResolutionOutcome()
 
@@ -258,10 +288,13 @@ async def resolve_interaction_entities(
                 text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
                 {"k": lock_key},
             )
-        except Exception:
+            debug["lock_acquired"] = True
+            debug["lock_key"] = lock_key
+        except Exception as exc:
             # SQLite (used in tests) doesn't have advisory locks.
             # Tests run single-threaded so the dedupe race doesn't apply
             # there; just continue without the lock.
+            debug["lock_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
             logger.debug(
                 "entity_resolution: advisory lock unavailable; continuing"
             )
@@ -274,7 +307,21 @@ async def resolve_interaction_entities(
             extracted_confidence=extraction.customer_name_confidence,
             own_org_name=own_org,
         )
+        debug["candidates_count"] = len(candidates)
+        debug["top_candidates"] = [
+            {
+                "name": c.name,
+                "score": round(c.score, 3),
+                "source": c.source,
+                "customer_id": str(c.customer_id) if c.customer_id else None,
+                "domain": c.domain,
+            }
+            for c in candidates[:5]
+        ]
         best = candidates[0] if candidates else None
+        debug["auto_threshold"] = AUTO_THRESHOLD
+        debug["suggest_threshold"] = SUGGEST_THRESHOLD
+        debug["best_score"] = round(best.score, 3) if best else None
         if best and best.score >= AUTO_THRESHOLD:
             customer_id = _link_or_create_customer(
                 session=session,
@@ -288,6 +335,8 @@ async def resolve_interaction_entities(
             outcome.customer_action = (
                 "auto_linked" if best.customer_id else "auto_created"
             )
+            debug["customer_action"] = outcome.customer_action
+            debug["customer_id"] = str(customer_id)
             _ensure_owner(
                 session=session,
                 tenant_id=tenant.id,
@@ -297,6 +346,7 @@ async def resolve_interaction_entities(
         elif best and best.score >= SUGGEST_THRESHOLD:
             outcome.customer_action = "suggested"
             outcome.customer_score = best.score
+            debug["customer_action"] = "suggested"
             outcome.suggestions.append(
                 {
                     "kind": "customer_match",
@@ -338,6 +388,23 @@ async def resolve_interaction_entities(
         # convenience heuristic — a multi-party call still has all the
         # extracted contacts in ``contact_ids`` for downstream surfaces.
         interaction.contact_id = contact_ids[0]
+
+    # Stash the full debug dict on the interaction's insights so we can
+    # diagnose entity-resolution decisions from the existing
+    # ``GET /interactions/{id}`` endpoint without standing up a
+    # separate observability surface. The pipeline merges this back
+    # into the final committed insights — see _run_pipeline_impl.
+    debug["resolved_contact_count"] = len(contact_ids)
+    debug["resolved_customer_id"] = (
+        str(outcome.customer_id) if outcome.customer_id else None
+    )
+    existing_meta = getattr(interaction, "insights", None) or {}
+    if isinstance(existing_meta, dict):
+        existing_meta = dict(existing_meta)
+    else:
+        existing_meta = {}
+    existing_meta["entity_resolution_debug"] = debug
+    interaction.insights = existing_meta
 
     return outcome
 

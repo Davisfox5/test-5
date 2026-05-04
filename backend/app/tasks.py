@@ -1050,7 +1050,7 @@ def _run_pipeline_impl(
     merged_insights = dict(insights)
     existing_extras = getattr(interaction, "insights", None) or {}
     if isinstance(existing_extras, dict):
-        for k in ("entity_resolution_suggestions",):
+        for k in ("entity_resolution_suggestions", "entity_resolution_debug"):
             if k in existing_extras:
                 merged_insights[k] = existing_extras[k]
     interaction.insights = merged_insights
