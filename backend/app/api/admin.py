@@ -838,3 +838,129 @@ async def celery_inspect(
         "default_queue_depth": queue_depth,
         "default_queue_error": queue_error,
     }
+
+
+# ── Phase 4 backfill: re-run warnings/commitments on existing analyzed rows ──
+#
+# Re-drive isn't valid for ``analyzed`` interactions (it would re-pay the
+# Sonnet analysis cost). This endpoint runs only the cheap Phase 4 step
+# (warnings_commitments.detect_and_persist) against the rows we already
+# analyzed pre-#76, so the customer detail pages light up with warnings
+# + commitments without re-ingesting transcripts.
+#
+# One-shot, idempotent: warnings dedupe on (customer_id, kind) so re-runs
+# upsert; commitments insert per-call (a second run on the same call
+# would create duplicate commitment rows, so we skip interactions whose
+# ``insights.warnings_commitments_debug`` already has a non-zero
+# ``commitments_created``).
+
+
+class BackfillResultRow(BaseModel):
+    interaction_id: uuid.UUID
+    skipped: bool
+    reason: Optional[str] = None
+    warnings_upserted: int = 0
+    commitments_created: int = 0
+
+
+class BackfillResponse(BaseModel):
+    processed: int
+    rows: List[BackfillResultRow]
+
+
+@router.post(
+    "/admin/backfill-warnings-commitments",
+    response_model=BackfillResponse,
+)
+async def backfill_warnings_commitments(
+    interaction_ids: Optional[List[uuid.UUID]] = None,
+    limit: int = Query(50, le=200),
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> BackfillResponse:
+    """Run Phase 4 detection on already-analyzed interactions.
+
+    Without this, a tenant analyzed before PR #76 would only get
+    warnings + commitments on interactions ingested after the deploy.
+    """
+    from backend.app.models import Interaction
+    from backend.app.services.warnings_commitments import detect_and_persist
+    from backend.app.tasks import _get_sync_session
+
+    session = _get_sync_session()
+    try:
+        q = (
+            session.query(Interaction)
+            .filter(
+                Interaction.tenant_id == tenant.id,
+                Interaction.status == "analyzed",
+            )
+            .order_by(Interaction.created_at.desc())
+        )
+        if interaction_ids:
+            q = q.filter(Interaction.id.in_(interaction_ids))
+        rows = q.limit(limit).all()
+
+        out: List[BackfillResultRow] = []
+        for ix in rows:
+            insights = ix.insights or {}
+            prior = (insights.get("warnings_commitments_debug") or {})
+            if int(prior.get("commitments_created") or 0) > 0:
+                out.append(
+                    BackfillResultRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason="already backfilled",
+                    )
+                )
+                continue
+            if ix.customer_id is None:
+                out.append(
+                    BackfillResultRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason="no customer linked",
+                    )
+                )
+                continue
+            transcript = (
+                "\n".join(
+                    seg.get("text", "")
+                    for seg in (ix.transcript or [])
+                    if isinstance(seg, dict)
+                )
+                if isinstance(ix.transcript, list)
+                else (ix.transcript or "")
+            )
+            try:
+                outcome = await detect_and_persist(
+                    session=session,
+                    interaction=ix,
+                    tenant=tenant,
+                    insights=insights,
+                    compressed_transcript=transcript[:18_000],
+                )
+                session.commit()
+                out.append(
+                    BackfillResultRow(
+                        interaction_id=ix.id,
+                        skipped=False,
+                        warnings_upserted=outcome.warnings_upserted,
+                        commitments_created=outcome.commitments_created,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.exception(
+                    "backfill warnings/commitments failed for %s", ix.id
+                )
+                out.append(
+                    BackfillResultRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason=f"error: {type(exc).__name__}: {str(exc)[:120]}",
+                    )
+                )
+        return BackfillResponse(processed=len(out), rows=out)
+    finally:
+        session.close()
