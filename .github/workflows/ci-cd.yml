@@ -178,6 +178,74 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+  # ── Auto-deploy SPA to staging on push to main ───────────────
+  #
+  # The SPA (Next.js) is its own Fly app (``linda-staging-app``)
+  # because Next.js needs a different runtime + Dockerfile from the
+  # FastAPI backend (``linda-staging``). For three days of Phase 3
+  # development this job did not exist and SPA changes accumulated
+  # in main without ever reaching staging — caught only when
+  # `/customers` returned 404 in a Playwright audit. The
+  # always-deploy-both invariant is now guarded by this job (mirrors
+  # ``deploy_staging`` exactly, just targets the other app + uses the
+  # subdir-scoped fly.toml).
+  #
+  # Runs in parallel with deploy_staging since the two apps are
+  # independent — neither depends on the other being up.
+  deploy_spa_staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_SPA_URL }}
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Set up flyctl"
+        if: env.FLY_API_TOKEN != ''
+        uses: superfly/flyctl-actions/setup-flyctl@master
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Deploy SPA to Fly staging"
+        if: env.FLY_API_TOKEN != ''
+        # ``--config`` + ``working-directory`` must agree: the build
+        # context is ``apps/app/`` (where package.json lives) and the
+        # fly.toml at that path declares the right Dockerfile path.
+        working-directory: apps/app
+        run: flyctl deploy --remote-only --app linda-staging-app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Smoke check SPA root"
+        if: env.STAGING_SPA_URL != ''
+        run: |
+          # Cheap proof-of-life: the Next.js app should serve a 200
+          # at the root (sign-in page when unauthenticated). Anything
+          # else means the deploy failed health checks even if the
+          # flyctl command exited cleanly.
+          for _ in $(seq 1 18); do
+            code=$(curl -fsS -o /dev/null -w "%{http_code}" "$STAGING_SPA_URL/" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "SPA staging is serving 200 at /"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::SPA did not serve 200 within 3 minutes"
+          exit 1
+        env:
+          STAGING_SPA_URL: ${{ vars.STAGING_SPA_URL }}
+
+      - name: "SPA deploy stub notice"
+        if: env.FLY_API_TOKEN == ''
+        run: |
+          echo "::notice::FLY_API_TOKEN secret unset — skipping SPA deploy."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
   # ── Manual promote to production ──────────────────────────────
   deploy_production:
     if: github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'production'
