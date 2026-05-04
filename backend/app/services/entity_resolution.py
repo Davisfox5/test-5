@@ -849,6 +849,22 @@ def _resolve_contact(
     if trace is not None:
         trace["role_after_flush"] = contact.role
         trace["role_conf_after_flush"] = contact.role_confidence
+        # Direct SQL readback right after flush to confirm what's
+        # actually in the DB row (within the same transaction).
+        # If trace["role_in_db_after_flush"] != role_after_flush,
+        # then the INSERT didn't include the role column. If they
+        # match, something between flush and final commit is
+        # nulling the role on the row.
+        try:
+            row = session.execute(
+                text("SELECT role, role_confidence FROM contacts WHERE id = :id"),
+                {"id": contact.id},
+            ).first()
+            if row is not None:
+                trace["role_in_db_after_flush"] = row[0]
+                trace["role_conf_in_db_after_flush"] = row[1]
+        except Exception as exc:
+            trace["role_db_readback_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     return contact.id
 
 
