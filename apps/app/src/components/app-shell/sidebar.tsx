@@ -48,6 +48,11 @@ function formatRole(role: UserRole): string {
 // drift out of sync.
 export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
+    // Customers is the new spine of the app shell — the page Linda
+    // builds from analyzed calls, where every interaction lands.
+    // /interactions stays for now (it's the global feed); a later phase
+    // demotes it under Customers as the "All Interactions" tab.
+    { href: "/customers", label: "Customers", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
     // Live coaching sits between items and communications: it's the

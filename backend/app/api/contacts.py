@@ -1,12 +1,12 @@
 """Contacts & Customers API — CRM-like directory for managing contacts and customers."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,7 +17,16 @@ from backend.app.auth import (
     require_scope,
 )
 from backend.app.db import get_db
-from backend.app.models import Customer, CustomerNote, Contact, Interaction, Tenant
+from backend.app.models import (
+    ActionItem,
+    Contact,
+    Customer,
+    CustomerNote,
+    CustomerOwner,
+    Interaction,
+    Tenant,
+    User,
+)
 from backend.app.services.audit_log import audit_log
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
@@ -49,6 +58,56 @@ class CustomerOut(BaseModel):
     strongest_connection_user_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
+
+
+class CustomerOwnerOut(BaseModel):
+    """One row of the multi-owner avatar stack on a customer card."""
+
+    user_id: uuid.UUID
+    name: Optional[str]
+    email: Optional[str]
+    role: str  # primary | secondary
+    assigned_via: str
+
+    model_config = {"from_attributes": True}
+
+
+class CustomerListItem(BaseModel):
+    """Rich customer row for the list page.
+
+    Adds the per-row signals the SPA's table/grid/kanban views need:
+    multi-owner stack, latest-interaction summary, open-action-item
+    count, multithreading count (distinct contacts in last 90 days),
+    and the most-recent sentiment + churn-risk numbers. Computed once
+    per row in a small bounded query budget — no N+1.
+    """
+
+    id: uuid.UUID
+    name: str
+    domain: Optional[str]
+    industry: Optional[str]
+    parent_customer_id: Optional[uuid.UUID] = None
+    timezone: Optional[str] = None
+
+    # Multi-owner stack
+    owners: List[CustomerOwnerOut] = []
+
+    # Activity
+    contact_count: int = 0
+    multithreading_90d: int = 0
+    latest_interaction_at: Optional[datetime] = None
+    latest_interaction_id: Optional[uuid.UUID] = None
+    latest_interaction_title: Optional[str] = None
+
+    # Health
+    sentiment_score: Optional[float] = None  # most-recent analyzed call
+    churn_risk: Optional[float] = None       # most-recent analyzed call
+    open_action_items: int = 0
+
+
+class CustomerListResponse(BaseModel):
+    items: List[CustomerListItem]
+    total: int
 
 
 class CustomerUpdate(BaseModel):
@@ -382,6 +441,12 @@ async def list_customers(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    """Bare customer list (legacy shape).
+
+    The Customers list page calls the richer ``/customers/list`` below.
+    This endpoint stays as-is so existing callers (CRM sync utilities,
+    older SPA hooks) don't break.
+    """
     stmt = (
         select(Customer)
         .where(Customer.tenant_id == tenant.id)
@@ -392,6 +457,229 @@ async def list_customers(
     result = await db.execute(stmt)
     customers = result.scalars().all()
     return [_customer_to_out(c) for c in customers]
+
+
+@router.get("/customers/list", response_model=CustomerListResponse)
+async def list_customers_rich(
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    name: Optional[str] = Query(
+        None,
+        description="Case-insensitive partial match on customer name.",
+    ),
+    owner_user_id: Optional[uuid.UUID] = Query(
+        None,
+        description="Filter to customers owned (primary or secondary) by this user.",
+    ),
+    sort: str = Query(
+        "latest_interaction",
+        description=(
+            "Sort key: latest_interaction (default), name, churn_risk, "
+            "open_action_items, multithreading_90d."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Rich customer list for the Customers page.
+
+    Returns one row per customer with everything the table / grid /
+    kanban variants need to render without further fetches: multi-
+    owner avatars, latest-interaction summary, open-action-item count,
+    multithreading count over the last 90 days, and the most-recent
+    sentiment + churn-risk signals.
+
+    Per-row computation is bounded: one base query + a handful of
+    per-tenant aggregates joined back. Pagination is on the base
+    query so a tenant with thousands of customers paginates cheaply.
+    """
+    # ── Base customer query ─────────────────────────────────
+    base_stmt = select(Customer).where(Customer.tenant_id == tenant.id)
+    if name:
+        base_stmt = base_stmt.where(Customer.name.ilike(f"%{name}%"))
+    if owner_user_id:
+        base_stmt = base_stmt.where(
+            Customer.id.in_(
+                select(CustomerOwner.customer_id).where(
+                    CustomerOwner.tenant_id == tenant.id,
+                    CustomerOwner.user_id == owner_user_id,
+                )
+            )
+        )
+
+    # Total count for pagination — separate query because the .count()
+    # on the same statement collides with the limit/offset below.
+    total_stmt = select(func.count()).select_from(base_stmt.subquery())
+    total = (await db.execute(total_stmt)).scalar_one()
+
+    base_stmt = base_stmt.order_by(Customer.name).limit(limit).offset(offset)
+    customers = (await db.execute(base_stmt)).scalars().all()
+    if not customers:
+        return CustomerListResponse(items=[], total=total)
+
+    customer_ids = [c.id for c in customers]
+    cutoff_90d = datetime.now(timezone.utc) - timedelta(days=90)
+
+    # ── Owners (joined to users for name/email) ──────────────
+    owners_rows = (
+        await db.execute(
+            select(
+                CustomerOwner.customer_id,
+                CustomerOwner.user_id,
+                CustomerOwner.role,
+                CustomerOwner.assigned_via,
+                User.name,
+                User.email,
+            )
+            .join(User, User.id == CustomerOwner.user_id)
+            .where(CustomerOwner.customer_id.in_(customer_ids))
+            .order_by(CustomerOwner.role.desc(), CustomerOwner.assigned_at)
+        )
+    ).all()
+    owners_by_customer: Dict[uuid.UUID, List[CustomerOwnerOut]] = {}
+    for row in owners_rows:
+        owners_by_customer.setdefault(row.customer_id, []).append(
+            CustomerOwnerOut(
+                user_id=row.user_id,
+                name=row.name,
+                email=row.email,
+                role=row.role,
+                assigned_via=row.assigned_via,
+            )
+        )
+
+    # ── Contact counts (total + last-90d distinct via interactions) ──
+    contact_count_rows = (
+        await db.execute(
+            select(Contact.customer_id, func.count(Contact.id))
+            .where(
+                Contact.tenant_id == tenant.id,
+                Contact.customer_id.in_(customer_ids),
+            )
+            .group_by(Contact.customer_id)
+        )
+    ).all()
+    contact_count_by_customer = {row[0]: int(row[1]) for row in contact_count_rows}
+
+    multithreading_rows = (
+        await db.execute(
+            select(
+                Interaction.customer_id,
+                func.count(func.distinct(Interaction.contact_id)),
+            )
+            .where(
+                Interaction.tenant_id == tenant.id,
+                Interaction.customer_id.in_(customer_ids),
+                Interaction.contact_id.is_not(None),
+                Interaction.created_at >= cutoff_90d,
+            )
+            .group_by(Interaction.customer_id)
+        )
+    ).all()
+    multithreading_by_customer = {row[0]: int(row[1]) for row in multithreading_rows}
+
+    # ── Open action items per customer ──────────────────────
+    # Joined via interaction → customer because action_items don't
+    # carry a customer_id directly today. (Phase 5 may denormalize.)
+    action_item_rows = (
+        await db.execute(
+            select(Interaction.customer_id, func.count(ActionItem.id))
+            .join(ActionItem, ActionItem.interaction_id == Interaction.id)
+            .where(
+                Interaction.tenant_id == tenant.id,
+                Interaction.customer_id.in_(customer_ids),
+                ActionItem.status == "pending",
+            )
+            .group_by(Interaction.customer_id)
+        )
+    ).all()
+    open_items_by_customer = {row[0]: int(row[1]) for row in action_item_rows}
+
+    # ── Latest interaction per customer ─────────────────────
+    # Use a window-style subquery (DISTINCT ON is Postgres-specific
+    # but we're on PG; use a per-customer max + join-back for
+    # cross-DB safety with SQLite tests).
+    latest_subq = (
+        select(
+            Interaction.customer_id.label("cid"),
+            func.max(Interaction.created_at).label("max_created"),
+        )
+        .where(
+            Interaction.tenant_id == tenant.id,
+            Interaction.customer_id.in_(customer_ids),
+        )
+        .group_by(Interaction.customer_id)
+        .subquery()
+    )
+    latest_rows = (
+        await db.execute(
+            select(
+                Interaction.id,
+                Interaction.customer_id,
+                Interaction.title,
+                Interaction.created_at,
+                Interaction.insights,
+            )
+            .join(
+                latest_subq,
+                (Interaction.customer_id == latest_subq.c.cid)
+                & (Interaction.created_at == latest_subq.c.max_created),
+            )
+            .where(Interaction.tenant_id == tenant.id)
+        )
+    ).all()
+    latest_by_customer: Dict[uuid.UUID, Dict] = {}
+    for row in latest_rows:
+        ins = row.insights or {}
+        latest_by_customer[row.customer_id] = {
+            "id": row.id,
+            "title": row.title,
+            "at": row.created_at,
+            "sentiment_score": ins.get("sentiment_score"),
+            "churn_risk": ins.get("churn_risk"),
+        }
+
+    # ── Assemble rows ───────────────────────────────────────
+    items: List[CustomerListItem] = []
+    for c in customers:
+        latest = latest_by_customer.get(c.id) or {}
+        items.append(
+            CustomerListItem(
+                id=c.id,
+                name=c.name,
+                domain=c.domain,
+                industry=c.industry,
+                parent_customer_id=c.parent_customer_id,
+                timezone=c.timezone,
+                owners=owners_by_customer.get(c.id, []),
+                contact_count=contact_count_by_customer.get(c.id, 0),
+                multithreading_90d=multithreading_by_customer.get(c.id, 0),
+                latest_interaction_at=latest.get("at"),
+                latest_interaction_id=latest.get("id"),
+                latest_interaction_title=latest.get("title"),
+                sentiment_score=latest.get("sentiment_score"),
+                churn_risk=latest.get("churn_risk"),
+                open_action_items=open_items_by_customer.get(c.id, 0),
+            )
+        )
+
+    # ── Optional sort overlay ───────────────────────────────
+    # Default base SQL order is name; if the caller asked for a
+    # signal sort, re-order in Python. Cheap because limit is bounded.
+    if sort == "latest_interaction":
+        items.sort(
+            key=lambda it: (it.latest_interaction_at or datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True,
+        )
+    elif sort == "churn_risk":
+        items.sort(key=lambda it: (it.churn_risk or 0.0), reverse=True)
+    elif sort == "open_action_items":
+        items.sort(key=lambda it: it.open_action_items, reverse=True)
+    elif sort == "multithreading_90d":
+        items.sort(key=lambda it: it.multithreading_90d, reverse=True)
+    # 'name' uses the SQL order already.
+
+    return CustomerListResponse(items=items, total=total)
 
 
 @router.post(
