@@ -139,7 +139,15 @@ class CustomerActionItemSummary(BaseModel):
 
 
 class CustomerDetail(BaseModel):
-    """Full customer record for the detail page (Layout 1-4 all consume this)."""
+    """Full customer record for the detail page (Layout 1-4 all consume this).
+
+    Note: ``contacts`` is a forward reference because ``ContactOut`` is
+    defined further down in this file. PR #65 originally embedded the
+    bare class name and broke API startup with NameError when the
+    module was imported in the right order. The forward ref + the
+    explicit ``model_rebuild()`` call after ``ContactOut`` lands keeps
+    the schema layout we want without requiring a hot reorder.
+    """
 
     # Base
     id: uuid.UUID
@@ -153,7 +161,7 @@ class CustomerDetail(BaseModel):
 
     # People
     owners: List[CustomerOwnerOut] = []
-    contacts: List[ContactOut] = []
+    contacts: List["ContactOut"] = []
     multithreading_90d: int = 0
 
     # Activity
@@ -211,6 +219,14 @@ class ContactOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# Resolve the forward reference on CustomerDetail now that ContactOut
+# exists. Without this Pydantic v2 raises ``PydanticUndefinedAnnotation``
+# the first time the schema is used (e.g. on first request hitting
+# ``GET /customers/{id}/detail``). This is the line that was missing
+# in PR #65 and is what took staging down with the deploy timeout.
+CustomerDetail.model_rebuild()
 
 
 class InteractionSummary(BaseModel):
