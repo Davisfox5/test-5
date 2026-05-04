@@ -1,29 +1,36 @@
 "use client";
 
 /**
- * Customers list page — Phase 3A.
+ * Customers list page — Phase 3C wraps Phase 3A.
  *
- * Renders the table view as the MVP. Grid, kanban, and hybrid variants
- * land in Phase 3C. Default sort is latest_interaction (matches
- * "what changed recently" mental model); a sort selector lets the user
- * switch to name / churn risk / open items / multithreading.
+ * Four switchable views (table / grid / hybrid / kanban) behind a
+ * top-of-page tab switcher. Default lands on the table view; per
+ * the user's planning answer the four are running in parallel for
+ * comparison until they pick one. Sort + filter + search apply to
+ * all views — the data shape is identical.
  *
- * The data shape comes from /api/v1/customers/list (CustomerListItem)
- * which gives us per-row owners, multithreading count, latest
- * interaction summary, sentiment, churn, and open-action-item count
- * — everything the row needs without extra fetches.
+ * Kanban is a stub for now (single column) because lifecycle stages
+ * haven't shipped; it bloomes into real columns when Phase 5 lands.
  */
 
-import Link from "next/link";
-import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
-    faviconFor,
     useCustomerList,
-    type CustomerListItem,
     type CustomerListSort,
 } from "@/lib/customers";
-import { formatRelative, sentimentLabel } from "@/lib/interactions";
+import { CustomerGridView } from "./_views/grid-view";
+import { CustomerHybridView } from "./_views/hybrid-view";
+import { CustomerKanbanView } from "./_views/kanban-view";
+import { CustomerTableView } from "./_views/table-view";
+
+type ViewKey = "table" | "grid" | "hybrid" | "kanban";
+
+const VIEW_LABEL: Record<ViewKey, string> = {
+    table: "Table",
+    grid: "Grid",
+    hybrid: "Hybrid",
+    kanban: "Kanban",
+};
 
 const SORT_OPTIONS: { value: CustomerListSort; label: string }[] = [
     { value: "latest_interaction", label: "Latest activity" },
@@ -36,6 +43,7 @@ const SORT_OPTIONS: { value: CustomerListSort; label: string }[] = [
 export default function CustomersPage() {
     const [sort, setSort] = useState<CustomerListSort>("latest_interaction");
     const [nameFilter, setNameFilter] = useState("");
+    const [view, setView] = useState<ViewKey>("table");
     const list = useCustomerList({ sort, name: nameFilter || undefined });
 
     const items = list.data?.items ?? [];
@@ -74,7 +82,31 @@ export default function CustomersPage() {
                         ))}
                     </select>
                 </label>
-                <span className="ml-auto text-xs text-text-subtle">
+                <div
+                    role="tablist"
+                    aria-label="Customer list view"
+                    className="ml-auto flex items-center gap-1 rounded-md border border-border bg-bg-secondary p-1"
+                >
+                    {(["table", "grid", "hybrid", "kanban"] as const).map(
+                        (k) => (
+                            <button
+                                key={k}
+                                type="button"
+                                role="tab"
+                                aria-selected={view === k}
+                                onClick={() => setView(k)}
+                                className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
+                                    view === k
+                                        ? "bg-primary text-white"
+                                        : "text-text-muted hover:text-text"
+                                }`}
+                            >
+                                {VIEW_LABEL[k]}
+                            </button>
+                        ),
+                    )}
+                </div>
+                <span className="text-xs text-text-subtle">
                     {total} customer{total === 1 ? "" : "s"}
                 </span>
             </div>
@@ -94,200 +126,15 @@ export default function CustomersPage() {
                     analyzed call. Upload a call or wait for ingestion to
                     finish; they&apos;ll appear here automatically.
                 </div>
+            ) : view === "table" ? (
+                <CustomerTableView items={items} />
+            ) : view === "grid" ? (
+                <CustomerGridView items={items} />
+            ) : view === "hybrid" ? (
+                <CustomerHybridView items={items} />
             ) : (
-                <CustomerTable items={items} />
+                <CustomerKanbanView items={items} />
             )}
-        </div>
-    );
-}
-
-function CustomerTable({ items }: { items: CustomerListItem[] }) {
-    return (
-        <div className="overflow-x-auto rounded-lg border border-border bg-bg-card">
-            <table className="w-full text-sm">
-                <thead className="border-b border-border bg-bg-secondary text-xs uppercase tracking-wide text-text-subtle">
-                    <tr>
-                        <th className="px-4 py-2 text-left">Customer</th>
-                        <th className="px-4 py-2 text-left">Owners</th>
-                        <th className="px-4 py-2 text-left">Last activity</th>
-                        <th className="px-4 py-2 text-left">Sentiment</th>
-                        <th className="px-4 py-2 text-left">Churn</th>
-                        <th className="px-4 py-2 text-left">Threads</th>
-                        <th className="px-4 py-2 text-left">Open items</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                    {items.map((c) => (
-                        <CustomerRow key={c.id} c={c} />
-                    ))}
-                </tbody>
-            </table>
-        </div>
-    );
-}
-
-function CustomerRow({ c }: { c: CustomerListItem }) {
-    const sent = sentimentLabel(c.sentiment_score);
-    const churnPct =
-        c.churn_risk != null ? `${Math.round(c.churn_risk * 100)}%` : "—";
-    const churnTone =
-        c.churn_risk == null
-            ? "text-text-subtle"
-            : c.churn_risk >= 0.7
-              ? "text-accent-rose"
-              : c.churn_risk >= 0.4
-                ? "text-accent-amber"
-                : "text-accent-emerald";
-    const fav = faviconFor(c.domain);
-
-    return (
-        <tr className="hover:bg-bg-card-hover">
-            <td className="px-4 py-3">
-                <Link
-                    href={`/customers/${c.id}`}
-                    className="flex items-center gap-3 group"
-                >
-                    <CustomerLogo domain={c.domain} fav={fav} name={c.name} />
-                    <div className="min-w-0">
-                        <div className="truncate font-medium text-text group-hover:text-primary">
-                            {c.name}
-                        </div>
-                        <div className="truncate text-xs text-text-subtle">
-                            {c.domain ?? "no domain yet"}
-                        </div>
-                    </div>
-                </Link>
-            </td>
-            <td className="px-4 py-3">
-                <OwnerStack owners={c.owners} />
-            </td>
-            <td className="px-4 py-3">
-                {c.latest_interaction_at ? (
-                    <Link
-                        href={
-                            c.latest_interaction_id
-                                ? `/interactions/${c.latest_interaction_id}`
-                                : "#"
-                        }
-                        className="block hover:text-primary"
-                    >
-                        <div className="text-text">
-                            {formatRelative(c.latest_interaction_at)}
-                        </div>
-                        <div className="truncate text-xs text-text-subtle max-w-[18rem]">
-                            {c.latest_interaction_title ?? ""}
-                        </div>
-                    </Link>
-                ) : (
-                    <span className="text-text-subtle">—</span>
-                )}
-            </td>
-            <td className="px-4 py-3">
-                {c.sentiment_score != null ? (
-                    <div>
-                        <div className="font-medium">
-                            {c.sentiment_score.toFixed(1)}
-                        </div>
-                        <div
-                            className={`text-xs ${
-                                sent.tone === "emerald"
-                                    ? "text-accent-emerald"
-                                    : sent.tone === "amber"
-                                      ? "text-accent-amber"
-                                      : sent.tone === "rose"
-                                        ? "text-accent-rose"
-                                        : "text-text-subtle"
-                            }`}
-                        >
-                            {sent.text}
-                        </div>
-                    </div>
-                ) : (
-                    <span className="text-text-subtle">—</span>
-                )}
-            </td>
-            <td className={`px-4 py-3 ${churnTone}`}>{churnPct}</td>
-            <td className="px-4 py-3">
-                <span className="text-text">{c.multithreading_90d}</span>
-                <span className="ml-1 text-xs text-text-subtle">/ 90d</span>
-            </td>
-            <td className="px-4 py-3">{c.open_action_items}</td>
-        </tr>
-    );
-}
-
-function CustomerLogo({
-    domain,
-    fav,
-    name,
-}: {
-    domain: string | null;
-    fav: string | null;
-    name: string;
-}) {
-    const initials = useMemo(() => {
-        const tokens = name
-            .split(/\s+/)
-            .filter(Boolean)
-            .slice(0, 2)
-            .map((t) => t[0]?.toUpperCase() ?? "");
-        return tokens.join("") || "·";
-    }, [name]);
-
-    if (fav) {
-        // Next/Image needs an explicit width/height for unoptimised
-        // external sources. We mark unoptimized to avoid Next baking the
-        // domain into its allowlist — Google's favicon service is
-        // ubiquitous enough that maintaining the allowlist is overhead.
-        return (
-            <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-md bg-bg-secondary">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                    src={fav}
-                    alt={`${domain ?? name} logo`}
-                    className="h-8 w-8 object-cover"
-                    loading="lazy"
-                />
-            </div>
-        );
-    }
-    return (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary-soft text-xs font-semibold text-primary">
-            {initials}
-        </div>
-    );
-}
-
-function OwnerStack({
-    owners,
-}: {
-    owners: CustomerListItem["owners"];
-}) {
-    if (owners.length === 0) {
-        return <span className="text-xs text-text-subtle">unassigned</span>;
-    }
-    const visible = owners.slice(0, 3);
-    const extra = owners.length - visible.length;
-    return (
-        <div className="flex items-center">
-            {visible.map((o, idx) => (
-                <div
-                    key={o.user_id}
-                    title={`${o.name ?? o.email ?? "Unknown"} (${o.role})`}
-                    className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-bg-card text-xs font-medium ${
-                        o.role === "primary"
-                            ? "bg-primary text-white"
-                            : "bg-bg-secondary text-text-muted"
-                    } ${idx > 0 ? "-ml-2" : ""}`}
-                >
-                    {(o.name || o.email || "?").charAt(0).toUpperCase()}
-                </div>
-            ))}
-            {extra > 0 ? (
-                <div className="-ml-2 flex h-7 w-7 items-center justify-center rounded-full border-2 border-bg-card bg-bg-secondary text-xs text-text-muted">
-                    +{extra}
-                </div>
-            ) : null}
         </div>
     );
 }
