@@ -58,10 +58,10 @@ export default function InteractionDetailPage() {
         return (
             <div className="space-y-3">
                 <Link
-                    href="/interactions"
+                    href="/customers?tab=all-interactions"
                     className="text-sm text-primary hover:underline"
                 >
-                    ← Back to interactions
+                    ← Back to all interactions
                 </Link>
                 <p className="text-accent-rose">
                     Couldn&apos;t load this interaction.
@@ -106,10 +106,10 @@ export default function InteractionDetailPage() {
         <div className="space-y-6">
             <div>
                 <Link
-                    href="/interactions"
+                    href="/customers?tab=all-interactions"
                     className="text-sm text-primary hover:underline"
                 >
-                    ← Back to interactions
+                    ← Back to all interactions
                 </Link>
             </div>
 
