@@ -571,7 +571,12 @@ class ActionItem(Base):
     due_date: Mapped[Optional[date]] = mapped_column(Date)
     calendar_event_id: Mapped[Optional[str]] = mapped_column(String)
     email_draft: Mapped[Optional[dict]] = mapped_column(JSONB)
+    call_script: Mapped[Optional[list]] = mapped_column(JSONB)
     automation_status: Mapped[str] = mapped_column(String, default="pending")
+    dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
+    snoozed_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     interaction: Mapped[Interaction] = relationship(back_populates="action_items")

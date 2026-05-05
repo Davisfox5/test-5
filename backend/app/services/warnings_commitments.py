@@ -87,10 +87,10 @@ _TREND_DELTA_THRESHOLD = 0.2
 
 
 _PROMPT = (
-    "You are Linda, the AI on this call. You are doing two narrow "
-    "structured-output tasks on top of an already-completed analysis. "
-    "Speak in first person where prose is required. Return valid JSON "
-    "only — no markdown fences, no preamble.\n\n"
+    "You are an expert call analyst doing two narrow structured-output "
+    "tasks on top of an already-completed analysis. Use neutral third "
+    "person where prose is required. Return valid JSON only — no "
+    "markdown fences, no preamble.\n\n"
     "Return JSON with these exact keys:\n\n"
     "{\n"
     '  "warnings": [\n'
@@ -133,7 +133,7 @@ _PROMPT = (
     "- ``severity``: low = worth knowing, medium = worth a follow-up, "
     "  high = needs intervention.\n"
     "- ``evidence_excerpt`` is a short verbatim quote (one or two "
-    "  sentences) showing why I flagged it. Must come from the "
+    "  sentences) showing why the warning applies. Must come from the "
     "  transcript.\n\n"
     "Hard rules for commitments:\n"
     "- A commitment is a promise to do a specific thing by a specific "
@@ -157,10 +157,10 @@ _PROMPT = (
 
 
 _DONE_MATCH_PROMPT = (
-    "You are Linda. I'm giving you (a) a list of open commitments from "
-    "earlier calls on this customer, and (b) the transcript of a NEW "
-    "call. Tell me which (if any) of the open commitments were "
-    "satisfied by something said in the new call.\n\n"
+    "You are an expert call analyst. Below are (a) a list of open "
+    "commitments from earlier calls on this customer, and (b) the "
+    "transcript of a NEW call. Identify which (if any) of the open "
+    "commitments were satisfied by something said in the new call.\n\n"
     "Return JSON only:\n\n"
     "{\n"
     '  "completed": [\n'
@@ -174,7 +174,7 @@ _DONE_MATCH_PROMPT = (
     "  yesterday'), not just discussed.\n"
     "- It's fine to return an empty list. Most calls don't close out "
     "  prior commitments.\n"
-    "- Never invent commitments; pick only from the list I provide.\n"
+    "- Never invent commitments; pick only from the provided list.\n"
 )
 
 
