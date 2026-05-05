@@ -23,6 +23,11 @@ MODELS = {
     "sonnet": "claude-sonnet-4-6",
 }
 
+# Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
+# Persisted to ``interaction_features.analysis_prompt_version`` so we can
+# cohort outcome data by prompt version when training the Phase 4 classifier.
+ANALYSIS_PROMPT_VERSION = "2026-05-05.phase-5a"
+
 ANALYSIS_SYSTEM_PROMPT = (
     "You are an expert call analyst reviewing a sales or customer-service "
     "transcript. Your tone is calm, attentive, and honest — never robotic, "

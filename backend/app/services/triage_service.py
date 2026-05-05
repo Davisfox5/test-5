@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
+# Bumped manually whenever ``TRIAGE_SYSTEM_PROMPT`` changes materially.
+# Persisted to ``interaction_features.triage_prompt_version``.
+TRIAGE_PROMPT_VERSION = "2026-05-05.phase-5a"
+
 TRIAGE_SYSTEM_PROMPT = (
     "You are an expert call analyst doing a fast first-pass triage on a "
     "transcript. Your tone is calm, attentive, and honest.\n\n"

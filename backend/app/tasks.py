@@ -1317,6 +1317,26 @@ def _run_pipeline_impl(
         "analysis_tier": recommended_tier,
         "complexity_score": complexity_score,
     }
+    # Phase 0 telemetry: record which prompt + model produced this analysis,
+    # so outcome data can be cohorted by version when training the Phase 4
+    # classifier. Imported lazily to avoid pulling LLM-client deps in the
+    # test environment.
+    try:
+        from backend.app.services.ai_analysis import (
+            ANALYSIS_PROMPT_VERSION,
+            MODELS as _ANALYSIS_MODELS,
+        )
+        from backend.app.services.triage_service import TRIAGE_PROMPT_VERSION
+
+        features_row.analysis_prompt_version = ANALYSIS_PROMPT_VERSION
+        features_row.triage_prompt_version = TRIAGE_PROMPT_VERSION
+        features_row.model_used = _ANALYSIS_MODELS.get(recommended_tier)
+    except Exception:
+        logger.debug(
+            "telemetry version capture failed for %s (non-fatal)",
+            interaction_id,
+            exc_info=True,
+        )
 
     # ── Step 18: Enqueue delta report → orchestrator ─────────────────
     try:
