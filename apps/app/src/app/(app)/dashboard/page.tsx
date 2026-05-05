@@ -163,7 +163,7 @@ export default function DashboardPage() {
                     title="Recent calls"
                     action={
                         <Link
-                            href="/interactions"
+                            href="/customers?tab=all-interactions"
                             className="text-sm text-primary hover:underline"
                         >
                             View all →
@@ -234,7 +234,7 @@ export default function DashboardPage() {
                             n={1}
                             title="Upload a call"
                             body="Drop in a recording and Linda transcribes + analyzes it in minutes."
-                            href="/interactions"
+                            href="/customers?tab=all-interactions"
                             cta="Upload"
                         />
                         <QuickStep
