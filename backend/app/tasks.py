@@ -1753,21 +1753,27 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             return {"status": "error", "detail": "Tenant not found"}
 
         # ── Build segments from raw_text ─────────────────────────────
-        # For text channels there is no audio — use raw_text or
-        # pre-existing transcript segments directly.
+        # For text channels there is no audio — parse speaker tags
+        # ("REP:", "PROSPECT:", "Maria Chen:") into proper turns. Falls
+        # back to a single segment when the source has no recognizable
+        # tags so anything unstructured still flows through the pipeline.
         if interaction.transcript and len(interaction.transcript) > 0:
             segments_dicts = interaction.transcript
         elif interaction.raw_text:
-            # Wrap raw_text in a single segment for uniform processing.
-            segments_dicts = [
-                {
-                    "start": 0.0,
-                    "end": 0.0,
-                    "text": interaction.raw_text,
-                    "speaker_id": None,
-                    "confidence": None,
-                }
-            ]
+            from backend.app.services.text_segmenter import segments_from_text
+
+            segments_dicts = segments_from_text(
+                interaction.raw_text,
+                duration_seconds=interaction.duration_seconds,
+            )
+            if not segments_dicts:
+                logger.error(
+                    "Text segmenter returned empty for interaction %s",
+                    interaction_id,
+                )
+                interaction.status = "failed"
+                session.commit()
+                return {"status": "error", "detail": "Empty raw_text"}
         else:
             logger.error(
                 "No text content for interaction %s", interaction_id
