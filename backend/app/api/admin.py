@@ -964,3 +964,109 @@ async def backfill_warnings_commitments(
         return BackfillResponse(processed=len(out), rows=out)
     finally:
         session.close()
+
+
+# ── Re-segment legacy single-segment transcripts ────────────────────
+#
+# Pre-fix-transcript-speaker-tags, the text-ingest path wrapped
+# ``raw_text`` in a single segment with start=0/end=0/speaker_id=None,
+# so every analyzed call rendered as one paragraph attributed to
+# "Speaker 1" at 0:00. This endpoint re-parses ``raw_text`` through
+# the new ``text_segmenter`` and writes a proper ``transcript`` array
+# without re-running analysis (no Sonnet cost).
+
+
+class TranscriptResegmentRow(BaseModel):
+    interaction_id: uuid.UUID
+    skipped: bool
+    reason: Optional[str] = None
+    segment_count: int = 0
+    speaker_count: int = 0
+
+
+class TranscriptResegmentResponse(BaseModel):
+    processed: int
+    rows: List[TranscriptResegmentRow]
+
+
+@router.post(
+    "/admin/resegment-transcripts",
+    response_model=TranscriptResegmentResponse,
+)
+async def resegment_transcripts(
+    interaction_ids: Optional[List[uuid.UUID]] = None,
+    limit: int = Query(50, le=200),
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> TranscriptResegmentResponse:
+    """Re-segment legacy single-segment transcripts using ``raw_text``.
+
+    Skips rows whose stored transcript already has more than one
+    segment (so re-running is safe).
+    """
+    from backend.app.models import Interaction
+    from backend.app.services.text_segmenter import segments_from_text
+    from backend.app.tasks import _get_sync_session
+
+    session = _get_sync_session()
+    try:
+        q = session.query(Interaction).filter(
+            Interaction.tenant_id == tenant.id,
+            Interaction.status == "analyzed",
+        )
+        if interaction_ids:
+            q = q.filter(Interaction.id.in_(interaction_ids))
+        rows = q.order_by(Interaction.created_at.desc()).limit(limit).all()
+
+        out: List[TranscriptResegmentRow] = []
+        for ix in rows:
+            if not ix.raw_text:
+                out.append(
+                    TranscriptResegmentRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason="no raw_text — would lose data to re-segment",
+                    )
+                )
+                continue
+            existing = ix.transcript or []
+            if isinstance(existing, list) and len(existing) > 1:
+                out.append(
+                    TranscriptResegmentRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason="already multi-segment",
+                        segment_count=len(existing),
+                    )
+                )
+                continue
+            segments = segments_from_text(
+                ix.raw_text,
+                duration_seconds=ix.duration_seconds,
+            )
+            if not segments:
+                out.append(
+                    TranscriptResegmentRow(
+                        interaction_id=ix.id,
+                        skipped=True,
+                        reason="segmenter returned empty",
+                    )
+                )
+                continue
+            speakers = {
+                s.get("speaker_label") for s in segments if isinstance(s, dict)
+            }
+            speakers.discard(None)
+            ix.transcript = segments
+            session.commit()
+            out.append(
+                TranscriptResegmentRow(
+                    interaction_id=ix.id,
+                    skipped=False,
+                    segment_count=len(segments),
+                    speaker_count=len(speakers),
+                )
+            )
+        return TranscriptResegmentResponse(processed=len(out), rows=out)
+    finally:
+        session.close()
