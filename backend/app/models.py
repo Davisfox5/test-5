@@ -1196,10 +1196,53 @@ class InteractionFeatures(Base):
     embeddings_ref: Mapped[Optional[str]] = mapped_column(Text)
     proxy_outcomes: Mapped[dict] = mapped_column(JSONB, default=dict)
     scorer_versions: Mapped[dict] = mapped_column(JSONB, default=dict)
+    analysis_prompt_version: Mapped[Optional[str]] = mapped_column(String(64))
+    triage_prompt_version: Mapped[Optional[str]] = mapped_column(String(64))
+    model_used: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InterventionEvent(Base):
+    """Append-only log of rep / manager / system actions on a customer.
+
+    Required for bias correction at training time: a customer who churns
+    after we flagged them and intervened is a different signal from one
+    who churns after we flagged them and did nothing. Joined against
+    ``customer_outcome_events`` and ``interaction_features`` to construct
+    training tuples.
+    """
+
+    __tablename__ = "intervention_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
+    )
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE")
+    )
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # Constrained to the vocabulary in the Phase 0 migration's CHECK.
+    # follow_up_sent | manager_review | escalation | rep_callback |
+    # discount_offered | action_item_completed | action_item_dismissed |
+    # action_item_snoozed | action_item_reopened |
+    # scorecard_review_completed | other
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

@@ -293,6 +293,27 @@ async def update_action_item(
         description_diff=description_diff,
     )
 
+    # Phase 0 telemetry: record action-item lifecycle transitions as
+    # intervention events for outcome bias correction. Imported lazily
+    # so test environments that stub the service don't have to.
+    if body.status is not None and body.status != old_status:
+        try:
+            from backend.app.services.intervention_events import (
+                record_action_item_lifecycle,
+            )
+            await record_action_item_lifecycle(
+                db,
+                tenant_id=tenant.id,
+                interaction_id=item.interaction_id,
+                action_item_id=item.id,
+                old_status=old_status,
+                new_status=body.status,
+                actor_user_id=body.user_id,
+                dismiss_reason=body.dismiss_reason,
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never fail the request
+            pass
+
     await audit_log(
         db,
         principal,
