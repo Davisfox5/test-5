@@ -1,7 +1,7 @@
 """Action Items API — standalone endpoint for managing action items across interactions."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -39,7 +39,12 @@ class ActionItemOut(BaseModel):
     due_date: Optional[date]
     calendar_event_id: Optional[str]
     email_draft: Optional[dict]
+    call_script: Optional[list] = None
     automation_status: str
+    dismiss_reason: Optional[str] = None
+    snoozed_until: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -53,6 +58,9 @@ class ActionItemUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     automation_status: Optional[str] = None
+    dismiss_reason: Optional[str] = None
+    snoozed_until: Optional[datetime] = None
+    call_script: Optional[list] = None
     user_id: Optional[uuid.UUID] = None  # who is doing the edit (for feedback attribution)
 
 
@@ -236,6 +244,13 @@ async def update_action_item(
 
     if body.status is not None:
         item.status = body.status
+        # Auto-stamp lifecycle transitions. Timestamps are sticky once set
+        # (no clear-on-reopen) so the audit trail survives a re-open.
+        now = datetime.now(timezone.utc)
+        if body.status in {"completed", "done"} and item.completed_at is None:
+            item.completed_at = now
+        if body.status in {"dismissed", "rejected"} and item.dismissed_at is None:
+            item.dismissed_at = now
     if body.assigned_to is not None:
         item.assigned_to = body.assigned_to
     if body.priority is not None:
@@ -248,6 +263,12 @@ async def update_action_item(
         item.description = body.description
     if body.automation_status is not None:
         item.automation_status = body.automation_status
+    if body.dismiss_reason is not None:
+        item.dismiss_reason = body.dismiss_reason
+    if body.snoozed_until is not None:
+        item.snoozed_until = body.snoozed_until
+    if body.call_script is not None:
+        item.call_script = body.call_script
 
     title_diff = (
         feedback_service.diff_summary(old_title or "", item.title or "")
