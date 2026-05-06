@@ -244,3 +244,112 @@ def test_name_match_handles_none():
 def test_name_match_handles_empty():
     assert _name_matches("", "Sarah") is False
     assert _name_matches("Sarah", "") is False
+
+
+# ── Microsoft Graph provider — body shape ──────────────────────────────
+
+
+def test_microsoft_graph_event_body_includes_teams_meeting_flags():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_event_body(_basic_request())
+    assert body["subject"] == "Test meeting"
+    assert body["isOnlineMeeting"] is True
+    assert body["onlineMeetingProvider"] == "teamsForBusiness"
+    assert body["start"]["timeZone"] == "UTC"
+    assert body["end"]["timeZone"] == "UTC"
+    # Both participants with emails should land as required attendees.
+    emails = {a["emailAddress"]["address"] for a in body["attendees"]}
+    assert emails == {"cust1@example.com", "se@example.com"}
+
+
+def test_microsoft_graph_event_body_omits_teams_when_conference_none():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_event_body(_basic_request(conference_provider="none"))
+    assert "isOnlineMeeting" not in body
+    assert "onlineMeetingProvider" not in body
+
+
+def test_microsoft_graph_event_body_skips_participants_without_email():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    request = _basic_request(
+        participants=[
+            MeetingParticipant(name="No Email", email=None, side="customer"),
+            MeetingParticipant(name="Has Email", email="ok@x.com", side="customer"),
+        ],
+    )
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_event_body(request)
+    assert len(body["attendees"]) == 1
+    assert body["attendees"][0]["emailAddress"]["address"] == "ok@x.com"
+
+
+def test_microsoft_graph_event_body_marks_optional_attendees():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    request = _basic_request(
+        participants=[
+            MeetingParticipant(name="Required", email="r@x.com", role="required"),
+            MeetingParticipant(name="Optional", email="o@x.com", role="optional"),
+        ],
+    )
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_event_body(request)
+    by_email = {a["emailAddress"]["address"]: a["type"] for a in body["attendees"]}
+    assert by_email["o@x.com"] == "optional"
+    assert by_email["r@x.com"] == "required"
+
+
+def test_microsoft_graph_result_pulls_join_url_from_online_meeting():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    event = {
+        "id": "AAMkADX==",
+        "webLink": "https://outlook.office.com/calendar/...",
+        "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/abc"},
+    }
+    result = provider._result_from_event(event)
+    assert result.success is True
+    assert result.event_id == "AAMkADX=="
+    assert result.join_url == "https://teams.microsoft.com/l/meetup-join/abc"
+    assert result.html_link == "https://outlook.office.com/calendar/..."
+
+
+def test_microsoft_graph_result_falls_back_to_legacy_field():
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+
+    provider = MicrosoftGraphProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    # Older Graph responses surface ``onlineMeetingUrl`` instead of
+    # the nested ``onlineMeeting.joinUrl``.
+    event = {"id": "x", "onlineMeetingUrl": "https://teams.microsoft.com/legacy"}
+    result = provider._result_from_event(event)
+    assert result.join_url == "https://teams.microsoft.com/legacy"
