@@ -29,6 +29,9 @@ from backend.app.services.meeting_scheduler.base import (
 from backend.app.services.meeting_scheduler.google_calendar import (
     GoogleCalendarProvider,
 )
+from backend.app.services.meeting_scheduler.microsoft_graph import (
+    MicrosoftGraphProvider,
+)
 from backend.app.services.meeting_scheduler.stub import StubMeetingProvider
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ logger = logging.getLogger(__name__)
 # slot in here.
 _PROVIDER_ORDER: List[Type[MeetingProvider]] = [
     GoogleCalendarProvider,
+    MicrosoftGraphProvider,
     StubMeetingProvider,
 ]
 
