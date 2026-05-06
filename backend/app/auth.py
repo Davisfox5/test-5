@@ -98,6 +98,8 @@ API_KEY_SCOPES: frozenset[str] = frozenset(
         "interactions:write",
         "action_items:read",
         "action_items:write",
+        "notifications:read",
+        "notifications:write",
         "contacts:read",
         "contacts:write",
         "analytics:read",
