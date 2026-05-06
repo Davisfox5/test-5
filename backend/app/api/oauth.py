@@ -72,8 +72,10 @@ def _provider_setting(attr: str) -> str:
     return getattr(settings, attr, "") or ""
 
 
-# CRM provider table. Each adapter's oauth flow reads from this.
-# ``scope_sep`` is how the provider wants scopes joined in the auth URL.
+# Generic OAuth provider table. Despite the historical name, this is
+# not CRM-only — meeting platforms (Zoom) live here too. Each adapter's
+# oauth flow reads from this. ``scope_sep`` is how the provider wants
+# scopes joined in the auth URL.
 CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "hubspot": {
         "authorize_url": "https://app.hubspot.com/oauth/authorize",
@@ -130,6 +132,22 @@ CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "client_secret_key": "ZOHO_CLIENT_SECRET",
         # Static config flag. Runtime certification still requires
         # client_id/secret to be set (see ``_runtime_certified``).
+        "certified": True,
+    },
+    "zoom": {
+        # Zoom OAuth 2.0 — standard authorization-code flow with
+        # client credentials. Scopes follow Zoom's granular API scope
+        # model: ``meeting:write:meeting`` to create meetings,
+        # ``user:read:user`` for the host's profile.
+        "authorize_url": "https://zoom.us/oauth/authorize",
+        "token_url": "https://zoom.us/oauth/token",
+        "scopes": [
+            "meeting:write:meeting",
+            "user:read:user",
+        ],
+        "scope_sep": " ",
+        "client_id_key": "ZOOM_CLIENT_ID",
+        "client_secret_key": "ZOOM_CLIENT_SECRET",
         "certified": True,
     },
     "microsoft_dynamics": {
