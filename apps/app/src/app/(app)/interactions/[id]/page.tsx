@@ -13,7 +13,6 @@ import {
     useInteraction,
     useRedriveInteraction,
     useUpdateInteraction,
-    type ActionItemOut,
     type TranscriptTurn,
 } from "@/lib/interactions";
 import {
@@ -22,6 +21,8 @@ import {
     type EmailSendOut,
 } from "@/lib/communications";
 import { useOAuthStatus } from "@/lib/oauth";
+import { type ActionItem } from "@/lib/action-items";
+import { ActionItemCard } from "@/components/action-item/action-item-card";
 
 export default function InteractionDetailPage() {
     const params = useParams<{ id: string }>();
@@ -867,7 +868,7 @@ function ActionItemsForInteraction({ interactionId }: { interactionId: string })
             // window from /action-items and filter client-side. Fine for
             // a single-call detail page; switch to a server filter if
             // tenants ever generate >200 items per call.
-            const all = await api.get<ActionItemOut[]>(
+            const all = await api.get<ActionItem[]>(
                 "/action-items?limit=200",
             );
             return all.filter((it) => it.interaction_id === interactionId);
@@ -884,28 +885,11 @@ function ActionItemsForInteraction({ interactionId }: { interactionId: string })
                     Couldn&apos;t load action items.
                 </p>
             ) : items.data && items.data.length > 0 ? (
-                <ul className="mt-3 space-y-2">
+                <div className="mt-3 space-y-2">
                     {items.data.map((it) => (
-                        <li
-                            key={it.id}
-                            className="rounded-md border border-border bg-bg-secondary p-3"
-                        >
-                            <div className="flex items-center justify-between gap-2">
-                                <span className="text-sm font-medium">
-                                    {it.title}
-                                </span>
-                                <span className="text-xs uppercase tracking-wide text-text-subtle">
-                                    {it.priority}
-                                </span>
-                            </div>
-                            {it.description ? (
-                                <p className="mt-1 text-xs text-text-muted">
-                                    {it.description}
-                                </p>
-                            ) : null}
-                        </li>
+                        <ActionItemCard key={it.id} item={it} />
                     ))}
-                </ul>
+                </div>
             ) : (
                 <p className="mt-3 text-sm text-text-subtle">
                     No action items pulled from this interaction yet.

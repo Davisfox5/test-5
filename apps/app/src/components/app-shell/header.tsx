@@ -9,6 +9,7 @@ import { useMe } from "@/lib/me";
 import { LindaMark } from "@/components/brand/linda-mark";
 import { navItemsForRole } from "@/components/app-shell/sidebar";
 import { PreviewRolePill } from "@/components/app-shell/preview-role-pill";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 
 const KNOWN_ROLES = new Set<string>(["agent", "manager", "admin"]);
 
@@ -67,6 +68,7 @@ export function Header() {
                 </div>
                 <div className="flex items-center gap-3">
                     <PreviewRolePill />
+                    <NotificationBell />
                     <UserButton afterSignOutUrl="/" />
                 </div>
             </header>
