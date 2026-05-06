@@ -16,9 +16,13 @@ from backend.app.auth import (
     require_scope,
 )
 from backend.app.db import get_db
-from backend.app.models import ActionItem, Tenant
+from backend.app.models import ActionItem, Interaction, Tenant
 from backend.app.services import feedback_service
 from backend.app.services.audit_log import audit_log
+from backend.app.services.meeting_scheduler import MeetingRequest, MeetingScheduler
+from backend.app.services.meeting_scheduler.participant_resolver import (
+    resolve_participants,
+)
 
 router = APIRouter()
 
@@ -114,6 +118,35 @@ class ActionItemFeedback(BaseModel):
     helpful: bool
     note: Optional[str] = None
     user_id: Optional[uuid.UUID] = None
+
+
+class ScheduleMeetingRequest(BaseModel):
+    """Optional overrides for the action-item-driven meeting scheduler."""
+    start: Optional[datetime] = None
+    duration_minutes: int = 30
+    location: Optional[str] = None
+    # When the rep edits participants/title before clicking schedule, the
+    # frontend can pass overrides here. None means "use what's on the
+    # action item."
+    override_subject: Optional[str] = None
+    override_participants: Optional[list] = None
+    # Conference platform hint: 'google_meet' | 'teams' | 'zoom' | 'none'.
+    # Each provider interprets this — the Google provider treats
+    # 'google_meet' as default and 'none' as suppressing the conference
+    # link. When None, the provider's default applies.
+    conference_provider: Optional[str] = None
+    user_id: Optional[uuid.UUID] = None
+
+
+class ScheduleMeetingResult(BaseModel):
+    success: bool
+    provider: str
+    event_id: Optional[str] = None
+    join_url: Optional[str] = None
+    html_link: Optional[str] = None
+    ics_payload: Optional[str] = None
+    note: Optional[str] = None
+    error: Optional[str] = None
 
 
 # Maps a status transition to the feedback event_type the model should learn from.
@@ -617,3 +650,155 @@ async def submit_action_item_feedback(
         after={"helpful": body.helpful, "feedback_score": item.feedback_score},
     )
     return item
+
+
+# ── Schedule meeting (calendar + video link) ────────────────────────────
+
+
+@router.post(
+    "/action-items/{action_item_id}/schedule-meeting",
+    response_model=ScheduleMeetingResult,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def schedule_meeting_for_action_item(
+    action_item_id: uuid.UUID,
+    body: ScheduleMeetingRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Create a calendar event with embedded video link for an action item.
+
+    Resolves participant emails from the action item's ``participants``
+    list, picks the best available calendar provider for the user
+    (Google → Microsoft → Zoom → Cal.com → stub), and creates the event.
+    Returns the join URL when the provider produced one, or an ICS
+    payload + copy-paste invite text when falling back to the stub.
+
+    Stamps ``calendar_event_id`` on the action item and records a
+    ``follow_up_sent``-flavored intervention event on success.
+    """
+    stmt = select(ActionItem).where(
+        ActionItem.id == action_item_id,
+        ActionItem.tenant_id == tenant.id,
+    )
+    result = await db.execute(stmt)
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+
+    # Pull customer_id from the source interaction so the participant
+    # resolver can scope to that customer's contacts.
+    interaction_stmt = select(Interaction).where(
+        Interaction.id == item.interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+    customer_id = interaction.customer_id if interaction else None
+
+    # Build participant list — override wins, else use the LLM-emitted
+    # list off the action item.
+    raw_parts = body.override_participants
+    if raw_parts is None:
+        raw_parts = item.participants or []
+    resolved = await resolve_participants(
+        db,
+        tenant_id=tenant.id,
+        customer_id=customer_id,
+        raw_participants=raw_parts,
+    )
+
+    # Organizer email — the requesting user. API-key calls without a
+    # user fall back to a placeholder; the stub provider tolerates it.
+    organizer_email = (
+        principal.user.email if principal.user and principal.user.email
+        else "no-reply@linda.local"
+    )
+
+    subject = body.override_subject or item.title or "Meeting"
+    description_parts = [item.description or ""]
+    if item.channel_reasoning:
+        description_parts.append(f"\n\nWhy meeting: {item.channel_reasoning}")
+    if item.prep_artifacts:
+        description_parts.append("\n\nPrep:")
+        for artifact in item.prep_artifacts:
+            if isinstance(artifact, str) and artifact.strip():
+                description_parts.append(f"\n  - {artifact}")
+    body_text = "".join(description_parts).strip()
+
+    request = MeetingRequest(
+        subject=subject,
+        body=body_text,
+        organizer_email=organizer_email,
+        participants=resolved,
+        start=body.start,
+        duration_minutes=body.duration_minutes,
+        conference_provider=body.conference_provider,
+        location=body.location,
+    )
+
+    # Tenant-level provider preference, when set.
+    tf = getattr(tenant, "features_enabled", None) or {}
+    preferred = tf.get("calendar_provider") if isinstance(tf, dict) else None
+
+    user_id = principal.user.id if principal.user else None
+    scheduler = MeetingScheduler(
+        db,
+        tenant_id=tenant.id,
+        user_id=user_id,
+        preferred_provider=preferred,
+    )
+    result_obj = await scheduler.create_meeting(request)
+
+    # Persist the event id on the action item when the provider
+    # produced one (stub doesn't, but real providers do).
+    if result_obj.success and result_obj.event_id:
+        item.calendar_event_id = result_obj.event_id
+
+    # Telemetry: a scheduled meeting is a 'follow_up_sent' equivalent
+    # intervention — the rep took action driven by the action item.
+    if result_obj.success:
+        try:
+            from backend.app.services.intervention_events import (
+                InterventionKind,
+                record_intervention,
+            )
+            await record_intervention(
+                db,
+                tenant_id=tenant.id,
+                kind=InterventionKind.FOLLOW_UP_SENT,
+                interaction_id=item.interaction_id,
+                actor_user_id=user_id,
+                meta={
+                    "action_item_id": str(item.id),
+                    "provider": result_obj.provider,
+                    "event_id": result_obj.event_id,
+                    "channel": "meeting",
+                },
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never fail the request
+            pass
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.scheduled_meeting",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        after={
+            "provider": result_obj.provider,
+            "success": result_obj.success,
+            "event_id": result_obj.event_id,
+        },
+    )
+
+    return ScheduleMeetingResult(
+        success=result_obj.success,
+        provider=result_obj.provider,
+        event_id=result_obj.event_id,
+        join_url=result_obj.join_url,
+        html_link=result_obj.html_link,
+        ics_payload=result_obj.ics_payload,
+        note=result_obj.note,
+        error=result_obj.error,
+    )
