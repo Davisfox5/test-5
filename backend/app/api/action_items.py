@@ -16,13 +16,14 @@ from backend.app.auth import (
     require_scope,
 )
 from backend.app.db import get_db
-from backend.app.models import ActionItem, Interaction, Tenant
+from backend.app.models import ActionItem, Interaction, InteractionComment, Tenant
 from backend.app.services import feedback_service
 from backend.app.services.audit_log import audit_log
 from backend.app.services.meeting_scheduler import MeetingRequest, MeetingScheduler
 from backend.app.services.meeting_scheduler.participant_resolver import (
     resolve_participants,
 )
+from backend.app.services.notifications import NotificationKind, notify
 
 router = APIRouter()
 
@@ -52,6 +53,8 @@ class ActionItemOut(BaseModel):
     prep_artifacts: list = Field(default_factory=list)
     parent_action_item_id: Optional[uuid.UUID] = None
     implicit_signal: Optional[str] = None
+    suggested_attachments: list = Field(default_factory=list)
+    attachments_sent: list = Field(default_factory=list)
     manually_created: bool = False
     feedback_score: int = 0
     automation_status: str
@@ -358,6 +361,7 @@ async def update_action_item(
             item.completed_at = now
         if normalized == "dismissed" and item.dismissed_at is None:
             item.dismissed_at = now
+    old_assignee = item.assigned_to
     if body.assigned_to is not None:
         item.assigned_to = body.assigned_to
     if body.priority is not None:
@@ -411,6 +415,25 @@ async def update_action_item(
         title_diff=title_diff,
         description_diff=description_diff,
     )
+
+    # Notify the new assignee on assignment changes (skip if they're
+    # assigning to themselves — no value in self-notifications).
+    if (
+        body.assigned_to is not None
+        and body.assigned_to != old_assignee
+        and (principal.user is None or body.assigned_to != principal.user.id)
+    ):
+        await notify(
+            db,
+            tenant_id=tenant.id,
+            user_id=body.assigned_to,
+            kind=NotificationKind.ACTION_ITEM_ASSIGNED,
+            title=f"Assigned to you: {item.title}",
+            body=item.description or None,
+            link_url=f"/action-items/{item.id}",
+            action_item_id=item.id,
+            interaction_id=item.interaction_id,
+        )
 
     # Phase 0 telemetry: record action-item lifecycle transitions as
     # intervention events for outcome bias correction. Imported lazily
@@ -726,6 +749,32 @@ async def schedule_meeting_for_action_item(
                 description_parts.append(f"\n  - {artifact}")
     body_text = "".join(description_parts).strip()
 
+    # Auto-detect: when the LLM tagged this as a phone call, suppress
+    # video conferencing on the calendar event and surface the customer
+    # phone number as the location/body. Caller's explicit
+    # ``conference_provider`` always wins.
+    inferred_conference = body.conference_provider
+    inferred_location = body.location
+    if inferred_conference is None and (item.recommended_channel == "phone_call"
+                                        or item.next_step_type == "phone_call"):
+        inferred_conference = "none"
+        # Find a customer-side phone number from the resolved participants
+        # or the interaction. Surface it in the location line so it shows
+        # up prominently in the calendar invite.
+        customer_phone = next(
+            (
+                getattr(p, "phone", None)
+                for p in resolved
+                if (p.side or "").lower() == "customer" and getattr(p, "phone", None)
+            ),
+            None,
+        )
+        if not customer_phone and interaction:
+            customer_phone = getattr(interaction, "caller_phone", None)
+        if customer_phone:
+            inferred_location = inferred_location or f"Phone: {customer_phone}"
+            body_text = f"Call: {customer_phone}\n\n{body_text}"
+
     request = MeetingRequest(
         subject=subject,
         body=body_text,
@@ -733,8 +782,8 @@ async def schedule_meeting_for_action_item(
         participants=resolved,
         start=body.start,
         duration_minutes=body.duration_minutes,
-        conference_provider=body.conference_provider,
-        location=body.location,
+        conference_provider=inferred_conference,
+        location=inferred_location,
     )
 
     # Tenant-level provider preference, when set.
@@ -802,3 +851,201 @@ async def schedule_meeting_for_action_item(
         note=result_obj.note,
         error=result_obj.error,
     )
+
+
+# ── Comments / dialogue ─────────────────────────────────────────────────
+
+
+class ActionItemCommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class ActionItemCommentOut(BaseModel):
+    id: uuid.UUID
+    action_item_id: Optional[uuid.UUID]
+    interaction_id: Optional[uuid.UUID]
+    user_id: uuid.UUID
+    body: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get(
+    "/action-items/{action_item_id}/comments",
+    response_model=List[ActionItemCommentOut],
+    dependencies=[Depends(require_scope("action_items:read"))],
+)
+async def list_action_item_comments(
+    action_item_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Return the comment thread on an action item, oldest-first."""
+    stmt = (
+        select(InteractionComment)
+        .where(
+            InteractionComment.action_item_id == action_item_id,
+            InteractionComment.tenant_id == tenant.id,
+        )
+        .order_by(InteractionComment.created_at.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars())
+
+
+@router.post(
+    "/action-items/{action_item_id}/comments",
+    response_model=ActionItemCommentOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def add_action_item_comment(
+    action_item_id: uuid.UUID,
+    body: ActionItemCommentCreate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Post a comment on an action item. Notifies the assignee (when
+    set and not the commenter) so they see the dialogue without
+    having to refresh the page."""
+    if not principal.user:
+        raise HTTPException(status_code=401, detail="Not a user")
+
+    stmt = select(ActionItem).where(
+        ActionItem.id == action_item_id,
+        ActionItem.tenant_id == tenant.id,
+    )
+    result = await db.execute(stmt)
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+
+    comment = InteractionComment(
+        tenant_id=tenant.id,
+        action_item_id=item.id,
+        interaction_id=item.interaction_id,
+        user_id=principal.user.id,
+        body=body.body,
+    )
+    db.add(comment)
+
+    # Notify the assignee when there is one and they didn't write the comment.
+    if item.assigned_to and item.assigned_to != principal.user.id:
+        await notify(
+            db,
+            tenant_id=tenant.id,
+            user_id=item.assigned_to,
+            kind=NotificationKind.ACTION_ITEM_COMMENT,
+            title=f"New comment on {item.title}",
+            body=body.body[:500],
+            link_url=f"/action-items/{item.id}",
+            action_item_id=item.id,
+            interaction_id=item.interaction_id,
+        )
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.comment_added",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        after={"body_excerpt": body.body[:200]},
+    )
+    await db.flush()
+    return comment
+
+
+# ── Reject and return ───────────────────────────────────────────────────
+
+
+class ActionItemReturn(BaseModel):
+    """The current assignee returns the item to whoever assigned it.
+
+    The item flips back to ``status='open'`` (not dismissed) and its
+    ``assigned_to`` clears so the original owner can reassign or
+    handle it themselves. The ``reason`` becomes the first comment in
+    the thread so the dialogue context is preserved.
+    """
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post(
+    "/action-items/{action_item_id}/return",
+    response_model=ActionItemOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def return_action_item(
+    action_item_id: uuid.UUID,
+    body: ActionItemReturn,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    if not principal.user:
+        raise HTTPException(status_code=401, detail="Not a user")
+
+    stmt = select(ActionItem).where(
+        ActionItem.id == action_item_id,
+        ActionItem.tenant_id == tenant.id,
+    )
+    item = (await db.execute(stmt)).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+
+    # Only the current assignee can return. Managers/admins can also
+    # return on behalf of an agent (e.g. "this got assigned wrong").
+    if item.assigned_to != principal.user.id and principal.role not in {"manager", "admin"}:
+        raise HTTPException(
+            status_code=403, detail="Only the assignee can return this item."
+        )
+
+    previous_assignee = item.assigned_to
+    item.assigned_to = None
+    item.status = "open"
+    item.dismissed_at = None
+    item.dismiss_reason = None
+
+    # First comment in the thread documents why it was returned.
+    comment = InteractionComment(
+        tenant_id=tenant.id,
+        action_item_id=item.id,
+        interaction_id=item.interaction_id,
+        user_id=principal.user.id,
+        body=f"Returned: {body.reason}",
+    )
+    db.add(comment)
+
+    # Notify the rep on the source interaction (when we can identify
+    # them) — they're the natural person to redirect this.
+    interaction_stmt = select(Interaction).where(
+        Interaction.id == item.interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+    rep_user_id = getattr(interaction, "user_id", None) if interaction else None
+    if rep_user_id and rep_user_id != principal.user.id:
+        await notify(
+            db,
+            tenant_id=tenant.id,
+            user_id=rep_user_id,
+            kind=NotificationKind.ACTION_ITEM_RETURNED,
+            title=f"Returned to you: {item.title}",
+            body=body.reason[:500],
+            link_url=f"/action-items/{item.id}",
+            action_item_id=item.id,
+            interaction_id=item.interaction_id,
+        )
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.returned",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        before={"assigned_to": str(previous_assignee) if previous_assignee else None},
+        after={"reason": body.reason[:200]},
+    )
+    return item

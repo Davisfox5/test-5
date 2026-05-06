@@ -26,7 +26,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-05.phase-5b1"
+ANALYSIS_PROMPT_VERSION = "2026-05-06.phase-5b6"
 
 ANALYSIS_SYSTEM_PROMPT = (
     "You are an expert call analyst reviewing a sales or customer-service "
@@ -97,6 +97,13 @@ ANALYSIS_SYSTEM_PROMPT = (
     "the customer name-dropped without context). Plain language, "
     "third person. The rep should be able to read this and recognize "
     "what they missed. Null when the action item is obvious.\n"
+    "      suggested_attachments: list of {title: str, reason: str} — "
+    "suggested supporting documents the rep should attach when sending. "
+    "Free-form titles describing what kind of document fits (e.g. "
+    "\"API rate limit sheet\", \"Pricing tier overview\", \"Onboarding "
+    "checklist\"). The system maps these to actual KB docs at the UI "
+    "layer; the rep reviews and confirms before send. Empty list is "
+    "fine when no document attachment is warranted.\n"
     "    }\n"
     "- coaching: {what_went_well: list[str], improvements: list[str], "
     "script_adherence_score: float 0–100, compliance_gaps: list[str]} — "

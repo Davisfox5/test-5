@@ -350,6 +350,9 @@ class EmailSend(Base):
     cc_address: Mapped[Optional[str]] = mapped_column(String)
     subject: Mapped[str] = mapped_column(String, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Shape per attachment: {"kind": "kb"|"upload", "id": str,
+    # "filename": str, "mime_type": str, "size_bytes": int}
+    attachments: Mapped[list] = mapped_column(JSONB, default=list)
     # pending | sent | failed
     status: Mapped[str] = mapped_column(String, default="pending")
     provider_message_id: Mapped[Optional[str]] = mapped_column(String)
@@ -589,6 +592,12 @@ class ActionItem(Base):
     implicit_signal: Mapped[Optional[str]] = mapped_column(Text)
     manually_created: Mapped[bool] = mapped_column(Boolean, default=False)
     feedback_score: Mapped[int] = mapped_column(Integer, default=0)
+    # LLM pre-suggested attachments (KB doc references). Rep reviews and
+    # edits before send. Shape: [{"kb_doc_id": str, "title": str, "reason": str}].
+    suggested_attachments: Mapped[list] = mapped_column(JSONB, default=list)
+    # What was actually sent. Shape: [{"kb_doc_id"|"upload_id": str, "title": str,
+    # "filename": str, "mime_type": str, "sent_at": iso8601}].
+    attachments_sent: Mapped[list] = mapped_column(JSONB, default=list)
     automation_status: Mapped[str] = mapped_column(String, default="pending")
     dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
     snoozed_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -697,10 +706,19 @@ class InteractionSnippet(Base):
 
 
 class InteractionComment(Base):
+    """Comment thread shared between interaction-level review and
+    action item dialogue. Exactly one of ``interaction_id`` /
+    ``action_item_id`` is required (CHECK enforced at DB level)."""
+
     __tablename__ = "interaction_comments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    interaction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interactions.id", ondelete="CASCADE"))
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("action_items.id", ondelete="CASCADE")
+    )
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     timestamp_sec: Mapped[Optional[float]] = mapped_column(Float)
@@ -965,6 +983,12 @@ class KBDocument(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    # NULL = tenant-wide doc (shared with everyone in the tenant).
+    # Populated = personal doc owned by that agent; visible to the
+    # owner + their managers/admins. Filtering happens at the API layer.
+    owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     title: Mapped[Optional[str]] = mapped_column(String)
     content: Mapped[Optional[str]] = mapped_column(Text)
     content_hash: Mapped[Optional[str]] = mapped_column(String)
@@ -1293,6 +1317,45 @@ class InterventionEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Notification(Base):
+    """Per-user notification surface.
+
+    Drives the in-app bell + email digest. Inserted by services on
+    events the recipient should know about (action item assigned,
+    new comment, reject-and-return, scorecard review, manager
+    coaching prompt). Constrained ``kind`` vocabulary mirrors the
+    Phase 5B-6 migration's CHECK.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # action_item_assigned | action_item_comment | action_item_returned |
+    # action_item_due_soon | action_item_overdue | manager_review_completed |
+    # scorecard_review_assigned | system | other
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    link_url: Mapped[Optional[str]] = mapped_column(String(500))
+    action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("action_items.id", ondelete="CASCADE")
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE")
+    )
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

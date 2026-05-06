@@ -39,11 +39,15 @@ class KBDocCreate(BaseModel):
     content: str
     tags: Optional[List[str]] = None
     source_type: str = "editor"
+    # When True, the doc is the current user's personal KB and is
+    # visible only to them + managers/admins. Defaults to tenant-wide.
+    personal: bool = False
 
 
 class KBDocOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
+    owner_user_id: Optional[uuid.UUID] = None
     title: Optional[str]
     content: Optional[str]
     source_type: Optional[str]
@@ -68,10 +72,23 @@ class KBDocUpdate(BaseModel):
 async def list_kb_docs(
     source_type: Optional[str] = Query(None, description="Filter by source type: editor, upload, confluence, notion, gdrive"),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by"),
+    scope: str = Query(
+        "all",
+        description=(
+            "Visibility filter: 'tenant' = tenant-wide only, "
+            "'personal' = current user's own personal docs only, "
+            "'all' = both. Managers/admins can pass owner_user_id to view "
+            "another user's personal docs."
+        ),
+    ),
+    owner_user_id: Optional[uuid.UUID] = Query(
+        None, description="Manager/admin: filter personal docs by owner."
+    ),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
 ):
     stmt = (
         select(KBDocument)
@@ -80,6 +97,35 @@ async def list_kb_docs(
         .limit(limit)
         .offset(offset)
     )
+
+    # Scope filter — tenant docs (owner NULL), personal docs (owner = caller),
+    # or both. Manager/admin can target a specific owner via owner_user_id.
+    if owner_user_id is not None:
+        if principal.role not in {"manager", "admin"}:
+            # Agents can only see their own personal docs.
+            requester_id = principal.user.id if principal.user else None
+            if owner_user_id != requester_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only managers/admins can view another user's personal KB.",
+                )
+        stmt = stmt.where(KBDocument.owner_user_id == owner_user_id)
+    elif scope == "tenant":
+        stmt = stmt.where(KBDocument.owner_user_id.is_(None))
+    elif scope == "personal":
+        if not principal.user:
+            return []
+        stmt = stmt.where(KBDocument.owner_user_id == principal.user.id)
+    elif scope == "all":
+        # Tenant-wide + the caller's own personal docs.
+        if principal.user:
+            stmt = stmt.where(
+                (KBDocument.owner_user_id.is_(None))
+                | (KBDocument.owner_user_id == principal.user.id)
+            )
+        else:
+            stmt = stmt.where(KBDocument.owner_user_id.is_(None))
+
     if source_type:
         stmt = stmt.where(KBDocument.source_type == source_type)
     if tags:
@@ -118,8 +164,14 @@ async def create_kb_doc(
     tenant: Tenant = Depends(get_current_tenant),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
+    # When ``personal=True``, scope the doc to the requesting user so it's
+    # visible only to them + managers/admins via the agent-KB filters on
+    # ``GET /kb/docs``.
+    owner_user_id = principal.user.id if (body.personal and principal.user) else None
+
     doc = KBDocument(
         tenant_id=tenant.id,
+        owner_user_id=owner_user_id,
         title=body.title,
         content=body.content,
         source_type=body.source_type,
