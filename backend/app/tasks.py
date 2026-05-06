@@ -1195,6 +1195,7 @@ def _run_pipeline_impl(
             participants=ai_item.get("participants") or [],
             prep_artifacts=ai_item.get("prep_artifacts") or [],
             implicit_signal=ai_item.get("implicit_signal"),
+            suggested_attachments=ai_item.get("suggested_attachments") or [],
             manually_created=False,
         )
         session.add(action)

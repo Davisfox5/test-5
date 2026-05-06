@@ -58,6 +58,16 @@ router = APIRouter()
 # ── Schemas ───────────────────────────────────────────────────────────
 
 
+class EmailAttachmentIn(BaseModel):
+    """An attachment to include with the send. v1 supports KB doc
+    references; binary upload IDs slot in here when file storage lands.
+    """
+    kind: Literal["kb", "upload"] = "kb"
+    id: str  # kb_doc_id (UUID string) or upload_id
+    title: Optional[str] = None  # falls back to KB doc title when omitted
+    mime_type: Optional[str] = None
+
+
 class EmailSendIn(BaseModel):
     to: EmailStr
     subject: str = Field(..., min_length=1, max_length=400)
@@ -66,6 +76,12 @@ class EmailSendIn(BaseModel):
     # Force a specific provider; otherwise we pick whichever the caller has
     # connected (preferring google if both).
     provider: Optional[Literal["google", "microsoft"]] = None
+    # Optional list of attachments. v1 persists metadata + appends doc
+    # references to the email body as a footer. Real MIME multipart
+    # attachment sending lands in a follow-up PR — the UI flow + audit
+    # trail ship now so reps can pick + review docs and the rep gets a
+    # clean record of what they sent.
+    attachments: List[EmailAttachmentIn] = Field(default_factory=list)
 
 
 class EmailSendOut(BaseModel):
@@ -75,6 +91,7 @@ class EmailSendOut(BaseModel):
     to_address: str
     cc_address: Optional[str]
     subject: str
+    attachments: List[dict] = Field(default_factory=list)
     status: str
     provider_message_id: Optional[str]
     error: Optional[str]
@@ -217,6 +234,46 @@ async def send_follow_up(
             ),
         )
 
+    # Resolve attachment metadata. KB docs are looked up by id and we
+    # append a "Attached:" footer to the body so the recipient sees
+    # what's coming alongside the email until real MIME multipart
+    # sending lands. The metadata is persisted regardless for audit.
+    attachment_records: List[dict] = []
+    body_with_attachments = body.body
+    if body.attachments:
+        from backend.app.models import KBDocument
+        attachment_lines = []
+        for att in body.attachments:
+            record_meta: dict = {
+                "kind": att.kind,
+                "id": att.id,
+                "title": att.title,
+                "mime_type": att.mime_type,
+            }
+            if att.kind == "kb":
+                try:
+                    kb_id = uuid.UUID(att.id)
+                except (ValueError, TypeError):
+                    record_meta["resolution_error"] = "invalid_uuid"
+                else:
+                    kb_doc = await db.get(KBDocument, kb_id)
+                    if kb_doc and kb_doc.tenant_id == principal.tenant.id:
+                        record_meta["title"] = att.title or kb_doc.title
+                        record_meta["source_url"] = kb_doc.source_url
+                    else:
+                        record_meta["resolution_error"] = "kb_doc_not_found"
+            attachment_records.append(record_meta)
+            display_title = record_meta.get("title") or "(untitled)"
+            url = record_meta.get("source_url")
+            if url:
+                attachment_lines.append(f"  • {display_title} — {url}")
+            else:
+                attachment_lines.append(f"  • {display_title}")
+        if attachment_lines:
+            body_with_attachments = (
+                body.body + "\n\nAttached:\n" + "\n".join(attachment_lines)
+            )
+
     record = EmailSend(
         tenant_id=principal.tenant.id,
         interaction_id=interaction_id,
@@ -225,7 +282,8 @@ async def send_follow_up(
         to_address=body.to,
         cc_address=body.cc,
         subject=body.subject,
-        body=body.body,
+        body=body_with_attachments,
+        attachments=attachment_records,
         status="pending",
     )
     db.add(record)
@@ -235,7 +293,10 @@ async def send_follow_up(
 
     try:
         result = await sender.send(
-            to=body.to, subject=body.subject, body=body.body, cc=body.cc
+            to=body.to,
+            subject=body.subject,
+            body=body_with_attachments,
+            cc=body.cc,
         )
         record.status = "sent"
         record.provider_message_id = result.provider_message_id or result.message_id
