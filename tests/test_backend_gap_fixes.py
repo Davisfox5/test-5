@@ -12,28 +12,43 @@ from types import SimpleNamespace
 import pytest
 
 
-# ── Gap 3: action-item status-filter aliasing ────────────────────────
+# ── Gap 3: action-item status filter — simplified enum (Phase 5B-1) ──
+# Status canon is exactly {open, done, dismissed}. Legacy spellings
+# (pending/in_progress/snoozed/completed/rejected) normalize to the
+# canonical set so old client filters keep working without 422-ing.
+# Snooze is orthogonal via ``snoozed_until`` — it's no longer a status.
 
 
-def test_status_filter_open_maps_to_pending_and_in_progress():
+def test_status_filter_canonical_returns_self():
     from backend.app.api.action_items import _expand_status_filter
 
-    assert sorted(_expand_status_filter("open")) == ["in_progress", "open", "pending"]
+    assert _expand_status_filter("open") == ["open"]
+    assert _expand_status_filter("done") == ["done"]
+    assert _expand_status_filter("dismissed") == ["dismissed"]
 
 
-def test_status_filter_done_maps_to_done_and_completed():
+def test_status_filter_legacy_done_aliases_normalize():
     from backend.app.api.action_items import _expand_status_filter
 
-    assert sorted(_expand_status_filter("done")) == ["completed", "done"]
-    assert sorted(_expand_status_filter("completed")) == ["completed", "done"]
+    # 'completed' was a synonym for 'done' under the old multi-state model.
+    assert _expand_status_filter("completed") == ["done"]
 
 
-def test_status_filter_canonical_singletons():
+def test_status_filter_legacy_open_aliases_normalize():
     from backend.app.api.action_items import _expand_status_filter
 
-    assert _expand_status_filter("snoozed") == ["snoozed"]
-    assert _expand_status_filter("pending") == ["pending"]
-    assert _expand_status_filter("in_progress") == ["in_progress"]
+    # 'pending' / 'in_progress' / 'snoozed' all normalize to 'open' now.
+    # Snooze is orthogonal via snoozed_until rather than a status value.
+    assert _expand_status_filter("pending") == ["open"]
+    assert _expand_status_filter("in_progress") == ["open"]
+    assert _expand_status_filter("snoozed") == ["open"]
+
+
+def test_status_filter_legacy_dismissed_aliases_normalize():
+    from backend.app.api.action_items import _expand_status_filter
+
+    # 'rejected' normalizes to 'dismissed'.
+    assert _expand_status_filter("rejected") == ["dismissed"]
 
 
 def test_status_filter_unknown_value_passes_through():
