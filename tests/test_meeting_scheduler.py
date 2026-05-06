@@ -353,3 +353,91 @@ def test_microsoft_graph_result_falls_back_to_legacy_field():
     event = {"id": "x", "onlineMeetingUrl": "https://teams.microsoft.com/legacy"}
     result = provider._result_from_event(event)
     assert result.join_url == "https://teams.microsoft.com/legacy"
+
+
+# ── Zoom provider ───────────────────────────────────────────────────────
+
+
+def test_zoom_meeting_body_basic_shape():
+    from backend.app.services.meeting_scheduler.zoom import ZoomMeetingProvider
+
+    provider = ZoomMeetingProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_meeting_body(_basic_request())
+    assert body["topic"] == "Test meeting"
+    assert body["type"] == 2  # scheduled
+    assert body["duration"] == 45
+    assert body["timezone"] == "UTC"
+    assert "agenda" in body
+    # Settings defaults — host video on, no waiting room, audio both.
+    assert body["settings"]["host_video"] is True
+    assert body["settings"]["audio"] == "both"
+
+
+def test_zoom_meeting_body_caps_topic_and_agenda_length():
+    from backend.app.services.meeting_scheduler.zoom import ZoomMeetingProvider
+
+    long_subject = "x" * 500
+    long_body = "y" * 5000
+    request = _basic_request()
+    request.subject = long_subject
+    request.body = long_body
+    provider = ZoomMeetingProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    body = provider._build_meeting_body(request)
+    assert len(body["topic"]) <= 200
+    assert len(body["agenda"]) <= 2000
+
+
+def test_zoom_result_includes_join_url_and_ics():
+    from backend.app.services.meeting_scheduler.zoom import ZoomMeetingProvider
+
+    provider = ZoomMeetingProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    zoom_response = {
+        "id": 8123456789,
+        "join_url": "https://us05web.zoom.us/j/8123456789",
+        "start_url": "https://us05web.zoom.us/s/8123456789?zak=...",
+        "password": "abc123",
+    }
+    result = provider._result_from_meeting(zoom_response, _basic_request())
+    assert result.success is True
+    assert result.event_id == "8123456789"
+    assert result.join_url == "https://us05web.zoom.us/j/8123456789"
+    assert result.html_link == zoom_response["start_url"]
+    # ICS payload is generated for calendar import.
+    assert result.ics_payload is not None
+    assert "BEGIN:VCALENDAR" in result.ics_payload
+    assert "8123456789" in result.ics_payload  # join URL embedded
+
+
+def test_zoom_result_handles_missing_password():
+    from backend.app.services.meeting_scheduler.zoom import ZoomMeetingProvider
+
+    provider = ZoomMeetingProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    zoom_response = {
+        "id": 1,
+        "join_url": "https://zoom.us/j/1",
+        "start_url": "https://zoom.us/s/1",
+        # password missing
+    }
+    result = provider._result_from_meeting(zoom_response, _basic_request())
+    assert result.success is True
+
+
+def test_oauth_zoom_provider_registered():
+    """Smoke test: Zoom is registered in the OAuth provider table so
+    the connect flow can resolve its authorize URL."""
+    from backend.app.api.oauth import CRM_PROVIDERS, SUPPORTED_PROVIDERS
+
+    assert "zoom" in CRM_PROVIDERS
+    cfg = CRM_PROVIDERS["zoom"]
+    assert "authorize_url" in cfg
+    assert "token_url" in cfg
+    assert "meeting:write:meeting" in cfg["scopes"]
+    assert "zoom" in SUPPORTED_PROVIDERS
