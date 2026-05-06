@@ -567,11 +567,28 @@ class ActionItem(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     category: Mapped[Optional[str]] = mapped_column(String)
     priority: Mapped[str] = mapped_column(String, default="medium")
-    status: Mapped[str] = mapped_column(String, default="pending")
+    # status: 'open' | 'done' | 'dismissed'. Snooze is orthogonal via ``snoozed_until``.
+    status: Mapped[str] = mapped_column(String, default="open")
     due_date: Mapped[Optional[date]] = mapped_column(Date)
     calendar_event_id: Mapped[Optional[str]] = mapped_column(String)
     email_draft: Mapped[Optional[dict]] = mapped_column(JSONB)
     call_script: Mapped[Optional[list]] = mapped_column(JSONB)
+    # next_step_type: 'meeting' | 'phone_call' | 'email' | 'document_send' |
+    # 'crm_update' | 'internal_loop_in' | 'other'.
+    next_step_type: Mapped[Optional[str]] = mapped_column(String(32))
+    # recommended_channel: 'email' | 'phone_call' | 'meeting' | 'document_send'.
+    recommended_channel: Mapped[Optional[str]] = mapped_column(String(32))
+    channel_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    # participants: list of {name, role, side: 'customer'|'vendor', source: ...}.
+    participants: Mapped[list] = mapped_column(JSONB, default=list)
+    # prep_artifacts: list of strings — what the rep should bring to the next step.
+    prep_artifacts: Mapped[list] = mapped_column(JSONB, default=list)
+    parent_action_item_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("action_items.id", ondelete="SET NULL")
+    )
+    implicit_signal: Mapped[Optional[str]] = mapped_column(Text)
+    manually_created: Mapped[bool] = mapped_column(Boolean, default=False)
+    feedback_score: Mapped[int] = mapped_column(Integer, default=0)
     automation_status: Mapped[str] = mapped_column(String, default="pending")
     dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
     snoozed_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -580,6 +597,40 @@ class ActionItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     interaction: Mapped[Interaction] = relationship(back_populates="action_items")
+
+
+class CategoryTaxonomy(Base):
+    """Per-tenant canonical category set for action items.
+
+    LLM emits free-form ``category`` strings on each action item. The
+    taxonomy service normalizes against this table — known aliases get
+    mapped to a canonical_name, new strings get logged as candidates and
+    promote to canonical once they cross the per-tenant occurrence
+    threshold. Global rows (``tenant_id IS NULL``) act as the default
+    set for every new tenant.
+    """
+
+    __tablename__ = "category_taxonomy"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    canonical_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    aliases: Mapped[list] = mapped_column(JSONB, default=list)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    promoted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────

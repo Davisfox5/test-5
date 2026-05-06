@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from celery import Celery
@@ -1137,15 +1137,65 @@ def _run_pipeline_impl(
                 conv.status = "waiting_customer"
 
     # ── Step 14: Insert action items ─────────────────────────────────
+    # Capture every field the LLM emits; prior code dropped ``due_date``,
+    # ``email_draft``, and the new advanced fields on the floor.
     for ai_item in insights.get("action_items", []):
+        # Parse due_date if provided as a string. Tolerate malformed
+        # values by leaving the column NULL rather than failing.
+        raw_due = ai_item.get("due_date")
+        parsed_due = None
+        if isinstance(raw_due, str) and raw_due.strip():
+            try:
+                parsed_due = date.fromisoformat(raw_due.strip())
+            except ValueError:
+                parsed_due = None
+
+        # email_draft can arrive as the new {subject, body} dict or as
+        # the legacy plain string under either ``email_draft`` or
+        # ``suggested_email_draft``. Normalize to the dict shape stored
+        # in JSONB.
+        raw_email = ai_item.get("email_draft") or ai_item.get("suggested_email_draft")
+        if isinstance(raw_email, str):
+            email_draft = {"subject": "", "body": raw_email}
+        elif isinstance(raw_email, dict):
+            email_draft = raw_email
+        else:
+            email_draft = None
+
+        raw_category = ai_item.get("category")
+        # Normalize category through the taxonomy service: known aliases
+        # map to canonical names; unknown strings get logged as candidates
+        # for promotion. Failures are non-fatal — we keep the raw value.
+        canonical_category = raw_category
+        try:
+            from backend.app.services.category_taxonomy import record_occurrence
+            normalized = record_occurrence(session, tenant.id, raw_category or "")
+            if normalized:
+                canonical_category = normalized
+        except Exception:
+            logger.debug(
+                "category taxonomy lookup failed for %r (non-fatal)",
+                raw_category, exc_info=True,
+            )
+
         action = ActionItem(
             interaction_id=interaction.id,
             tenant_id=tenant.id,
             title=ai_item.get("title", "Untitled"),
             description=ai_item.get("description", ""),
-            category=ai_item.get("category"),
+            category=canonical_category,
             priority=ai_item.get("priority", "medium"),
-            status="pending",
+            status="open",
+            due_date=parsed_due,
+            email_draft=email_draft,
+            call_script=ai_item.get("call_script") or None,
+            next_step_type=ai_item.get("next_step_type"),
+            recommended_channel=ai_item.get("recommended_channel"),
+            channel_reasoning=ai_item.get("channel_reasoning"),
+            participants=ai_item.get("participants") or [],
+            prep_artifacts=ai_item.get("prep_artifacts") or [],
+            implicit_signal=ai_item.get("implicit_signal"),
+            manually_created=False,
         )
         session.add(action)
 

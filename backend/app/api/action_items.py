@@ -2,10 +2,10 @@
 
 import uuid
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,11 +35,21 @@ class ActionItemOut(BaseModel):
     description: Optional[str]
     category: Optional[str]
     priority: str
+    # 'open' | 'done' | 'dismissed'. Snooze is orthogonal — see ``snoozed_until``.
     status: str
     due_date: Optional[date]
     calendar_event_id: Optional[str]
     email_draft: Optional[dict]
     call_script: Optional[list] = None
+    next_step_type: Optional[str] = None
+    recommended_channel: Optional[str] = None
+    channel_reasoning: Optional[str] = None
+    participants: list = Field(default_factory=list)
+    prep_artifacts: list = Field(default_factory=list)
+    parent_action_item_id: Optional[uuid.UUID] = None
+    implicit_signal: Optional[str] = None
+    manually_created: bool = False
+    feedback_score: int = 0
     automation_status: str
     dismiss_reason: Optional[str] = None
     snoozed_until: Optional[datetime] = None
@@ -61,38 +71,96 @@ class ActionItemUpdate(BaseModel):
     dismiss_reason: Optional[str] = None
     snoozed_until: Optional[datetime] = None
     call_script: Optional[list] = None
+    email_draft: Optional[dict] = None
+    next_step_type: Optional[str] = None
+    recommended_channel: Optional[str] = None
+    channel_reasoning: Optional[str] = None
+    participants: Optional[list] = None
+    prep_artifacts: Optional[list] = None
     user_id: Optional[uuid.UUID] = None  # who is doing the edit (for feedback attribution)
+
+
+class ActionItemCreate(BaseModel):
+    """Manual creation by a rep / manager. Most fields optional —
+    only ``title`` and ``interaction_id`` are required."""
+    interaction_id: uuid.UUID
+    title: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    priority: str = "medium"
+    due_date: Optional[date] = None
+    assigned_to: Optional[uuid.UUID] = None
+    next_step_type: Optional[str] = None
+    recommended_channel: Optional[str] = None
+    channel_reasoning: Optional[str] = None
+    participants: list = Field(default_factory=list)
+    prep_artifacts: list = Field(default_factory=list)
+    email_draft: Optional[dict] = None
+    call_script: Optional[list] = None
+    parent_action_item_id: Optional[uuid.UUID] = None
+
+
+class ActionItemBulkUpdate(BaseModel):
+    ids: List[uuid.UUID]
+    status: Optional[str] = None
+    assigned_to: Optional[uuid.UUID] = None
+    priority: Optional[str] = None
+    snoozed_until: Optional[datetime] = None
+    user_id: Optional[uuid.UUID] = None
+
+
+class ActionItemFeedback(BaseModel):
+    """Lightweight 'this was/wasn't useful' signal — feeds the learning loop."""
+    helpful: bool
+    note: Optional[str] = None
+    user_id: Optional[uuid.UUID] = None
 
 
 # Maps a status transition to the feedback event_type the model should learn from.
 _STATUS_EVENT_MAP = {
     "done": "action_accepted",
-    "completed": "action_accepted",
     "dismissed": "action_dismissed",
-    "rejected": "action_dismissed",
+    "open": "action_reopened",
 }
 
 
-# SPA buckets vs. canonical statuses.  The SPA's status pills are
-# {open, done, snoozed}; the DB stores {pending, in_progress, done,
-# snoozed, dismissed, rejected, completed}.  Map either spelling
-# to the canonical set used by ActionItem.status so filtering works
-# regardless of which side of the contract the client lives on.
-_STATUS_FILTER_ALIASES: dict[str, list[str]] = {
-    "open": ["pending", "in_progress", "open"],
-    "pending": ["pending"],
-    "in_progress": ["in_progress"],
-    "done": ["done", "completed"],
-    "completed": ["done", "completed"],
-    "snoozed": ["snoozed"],
-    "dismissed": ["dismissed", "rejected"],
-    "rejected": ["dismissed", "rejected"],
-}
+# Phase 5B simplification: status enum is exactly {open, done, dismissed}.
+# Snooze is orthogonal via ``snoozed_until`` — clients filter by the
+# ``snoozed`` bucket via the dedicated query parameter, not via status.
+_VALID_STATUSES = frozenset({"open", "done", "dismissed"})
+
+
+def _normalize_status(value: Optional[str]) -> Optional[str]:
+    """Map any incoming status string to the canonical set, or None.
+
+    Tolerates legacy spellings (pending/in_progress/completed/rejected)
+    so older clients during migration don't 422 — but every legacy
+    spelling normalizes to one of {open, done, dismissed}.
+    """
+    if not value:
+        return None
+    v = value.lower().strip()
+    if v in _VALID_STATUSES:
+        return v
+    if v in {"pending", "in_progress", "snoozed"}:
+        return "open"
+    if v == "completed":
+        return "done"
+    if v == "rejected":
+        return "dismissed"
+    return None  # unrecognized — caller decides whether to 422
 
 
 def _expand_status_filter(value: str) -> list[str]:
-    """Return the list of underlying ActionItem.status values to query for."""
-    return _STATUS_FILTER_ALIASES.get(value.lower(), [value])
+    """Return the list of underlying ActionItem.status values to query for.
+
+    With the simplified enum each canonical status maps to itself.
+    Legacy aliases are normalized first so old client filters still work.
+    """
+    canonical = _normalize_status(value)
+    if canonical:
+        return [canonical]
+    return [value.lower()]
 
 
 def _emit_lifecycle_event(
@@ -243,13 +311,19 @@ async def update_action_item(
     old_description = item.description
 
     if body.status is not None:
-        item.status = body.status
+        normalized = _normalize_status(body.status)
+        if normalized is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid status: {body.status!r}. Expected one of {sorted(_VALID_STATUSES)}.",
+            )
+        item.status = normalized
         # Auto-stamp lifecycle transitions. Timestamps are sticky once set
-        # (no clear-on-reopen) so the audit trail survives a re-open.
+        # (no clear-on-uncheck) so the audit trail survives a re-open.
         now = datetime.now(timezone.utc)
-        if body.status in {"completed", "done"} and item.completed_at is None:
+        if normalized == "done" and item.completed_at is None:
             item.completed_at = now
-        if body.status in {"dismissed", "rejected"} and item.dismissed_at is None:
+        if normalized == "dismissed" and item.dismissed_at is None:
             item.dismissed_at = now
     if body.assigned_to is not None:
         item.assigned_to = body.assigned_to
@@ -269,6 +343,18 @@ async def update_action_item(
         item.snoozed_until = body.snoozed_until
     if body.call_script is not None:
         item.call_script = body.call_script
+    if body.email_draft is not None:
+        item.email_draft = body.email_draft
+    if body.next_step_type is not None:
+        item.next_step_type = body.next_step_type
+    if body.recommended_channel is not None:
+        item.recommended_channel = body.recommended_channel
+    if body.channel_reasoning is not None:
+        item.channel_reasoning = body.channel_reasoning
+    if body.participants is not None:
+        item.participants = body.participants
+    if body.prep_artifacts is not None:
+        item.prep_artifacts = body.prep_artifacts
 
     title_diff = (
         feedback_service.diff_summary(old_title or "", item.title or "")
@@ -334,4 +420,200 @@ async def update_action_item(
         },
     )
 
+    return item
+
+
+# ── Manual creation ─────────────────────────────────────────────────────
+
+
+@router.post(
+    "/action-items",
+    response_model=ActionItemOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def create_action_item(
+    body: ActionItemCreate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Manually add an action item the system didn't generate.
+
+    Use case: a rep notices something during review that the LLM missed
+    and wants it tracked. Distinguished from LLM-generated items by
+    ``manually_created=True`` so the learning loop doesn't treat it as
+    confirmation of an LLM suggestion.
+    """
+    item = ActionItem(
+        interaction_id=body.interaction_id,
+        tenant_id=tenant.id,
+        title=body.title,
+        description=body.description,
+        category=body.category,
+        priority=body.priority,
+        status="open",
+        due_date=body.due_date,
+        assigned_to=body.assigned_to,
+        next_step_type=body.next_step_type,
+        recommended_channel=body.recommended_channel,
+        channel_reasoning=body.channel_reasoning,
+        participants=body.participants,
+        prep_artifacts=body.prep_artifacts,
+        email_draft=body.email_draft,
+        call_script=body.call_script,
+        parent_action_item_id=body.parent_action_item_id,
+        manually_created=True,
+    )
+    db.add(item)
+    await db.flush()
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.created_manually",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        after={"title": item.title, "category": item.category, "priority": item.priority},
+    )
+    return item
+
+
+# ── Bulk operations ─────────────────────────────────────────────────────
+
+
+@router.patch(
+    "/action-items/bulk",
+    response_model=Dict[str, int],
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def bulk_update_action_items(
+    body: ActionItemBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Apply the same update to many action items.
+
+    Returns ``{"updated": N}``. Status normalization is applied per-item;
+    invalid statuses 422 the entire batch (no partial success — that's a
+    foot-gun in bulk flows).
+    """
+    if not body.ids:
+        return {"updated": 0}
+
+    if body.status is not None:
+        normalized = _normalize_status(body.status)
+        if normalized is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid status: {body.status!r}. Expected one of {sorted(_VALID_STATUSES)}.",
+            )
+    else:
+        normalized = None
+
+    stmt = select(ActionItem).where(
+        ActionItem.id.in_(body.ids),
+        ActionItem.tenant_id == tenant.id,
+    )
+    result = await db.execute(stmt)
+    items = list(result.scalars())
+
+    now = datetime.now(timezone.utc)
+    for item in items:
+        if normalized is not None:
+            item.status = normalized
+            if normalized == "done" and item.completed_at is None:
+                item.completed_at = now
+            if normalized == "dismissed" and item.dismissed_at is None:
+                item.dismissed_at = now
+        if body.assigned_to is not None:
+            item.assigned_to = body.assigned_to
+        if body.priority is not None:
+            item.priority = body.priority
+        if body.snoozed_until is not None:
+            item.snoozed_until = body.snoozed_until
+
+    if items and normalized is not None:
+        try:
+            from backend.app.services.intervention_events import (
+                record_action_item_lifecycle,
+            )
+            for item in items:
+                await record_action_item_lifecycle(
+                    db,
+                    tenant_id=tenant.id,
+                    interaction_id=item.interaction_id,
+                    action_item_id=item.id,
+                    old_status=None,
+                    new_status=normalized,
+                    actor_user_id=body.user_id,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.bulk_updated",
+        resource_type="action_item",
+        resource_id=",".join(str(i.id) for i in items[:10]),
+        after={"count": len(items), "status": normalized},
+    )
+    return {"updated": len(items)}
+
+
+# ── Feedback (was/wasn't useful) ────────────────────────────────────────
+
+
+@router.post(
+    "/action-items/{action_item_id}/feedback",
+    response_model=ActionItemOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def submit_action_item_feedback(
+    action_item_id: uuid.UUID,
+    body: ActionItemFeedback,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Mark an action item as helpful or not.
+
+    Drives the learning loop: as ``feedback_score`` distributions
+    accumulate per category / next_step_type / model version, future
+    action item generation can suppress patterns that consistently get
+    'not useful'. Helpful = +1, not helpful = -1.
+    """
+    stmt = select(ActionItem).where(
+        ActionItem.id == action_item_id,
+        ActionItem.tenant_id == tenant.id,
+    )
+    result = await db.execute(stmt)
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+
+    item.feedback_score = (item.feedback_score or 0) + (1 if body.helpful else -1)
+
+    feedback_service.emit_event(
+        tenant_id=tenant.id,
+        surface="analysis",
+        event_type="action_helpful" if body.helpful else "action_not_helpful",
+        signal_type="explicit",
+        interaction_id=item.interaction_id,
+        action_item_id=item.id,
+        user_id=body.user_id,
+        insight_dimension="action_items",
+        payload={"note": body.note} if body.note else {},
+    )
+
+    await audit_log(
+        db,
+        principal,
+        action="action_item.feedback",
+        resource_type="action_item",
+        resource_id=str(item.id),
+        after={"helpful": body.helpful, "feedback_score": item.feedback_score},
+    )
     return item
