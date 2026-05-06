@@ -29,6 +29,7 @@ from backend.app.services.meeting_scheduler.base import (
 from backend.app.services.meeting_scheduler.google_calendar import (
     GoogleCalendarProvider,
 )
+from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
 from backend.app.services.meeting_scheduler.microsoft_graph import (
     MicrosoftGraphProvider,
 )
@@ -45,6 +46,7 @@ _PROVIDER_ORDER: List[Type[MeetingProvider]] = [
     GoogleCalendarProvider,
     MicrosoftGraphProvider,
     ZoomMeetingProvider,
+    CalcomProvider,
     StubMeetingProvider,
 ]
 

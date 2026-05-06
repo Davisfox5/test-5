@@ -441,3 +441,125 @@ def test_oauth_zoom_provider_registered():
     assert "token_url" in cfg
     assert "meeting:write:meeting" in cfg["scopes"]
     assert "zoom" in SUPPORTED_PROVIDERS
+
+
+# ── Cal.com provider ────────────────────────────────────────────────────
+
+
+def test_calcom_picks_customer_attendee_over_vendor():
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    request = _basic_request(
+        participants=[
+            MeetingParticipant(name="Vendor Person", email="v@x.com", side="vendor"),
+            MeetingParticipant(name="Customer Person", email="c@x.com", side="customer"),
+        ],
+    )
+    attendee = provider._pick_customer_attendee(request)
+    assert attendee.email == "c@x.com"
+
+
+def test_calcom_falls_back_to_any_email_when_no_customer():
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    request = _basic_request(
+        participants=[
+            MeetingParticipant(name="Vendor Only", email="v@x.com", side="vendor"),
+        ],
+    )
+    attendee = provider._pick_customer_attendee(request)
+    assert attendee.email == "v@x.com"
+
+
+def test_calcom_returns_none_when_no_emails():
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    request = _basic_request(
+        participants=[
+            MeetingParticipant(name="No Email", email=None, side="customer"),
+        ],
+    )
+    assert provider._pick_customer_attendee(request) is None
+
+
+def test_calcom_booking_body_shape():
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    attendee = MeetingParticipant(name="Customer", email="c@x.com", side="customer")
+    body = provider._build_booking_body(
+        event_type_id=42,
+        request=_basic_request(),
+        attendee=attendee,
+    )
+    assert body["eventTypeId"] == 42
+    assert body["attendee"]["email"] == "c@x.com"
+    assert body["attendee"]["timeZone"] == "UTC"
+    assert body["lengthInMinutes"] == 45
+    assert body["metadata"]["source"] == "linda_action_item"
+
+
+def test_calcom_result_from_booking_v2_shape():
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    payload = {
+        "data": {
+            "uid": "abc-uid-123",
+            "meetingUrl": "https://meet.example.com/xyz",
+            "rescheduleLink": "https://cal.com/reschedule/abc",
+        }
+    }
+    result = provider._result_from_booking(payload)
+    assert result.success is True
+    assert result.event_id == "abc-uid-123"
+    assert result.join_url == "https://meet.example.com/xyz"
+    assert result.html_link == "https://cal.com/reschedule/abc"
+
+
+def test_calcom_result_from_booking_v1_shape():
+    """Older Cal.com v1 returns booking data at the top level."""
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    payload = {
+        "id": 99,
+        "location": "https://zoom.us/j/123456",
+    }
+    result = provider._result_from_booking(payload)
+    assert result.event_id == "99"
+    assert result.join_url == "https://zoom.us/j/123456"
+
+
+def test_calcom_result_extracts_video_url_from_references():
+    """Cal.com surfaces Google Meet / Zoom / Daily URLs in references."""
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    provider = CalcomProvider(
+        db=None, tenant_id=uuid.uuid4(), user_id=uuid.uuid4()
+    )
+    payload = {
+        "data": {
+            "uid": "x",
+            "references": [
+                {"type": "daily_video", "meetingUrl": "https://daily.co/abc"},
+            ],
+        }
+    }
+    result = provider._result_from_booking(payload)
+    assert result.join_url == "https://daily.co/abc"
