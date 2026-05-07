@@ -23,6 +23,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
@@ -45,6 +46,7 @@ from backend.app.services.email.base import (
     EmailAuthError,
     EmailSender,
     EmailSendError,
+    OutboundAttachment,
 )
 from backend.app.services.email.gmail import GmailSender
 from backend.app.services.email.outlook import OutlookSender
@@ -234,15 +236,14 @@ async def send_follow_up(
             ),
         )
 
-    # Resolve attachment metadata. KB docs are looked up by id and we
-    # append a "Attached:" footer to the body so the recipient sees
-    # what's coming alongside the email until real MIME multipart
-    # sending lands. The metadata is persisted regardless for audit.
+    # Resolve attachments — fetch KB doc content as real binary
+    # attachments and send via the provider's MIME multipart / Graph
+    # ``fileAttachment`` flows. The metadata is persisted on
+    # ``email_sends.attachments`` for audit + dedupe.
     attachment_records: List[dict] = []
-    body_with_attachments = body.body
+    outbound_attachments: List[OutboundAttachment] = []
     if body.attachments:
         from backend.app.models import KBDocument
-        attachment_lines = []
         for att in body.attachments:
             record_meta: dict = {
                 "kind": att.kind,
@@ -260,19 +261,30 @@ async def send_follow_up(
                     if kb_doc and kb_doc.tenant_id == principal.tenant.id:
                         record_meta["title"] = att.title or kb_doc.title
                         record_meta["source_url"] = kb_doc.source_url
+                        # KB docs hold text content. Attach as a ``.txt``
+                        # file so the recipient sees the source material
+                        # alongside the email. Binary uploads (PDFs, etc.)
+                        # need a separate file storage layer — out of
+                        # scope for v1.
+                        title = (
+                            att.title
+                            or kb_doc.title
+                            or f"document-{kb_doc.id}"
+                        )
+                        safe_filename = _safe_filename(title) + ".txt"
+                        content = (kb_doc.content or "").encode("utf-8")
+                        outbound_attachments.append(
+                            OutboundAttachment(
+                                filename=safe_filename,
+                                content_type=att.mime_type or "text/plain",
+                                data=content,
+                            )
+                        )
+                        record_meta["filename"] = safe_filename
+                        record_meta["size_bytes"] = len(content)
                     else:
                         record_meta["resolution_error"] = "kb_doc_not_found"
             attachment_records.append(record_meta)
-            display_title = record_meta.get("title") or "(untitled)"
-            url = record_meta.get("source_url")
-            if url:
-                attachment_lines.append(f"  • {display_title} — {url}")
-            else:
-                attachment_lines.append(f"  • {display_title}")
-        if attachment_lines:
-            body_with_attachments = (
-                body.body + "\n\nAttached:\n" + "\n".join(attachment_lines)
-            )
 
     record = EmailSend(
         tenant_id=principal.tenant.id,
@@ -282,7 +294,7 @@ async def send_follow_up(
         to_address=body.to,
         cc_address=body.cc,
         subject=body.subject,
-        body=body_with_attachments,
+        body=body.body,
         attachments=attachment_records,
         status="pending",
     )
@@ -293,10 +305,11 @@ async def send_follow_up(
 
     try:
         result = await sender.send(
-            to=body.to,
+            to=[body.to],
             subject=body.subject,
-            body=body_with_attachments,
-            cc=body.cc,
+            body=body.body,
+            cc=[body.cc] if body.cc else None,
+            attachments=outbound_attachments or None,
         )
         record.status = "sent"
         record.provider_message_id = result.provider_message_id or result.message_id
@@ -484,3 +497,15 @@ async def _close_sender(sender) -> None:
         await sender.close()
     except Exception:  # pragma: no cover — defensive
         logger.debug("sender.close failed", exc_info=True)
+
+
+def _safe_filename(raw: str) -> str:
+    """Reduce a free-form title to a filename safe for Gmail / Graph
+    multipart attachments. Strips path traversal, control chars, and
+    most punctuation; collapses to underscore. Caps at 80 chars to keep
+    headers within RFC 2822 line-length limits."""
+    cleaned = re.sub(r"[^A-Za-z0-9._\- ]+", "_", raw or "")
+    cleaned = re.sub(r"\s+", "_", cleaned).strip("._")
+    if not cleaned:
+        cleaned = "attachment"
+    return cleaned[:80]

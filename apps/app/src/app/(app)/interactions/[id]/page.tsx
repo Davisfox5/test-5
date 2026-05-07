@@ -31,6 +31,10 @@ import {
     findTagForTurn,
     TaggedTurnText,
 } from "@/components/transcript/inline-tag-overlay";
+import {
+    KBFilePickerModal,
+    type KBPickedAttachment,
+} from "@/components/kb-picker/kb-file-picker";
 
 export default function InteractionDetailPage() {
     const params = useParams<{ id: string }>();
@@ -477,6 +481,8 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
     const [provider, setProvider] = useState<ProviderChoice>("auto");
     const [lastSent, setLastSent] = useState<EmailSendOut | null>(null);
     const [hydrated, setHydrated] = useState(false);
+    const [attachments, setAttachments] = useState<KBPickedAttachment[]>([]);
+    const [showPicker, setShowPicker] = useState(false);
 
     // Hydrate the form from the AI draft once it arrives. Don't keep
     // overwriting the user's edits if they keep editing while the query
@@ -650,8 +656,17 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
                 to,
                 cc: ccCombined || undefined,
                 provider: provider === "auto" ? undefined : provider,
+                attachments:
+                    attachments.length > 0
+                        ? attachments.map((a) => ({
+                              kind: a.kind,
+                              id: a.id,
+                              title: a.title,
+                          }))
+                        : undefined,
             });
             setLastSent(result);
+            setAttachments([]);
         } catch {
             // surfaced inline below
         }
@@ -807,6 +822,49 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
                         className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
                     />
                 </label>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                        type="button"
+                        onClick={() => setShowPicker(true)}
+                        className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs hover:bg-card-hover"
+                    >
+                        📎 Attach from KB
+                    </button>
+                    {attachments.map((a) => (
+                        <span
+                            key={a.id}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-primary-soft px-2 py-0.5 text-xs text-primary"
+                            title={a.title}
+                        >
+                            <span className="max-w-[160px] truncate">
+                                {a.title}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setAttachments((prev) =>
+                                        prev.filter((p) => p.id !== a.id),
+                                    )
+                                }
+                                aria-label={`Remove ${a.title}`}
+                                className="text-text-muted hover:text-text"
+                            >
+                                ×
+                            </button>
+                        </span>
+                    ))}
+                </div>
+
+                <KBFilePickerModal
+                    open={showPicker}
+                    onClose={() => setShowPicker(false)}
+                    onConfirm={(picked) => {
+                        setAttachments(picked);
+                        setShowPicker(false);
+                    }}
+                    initialSelection={attachments}
+                />
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                     <label className="flex items-center gap-2 text-xs text-text-muted">
