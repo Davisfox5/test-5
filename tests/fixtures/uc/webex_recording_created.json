@@ -1,0 +1,22 @@
+{
+  "id": "Y2lzY29zcGFyazovL3VzL1dFQkhPT0svZml4dHVyZQ==",
+  "name": "LINDA recordings webhook",
+  "targetUrl": "https://linda.example.com/api/v1/uc/webex/webhook/00000000-0000-0000-0000-000000000001",
+  "resource": "recordings",
+  "event": "created",
+  "orgId": "Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi9maXh0dXJl",
+  "createdBy": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9maXh0dXJlLWFkbWlu",
+  "appId": "Y2lzY29zcGFyazovL3VzL0FQUExJQ0FUSU9OL2ZpeHR1cmU=",
+  "ownedBy": "creator",
+  "status": "active",
+  "actorId": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9maXh0dXJlLWFnZW50",
+  "data": {
+    "id": "rec-webex-fixture-002",
+    "topic": "Customer onboarding call",
+    "createTime": "2026-05-07T15:50:08.000Z",
+    "durationSeconds": 312,
+    "hostId": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9maXh0dXJlLWhvc3Q=",
+    "personId": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9maXh0dXJlLWFnZW50",
+    "format": "ARF"
+  }
+}
