@@ -1951,7 +1951,63 @@ class DemoEmailCapture(Base):
 # (SiprecSession goes here)
 #
 # stream-2/uc:
-# (UcRecordingJob goes here)
+class UcRecordingJob(Base):
+    """One row per UC vendor recording webhook delivery.
+
+    Idempotency anchor for RingCentral / Webex Calling / Zoom Phone.
+    Unique on (provider, external_call_id) so duplicate webhook
+    deliveries are no-ops.
+    """
+
+    __tablename__ = "uc_recording_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    external_call_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    started_at_provider: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    caller_phone: Mapped[Optional[str]] = mapped_column(String)
+    callee_phone: Mapped[Optional[str]] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    state: Mapped[str] = mapped_column(
+        String, default="pending", server_default="pending", nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_call_id",
+            name="uq_uc_recording_jobs_provider_call",
+        ),
+        CheckConstraint(
+            "state IN ('pending','in_progress','fetched','dispatched','done','failed')",
+            name="ck_uc_recording_jobs_state",
+        ),
+    )
 #
 # stream-3/teams:
 # (TeamsCallRecord goes here)
