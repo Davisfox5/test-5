@@ -2134,4 +2134,66 @@ class TeamsCallRecord(Base):
 #
 # stream-4/audiohook:
 # (AudiohookSession goes here)
+
+
+class AudiohookSession(Base):
+    """One Genesys Cloud AudioHook conversation streamed into LINDA.
+
+    Sibling of :class:`LiveSession` — the AudioHook flow doesn't
+    create LiveSession rows because the agent attribution arrives
+    inside the protocol envelope (``participant.id`` + customConfig)
+    rather than from a Twilio-style outbound call setup. Linking a
+    row here to a LiveSession (when the same agent has both a CPaaS
+    session and an AudioHook session) is left for a follow-up.
+
+    ``channel`` mirrors the AudioHook ``media[].channels`` semantics:
+    ``"agent"`` for the internal leg only, ``"customer"`` for the
+    external leg only, ``"both"`` when stereo or a mono mix carries
+    both. The string is denormalized from ``provider_config`` so the
+    admin UI can filter sessions without parsing JSONB.
+
+    ``is_consent_attested`` records whether the customer has been
+    consented to recording — the AudioHook integration relies on
+    Genesys' built-in consent flow, but tenants can override the
+    attestation per-session via a future admin UI.
+    """
+
+    __tablename__ = "audiohook_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('agent', 'customer', 'both', 'unknown')",
+            name="ck_audiohook_sessions_channel",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "audiohook_session_id",
+            name="uq_audiohook_sessions_tenant_session",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    audiohook_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    organization_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    participant_id: Mapped[Optional[str]] = mapped_column(String)
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    media_format: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    audio_frames_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    audio_bytes_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    is_consent_attested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 # === END MULTI-STREAM MODELS REGION ===

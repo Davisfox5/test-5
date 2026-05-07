@@ -212,6 +212,8 @@ app.include_router(uc_telephony_router, prefix=settings.API_V1_PREFIX, tags=["uc
 from backend.app.api.teams_recording import router as teams_recording_router  # noqa: E402
 app.include_router(teams_recording_router, prefix=settings.API_V1_PREFIX, tags=["teams-recording"])
 # stream-4/audiohook:
+from backend.app.api.audiohook import router as audiohook_router  # noqa: E402
+app.include_router(audiohook_router, prefix=settings.API_V1_PREFIX, tags=["audiohook"])
 # === END MULTI-STREAM ROUTER REGION ===
 
 
