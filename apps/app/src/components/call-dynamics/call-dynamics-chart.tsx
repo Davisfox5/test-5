@@ -1,7 +1,46 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { SentimentTrajectoryPoint } from "@/lib/interactions";
+
+interface KeyMoment {
+    time: string;
+    type: string;
+    description: string;
+    start_time?: string;
+    end_time?: string;
+}
+
+const PIN_TYPES = [
+    "objection",
+    "commitment",
+    "question",
+    "risk",
+    "win",
+    "other",
+] as const;
+
+/** Categorize a free-form ``type`` into one of the visible pin filters. */
+function pinCategory(type: string): (typeof PIN_TYPES)[number] {
+    const t = type.toLowerCase();
+    if (t.includes("objection")) return "objection";
+    if (t.includes("commit")) return "commitment";
+    if (t.includes("question")) return "question";
+    if (t.includes("risk") || t.includes("churn") || t.includes("warning"))
+        return "risk";
+    if (t.includes("win") || t.includes("positive") || t.includes("success"))
+        return "win";
+    return "other";
+}
+
+const PIN_COLORS: Record<(typeof PIN_TYPES)[number], string> = {
+    objection: "var(--accent-rose)",
+    commitment: "var(--accent-emerald)",
+    question: "var(--accent-cyan)",
+    risk: "var(--accent-amber)",
+    win: "var(--primary)",
+    other: "var(--text-subtle)",
+};
 
 /**
  * Call Dynamics — single timeline with up to three toggleable layers:
@@ -18,10 +57,12 @@ import type { SentimentTrajectoryPoint } from "@/lib/interactions";
  */
 export function CallDynamicsChart({
     trajectory,
+    keyMoments,
     durationSeconds,
     onSeek,
 }: {
     trajectory: SentimentTrajectoryPoint[] | undefined;
+    keyMoments?: KeyMoment[];
     durationSeconds?: number | null;
     onSeek?: (seconds: number) => void;
 }) {
@@ -29,6 +70,9 @@ export function CallDynamicsChart({
         () => normalizeTrajectory(trajectory, durationSeconds),
         [trajectory, durationSeconds],
     );
+    const [pinFilter, setPinFilter] = useState<
+        Set<(typeof PIN_TYPES)[number]>
+    >(() => new Set(PIN_TYPES));
 
     if (points.length === 0) {
         return null;
@@ -116,6 +160,81 @@ export function CallDynamicsChart({
                         </title>
                     </circle>
                 ))}
+                {/* Key-moment pins layered on top of the mood line.
+                    Clustered into bins ~20s wide to avoid overlap on
+                    busy calls; the busiest 6 bins render visibly,
+                    the rest hide behind a "+N more" indicator. */}
+                {(() => {
+                    const moments = (keyMoments || []).filter((m) =>
+                        pinFilter.has(pinCategory(m.type)),
+                    );
+                    if (moments.length === 0) return null;
+                    const clusters = clusterMoments(moments, 20);
+                    const ranked = [...clusters].sort(
+                        (a, b) => b.items.length - a.items.length,
+                    );
+                    const visible = ranked.slice(0, 6);
+                    return visible.map((cluster, idx) => {
+                        const t = cluster.tCenter;
+                        const cx = xFor(t);
+                        const cy = yFor(0); // pin row at the bottom of the chart
+                        const dominantType = cluster.items[0].type;
+                        const color = PIN_COLORS[pinCategory(dominantType)];
+                        return (
+                            <g key={idx}>
+                                <line
+                                    x1={cx}
+                                    x2={cx}
+                                    y1={padY}
+                                    y2={cy}
+                                    stroke={color}
+                                    strokeOpacity={0.25}
+                                    strokeWidth={1}
+                                />
+                                <circle
+                                    cx={cx}
+                                    cy={padY + innerH - 4}
+                                    r={cluster.items.length > 1 ? 6 : 4}
+                                    fill={color}
+                                    stroke="var(--bg-card)"
+                                    strokeWidth={1.5}
+                                    style={{ cursor: "pointer" }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (onSeek) onSeek(Math.round(t));
+                                    }}
+                                >
+                                    <title>
+                                        {formatSeconds(t)} —{" "}
+                                        {cluster.items
+                                            .slice(0, 3)
+                                            .map(
+                                                (m) =>
+                                                    `${m.type}: ${m.description}`,
+                                            )
+                                            .join("; ")}
+                                        {cluster.items.length > 3
+                                            ? ` (+${cluster.items.length - 3} more)`
+                                            : ""}
+                                    </title>
+                                </circle>
+                                {cluster.items.length > 1 && (
+                                    <text
+                                        x={cx}
+                                        y={padY + innerH - 1}
+                                        fontSize={9}
+                                        fill="white"
+                                        textAnchor="middle"
+                                        dominantBaseline="middle"
+                                        style={{ pointerEvents: "none" }}
+                                    >
+                                        {cluster.items.length}
+                                    </text>
+                                )}
+                            </g>
+                        );
+                    });
+                })()}
                 {/* x-axis labels: start, middle, end. */}
                 <text
                     x={padX}
@@ -135,6 +254,40 @@ export function CallDynamicsChart({
                     {formatSeconds(maxT)}
                 </text>
             </svg>
+            {keyMoments && keyMoments.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1 text-xs">
+                    <span className="text-text-muted">Pins:</span>
+                    {PIN_TYPES.map((type) => {
+                        const active = pinFilter.has(type);
+                        return (
+                            <button
+                                key={type}
+                                type="button"
+                                onClick={() =>
+                                    setPinFilter((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(type)) next.delete(type);
+                                        else next.add(type);
+                                        return next;
+                                    })
+                                }
+                                className={`rounded-full border px-2 py-0.5 capitalize transition-colors ${
+                                    active
+                                        ? "border-transparent text-white"
+                                        : "border-border bg-bg-secondary text-text-muted"
+                                }`}
+                                style={
+                                    active
+                                        ? { backgroundColor: PIN_COLORS[type] }
+                                        : undefined
+                                }
+                            >
+                                {type}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
             <p className="mt-1 text-xs text-text-subtle">
                 Hover a point for the score. Vocal energy + rep talk-density
                 layers slot in here once the upstream signals are wired
@@ -200,4 +353,45 @@ function formatSeconds(t: number): string {
 
 function clamp01(v: number): number {
     return Math.max(0, Math.min(1, v));
+}
+
+interface MomentCluster {
+    tCenter: number;
+    items: KeyMoment[];
+}
+
+/**
+ * Group moments whose timestamps are within ``windowSec`` of each
+ * other into a single visual cluster. The cluster's ``tCenter`` is
+ * the midpoint of its members' timestamps, which renders the pin
+ * close to where the rep would expect.
+ */
+function clusterMoments(moments: KeyMoment[], windowSec: number): MomentCluster[] {
+    const sorted = moments
+        .map((m) => ({
+            t: parseTimeToSeconds(m.start_time ?? m.time, null),
+            m,
+        }))
+        .filter((x) => !Number.isNaN(x.t))
+        .sort((a, b) => a.t - b.t);
+    const clusters: MomentCluster[] = [];
+    for (const { t, m } of sorted) {
+        const last = clusters[clusters.length - 1];
+        if (last && t - last.tCenter <= windowSec) {
+            last.items.push(m);
+            // Update tCenter to the running mean — keeps the pin
+            // visually anchored to the cluster's mass.
+            const total = last.items.reduce((acc, item, i) => {
+                const tv = parseTimeToSeconds(
+                    item.start_time ?? item.time,
+                    null,
+                );
+                return acc + (Number.isNaN(tv) ? last.tCenter : tv);
+            }, 0);
+            last.tCenter = total / last.items.length;
+        } else {
+            clusters.push({ tCenter: t, items: [m] });
+        }
+    }
+    return clusters;
 }

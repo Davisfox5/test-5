@@ -48,6 +48,14 @@ export interface SentimentTrajectoryPoint {
     score: number;
 }
 
+export interface KeyMoment {
+    time: string;
+    type: string;
+    description: string;
+    start_time?: string;
+    end_time?: string;
+}
+
 export interface InteractionInsights {
     sentiment_score?: number;
     sentiment_overall?: string;
@@ -60,6 +68,7 @@ export interface InteractionInsights {
     summary?: string;
     inline_tags?: InlineTag[];
     methodology_coverage?: MethodologyCoverage;
+    key_moments?: KeyMoment[];
     [k: string]: unknown;
 }
 

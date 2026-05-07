@@ -48,6 +48,20 @@ interface DashboardOverview {
     methodology: MethodologyAdherence[];
 }
 
+interface RepTrainingGap {
+    rep_id: string | null;
+    rep_name: string | null;
+    call_count: number;
+    reflection_rate: number | null;
+    open_question_rate: number | null;
+    avg_methodology_coverage: number | null;
+}
+
+interface TrainingGapReport {
+    window_days: number;
+    rows: RepTrainingGap[];
+}
+
 export default function ManagerDashboardPage() {
     const api = useApi();
     const [window, setWindow] = useState(30);
@@ -57,6 +71,14 @@ export default function ManagerDashboardPage() {
         queryFn: () =>
             api.get<DashboardOverview>(
                 `/manager/dashboard/overview?window_days=${window}`,
+            ),
+    });
+
+    const trainingGap = useQuery({
+        queryKey: ["manager-dashboard", "training-gap", window],
+        queryFn: () =>
+            api.get<TrainingGapReport>(
+                `/manager/dashboard/training-gap?window_days=${window}`,
             ),
     });
 
