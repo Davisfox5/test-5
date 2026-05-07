@@ -54,6 +54,7 @@ export const NAV: NavItem[] = [
     // account, not from a flat call list. /interactions/{id} detail
     // pages still exist and stay reachable.
     { href: "/customers", label: "Customers", minRole: "agent" },
+    { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },
     // Live coaching sits between items and communications: it's the
     // synchronous companion to the async follow-up workflow, and the

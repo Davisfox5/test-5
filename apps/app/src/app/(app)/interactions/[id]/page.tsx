@@ -26,6 +26,7 @@ import { type ActionItem } from "@/lib/action-items";
 import { ActionItemCard } from "@/components/action-item/action-item-card";
 import { MethodologyScorecard } from "@/components/methodology/methodology-scorecard";
 import { CallDynamicsChart } from "@/components/call-dynamics/call-dynamics-chart";
+import { TopicChips } from "@/components/topics/topic-chips";
 import {
     findTagForTurn,
     TaggedTurnText,
@@ -319,8 +320,11 @@ export default function InteractionDetailPage() {
 
             <CallDynamicsChart
                 trajectory={i.insights?.sentiment_trajectory}
+                keyMoments={i.insights?.key_moments}
                 durationSeconds={i.duration_seconds}
             />
+
+            <TopicChips topics={i.insights?.topics} />
 
             <MethodologyScorecard coverage={i.insights?.methodology_coverage} />
 
