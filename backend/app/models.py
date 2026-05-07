@@ -1939,3 +1939,23 @@ class DemoEmailCapture(Base):
     utm: Mapped[dict] = mapped_column(JSONB, default=dict)
     converted_tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# === BEGIN MULTI-STREAM MODELS REGION ===
+# Each telephony integration stream owns ONE block below. Append your model
+# class definitions after your stream's header line. Do not modify
+# ``LiveSession`` (line 736) or any other stream's models.
+# See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
+#
+# stream-1/siprec:
+# (SiprecSession goes here)
+#
+# stream-2/uc:
+# (UcRecordingJob goes here)
+#
+# stream-3/teams:
+# (TeamsCallRecord goes here)
+#
+# stream-4/audiohook:
+# (AudiohookSession goes here)
+# === END MULTI-STREAM MODELS REGION ===

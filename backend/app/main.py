@@ -196,6 +196,18 @@ from backend.app.api.websocket import router as websocket_router  # noqa: E402
 app.include_router(websocket_router, tags=["websocket"])
 
 
+# === BEGIN MULTI-STREAM ROUTER REGION (do not edit other streams' lines) ===
+# Each stream owns ONE line below. Append your include_router call after
+# the colon on your stream's line. Do not reorder, edit other streams,
+# or remove the BEGIN/END markers.
+# See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
+# stream-1/siprec:
+# stream-2/uc:
+# stream-3/teams:
+# stream-4/audiohook:
+# === END MULTI-STREAM ROUTER REGION ===
+
+
 # ── Prometheus /metrics ──────────────────────────────────
 from fastapi import Response  # noqa: E402
 
