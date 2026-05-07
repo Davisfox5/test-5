@@ -142,7 +142,9 @@ primary_region = "iad"
   [[services.ports]]
     port = 5061
     handlers = ["tls"]
-    tls_options = { alpn = ["sip"] }
+    # No tls_options — Fly's API only accepts ALPN values "h2" or
+    # "http/1.1". SIP-TLS doesn't negotiate ALPN, so we let Fly's
+    # default handler pass the TLS handshake through unchanged.
 
 # RTP port range — declared as a sidecar service. Fly bills UDP
 # services per-port-range, so widening this is a deliberate cost
