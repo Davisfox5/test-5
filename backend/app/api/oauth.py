@@ -1,6 +1,8 @@
 """OAuth integration endpoints.
 
-Supports: Google Workspace, Microsoft, HubSpot, Salesforce, Pipedrive.
+Supports: Google Workspace, Microsoft, HubSpot, Salesforce, Pipedrive,
+Zoho, Microsoft Dynamics, Zoom (meetings), RingCentral, Webex Calling,
+Zoom Phone.
 
 Flow:
 
@@ -13,12 +15,20 @@ Flow:
 3. ``GET /oauth/status`` lists connected integrations.
 4. ``POST /oauth/{provider}/revoke`` deletes the row.
 
-Adding a new provider = adding one entry to ``CRM_PROVIDERS`` (auth URL,
-token URL, scopes, extras). Google/Microsoft still use their SDKs.
+Adding a new provider = adding one entry to ``OAUTH_PROVIDERS`` (auth
+URL, token URL, scopes, extras). Google/Microsoft still use their SDKs.
+
+The dict was historically named ``CRM_PROVIDERS`` back when only CRM
+providers lived here. Meeting platforms (Zoom) and now UC telephony
+vendors (RingCentral, Webex Calling, Zoom Phone) share the same flow,
+so the dict is now ``OAUTH_PROVIDERS``. ``CRM_PROVIDERS`` remains as a
+back-compat alias for callers that already imported the old name.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import secrets
@@ -72,11 +82,11 @@ def _provider_setting(attr: str) -> str:
     return getattr(settings, attr, "") or ""
 
 
-# Generic OAuth provider table. Despite the historical name, this is
-# not CRM-only — meeting platforms (Zoom) live here too. Each adapter's
-# oauth flow reads from this. ``scope_sep`` is how the provider wants
-# scopes joined in the auth URL.
-CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
+# Generic OAuth provider table. Each adapter's oauth flow reads from
+# this. ``scope_sep`` is how the provider wants scopes joined in the
+# auth URL. Used by CRMs, meeting platforms (Zoom), and UC telephony
+# vendors (RingCentral, Webex Calling, Zoom Phone).
+OAUTH_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "hubspot": {
         "authorize_url": "https://app.hubspot.com/oauth/authorize",
         "token_url": "https://api.hubapi.com/oauth/v1/token",
@@ -166,7 +176,59 @@ CRM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "client_secret_key": "MS_DYNAMICS_CLIENT_SECRET",
         "certified": True,
     },
+    # ── UC telephony vendors (Stream 2) ────────────────────────────────
+    # RingCentral / Webex Calling / Zoom Phone share the OAuth-then-
+    # webhook lifecycle. ``certified=False`` until the developer-portal
+    # apps are graduated to production by the user — until then the SPA
+    # surfaces them as "Configure secrets / Coming soon" rather than
+    # offering a connect button that would 500 on missing client id.
+    "ringcentral": {
+        "authorize_url": "https://platform.ringcentral.com/restapi/oauth/authorize",
+        "token_url": "https://platform.ringcentral.com/restapi/oauth/token",
+        "scopes": [
+            "ReadAccounts",
+            "ReadCallLog",
+            "ReadCallRecording",
+            "Subscriptions",
+        ],
+        "scope_sep": " ",
+        "client_id_key": "RINGCENTRAL_CLIENT_ID",
+        "client_secret_key": "RINGCENTRAL_CLIENT_SECRET",
+        "certified": False,
+    },
+    "webex_calling": {
+        "authorize_url": "https://webexapis.com/v1/authorize",
+        "token_url": "https://webexapis.com/v1/access_token",
+        "scopes": [
+            "spark:calls_read",
+            "spark:recordings_read",
+            "spark-admin:recordings_read",
+            "spark-admin:telephony_config_read",
+        ],
+        "scope_sep": " ",
+        "client_id_key": "WEBEX_CLIENT_ID",
+        "client_secret_key": "WEBEX_CLIENT_SECRET",
+        "use_pkce": True,
+        "certified": False,
+    },
+    "zoom_phone": {
+        "authorize_url": "https://zoom.us/oauth/authorize",
+        "token_url": "https://zoom.us/oauth/token",
+        "scopes": [
+            "phone:read:admin",
+            "phone_recording:read:admin",
+            "phone_call_log:read:admin",
+        ],
+        "scope_sep": " ",
+        "client_id_key": "ZOOM_PHONE_CLIENT_ID",
+        "client_secret_key": "ZOOM_PHONE_CLIENT_SECRET",
+        "certified": False,
+    },
 }
+
+
+# Back-compat alias. Old name remains for callers that already imported it.
+CRM_PROVIDERS = OAUTH_PROVIDERS
 
 
 # ── Zoho region map ───────────────────────────────────────
@@ -188,7 +250,7 @@ def _zoho_host(region: Optional[str]) -> str:
     return _ZOHO_REGION_HOSTS.get(region_key, _ZOHO_REGION_HOSTS["us"])
 
 
-SUPPORTED_PROVIDERS = {"google", "microsoft"} | set(CRM_PROVIDERS.keys())
+SUPPORTED_PROVIDERS = {"google", "microsoft"} | set(OAUTH_PROVIDERS.keys())
 
 
 # ── Pydantic Schemas ────────────────────────────────────
@@ -220,11 +282,11 @@ def _build_redirect_uri(request: Request, provider: str) -> str:
 def _is_certified(provider: str) -> bool:
     """Static-config gate — has the provider been integrated end-to-end?
 
-    Built-ins (google/microsoft) and any provider not in CRM_PROVIDERS
+    Built-ins (google/microsoft) and any provider not in OAUTH_PROVIDERS
     default to certified — ``SUPPORTED_PROVIDERS`` membership is the
     outer gate. CRM providers consult their catalog ``certified`` flag.
     """
-    spec = CRM_PROVIDERS.get(provider)
+    spec = OAUTH_PROVIDERS.get(provider)
     if spec is None:
         return True
     return bool(spec.get("certified", True))
@@ -241,7 +303,7 @@ def _runtime_certified(provider: str) -> bool:
     """
     if not _is_certified(provider):
         return False
-    spec = CRM_PROVIDERS.get(provider)
+    spec = OAUTH_PROVIDERS.get(provider)
     if spec is None:
         return True
     client_id = _provider_setting(spec.get("client_id_key", ""))
@@ -432,6 +494,15 @@ async def _build_provider_authorize_url(
         payload["user_id"] = str(user_id)
     if provider == "zoho":
         payload["region"] = (region or "us").strip().lower()
+    pkce_spec = OAUTH_PROVIDERS.get(provider, {})
+    if pkce_spec.get("use_pkce"):
+        code_verifier = secrets.token_urlsafe(64)
+        challenge_bytes = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        code_challenge = (
+            base64.urlsafe_b64encode(challenge_bytes).rstrip(b"=").decode("ascii")
+        )
+        payload["pkce_verifier"] = code_verifier
+        payload["pkce_challenge"] = code_challenge
     if provider == "microsoft_dynamics":
         if not org_url:
             raise HTTPException(
@@ -482,7 +553,7 @@ async def _build_provider_authorize_url(
             state=state,
         )
 
-    spec = CRM_PROVIDERS[provider]
+    spec = OAUTH_PROVIDERS[provider]
     client_id = _provider_setting(spec["client_id_key"])
     if not client_id:
         raise HTTPException(
@@ -533,6 +604,9 @@ async def _build_provider_authorize_url(
         "scope": spec["scope_sep"].join(scopes),
         "state": state,
     }
+    if spec.get("use_pkce"):
+        params["code_challenge"] = payload["pkce_challenge"]
+        params["code_challenge_method"] = "S256"
     return f"{authorize_url}?{urlencode(params)}"
 
 
@@ -662,7 +736,7 @@ async def oauth_providers() -> OAuthProvidersResponse:
         OAuthProviderInfo(provider="google", certified=True),
         OAuthProviderInfo(provider="microsoft", certified=True),
     ]
-    for name in sorted(CRM_PROVIDERS.keys()):
+    for name in sorted(OAUTH_PROVIDERS.keys()):
         # Listing-side certified flag: AND of "we've integrated this"
         # (static catalog) and "operator has set the secrets" (env). The
         # SPA disables the connect button when this is False.
@@ -801,7 +875,7 @@ async def oauth_authorize(
         return RedirectResponse(url=auth_url)
 
     # CRM providers — generic code-flow URL builder.
-    spec = CRM_PROVIDERS[provider]
+    spec = OAUTH_PROVIDERS[provider]
     client_id = _provider_setting(spec["client_id_key"])
     if not client_id:
         raise HTTPException(
@@ -923,7 +997,7 @@ async def oauth_callback(
         return _spa_redirect(provider)
 
     # ── Generic CRM exchange ──────────────────────────────
-    spec = CRM_PROVIDERS[provider]
+    spec = OAUTH_PROVIDERS[provider]
     client_id = _provider_setting(spec["client_id_key"])
     client_secret = _provider_setting(spec["client_secret_key"])
     if not (client_id and client_secret):
@@ -938,16 +1012,26 @@ async def oauth_callback(
     if provider == "zoho":
         token_url = f"https://{_zoho_host(state_payload.get('region'))}/oauth/v2/token"
 
+    token_data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    if spec.get("use_pkce"):
+        verifier = state_payload.get("pkce_verifier")
+        if not verifier:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider} PKCE verifier missing from state",
+            )
+        token_data["code_verifier"] = verifier
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             token_url,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
+            data=token_data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if resp.status_code >= 400:

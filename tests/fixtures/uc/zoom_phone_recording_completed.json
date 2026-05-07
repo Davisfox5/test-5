@@ -1,0 +1,30 @@
+{
+  "event": "phone.recording_completed",
+  "event_ts": 1746631200000,
+  "payload": {
+    "account_id": "abc123ZoomAccount",
+    "object": {
+      "id": "obj-fixture-zp-003",
+      "call_id": "call-fixture-zp-003",
+      "user_id": "user-fixture-zp",
+      "date_time": "2026-05-07T16:00:00Z",
+      "direction": "outbound",
+      "duration": 245,
+      "callee_number": "+15555550199",
+      "callee_did_number": "+15555550199",
+      "caller_number": "+18005551234",
+      "caller_did_number": "+18005551234",
+      "recording_files": [
+        {
+          "id": "rec-fixture-zp-003-a",
+          "download_url": "https://us04web.zoom.us/recording/download/rec-fixture-zp-003-a",
+          "duration": 245,
+          "file_type": "MP3",
+          "recording_start": "2026-05-07T16:00:01Z",
+          "recording_end": "2026-05-07T16:04:06Z",
+          "status": "completed"
+        }
+      ]
+    }
+  }
+}

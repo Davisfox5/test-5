@@ -206,6 +206,8 @@ from backend.app.api.siprec import siprec_router as _siprec_router  # noqa: E402
 
 app.include_router(_siprec_router, prefix=settings.API_V1_PREFIX, tags=["siprec"])
 # stream-2/uc:
+from backend.app.api.uc_telephony import router as uc_telephony_router  # noqa: E402
+app.include_router(uc_telephony_router, prefix=settings.API_V1_PREFIX, tags=["uc-telephony"])
 # stream-3/teams:
 from backend.app.api.teams_recording import router as teams_recording_router  # noqa: E402
 app.include_router(teams_recording_router, prefix=settings.API_V1_PREFIX, tags=["teams-recording"])
