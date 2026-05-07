@@ -73,6 +73,13 @@ export interface CommunicationsListFilters {
     offset?: number;
 }
 
+export interface EmailAttachmentInput {
+    kind: "kb" | "upload";
+    id: string;
+    title?: string;
+    mime_type?: string;
+}
+
 export interface SendFollowUpInput {
     subject: string;
     body: string;
@@ -81,6 +88,7 @@ export interface SendFollowUpInput {
     // Backend accepts only "google" | "microsoft" or omitted for auto.
     // The UI layer translates "auto" → undefined before mutating.
     provider?: "google" | "microsoft";
+    attachments?: EmailAttachmentInput[];
 }
 
 function buildCommsQs(filters: CommunicationsListFilters): string {
@@ -131,6 +139,8 @@ export function useSendFollowUp(interactionId: string | undefined) {
             };
             if (input.cc) payload.cc = input.cc;
             if (input.provider) payload.provider = input.provider;
+            if (input.attachments && input.attachments.length > 0)
+                payload.attachments = input.attachments;
             return api.post<EmailSendOut>(
                 `/interactions/${interactionId}/send-follow-up`,
                 payload,
