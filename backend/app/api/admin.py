@@ -861,6 +861,10 @@ class BackfillResultRow(BaseModel):
     reason: Optional[str] = None
     warnings_upserted: int = 0
     commitments_created: int = 0
+    # Phase 2: when ``paralinguistic_reanalysis=true``, this records
+    # whether we actually re-enqueued the pipeline for that
+    # interaction. Skip rows leave it False and explain via ``reason``.
+    paralinguistic_applied: bool = False
 
 
 class BackfillResponse(BaseModel):
@@ -875,6 +879,15 @@ class BackfillResponse(BaseModel):
 async def backfill_warnings_commitments(
     interaction_ids: Optional[List[uuid.UUID]] = None,
     limit: int = Query(50, le=200),
+    paralinguistic_reanalysis: bool = Query(
+        False,
+        description=(
+            "Phase 2: also re-enqueue the analysis pipeline for each row "
+            "so the new paralinguistic block lands on already-analyzed "
+            "interactions. Skips rows where audio is no longer "
+            "accessible."
+        ),
+    ),
     _principal: AuthPrincipal = Depends(require_role("admin")),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> BackfillResponse:
@@ -882,6 +895,12 @@ async def backfill_warnings_commitments(
 
     Without this, a tenant analyzed before PR #76 would only get
     warnings + commitments on interactions ingested after the deploy.
+
+    Phase 2 (``paralinguistic_reanalysis=true``): additionally
+    re-enqueue the full analysis pipeline for each interaction so the
+    new paralinguistic prompt block + LSM rapport gauge land on
+    historical calls. Skips rows where ``audio_s3_key`` and
+    ``audio_url`` are both null (audio retention has expired).
     """
     from backend.app.models import Interaction
     from backend.app.services.warnings_commitments import detect_and_persist
@@ -905,7 +924,8 @@ async def backfill_warnings_commitments(
         for ix in rows:
             insights = ix.insights or {}
             prior = (insights.get("warnings_commitments_debug") or {})
-            if int(prior.get("commitments_created") or 0) > 0:
+            already_backfilled = int(prior.get("commitments_created") or 0) > 0
+            if already_backfilled and not paralinguistic_reanalysis:
                 out.append(
                     BackfillResultRow(
                         interaction_id=ix.id,
@@ -914,7 +934,7 @@ async def backfill_warnings_commitments(
                     )
                 )
                 continue
-            if ix.customer_id is None:
+            if ix.customer_id is None and not paralinguistic_reanalysis:
                 out.append(
                     BackfillResultRow(
                         interaction_id=ix.id,
@@ -932,27 +952,40 @@ async def backfill_warnings_commitments(
                 if isinstance(ix.transcript, list)
                 else (ix.transcript or "")
             )
+            row = BackfillResultRow(interaction_id=ix.id, skipped=False)
             try:
-                outcome = await detect_and_persist(
-                    session=session,
-                    interaction=ix,
-                    tenant=tenant,
-                    insights=insights,
-                    compressed_transcript=transcript[:18_000],
-                )
-                session.commit()
-                out.append(
-                    BackfillResultRow(
-                        interaction_id=ix.id,
-                        skipped=False,
-                        warnings_upserted=outcome.warnings_upserted,
-                        commitments_created=outcome.commitments_created,
+                if not already_backfilled and ix.customer_id is not None:
+                    outcome = await detect_and_persist(
+                        session=session,
+                        interaction=ix,
+                        tenant=tenant,
+                        insights=insights,
+                        compressed_transcript=transcript[:18_000],
                     )
-                )
+                    row.warnings_upserted = outcome.warnings_upserted
+                    row.commitments_created = outcome.commitments_created
+                    session.commit()
+                if paralinguistic_reanalysis:
+                    if not (ix.audio_s3_key or ix.audio_url):
+                        # No audio path on this interaction → can't
+                        # extract paralinguistics. Mark skipped on
+                        # this dimension while keeping any warnings
+                        # / commitments work that already ran.
+                        row.skipped = True
+                        row.reason = "audio_unavailable"
+                    else:
+                        # Re-enqueue the pipeline. Step 7.5 is now
+                        # part of the standard run, so this lands the
+                        # new paralinguistic block + bumps
+                        # ``analysis_prompt_version`` automatically.
+                        from backend.app.tasks import process_voice_interaction
+                        process_voice_interaction.delay(str(ix.id))
+                        row.paralinguistic_applied = True
+                out.append(row)
             except Exception as exc:  # noqa: BLE001
                 session.rollback()
                 logger.exception(
-                    "backfill warnings/commitments failed for %s", ix.id
+                    "backfill failed for %s", ix.id
                 )
                 out.append(
                     BackfillResultRow(

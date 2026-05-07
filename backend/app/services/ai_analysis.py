@@ -26,7 +26,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-07.phase-1-buckets-only"
+ANALYSIS_PROMPT_VERSION = "2026-05-07.phase-2-paralinguistic"
 
 ANALYSIS_SYSTEM_PROMPT = (
     "You are an expert call analyst reviewing a sales or customer-service "
@@ -160,14 +160,29 @@ ANALYSIS_SYSTEM_PROMPT = (
 )
 
 
-def _format_transcript(segments: List[Dict[str, Any]]) -> str:
-    """Convert transcript segments to a readable string."""
+def _format_transcript(
+    segments: List[Dict[str, Any]],
+    inline_tags: Optional[Dict[int, str]] = None,
+) -> str:
+    """Convert transcript segments to a readable string.
+
+    When ``inline_tags`` is provided, the per-segment-index tag string
+    (already pre-formatted by ``paralinguistic_prompt`` as ``"[pitch
+    ↑1.8σ · pause-before 1.6σ]"``) gets appended after the time/
+    speaker prefix on the matching turn. Absent indices render
+    bit-identical to the no-tag path — callers can pass ``None`` to
+    short-circuit the lookup entirely.
+    """
     lines: List[str] = []
-    for seg in segments:
+    for idx, seg in enumerate(segments):
         time = seg.get("time", seg.get("start_time", "00:00"))
         speaker = seg.get("speaker", "Unknown")
         text = seg.get("text", "")
-        lines.append(f"[{time}] {speaker}: {text}")
+        tag = inline_tags.get(idx) if inline_tags else None
+        if tag:
+            lines.append(f"[{time}] {speaker} {tag}: {text}")
+        else:
+            lines.append(f"[{time}] {speaker}: {text}")
     return "\n".join(lines)
 
 
@@ -188,6 +203,7 @@ class AIAnalysisService:
         max_tokens_override: Optional[int] = None,
         tenant_context: Optional[Dict[str, Any]] = None,
         customer_brief: Optional[Dict[str, Any]] = None,
+        paralinguistic_block: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -215,7 +231,23 @@ class AIAnalysisService:
             Raw customer brief dict; auto-formatted as a system block.
         """
         model = MODELS.get(tier, MODELS["sonnet"])
-        formatted = _format_transcript(transcript_segments)
+        # Phase 2: paralinguistic block contributes both a structured
+        # prompt section and a per-turn-index inline tag map. When the
+        # tenant flag is off, the audio is unavailable, or the
+        # extractor returns ``available: False``, ``paralinguistic_block``
+        # is None and the formatted transcript is bit-identical to the
+        # pre-Phase-2 output. Decision Q3: silent fallback.
+        inline_tags = (
+            getattr(paralinguistic_block, "inline_tags", None)
+            if paralinguistic_block is not None
+            else None
+        )
+        para_structured = (
+            getattr(paralinguistic_block, "structured_text", "")
+            if paralinguistic_block is not None
+            else ""
+        )
+        formatted = _format_transcript(transcript_segments, inline_tags)
         system_prompt = system_prompt_override or ANALYSIS_SYSTEM_PROMPT
 
         # Build user message, optionally prepending triage + tenant + RAG context.
@@ -232,6 +264,8 @@ class AIAnalysisService:
             parts.append(tenant_context_block)
         if rag_context_block:
             parts.append(rag_context_block)
+        if para_structured:
+            parts.append(para_structured)
         parts.append(f"## Transcript\n{formatted}")
         user_content = "\n".join(parts)
 

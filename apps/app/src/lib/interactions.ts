@@ -79,9 +79,19 @@ export interface RubricScores {
     win_likelihood?: number;
 }
 
+export interface VocalAccommodation {
+    overall?: number;
+    pitch_hz_p50?: number;
+    intensity_db_p50?: number;
+    speaking_rate_syll_per_sec?: number;
+    pause_rate_per_min?: number;
+}
+
 export interface RapportSignal {
     lsm_overall?: number;
     lsm_by_category?: Record<string, number>;
+    vocal_accommodation?: VocalAccommodation;
+    overall?: number;
 }
 
 export interface NotableSnippet {

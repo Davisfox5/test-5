@@ -219,5 +219,114 @@ def attach_rapport(insights: Dict[str, Any], transcript: List[Dict[str, Any]]) -
     insights["rapport"] = {
         "lsm_overall": lsm["overall"],
         "lsm_by_category": {k: v for k, v in lsm.items() if k != "overall"},
+        "overall": lsm["overall"],
     }
     return insights["rapport"]
+
+
+# ── Vocal accommodation (Phase 2) ────────────────────────────────────
+
+
+# Features the rep / customer convergence is measured on. Each feature
+# yields its own 0..1 score; the overall is the mean. Keys match the
+# extractor's ``_measure_slices`` output (paralinguistics.py).
+_VOCAL_ACCOM_FEATURES: Tuple[str, ...] = (
+    "pitch_hz_p50",
+    "intensity_db_p50",
+    "speaking_rate_syll_per_sec",
+    "pause_rate_per_min",
+)
+
+
+def _identify_speaker_roles(per_speaker: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Pick rep + customer keys out of the paralinguistic block.
+
+    Same role-classification heuristic as ``compute_lsm_for_transcript``:
+    explicit ``rep`` / ``customer`` labels first, fallback to the first
+    two distinct keys we see when the labels are vendor-specific
+    (``Speaker A`` / ``Speaker B``).
+    """
+    rep_key: Optional[str] = None
+    cust_key: Optional[str] = None
+    leftover: List[str] = []
+    for key in per_speaker.keys():
+        role = _classify_role(key, None)
+        if role == "rep" and rep_key is None:
+            rep_key = key
+        elif role == "customer" and cust_key is None:
+            cust_key = key
+        else:
+            leftover.append(key)
+    # Fallback assignment when classification missed both sides.
+    if rep_key is None and leftover:
+        rep_key = leftover.pop(0)
+    if cust_key is None and leftover:
+        cust_key = leftover.pop(0)
+    return rep_key, cust_key
+
+
+def compute_vocal_accommodation(
+    paralinguistic_block: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, float]]:
+    """Compute a 0..1 accommodation score from per-speaker prosody.
+
+    For each feature in ``_VOCAL_ACCOM_FEATURES``, score
+    ``1 − |rep − cust| / (|rep| + |cust| + ε)`` — same shape as LSM.
+    A perfectly mirrored pair lands at 1.0; opposite poles → 0.0.
+    Returns ``None`` when fewer than two speakers are present or when
+    none of the tracked features have values for both speakers.
+    """
+    if not paralinguistic_block or not paralinguistic_block.get("available"):
+        return None
+    per_speaker = paralinguistic_block.get("per_speaker") or {}
+    if len(per_speaker) < 2:
+        return None
+    rep_key, cust_key = _identify_speaker_roles(per_speaker)
+    if not rep_key or not cust_key:
+        return None
+    rep_block = per_speaker.get(rep_key) or {}
+    cust_block = per_speaker.get(cust_key) or {}
+    out: Dict[str, float] = {}
+    for feat in _VOCAL_ACCOM_FEATURES:
+        rep_v = rep_block.get(feat)
+        cust_v = cust_block.get(feat)
+        if rep_v is None or cust_v is None:
+            continue
+        try:
+            rep_f = float(rep_v)
+            cust_f = float(cust_v)
+        except (TypeError, ValueError):
+            continue
+        denom = abs(rep_f) + abs(cust_f) + 1e-6
+        out[feat] = round(1 - abs(rep_f - cust_f) / denom, 4)
+    if not out:
+        return None
+    out["overall"] = round(sum(out.values()) / len(out), 4)
+    return out
+
+
+def attach_vocal_accommodation(
+    insights: Dict[str, Any],
+    paralinguistic_block: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, float]]:
+    """Compute vocal accommodation and merge it into ``insights['rapport']``.
+
+    Updates the composite ``overall`` to be the mean of LSM and vocal
+    accommodation when both are present, falling back to whichever side
+    is available. Returns the accommodation sub-dict (not the merged
+    rapport). No-op when paralinguistic block is unavailable, but does
+    NOT delete the existing LSM-only rapport block in that case.
+    """
+    accom = compute_vocal_accommodation(paralinguistic_block)
+    if accom is None:
+        return None
+    rapport = insights.setdefault("rapport", {})
+    rapport["vocal_accommodation"] = accom
+    lsm_overall = rapport.get("lsm_overall")
+    if isinstance(lsm_overall, (int, float)):
+        rapport["overall"] = round(
+            (float(lsm_overall) + float(accom["overall"])) / 2, 4
+        )
+    else:
+        rapport["overall"] = accom["overall"]
+    return accom

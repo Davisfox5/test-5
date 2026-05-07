@@ -12,8 +12,10 @@ from backend.app.services.rapport_lsm import (
     FUNCTION_WORDS,
     LSM_EPSILON,
     attach_rapport,
+    attach_vocal_accommodation,
     compute_lsm_for_transcript,
     compute_lsm_pair,
+    compute_vocal_accommodation,
 )
 
 
@@ -110,3 +112,83 @@ def test_attach_rapport_no_op_on_single_speaker():
 def test_lsm_epsilon_unchanged():
     """Pennebaker's original ε is 0.0001. Don't drift."""
     assert LSM_EPSILON == 0.0001
+
+
+# ── Vocal accommodation (Phase 2) ────────────────────────────────────
+
+
+def _para(rep_block: dict, cust_block: dict) -> dict:
+    """Build a paralinguistic block in the shape ``compute_vocal_accommodation`` expects."""
+    return {
+        "available": True,
+        "per_speaker": {"agent": rep_block, "customer": cust_block},
+    }
+
+
+def test_compute_vocal_accommodation_perfect_mirror_is_one():
+    rep = {
+        "pitch_hz_p50": 150.0,
+        "intensity_db_p50": 65.0,
+        "speaking_rate_syll_per_sec": 3.5,
+        "pause_rate_per_min": 4.0,
+    }
+    accom = compute_vocal_accommodation(_para(rep, dict(rep)))
+    assert accom is not None
+    assert accom["overall"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_compute_vocal_accommodation_diverges_with_distance():
+    rep = {
+        "pitch_hz_p50": 100.0,
+        "intensity_db_p50": 60.0,
+        "speaking_rate_syll_per_sec": 2.0,
+        "pause_rate_per_min": 1.0,
+    }
+    cust = {
+        "pitch_hz_p50": 250.0,
+        "intensity_db_p50": 80.0,
+        "speaking_rate_syll_per_sec": 6.0,
+        "pause_rate_per_min": 8.0,
+    }
+    accom = compute_vocal_accommodation(_para(rep, cust))
+    assert accom is not None
+    # Mismatched poles → overall well below 1.0.
+    assert accom["overall"] < 0.85
+
+
+def test_compute_vocal_accommodation_returns_none_when_unavailable():
+    assert compute_vocal_accommodation(None) is None
+    assert compute_vocal_accommodation({"available": False}) is None
+    assert (
+        compute_vocal_accommodation({"available": True, "per_speaker": {}})
+        is None
+    )
+
+
+def test_compute_vocal_accommodation_skips_when_features_missing_one_side():
+    rep = {"pitch_hz_p50": 150.0}  # only one feature on rep side
+    cust = {"intensity_db_p50": 70.0}  # disjoint feature on customer
+    # No overlapping feature with values on both sides → None.
+    assert compute_vocal_accommodation(_para(rep, cust)) is None
+
+
+def test_attach_vocal_accommodation_blends_with_lsm_overall():
+    insights = {"rapport": {"lsm_overall": 0.80, "overall": 0.80}}
+    rep = {"pitch_hz_p50": 150.0, "intensity_db_p50": 65.0}
+    cust = {"pitch_hz_p50": 150.0, "intensity_db_p50": 65.0}
+    out = attach_vocal_accommodation(insights, _para(rep, cust))
+    assert out is not None
+    # Both halves at 1.0 (perfect mirror) and 0.80 → composite is mean.
+    assert insights["rapport"]["overall"] == pytest.approx(0.90, abs=0.01)
+    assert insights["rapport"]["vocal_accommodation"]["overall"] == pytest.approx(
+        1.0, abs=1e-3
+    )
+
+
+def test_attach_vocal_accommodation_no_op_without_paralinguistic_block():
+    insights = {"rapport": {"lsm_overall": 0.7, "overall": 0.7}}
+    out = attach_vocal_accommodation(insights, None)
+    assert out is None
+    # LSM-only state untouched.
+    assert "vocal_accommodation" not in insights["rapport"]
+    assert insights["rapport"]["overall"] == 0.7
