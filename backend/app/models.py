@@ -1939,3 +1939,261 @@ class DemoEmailCapture(Base):
     utm: Mapped[dict] = mapped_column(JSONB, default=dict)
     converted_tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# === BEGIN MULTI-STREAM MODELS REGION ===
+# Each telephony integration stream owns ONE block below. Append your model
+# class definitions after your stream's header line. Do not modify
+# ``LiveSession`` (line 736) or any other stream's models.
+# See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
+#
+# stream-1/siprec:
+class SiprecSession(Base):
+    """One SIPREC recording session as forked from a customer's SBC.
+
+    Sibling to :class:`LiveSession` (which we don't modify): the live
+    coaching pipeline reads from ``LiveSession`` regardless of the
+    ingest source, while ``SiprecSession`` carries the SIPREC-specific
+    metadata that has no analogue in CPaaS sources (the SRC's call id,
+    the rs-metadata XML, the negotiated crypto suite, consent
+    attestation). One-to-one with ``LiveSession`` via
+    ``live_session_id`` — populated by ``SiprecBridge.handle_started``
+    when the SRS reports ``recording.started``.
+    """
+
+    __tablename__ = "siprec_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    live_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("live_sessions.id", ondelete="SET NULL"), index=True
+    )
+    integration_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("integrations.id", ondelete="SET NULL"), index=True
+    )
+    # One of the SIPREC TelephonyProvider Literal values
+    # (siprec_cisco_cube | siprec_avaya_sbce | siprec_metaswitch).
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    # The recording session id from the rs-metadata XML root —
+    # globally unique-ish per SBC and the natural idempotency key for
+    # repeated ``recording.started`` deliveries.
+    src_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    # SBC-side dialog identifier (Call-ID header on the recorded
+    # call). Useful for correlating against the customer's CDRs.
+    src_call_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    # The full rs-metadata document as parsed JSON — participants,
+    # streams, communication-session refs.
+    src_metadata: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # Negotiated SDES suite (e.g. ``AES_256_CM_HMAC_SHA1_80``) or
+    # ``"DTLS_SRTP"`` when DTLS handled the key exchange. The master
+    # key is **never** stored — we only persist the suite name so
+    # ops can answer "did this customer use weak crypto?" without
+    # creating a key-leak surface.
+    sdp_crypto_suite: Mapped[Optional[str]] = mapped_column(String)
+    # Per-tenant attestation that legal consent for recording is in
+    # place. Defaults to False so the bridge fails closed in
+    # jurisdictions that require explicit consent capture.
+    is_consent_attested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # SRS-supplied stop reason (``hangup`` | ``timeout`` | ``error``
+    # | etc.) — left as freeform text because vendors are inconsistent.
+    end_reason: Mapped[Optional[str]] = mapped_column(String)
+
+    __table_args__ = (
+        UniqueConstraint("src_session_id", name="uq_siprec_sessions_src_session_id"),
+    )
+#
+# stream-2/uc:
+class UcRecordingJob(Base):
+    """One row per UC vendor recording webhook delivery.
+
+    Idempotency anchor for RingCentral / Webex Calling / Zoom Phone.
+    Unique on (provider, external_call_id) so duplicate webhook
+    deliveries are no-ops.
+    """
+
+    __tablename__ = "uc_recording_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    external_call_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    started_at_provider: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    caller_phone: Mapped[Optional[str]] = mapped_column(String)
+    callee_phone: Mapped[Optional[str]] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    state: Mapped[str] = mapped_column(
+        String, default="pending", server_default="pending", nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_call_id",
+            name="uq_uc_recording_jobs_provider_call",
+        ),
+        CheckConstraint(
+            "state IN ('pending','in_progress','fetched','dispatched','done','failed')",
+            name="ck_uc_recording_jobs_state",
+        ),
+    )
+#
+# stream-3/teams:
+# (TeamsCallRecord goes here)
+class TeamsCallRecord(Base):
+    """Microsoft Teams compliance recording control-plane row.
+
+    One row per Teams call we have *observed* (via Graph change
+    notification or — eventually — the .NET media bot's lifecycle
+    events). The actual recorded media lives elsewhere; this row is the
+    join key between Graph's call identifiers and LINDA's interaction
+    pipeline.
+
+    The scaffold does not write rows yet — that requires the media bot.
+    The table exists so the migration is in place when the bot ships,
+    and so admin tooling/queries can be wired without a follow-on
+    schema change.
+
+    Fields:
+
+    * ``call_id`` — Microsoft's call identifier (GUID-shaped string from
+      ``communications/calls`` resource).
+    * ``organizer`` — UPN of the meeting organiser, or None if unknown.
+    * ``participants`` — JSONB array of ``{"upn": str, "role": str,
+      "joined_at": str}``. Schema is loose so the bot can stash extra
+      fields without a migration.
+    * ``join_url`` — Teams join URL when the call originated from a
+      scheduled meeting.
+    * ``recording_url`` — Graph URL for the recorded media artifact when
+      one was produced (Teams built-in recording, not the media bot
+      output). Nullable until ``getAllRecordings`` reports one.
+    * ``certification_status`` — one of ``scaffold``, ``bot_required``,
+      ``recording_fetched``. ``scaffold`` is the steady state until the
+      .NET bot is deployed; ``bot_required`` indicates we observed a
+      call that should have been recorded but the bot wasn't reachable;
+      ``recording_fetched`` is the success terminal.
+    """
+
+    __tablename__ = "teams_call_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False)
+    call_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    organizer: Mapped[Optional[str]] = mapped_column(String)
+    participants: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    join_url: Mapped[Optional[str]] = mapped_column(Text)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+    certification_status: Mapped[str] = mapped_column(
+        String, default="scaffold", server_default="scaffold", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "call_id", name="uq_teams_call_records_tenant_call"),
+        CheckConstraint(
+            "certification_status IN ('scaffold','bot_required','recording_fetched')",
+            name="ck_teams_call_records_certification_status",
+        ),
+    )
+#
+# stream-4/audiohook:
+# (AudiohookSession goes here)
+
+
+class AudiohookSession(Base):
+    """One Genesys Cloud AudioHook conversation streamed into LINDA.
+
+    Sibling of :class:`LiveSession` — the AudioHook flow doesn't
+    create LiveSession rows because the agent attribution arrives
+    inside the protocol envelope (``participant.id`` + customConfig)
+    rather than from a Twilio-style outbound call setup. Linking a
+    row here to a LiveSession (when the same agent has both a CPaaS
+    session and an AudioHook session) is left for a follow-up.
+
+    ``channel`` mirrors the AudioHook ``media[].channels`` semantics:
+    ``"agent"`` for the internal leg only, ``"customer"`` for the
+    external leg only, ``"both"`` when stereo or a mono mix carries
+    both. The string is denormalized from ``provider_config`` so the
+    admin UI can filter sessions without parsing JSONB.
+
+    ``is_consent_attested`` records whether the customer has been
+    consented to recording — the AudioHook integration relies on
+    Genesys' built-in consent flow, but tenants can override the
+    attestation per-session via a future admin UI.
+    """
+
+    __tablename__ = "audiohook_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('agent', 'customer', 'both', 'unknown')",
+            name="ck_audiohook_sessions_channel",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "audiohook_session_id",
+            name="uq_audiohook_sessions_tenant_session",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    audiohook_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    organization_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    participant_id: Mapped[Optional[str]] = mapped_column(String)
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    media_format: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    audio_frames_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    audio_bytes_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    is_consent_attested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+# === END MULTI-STREAM MODELS REGION ===

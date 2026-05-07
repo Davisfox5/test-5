@@ -113,3 +113,31 @@ pytest-asyncio>=0.23
 httpx                             # TestClient / AsyncClient
 aiosqlite>=0.19                   # in-memory DB for integration tests
 asgi-lifespan>=2.1                # lifespan mgmt when mounting AsyncClient
+
+# === Audio normalization (Stream 0 — shared across telephony integrations) ===
+# Used by backend/app/services/audio/normalizer.py to convert vendor recording
+# formats (MP3/WAV/FLAC) into PCM16 8/16k for the transcription pipeline.
+# Pure-Python μ-law/PCM resampling uses the stdlib `audioop` module (Py 3.9+).
+pydub>=0.25                       # MP3/WAV/FLAC → PCM via ffmpeg shell-out
+
+# === BEGIN MULTI-STREAM DEPS REGION ===
+# Each stream owns ONE block below. Append dependencies after your stream's
+# header line. Do not edit other streams' blocks.
+# stream-1/siprec:
+# Stream 1 ships SIPREC ingestion via a FreeSWITCH userspace SRS sidecar
+# that terminates SIP and SRTP off-Python. The control plane parses
+# multipart-MIME bodies, SDP, and RFC 7865 rs-metadata XML using only
+# stdlib (xml.etree, audioop, base64) — see services/telephony/siprec/.
+# Crypto-suite enumeration uses no external library because the SRS
+# performs the actual SRTP termination. No new Python deps required.
+# stream-2/uc:
+# respx: httpx route mocker used by tests/test_uc_*.py to fixture
+# RingCentral / Webex / Zoom Phone API responses without live calls.
+respx>=0.20
+# stream-3/teams:
+# Reuses the existing `msal>=1.28` pin in the OAuth / Microsoft block above.
+# Teams compliance recording uses MSAL's `ConfidentialClientApplication` for
+# app-only (client-credentials) auth against Microsoft Graph; the user-OAuth
+# registry uses MSAL's delegated flow. Same library, two flows — one pin.
+# stream-4/audiohook:
+# === END MULTI-STREAM DEPS REGION ===

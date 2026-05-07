@@ -196,6 +196,27 @@ from backend.app.api.websocket import router as websocket_router  # noqa: E402
 app.include_router(websocket_router, tags=["websocket"])
 
 
+# === BEGIN MULTI-STREAM ROUTER REGION (do not edit other streams' lines) ===
+# Each stream owns ONE line below. Append your include_router call after
+# the colon on your stream's line. Do not reorder, edit other streams,
+# or remove the BEGIN/END markers.
+# See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
+# stream-1/siprec:
+from backend.app.api.siprec import siprec_router as _siprec_router  # noqa: E402
+
+app.include_router(_siprec_router, prefix=settings.API_V1_PREFIX, tags=["siprec"])
+# stream-2/uc:
+from backend.app.api.uc_telephony import router as uc_telephony_router  # noqa: E402
+app.include_router(uc_telephony_router, prefix=settings.API_V1_PREFIX, tags=["uc-telephony"])
+# stream-3/teams:
+from backend.app.api.teams_recording import router as teams_recording_router  # noqa: E402
+app.include_router(teams_recording_router, prefix=settings.API_V1_PREFIX, tags=["teams-recording"])
+# stream-4/audiohook:
+from backend.app.api.audiohook import router as audiohook_router  # noqa: E402
+app.include_router(audiohook_router, prefix=settings.API_V1_PREFIX, tags=["audiohook"])
+# === END MULTI-STREAM ROUTER REGION ===
+
+
 # ── Prometheus /metrics ──────────────────────────────────
 from fastapi import Response  # noqa: E402
 

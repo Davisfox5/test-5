@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "Tenant-aware SRS config. The entrypoint expands ${ENV} placeholders",
+    "from the container environment and writes /etc/linda-srs/config.json",
+    "before FreeSWITCH boots. Per-tenant SBC mappings live in tenant_map.json,",
+    "kept separate so a Fly secret rotation doesn't require a full image",
+    "rebuild."
+  ],
+  "backend": {
+    "url": "${LINDA_BACKEND_URL}",
+    "events_path": "/api/v1/siprec/events",
+    "shared_secret_env": "SIPREC_SRS_SHARED_SECRET",
+    "request_timeout_seconds": 5,
+    "max_retries": 3
+  },
+  "sip": {
+    "bind_port": "${SIPREC_SRS_SIP_PORT}",
+    "tls_cert_path": "/etc/freeswitch/tls/tls.crt",
+    "tls_key_path": "/etc/freeswitch/tls/tls.key",
+    "tls_ca_path": "/etc/freeswitch/tls/ca.crt",
+    "require_mtls": true,
+    "_mtls_comment": [
+      "Cisco CUBE 17+ and Avaya SBCE 8+ both require mutual TLS for",
+      "production SIPREC. Setting require_mtls=false is appropriate only",
+      "for the staging integration-test ring."
+    ]
+  },
+  "rtp": {
+    "port_min": "${SIPREC_SRS_RTP_PORT_MIN}",
+    "port_max": "${SIPREC_SRS_RTP_PORT_MAX}",
+    "external_ip": "${SIPREC_FLY_PRIVATE_IP}",
+    "_external_ip_comment": [
+      "On Fly, set this to the machine's 6PN IPv4 (or use a static",
+      "WireGuard IP) — auto-detection from the default route returns the",
+      "private 172.16/12 address that SBCs in the customer's DC cannot",
+      "route to."
+    ]
+  },
+  "media": {
+    "preferred_format": "mulaw_8k",
+    "_format_comment": [
+      "The bridge accepts mulaw_8k, alaw_8k, or pcm16_16k. mulaw_8k is",
+      "what Twilio / SignalWire / Telnyx already deliver, so SIPREC ingest",
+      "shares Deepgram pricing. Override per-tenant via tenant_map.json."
+    ],
+    "frame_ms": 20,
+    "fork_url_template": "${LINDA_BACKEND_URL}/api/v1/siprec/events"
+  },
+  "srtp": {
+    "default_profile": "sdes",
+    "_profile_comment": [
+      "Cisco CUBE defaults to SDES with AES_CM_128_HMAC_SHA1_80; Avaya",
+      "SBCE defaults to DTLS-SRTP. Per-tenant override goes in tenant_map.json.",
+      "Set 'none' only for SDES-with-clear-RTP customer pilots."
+    ],
+    "supported_suites": [
+      "AES_CM_128_HMAC_SHA1_80",
+      "AES_CM_128_HMAC_SHA1_32",
+      "AES_256_CM_HMAC_SHA1_80",
+      "AES_256_CM_HMAC_SHA1_32"
+    ]
+  },
+  "logging": {
+    "level": "info",
+    "format": "json"
+  }
+}

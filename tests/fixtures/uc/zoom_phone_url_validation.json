@@ -1,0 +1,7 @@
+{
+  "event": "endpoint.url_validation",
+  "event_ts": 1746631100000,
+  "payload": {
+    "plainToken": "fixture-plain-token-abcdef0123456789"
+  }
+}

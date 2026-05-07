@@ -1,0 +1,47 @@
+# docker-compose for local SIPREC sidecar smoke-tests.
+#
+# The acceptance criterion "docker-compose up siprec_srs boots" is
+# verified against this file. CI doesn't drive real SIP traffic — it
+# exercises the protocol parser + bridge directly with the sipp
+# scenario fixtures in tests/fixtures/siprec/.
+#
+# Usage:
+#   docker compose -f backend/app/services/telephony/siprec_srs/docker-compose.yml up siprec_srs
+#
+# The compose file exists alongside the Dockerfile rather than at the
+# repo root because it's purpose-built for SRS smoke-tests; production
+# deployment is via Fly.toml's siprec_srs process.
+
+version: "3.9"
+
+services:
+  siprec_srs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linda-siprec-srs:dev
+    container_name: linda-siprec-srs
+    environment:
+      LINDA_BACKEND_URL: "http://stub_backend:8080"
+      SIPREC_SRS_SHARED_SECRET: "smoke-test-secret-not-for-prod"
+      SIPREC_SRS_SIP_PORT: "5061"
+      SIPREC_SRS_RTP_PORT_MIN: "16384"
+      SIPREC_SRS_RTP_PORT_MAX: "16400"
+      SIPREC_SRS_REQUIRE_TENANT_MAP: "false"
+      SIPREC_SRS_ALLOW_NO_TLS: "true"
+    ports:
+      - "5061:5061/tcp"
+      - "5061:5061/udp"
+      - "16384-16400:16384-16400/udp"
+    depends_on:
+      - stub_backend
+
+  # Tiny stub that absorbs /siprec/events POSTs so the SRS doesn't
+  # crash-loop in the smoke test. Real CI runs the LINDA backend,
+  # not this stub.
+  stub_backend:
+    image: ghcr.io/static-web-server/static-web-server:2
+    container_name: linda-siprec-stub-backend
+    command: ["--port", "8080", "--root", "/srv"]
+    ports:
+      - "18080:8080"

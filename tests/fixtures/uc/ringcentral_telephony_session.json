@@ -1,0 +1,34 @@
+{
+  "uuid": "delivery-c6f3a1b8-7d2c-4a5d-8e0a-1f2c3b4d5e6f",
+  "event": "/restapi/v1.0/account/~/extension/~/telephony/sessions",
+  "timestamp": "2026-05-07T15:42:01.000Z",
+  "subscriptionId": "sub-ab12cd34",
+  "ownerId": "401234567",
+  "body": {
+    "telephonySessionId": "s-fixture-rc-001",
+    "sessionId": "s-fixture-rc-001",
+    "extensionId": "401234567",
+    "creationTime": "2026-05-07T15:40:13.000Z",
+    "startTime": "2026-05-07T15:40:13.000Z",
+    "direction": "Inbound",
+    "from": {"phoneNumber": "+15551234567", "name": "Acme Customer"},
+    "to": {"phoneNumber": "+18005550199", "extensionNumber": "101"},
+    "parties": [
+      {
+        "id": "p-1",
+        "sessionId": "s-fixture-rc-001",
+        "extensionId": "401234567",
+        "direction": "Inbound",
+        "recordings": [
+          {
+            "id": "rec-fixture-001",
+            "active": false,
+            "duration": 187,
+            "contentUri": "https://media.ringcentral.com/restapi/v1.0/account/~/recording/rec-fixture-001/content",
+            "uri": "https://platform.ringcentral.com/restapi/v1.0/account/~/recording/rec-fixture-001"
+          }
+        ]
+      }
+    ]
+  }
+}

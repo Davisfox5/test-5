@@ -1,0 +1,30 @@
+{
+  "value": [
+    {
+      "subscriptionId": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+      "subscriptionExpirationDateTime": "2026-05-07T16:00:00.0000000Z",
+      "tenantId": "00000000-0000-0000-0000-000000000001",
+      "clientState": "scaffold-shared-secret",
+      "changeType": "created",
+      "resource": "communications/onlineMeetings/getAllRecordings",
+      "resourceData": {
+        "@odata.type": "#microsoft.graph.callRecording",
+        "@odata.id": "communications/onlineMeetings/MSpkLTk5/recordings/RG9jLTk5",
+        "id": "RG9jLTk5"
+      }
+    },
+    {
+      "subscriptionId": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+      "subscriptionExpirationDateTime": "2026-05-07T16:00:00.0000000Z",
+      "tenantId": "00000000-0000-0000-0000-000000000001",
+      "clientState": "scaffold-shared-secret",
+      "changeType": "updated",
+      "resource": "communications/onlineMeetings/getAllRecordings",
+      "resourceData": {
+        "@odata.type": "#microsoft.graph.callRecording",
+        "@odata.id": "communications/onlineMeetings/MSpkLTk5/recordings/RG9jLTk5",
+        "id": "RG9jLTk5"
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "rec-webex-fixture-002",
+  "topic": "Customer onboarding call",
+  "createTime": "2026-05-07T15:50:08.000Z",
+  "timeRecorded": "2026-05-07T15:50:08.000Z",
+  "durationSeconds": 312,
+  "format": "MP3",
+  "serviceType": "WebexCalling",
+  "sizeBytes": 1234567,
+  "hostId": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9maXh0dXJlLWhvc3Q=",
+  "temporaryDirectDownloadLinks": {
+    "audioDownloadLink": "https://nfg1.webex.com/recordingdownload/audio/rec-webex-fixture-002?signature=abc",
+    "recordingDownloadLink": "https://nfg1.webex.com/recordingdownload/full/rec-webex-fixture-002?signature=abc",
+    "expiration": "2026-05-07T16:50:08.000Z"
+  }
+}
