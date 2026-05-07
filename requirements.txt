@@ -125,6 +125,9 @@ pydub>=0.25                       # MP3/WAV/FLAC → PCM via ffmpeg shell-out
 # header line. Do not edit other streams' blocks.
 # stream-1/siprec:
 # stream-2/uc:
+# respx: httpx route mocker used by tests/test_uc_*.py to fixture
+# RingCentral / Webex / Zoom Phone API responses without live calls.
+respx>=0.20
 # stream-3/teams:
 # stream-4/audiohook:
 # === END MULTI-STREAM DEPS REGION ===
