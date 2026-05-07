@@ -203,10 +203,14 @@ app.include_router(websocket_router, tags=["websocket"])
 # See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
 # stream-1/siprec:
 # stream-2/uc:
+from backend.app.api.uc_telephony import router as uc_telephony_router  # noqa: E402
+app.include_router(uc_telephony_router, prefix=settings.API_V1_PREFIX, tags=["uc-telephony"])
 # stream-3/teams:
 from backend.app.api.teams_recording import router as teams_recording_router  # noqa: E402
 app.include_router(teams_recording_router, prefix=settings.API_V1_PREFIX, tags=["teams-recording"])
 # stream-4/audiohook:
+from backend.app.api.audiohook import router as audiohook_router  # noqa: E402
+app.include_router(audiohook_router, prefix=settings.API_V1_PREFIX, tags=["audiohook"])
 # === END MULTI-STREAM ROUTER REGION ===
 
 

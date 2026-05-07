@@ -1951,7 +1951,87 @@ class DemoEmailCapture(Base):
 # (SiprecSession goes here)
 #
 # stream-2/uc:
-# (UcRecordingJob goes here)
+class UcRecordingJob(Base):
+    """One row per UC vendor recording webhook delivery.
+
+    Idempotency anchor for RingCentral / Webex Calling / Zoom Phone
+    recording lifecycles. The unique constraint on
+    ``(provider, external_call_id)`` is what makes duplicate webhook
+    deliveries safe — the second delivery updates the existing row
+    instead of starting a second fetch.
+
+    State machine (column ``state``):
+
+        pending → in_progress → fetched → dispatched → done
+                      ↓
+                    failed (last_error populated)
+
+    ``payload`` carries a JSON snapshot of the verified webhook body
+    so an operator can replay a failed fetch without re-receiving the
+    delivery. The transient ``__provider_config`` marker the Celery
+    task injects at runtime (carrying the per-tenant webhook secret)
+    is stripped before persistence by the route handler.
+    """
+
+    __tablename__ = "uc_recording_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False
+    )
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Provider identifier — must match a TelephonyProvider Literal value
+    # in services/telephony/__init__.py. Code-enforced; not a DB CHECK
+    # because adding a provider would require a schema migration we
+    # can avoid.
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+
+    external_call_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_id: Mapped[str] = mapped_column(String, nullable=False)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    started_at_provider: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    caller_phone: Mapped[Optional[str]] = mapped_column(String)
+    callee_phone: Mapped[Optional[str]] = mapped_column(String)
+
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+
+    state: Mapped[str] = mapped_column(
+        String, default="pending", server_default="pending", nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_call_id",
+            name="uq_uc_recording_jobs_provider_call",
+        ),
+        CheckConstraint(
+            "state IN ('pending','in_progress','fetched','dispatched','done','failed')",
+            name="ck_uc_recording_jobs_state",
+        ),
+    )
 #
 # stream-3/teams:
 # (TeamsCallRecord goes here)
@@ -2016,4 +2096,66 @@ class TeamsCallRecord(Base):
 #
 # stream-4/audiohook:
 # (AudiohookSession goes here)
+
+
+class AudiohookSession(Base):
+    """One Genesys Cloud AudioHook conversation streamed into LINDA.
+
+    Sibling of :class:`LiveSession` — the AudioHook flow doesn't
+    create LiveSession rows because the agent attribution arrives
+    inside the protocol envelope (``participant.id`` + customConfig)
+    rather than from a Twilio-style outbound call setup. Linking a
+    row here to a LiveSession (when the same agent has both a CPaaS
+    session and an AudioHook session) is left for a follow-up.
+
+    ``channel`` mirrors the AudioHook ``media[].channels`` semantics:
+    ``"agent"`` for the internal leg only, ``"customer"`` for the
+    external leg only, ``"both"`` when stereo or a mono mix carries
+    both. The string is denormalized from ``provider_config`` so the
+    admin UI can filter sessions without parsing JSONB.
+
+    ``is_consent_attested`` records whether the customer has been
+    consented to recording — the AudioHook integration relies on
+    Genesys' built-in consent flow, but tenants can override the
+    attestation per-session via a future admin UI.
+    """
+
+    __tablename__ = "audiohook_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('agent', 'customer', 'both', 'unknown')",
+            name="ck_audiohook_sessions_channel",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "audiohook_session_id",
+            name="uq_audiohook_sessions_tenant_session",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    audiohook_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    organization_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    participant_id: Mapped[Optional[str]] = mapped_column(String)
+    channel: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    media_format: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    audio_frames_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    audio_bytes_received: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    is_consent_attested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 # === END MULTI-STREAM MODELS REGION ===
