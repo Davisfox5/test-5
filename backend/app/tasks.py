@@ -764,6 +764,84 @@ def _run_pipeline_impl(
         interaction_id, complexity_score, recommended_tier,
     )
 
+    # ── Step 7.5: Paralinguistic extraction (Phase 2) ────────────────
+    # Moved here from the old step 17a so the AI-analysis prompt can
+    # consume acoustic features. The flag check happens BEFORE any
+    # audio decoding so a tenant who has paralinguistics off pays no
+    # cost. Decision matrix Q3/Q4: feature gate + silent fallback.
+    paralinguistic_block = None
+    paralinguistic_raw: Optional[Dict[str, Any]] = None
+    paralinguistic_notable: List[Any] = []
+    tenant_features = getattr(tenant, "features_enabled", None) or {}
+    if audio_path and tenant_features.get("paralinguistic_analysis", True):
+        try:
+            from backend.app.services.paralinguistics import (
+                SpeakerAudioSegment,
+                get_paralinguistic_extractor,
+            )
+            from backend.app.services.paralinguistic_baseline import (
+                analyze as _para_baseline_analyze,
+            )
+            from backend.app.services.paralinguistic_prompt import (
+                build_prompt_block as _build_para_prompt_block,
+            )
+
+            para_segments = [
+                SpeakerAudioSegment(
+                    speaker_id=s.speaker_id or "unknown",
+                    start=s.start,
+                    end=s.end,
+                )
+                for s in segment_objects
+            ]
+            para = get_paralinguistic_extractor().extract(
+                para_segments, audio_path=audio_path
+            )
+            if para.available:
+                para_dict = para.as_dict()
+                # Deterministic arousal annotation (same as legacy step
+                # 17a) — cheap, model-free, applies on every available
+                # extraction.
+                try:
+                    from backend.app.services.paralinguistics_emotion import (
+                        annotate_arousal,
+                    )
+                    para_dict = annotate_arousal(para_dict)
+                except Exception:
+                    logger.debug("arousal annotation failed", exc_info=True)
+                # Heavy SpeechBrain emotion pass stays opt-in.
+                if tenant_features.get("emotion_classification"):
+                    try:
+                        from backend.app.services.paralinguistics_emotion import (
+                            annotate_emotion,
+                        )
+                        speakers = list(
+                            (para_dict.get("per_speaker") or {}).keys()
+                        )
+                        segment_paths = [(sid, audio_path) for sid in speakers]
+                        para_dict = annotate_emotion(para_dict, segment_paths)
+                    except Exception:
+                        logger.debug("emotion annotation failed", exc_info=True)
+
+                paralinguistic_raw = para_dict
+                # Per-utterance baselines + outlier detection. Short calls
+                # with too few utterances per speaker yield an empty
+                # notable list (MIN_SPEAKER_UTTERANCES gate inside).
+                _, _, paralinguistic_notable = _para_baseline_analyze(
+                    audio_path, segment_objects
+                )
+                paralinguistic_block = _build_para_prompt_block(
+                    para_dict, paralinguistic_notable
+                )
+                if paralinguistic_block.is_empty():
+                    paralinguistic_block = None
+        except Exception:
+            logger.exception(
+                "Paralinguistic extraction failed for %s (non-fatal)",
+                interaction_id,
+            )
+            paralinguistic_block = None
+
     # ── Step 9: AI analysis ──────────────────────────────────────────
     # Prompt-variant routing + personalization blocks.
     from backend.app.services.ai_analysis import ANALYSIS_SYSTEM_PROMPT
@@ -820,6 +898,7 @@ def _run_pipeline_impl(
             max_tokens_override=overrides.get("max_tokens"),
             tenant_context=tenant_context,
             customer_brief=customer_brief,
+            paralinguistic_block=paralinguistic_block,
         )
     )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
@@ -1097,11 +1176,16 @@ def _run_pipeline_impl(
     attach_rubric(insights)
     # Phase 5 rapport gauge — Linguistic Style Matching (LSM) is a
     # transcript-only signal of how closely the rep and customer mirror
-    # each other's function-word usage. Cheap, deterministic, surfaces
-    # on the Coaching tab. The audio-driven vocal-accommodation
-    # counterpart is still gated on Phase 2 paralinguistic extraction.
-    from backend.app.services.rapport_lsm import attach_rapport
+    # each other's function-word usage. Phase 2 adds the
+    # vocal-accommodation half from per-speaker prosody when audio
+    # was available. The composite ``rapport.overall`` blends both
+    # halves automatically.
+    from backend.app.services.rapport_lsm import (
+        attach_rapport,
+        attach_vocal_accommodation,
+    )
     attach_rapport(insights, segments_dicts)
+    attach_vocal_accommodation(insights, paralinguistic_raw)
     # ``interaction.insights`` may already have been mutated above
     # (entity_resolution stashes suggestions there); merge rather than
     # overwrite when we replace the dict here.
@@ -1256,68 +1340,27 @@ def _run_pipeline_impl(
 
     deterministic_features = FeatureExtractor().extract(segment_objects)
 
-    # ── Step 17a: Paralinguistic features ────────────────────────────
-    # Runs whenever we still have the audio file on disk (``audio_path``
-    # is populated by process_voice_interaction for S3-staged uploads
-    # and for URL-mode ingests when the tenant has opted in). Per-
-    # speaker + overall acoustic features are stored under the
-    # ``paralinguistic`` key so scorers can read them.
-    tenant_features = getattr(tenant, "features_enabled", None) or {}
-    if audio_path and tenant_features.get("paralinguistic_analysis", True):
-        try:
-            from backend.app.services.paralinguistics import (
-                SpeakerAudioSegment,
-                get_paralinguistic_extractor,
-            )
-
-            para_segments = [
-                SpeakerAudioSegment(
-                    speaker_id=s.speaker_id or "unknown",
-                    start=s.start,
-                    end=s.end,
-                )
-                for s in segment_objects
+    # ── Step 17a (legacy): persist paralinguistic block ──────────────
+    # Phase 2 moved the extraction itself to step 7.5 so the AI prompt
+    # could consume it. This step now only persists the already-
+    # computed ``paralinguistic_raw`` (plus the notable utterance list)
+    # onto ``deterministic_features`` so the existing JSONB storage and
+    # downstream consumers (rapport gauge, dashboards) keep working.
+    if paralinguistic_raw:
+        block_for_storage = dict(paralinguistic_raw)
+        if paralinguistic_notable:
+            block_for_storage["notable_utterances"] = [
+                {
+                    "segment_idx": tag.segment_idx,
+                    "speaker_id": tag.speaker_id,
+                    "start": tag.start,
+                    "features": [
+                        {"name": name, "z": z} for name, z in tag.features
+                    ],
+                }
+                for tag in paralinguistic_notable
             ]
-            para = get_paralinguistic_extractor().extract(
-                para_segments, audio_path=audio_path
-            )
-            if para.available:
-                block = para.as_dict()
-                # Deterministic arousal annotation is cheap (no models,
-                # pure arithmetic) so it runs on every paralinguistic
-                # output — no feature flag.
-                try:
-                    from backend.app.services.paralinguistics_emotion import (
-                        annotate_arousal,
-                    )
-
-                    block = annotate_arousal(block)
-                except Exception:
-                    logger.debug("arousal annotation failed", exc_info=True)
-
-                # Optional SpeechBrain emotion pass — heavy, opt-in.
-                if tenant_features.get("emotion_classification"):
-                    try:
-                        from backend.app.services.paralinguistics_emotion import (
-                            annotate_emotion,
-                        )
-
-                        # For now we pass the whole-file path for each
-                        # speaker. A finer-grained pass (per-speaker
-                        # concatenated slices) can land as a follow-up
-                        # once we have per-speaker audio extraction
-                        # factored out of the extractor.
-                        speakers = list((block.get("per_speaker") or {}).keys())
-                        segment_paths = [(sid, audio_path) for sid in speakers]
-                        block = annotate_emotion(block, segment_paths)
-                    except Exception:
-                        logger.debug("emotion annotation failed", exc_info=True)
-
-                deterministic_features["paralinguistic"] = block
-        except Exception:
-            logger.exception(
-                "Paralinguistic extraction raised for %s (non-fatal)", interaction_id
-            )
+        deterministic_features["paralinguistic"] = block_for_storage
 
     features_row = (
         session.query(InteractionFeatures)

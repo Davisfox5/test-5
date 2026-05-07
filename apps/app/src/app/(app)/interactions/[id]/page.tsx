@@ -1069,11 +1069,13 @@ function CoachingTab({
 
     return (
         <div className="space-y-6">
-            {/* Rapport gauge — LSM-derived, transcript-only. Hidden
-                when the analysis pipeline couldn't compute it (single
-                speaker, empty transcript, etc.). */}
-            {typeof rapport?.lsm_overall === "number" && (
-                <RapportCard rapport={rapport} />
+            {/* Rapport gauge — LSM (transcript) + vocal accommodation
+                (audio-prosody). Either half is enough to render; the
+                composite ``rapport.overall`` blends both when both are
+                present. Hidden only when neither half computed. */}
+            {(typeof rapport?.lsm_overall === "number" ||
+                typeof rapport?.vocal_accommodation?.overall === "number") && (
+                <RapportCard rapport={rapport!} />
             )}
             {/*
                 Reinforcement parity: "What went well" sits left of
@@ -1200,7 +1202,14 @@ function RapportCard({
         import("@/lib/interactions").InteractionInsights["rapport"]
     >;
 }) {
-    const overall = rapport.lsm_overall ?? 0;
+    // Composite uses ``overall`` when both halves landed; falls back
+    // to whichever half is present. Pinned by ``attach_vocal_accommodation``
+    // on the backend.
+    const overall =
+        rapport.overall ??
+        rapport.lsm_overall ??
+        rapport.vocal_accommodation?.overall ??
+        0;
     const pct = Math.round(overall * 100);
     // Bands tuned around the Pennebaker reference: typical free-flow
     // dialogue lands ~0.65–0.80; below 0.5 reads as misalignment.
@@ -1216,16 +1225,19 @@ function RapportCard({
         amber: "border-accent-amber/40 bg-accent-amber/10 text-accent-amber",
         rose: "border-accent-rose/40 bg-accent-rose/10 text-accent-rose",
     }[band.tone];
+    const hasVocal =
+        typeof rapport.vocal_accommodation?.overall === "number";
+    const hasLsm = typeof rapport.lsm_overall === "number";
     return (
         <section className="rounded-lg border border-border bg-bg-card p-5">
             <header className="flex flex-wrap items-baseline justify-between gap-3">
                 <div>
                     <h3 className="text-sm font-semibold">Rapport</h3>
                     <p className="mt-1 text-xs text-text-subtle">
-                        Linguistic Style Matching — how closely you and the
-                        customer mirror each other&apos;s function-word usage.
-                        Computed deterministically from the transcript; not a
-                        model gut-feel.
+                        Composite of Linguistic Style Matching (function-word
+                        mirroring) and vocal accommodation (prosodic
+                        convergence). Both halves are deterministic —
+                        no model gut-feel.
                     </p>
                 </div>
                 <span
@@ -1234,6 +1246,32 @@ function RapportCard({
                     {pct}% · {band.label}
                 </span>
             </header>
+
+            {/* Per-half summary chips so the rep can see which side of
+                the composite is driving the overall number. */}
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                {hasLsm && (
+                    <span className="rounded-md border border-border-light bg-bg-secondary px-2 py-1">
+                        LSM (text):{" "}
+                        <span className="font-semibold">
+                            {Math.round((rapport.lsm_overall ?? 0) * 100)}%
+                        </span>
+                    </span>
+                )}
+                {hasVocal && (
+                    <span className="rounded-md border border-border-light bg-bg-secondary px-2 py-1">
+                        Vocal accommodation:{" "}
+                        <span className="font-semibold">
+                            {Math.round(
+                                (rapport.vocal_accommodation?.overall ?? 0) *
+                                    100,
+                            )}
+                            %
+                        </span>
+                    </span>
+                )}
+            </div>
+
             {rapport.lsm_by_category && (
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {Object.entries(rapport.lsm_by_category)
