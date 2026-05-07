@@ -1955,6 +1955,64 @@ class DemoEmailCapture(Base):
 #
 # stream-3/teams:
 # (TeamsCallRecord goes here)
+class TeamsCallRecord(Base):
+    """Microsoft Teams compliance recording control-plane row.
+
+    One row per Teams call we have *observed* (via Graph change
+    notification or — eventually — the .NET media bot's lifecycle
+    events). The actual recorded media lives elsewhere; this row is the
+    join key between Graph's call identifiers and LINDA's interaction
+    pipeline.
+
+    The scaffold does not write rows yet — that requires the media bot.
+    The table exists so the migration is in place when the bot ships,
+    and so admin tooling/queries can be wired without a follow-on
+    schema change.
+
+    Fields:
+
+    * ``call_id`` — Microsoft's call identifier (GUID-shaped string from
+      ``communications/calls`` resource).
+    * ``organizer`` — UPN of the meeting organiser, or None if unknown.
+    * ``participants`` — JSONB array of ``{"upn": str, "role": str,
+      "joined_at": str}``. Schema is loose so the bot can stash extra
+      fields without a migration.
+    * ``join_url`` — Teams join URL when the call originated from a
+      scheduled meeting.
+    * ``recording_url`` — Graph URL for the recorded media artifact when
+      one was produced (Teams built-in recording, not the media bot
+      output). Nullable until ``getAllRecordings`` reports one.
+    * ``certification_status`` — one of ``scaffold``, ``bot_required``,
+      ``recording_fetched``. ``scaffold`` is the steady state until the
+      .NET bot is deployed; ``bot_required`` indicates we observed a
+      call that should have been recorded but the bot wasn't reachable;
+      ``recording_fetched`` is the success terminal.
+    """
+
+    __tablename__ = "teams_call_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False)
+    call_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    organizer: Mapped[Optional[str]] = mapped_column(String)
+    participants: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    join_url: Mapped[Optional[str]] = mapped_column(Text)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+    certification_status: Mapped[str] = mapped_column(
+        String, default="scaffold", server_default="scaffold", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "call_id", name="uq_teams_call_records_tenant_call"),
+        CheckConstraint(
+            "certification_status IN ('scaffold','bot_required','recording_fetched')",
+            name="ck_teams_call_records_certification_status",
+        ),
+    )
 #
 # stream-4/audiohook:
 # (AudiohookSession goes here)

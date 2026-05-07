@@ -204,6 +204,8 @@ app.include_router(websocket_router, tags=["websocket"])
 # stream-1/siprec:
 # stream-2/uc:
 # stream-3/teams:
+from backend.app.api.teams_recording import router as teams_recording_router  # noqa: E402
+app.include_router(teams_recording_router, prefix=settings.API_V1_PREFIX, tags=["teams-recording"])
 # stream-4/audiohook:
 # === END MULTI-STREAM ROUTER REGION ===
 

@@ -1,0 +1,16 @@
+{
+  "value": [
+    {
+      "subscriptionId": "11111111-2222-3333-4444-555555555555",
+      "subscriptionExpirationDateTime": "2026-05-07T16:00:00.0000000Z",
+      "tenantId": "00000000-0000-0000-0000-000000000001",
+      "clientState": "tampered-or-replayed",
+      "changeType": "created",
+      "resource": "communications/callRecords/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "resourceData": {
+        "@odata.type": "#microsoft.graph.callRecords.callRecord",
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      }
+    }
+  ]
+}
