@@ -19,15 +19,47 @@ export type InteractionStatus =
     | "flagged_for_review"
     | string;
 
+export interface InlineTag {
+    start_time: string;
+    end_time: string;
+    speaker: string;
+    type:
+        | "went_well"
+        | "improvement"
+        | "competitor"
+        | "commitment"
+        | "objection_resolved"
+        | "objection_unresolved"
+        | "tense"
+        | string;
+    popup_text: string;
+    suggested_action: string | null;
+}
+
+export interface MethodologyCoverage {
+    framework: string;
+    covered: string[];
+    missing: string[];
+    next_question: string | null;
+}
+
+export interface SentimentTrajectoryPoint {
+    time: string;
+    score: number;
+}
+
 export interface InteractionInsights {
     sentiment_score?: number;
     sentiment_overall?: string;
+    sentiment_trajectory?: SentimentTrajectoryPoint[];
     churn_risk?: number;
     churn_risk_signal?: string;
     upsell_score?: number;
     upsell_signal?: string;
     topics?: Array<{ name: string; relevance?: number; mentions?: number }>;
     summary?: string;
+    inline_tags?: InlineTag[];
+    methodology_coverage?: MethodologyCoverage;
     [k: string]: unknown;
 }
 

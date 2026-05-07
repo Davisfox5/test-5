@@ -70,6 +70,7 @@ export const NAV: NavItem[] = [
         minRole: "manager",
     },
     { href: "/team", label: "Team", minRole: "manager" },
+    { href: "/manager-dashboard", label: "Team Dashboard", minRole: "manager" },
     { href: "/analytics", label: "Analytics", minRole: "manager" },
     { href: "/billing", label: "Billing & plan", minRole: "admin" },
     { href: "/settings", label: "Settings", minRole: "agent" },

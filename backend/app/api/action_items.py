@@ -1025,7 +1025,7 @@ async def return_action_item(
         Interaction.tenant_id == tenant.id,
     )
     interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
-    rep_user_id = getattr(interaction, "user_id", None) if interaction else None
+    rep_user_id = getattr(interaction, "agent_id", None) if interaction else None
     if rep_user_id and rep_user_id != principal.user.id:
         await notify(
             db,

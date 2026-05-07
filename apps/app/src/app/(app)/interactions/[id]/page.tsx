@@ -13,6 +13,7 @@ import {
     useInteraction,
     useRedriveInteraction,
     useUpdateInteraction,
+    type InlineTag,
     type TranscriptTurn,
 } from "@/lib/interactions";
 import {
@@ -23,6 +24,12 @@ import {
 import { useOAuthStatus } from "@/lib/oauth";
 import { type ActionItem } from "@/lib/action-items";
 import { ActionItemCard } from "@/components/action-item/action-item-card";
+import { MethodologyScorecard } from "@/components/methodology/methodology-scorecard";
+import { CallDynamicsChart } from "@/components/call-dynamics/call-dynamics-chart";
+import {
+    findTagForTurn,
+    TaggedTurnText,
+} from "@/components/transcript/inline-tag-overlay";
 
 export default function InteractionDetailPage() {
     const params = useParams<{ id: string }>();
@@ -226,7 +233,14 @@ export default function InteractionDetailPage() {
                                 will appear here when it&apos;s ready.
                             </p>
                         ) : i.transcript && i.transcript.length > 0 ? (
-                            <TranscriptList turns={i.transcript} />
+                            <TranscriptList
+                                turns={i.transcript}
+                                inlineTags={
+                                    i.insights?.inline_tags as
+                                        | InlineTag[]
+                                        | undefined
+                                }
+                            />
                         ) : i.raw_text ? (
                             <pre className="whitespace-pre-wrap text-sm text-text-muted">
                                 {i.raw_text}
@@ -303,6 +317,13 @@ export default function InteractionDetailPage() {
                 </aside>
             </div>
 
+            <CallDynamicsChart
+                trajectory={i.insights?.sentiment_trajectory}
+                durationSeconds={i.duration_seconds}
+            />
+
+            <MethodologyScorecard coverage={i.insights?.methodology_coverage} />
+
             <FollowUpPanel interactionId={i.id} />
 
             <section className="flex items-center justify-between rounded-lg border border-border bg-bg-card p-5">
@@ -349,7 +370,13 @@ export default function InteractionDetailPage() {
     );
 }
 
-function TranscriptList({ turns }: { turns: TranscriptTurn[] }) {
+function TranscriptList({
+    turns,
+    inlineTags,
+}: {
+    turns: TranscriptTurn[];
+    inlineTags?: InlineTag[];
+}) {
     return (
         <ol className="space-y-3">
             {turns.map((turn, idx) => {
@@ -358,21 +385,26 @@ function TranscriptList({ turns }: { turns: TranscriptTurn[] }) {
                     (turn.role as string | undefined) ||
                     `Speaker ${idx + 1}`;
                 const text = (turn.text as string | undefined) ?? "";
+                const startSec = typeof turn.start === "number" ? turn.start : null;
+                const turnTime =
+                    startSec !== null
+                        ? `${Math.floor(startSec / 60)}:${String(
+                              Math.floor(startSec % 60),
+                          ).padStart(2, "0")}`
+                        : "";
+                const tag = findTagForTurn(inlineTags, turnTime);
                 return (
                     <li key={idx} className="flex gap-3">
                         <div className="w-24 shrink-0 text-xs font-semibold uppercase tracking-wide text-text-subtle">
                             {speaker}
-                            {typeof turn.start === "number" ? (
+                            {turnTime ? (
                                 <div className="font-normal normal-case text-text-subtle">
-                                    {Math.floor(turn.start / 60)}:
-                                    {String(
-                                        Math.floor(turn.start % 60),
-                                    ).padStart(2, "0")}
+                                    {turnTime}
                                 </div>
                             ) : null}
                         </div>
                         <p className="flex-1 text-sm text-text-muted">
-                            {text}
+                            <TaggedTurnText text={text} tag={tag} />
                         </p>
                     </li>
                 );
