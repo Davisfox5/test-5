@@ -79,6 +79,21 @@ export interface RubricScores {
     win_likelihood?: number;
 }
 
+export interface RapportSignal {
+    lsm_overall?: number;
+    lsm_by_category?: Record<string, number>;
+}
+
+export interface NotableSnippet {
+    start_time?: string;
+    end_time?: string;
+    type?: string;
+    quality?: "positive" | "negative" | "neutral" | string;
+    title?: string;
+    description?: string;
+    tags?: string[];
+}
+
 export interface InteractionInsights {
     sentiment_score?: number;
     sentiment_overall?: string;
@@ -95,6 +110,8 @@ export interface InteractionInsights {
     coaching?: CoachingBlock;
     evidence?: EvidenceCounts;
     rubric?: RubricScores;
+    rapport?: RapportSignal;
+    notable_snippets?: NotableSnippet[];
     [k: string]: unknown;
 }
 
