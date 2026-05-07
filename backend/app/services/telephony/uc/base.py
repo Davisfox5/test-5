@@ -70,7 +70,7 @@ class UCRecordingProvider(abc.ABC):
         *,
         headers: Mapping[str, str],
         body: bytes,
-        tenant_secret: str,
+        signing_secret: str,
     ) -> UCWebhookEvent:
         """Authenticate + parse a webhook delivery."""
 
@@ -109,11 +109,16 @@ def get_provider(name: str) -> "UCRecordingProvider":
 
 @dataclass
 class TenantContext:
-    """Resolved tenant context attached to a webhook delivery."""
+    """Resolved tenant context attached to a webhook delivery.
+
+    The webhook signing secret is *not* on this struct: signing secrets
+    are vendor-wide env vars (RINGCENTRAL_WEBHOOK_SECRET /
+    WEBEX_WEBHOOK_SECRET / ZOOM_PHONE_WEBHOOK_SECRET), not per-tenant.
+    See the docstring at the top of ``api/uc_telephony.py``.
+    """
 
     tenant_id: uuid.UUID
     integration_id: uuid.UUID
-    webhook_secret: str
     access_token: str
     refresh_token: Optional[str] = None
     provider_config: Dict[str, Any] = field(default_factory=dict)

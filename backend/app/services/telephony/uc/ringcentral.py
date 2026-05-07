@@ -48,16 +48,16 @@ class RingCentralProvider(UCRecordingProvider):
         *,
         headers: Mapping[str, str],
         body: bytes,
-        tenant_secret: str,
+        signing_secret: str,
     ) -> UCWebhookEvent:
         provided = headers.get("verification-token") or headers.get(
             "Verification-Token"
         )
-        if not provided or not tenant_secret:
+        if not provided or not signing_secret:
             raise WebhookVerificationError(
-                "Missing verification-token header or tenant_secret"
+                "Missing verification-token header or signing_secret"
             )
-        if not hmac.compare_digest(str(provided), str(tenant_secret)):
+        if not hmac.compare_digest(str(provided), str(signing_secret)):
             raise WebhookVerificationError(
                 "RingCentral verification-token mismatch"
             )

@@ -30,7 +30,7 @@ async def test_ringcentral_verify_accepts_valid_token():
     event = await provider.verify_webhook(
         headers={"verification-token": "rc-fixture-verification-token"},
         body=body,
-        tenant_secret="rc-fixture-verification-token",
+        signing_secret="rc-fixture-verification-token",
     )
     assert event.provider == "ringcentral"
     assert event.external_call_id == "s-fixture-rc-001"
@@ -52,7 +52,7 @@ async def test_ringcentral_verify_rejects_wrong_token():
         await provider.verify_webhook(
             headers={"verification-token": "WRONG"},
             body=body,
-            tenant_secret="rc-fixture-verification-token",
+            signing_secret="rc-fixture-verification-token",
         )
 
 
@@ -65,7 +65,7 @@ async def test_ringcentral_verify_rejects_missing_header():
         await provider.verify_webhook(
             headers={},
             body=b'{"foo":"bar"}',
-            tenant_secret="rc-fixture-verification-token",
+            signing_secret="rc-fixture-verification-token",
         )
 
 

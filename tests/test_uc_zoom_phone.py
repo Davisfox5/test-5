@@ -61,7 +61,7 @@ async def test_zoom_verify_accepts_valid_signature():
             "x-zm-request-timestamp": ts,
         },
         body=body,
-        tenant_secret=_SECRET,
+        signing_secret=_SECRET,
     )
     assert event.provider == "zoom_phone"
     assert event.external_call_id == "call-fixture-zp-003"
@@ -88,7 +88,7 @@ async def test_zoom_verify_rejects_tampered_body():
                 "x-zm-request-timestamp": ts,
             },
             body=tampered,
-            tenant_secret=_SECRET,
+            signing_secret=_SECRET,
         )
 
 

@@ -48,17 +48,17 @@ class WebexProvider(UCRecordingProvider):
         *,
         headers: Mapping[str, str],
         body: bytes,
-        tenant_secret: str,
+        signing_secret: str,
     ) -> UCWebhookEvent:
         provided = headers.get("x-spark-signature") or headers.get(
             "X-Spark-Signature"
         )
-        if not provided or not tenant_secret:
+        if not provided or not signing_secret:
             raise WebhookVerificationError(
-                "Missing X-Spark-Signature header or tenant_secret"
+                "Missing X-Spark-Signature header or signing_secret"
             )
         expected = hmac.new(
-            tenant_secret.encode("utf-8"), body, hashlib.sha1
+            signing_secret.encode("utf-8"), body, hashlib.sha1
         ).hexdigest()
         if not hmac.compare_digest(str(provided).lower(), expected.lower()):
             raise WebhookVerificationError("Webex X-Spark-Signature mismatch")

@@ -72,9 +72,22 @@ async def uc_test_client(uc_test_app):
         yield client
 
 
+_SIGNING_SECRET_ENV: Dict[str, str] = {
+    "ringcentral": "RINGCENTRAL_WEBHOOK_SECRET",
+    "webex_calling": "WEBEX_WEBHOOK_SECRET",
+    "zoom_phone": "ZOOM_PHONE_WEBHOOK_SECRET",
+}
+
+
 @pytest_asyncio.fixture
-async def seeded_uc_integration(test_session_factory, test_tenant):
-    """Seed an Integration row for each UC provider on the test tenant."""
+async def seeded_uc_integration(test_session_factory, test_tenant, monkeypatch):
+    """Seed an Integration row for each UC provider on the test tenant.
+
+    Also sets the vendor-wide signing-secret env vars so the route
+    handlers (which read from env, not the Integration row) can verify
+    test webhook deliveries. Per-tenant ``provider_config["webhook_secret"]``
+    storage was removed — secrets are global per-vendor now.
+    """
     from backend.app.models import Integration
     from backend.app.services.token_crypto import encrypt_token
 
@@ -83,6 +96,9 @@ async def seeded_uc_integration(test_session_factory, test_tenant):
         "webex_calling": "webex-fixture-webhook-secret",
         "zoom_phone": "zoom-fixture-secret-token",
     }
+
+    for provider, secret in secrets.items():
+        monkeypatch.setenv(_SIGNING_SECRET_ENV[provider], secret)
 
     async with test_session_factory() as session:
         out: Dict[str, Any] = {}
@@ -97,7 +113,7 @@ async def seeded_uc_integration(test_session_factory, test_tenant):
                     "fixture-refresh-token-" + provider
                 ),
                 scopes=[],
-                provider_config={"webhook_secret": secret},
+                provider_config={},
             )
             session.add(integ)
             await session.flush()

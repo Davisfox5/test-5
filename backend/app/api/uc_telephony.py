@@ -13,10 +13,15 @@ Three POST endpoints, one per provider:
 All three:
 
 1. Resolve the tenant from the URL path.
-2. Look up the per-tenant ``Integration`` row and decrypted webhook
-   secret.
-3. Verify the signature via the provider adapter's
-   :meth:`UCRecordingProvider.verify_webhook`.
+2. Look up the tenant's ``Integration`` row (for the OAuth access
+   token used during recording fetch).
+3. Verify the inbound signature using the **vendor-wide** signing
+   secret loaded from an env var (``RINGCENTRAL_WEBHOOK_SECRET``,
+   ``WEBEX_WEBHOOK_SECRET``, ``ZOOM_PHONE_WEBHOOK_SECRET``). One
+   secret per vendor — set once as a Fly secret. Tenant identity
+   comes from the URL path (and double-checked against the payload's
+   account/org id by the adapter). This matches how Stripe, Slack,
+   Twilio and GitHub run multi-tenant webhook integrations.
 4. Upsert a :class:`UcRecordingJob` row keyed on
    ``(provider, external_call_id)`` (idempotency).
 5. Enqueue the Celery ``fetch_uc_recording`` task.
@@ -29,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from typing import Tuple
 
@@ -37,7 +43,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, require_role
 from backend.app.db import get_db
 from backend.app.models import Integration, Tenant, UcRecordingJob
 from backend.app.services.telephony.uc.base import (
@@ -49,6 +54,28 @@ from backend.app.services.telephony.uc.zoom_phone import ZoomPhoneProvider
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Vendor-wide webhook signing secrets. One value per vendor, set as a Fly
+# secret at deploy time — NOT per-tenant. Tenant identity comes from the
+# URL path /uc/{vendor}/webhook/{tenant_id} and from the payload itself
+# (accountId / orgId / account_id depending on vendor). Per-tenant
+# secrets were dropped because they added operator burden on every
+# customer onboarding without meaningful security benefit for the
+# multi-tenant SaaS shape — the same pattern Stripe / Slack / Twilio /
+# GitHub use for their webhook integrations.
+_SIGNING_SECRET_ENV: dict[str, str] = {
+    "ringcentral": "RINGCENTRAL_WEBHOOK_SECRET",
+    "webex_calling": "WEBEX_WEBHOOK_SECRET",
+    # Zoom's "Secret Token" comes from the Marketplace app config and is
+    # already per-app (not per-tenant) by Zoom's own design.
+    "zoom_phone": "ZOOM_PHONE_WEBHOOK_SECRET",
+}
+
+
+def _signing_secret(provider: str) -> str:
+    env_key = _SIGNING_SECRET_ENV.get(provider, "")
+    return os.environ.get(env_key, "")
 
 
 async def _resolve_integration(
@@ -84,11 +111,6 @@ async def _resolve_integration(
             detail=f"No {provider} integration connected for tenant",
         )
     return tenant, integ
-
-
-def _webhook_secret(integration: Integration) -> str:
-    cfg = integration.provider_config or {}
-    return str(cfg.get("webhook_secret") or "")
 
 
 async def _upsert_job_and_dispatch(
@@ -185,12 +207,12 @@ async def ringcentral_webhook(
         db, tenant_id=tenant_id, provider="ringcentral"
     )
     body = await request.body()
-    secret = _webhook_secret(integration)
+    secret = _signing_secret("ringcentral")
 
     provider = get_provider("ringcentral")
     try:
         event = await provider.verify_webhook(
-            headers=headers, body=body, tenant_secret=secret
+            headers=headers, body=body, signing_secret=secret
         )
     except WebhookVerificationError as exc:
         logger.warning("RingCentral webhook verification failed: %s", exc)
@@ -217,13 +239,13 @@ async def webex_webhook(
         db, tenant_id=tenant_id, provider="webex_calling"
     )
     body = await request.body()
-    secret = _webhook_secret(integration)
+    secret = _signing_secret("webex_calling")
     headers = {k.lower(): v for k, v in request.headers.items()}
 
     provider = get_provider("webex_calling")
     try:
         event = await provider.verify_webhook(
-            headers=headers, body=body, tenant_secret=secret
+            headers=headers, body=body, signing_secret=secret
         )
     except WebhookVerificationError as exc:
         logger.warning("Webex webhook verification failed: %s", exc)
@@ -259,14 +281,14 @@ async def zoom_phone_webhook(
     _, integration = await _resolve_integration(
         db, tenant_id=tenant_id, provider="zoom_phone"
     )
-    secret = _webhook_secret(integration)
+    secret = _signing_secret("zoom_phone")
 
     if event_name == "endpoint.url_validation":
         plain_token = (peek.get("payload") or {}).get("plainToken") or ""
         if not (plain_token and secret):
             raise HTTPException(
                 status_code=400,
-                detail="Cannot answer URL validation without secret_token",
+                detail="Cannot answer URL validation without ZOOM_PHONE_WEBHOOK_SECRET",
             )
         return JSONResponse(
             ZoomPhoneProvider.url_validation_response(plain_token, secret)
@@ -275,7 +297,7 @@ async def zoom_phone_webhook(
     provider = get_provider("zoom_phone")
     try:
         event = await provider.verify_webhook(
-            headers=headers, body=body, tenant_secret=secret
+            headers=headers, body=body, signing_secret=secret
         )
     except WebhookVerificationError as exc:
         logger.warning("Zoom Phone webhook verification failed: %s", exc)
@@ -289,50 +311,6 @@ async def zoom_phone_webhook(
     )
     await db.commit()
     return {"status": "queued", "job_id": str(job.id)}
-
-
-@router.post("/admin/integrations/uc/{provider}/webhook-secret")
-async def set_webhook_secret(
-    provider: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_role("admin")),
-):
-    """Persist the per-tenant webhook signing secret for a UC provider.
-
-    The admin obtains this value from the provider's developer-portal
-    UI when creating the webhook subscription.
-    """
-    if provider not in ("ringcentral", "webex_calling", "zoom_phone"):
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported UC provider: {provider}"
-        )
-    body = await request.json()
-    secret = (body or {}).get("webhook_secret")
-    if not secret or not isinstance(secret, str):
-        raise HTTPException(status_code=400, detail="webhook_secret is required")
-
-    integ = (
-        await db.execute(
-            select(Integration)
-            .where(
-                Integration.tenant_id == principal.tenant.id,
-                Integration.provider == provider,
-            )
-            .order_by(Integration.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if integ is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No {provider} integration — connect OAuth first",
-        )
-    cfg = dict(integ.provider_config or {})
-    cfg["webhook_secret"] = secret
-    integ.provider_config = cfg
-    await db.commit()
-    return {"status": "ok"}
 
 
 __all__ = ["router"]

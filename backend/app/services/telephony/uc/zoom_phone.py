@@ -41,7 +41,7 @@ class ZoomPhoneProvider(UCRecordingProvider):
         *,
         headers: Mapping[str, str],
         body: bytes,
-        tenant_secret: str,
+        signing_secret: str,
     ) -> UCWebhookEvent:
         signature = headers.get("x-zm-signature") or headers.get(
             "X-Zm-Signature"
@@ -49,16 +49,16 @@ class ZoomPhoneProvider(UCRecordingProvider):
         timestamp = headers.get("x-zm-request-timestamp") or headers.get(
             "X-Zm-Request-Timestamp"
         )
-        if not (signature and timestamp and tenant_secret):
+        if not (signature and timestamp and signing_secret):
             raise WebhookVerificationError(
-                "Missing Zoom signature, timestamp, or tenant_secret"
+                "Missing Zoom signature, timestamp, or signing_secret"
             )
 
         msg = b"v0:" + timestamp.encode("utf-8") + b":" + body
         expected = (
             "v0="
             + hmac.new(
-                tenant_secret.encode("utf-8"), msg, hashlib.sha256
+                signing_secret.encode("utf-8"), msg, hashlib.sha256
             ).hexdigest()
         )
         if not hmac.compare_digest(signature, expected):

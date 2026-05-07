@@ -36,7 +36,7 @@ async def test_webex_verify_accepts_valid_signature():
     event = await provider.verify_webhook(
         headers={"x-spark-signature": _sign(body)},
         body=body,
-        tenant_secret=_SECRET,
+        signing_secret=_SECRET,
     )
     assert event.provider == "webex_calling"
     assert event.recording_id == "rec-webex-fixture-002"
@@ -53,7 +53,7 @@ async def test_webex_verify_rejects_bad_signature():
         await provider.verify_webhook(
             headers={"x-spark-signature": _sign(body, "wrong-secret")},
             body=body,
-            tenant_secret=_SECRET,
+            signing_secret=_SECRET,
         )
 
 
@@ -69,7 +69,7 @@ async def test_webex_verify_rejects_unsupported_event():
         await provider.verify_webhook(
             headers={"x-spark-signature": _sign(body)},
             body=body,
-            tenant_secret=_SECRET,
+            signing_secret=_SECRET,
         )
 
 
