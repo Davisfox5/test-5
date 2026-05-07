@@ -8,6 +8,7 @@
  */
 
 import type { CustomerDetail } from "@/lib/customers";
+import { CustomerBehaviorSignals } from "@/components/customer-signals/customer-behavior-signals";
 import {
     ActionItemsCard,
     CommitmentsCard,
@@ -23,6 +24,8 @@ export function Layout2Dossier({ c }: { c: CustomerDetail }) {
             <OverviewHeader c={c} />
 
             <WarningsCard c={c} />
+
+            <CustomerBehaviorSignals customerId={c.id} />
 
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <div className="lg:col-span-1 space-y-6">

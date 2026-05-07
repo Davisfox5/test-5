@@ -1540,3 +1540,107 @@ async def update_commitment_status(
         ct = await db.get(Contact, c.actor_contact_id)
         contact_name = ct.name if ct else None
     return _commitment_to_out(c, actor_user_name=user_name, actor_contact_name=contact_name)
+
+
+# ── Customer behavior signals (Phase 5C) ─────────────────────────────────
+
+
+class BehaviorRadarOut(BaseModel):
+    commitment: float
+    openness: float
+    engagement: float
+    trust: float
+    decision_urgency: float
+    friction: float
+
+
+class ChangeReadinessOut(BaseModel):
+    score: int
+    confidence: str
+    contributing: Dict[str, float]
+
+
+class CustomerBehaviorSignalsOut(BaseModel):
+    customer_id: uuid.UUID
+    radar: BehaviorRadarOut
+    change_readiness: ChangeReadinessOut
+    signal_density: int
+    source_interaction_count: int
+
+
+@router.get(
+    "/customers/{customer_id}/behavior-signals",
+    response_model=CustomerBehaviorSignalsOut,
+)
+async def get_customer_behavior_signals(
+    customer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Aggregated Customer Behavior Radar + Change-Readiness Index.
+
+    Pulls ``customer_signals`` blocks from every analyzed interaction
+    on this customer, merges them, and runs the radar + readiness
+    services. Returned shape mirrors the dataclasses with one extra
+    field — ``source_interaction_count`` — so the UI can show how
+    many calls' worth of signal informed the score.
+    """
+    from backend.app.services.customer_behavior import (
+        compute_behavior_radar,
+        compute_change_readiness,
+        signal_density_from,
+    )
+
+    cust = (
+        await db.execute(
+            select(Customer).where(
+                Customer.id == customer_id,
+                Customer.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if cust is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    rows = (
+        await db.execute(
+            select(Interaction.insights).where(
+                Interaction.customer_id == customer_id,
+                Interaction.tenant_id == tenant.id,
+                Interaction.insights.isnot(None),
+            )
+        )
+    ).all()
+
+    merged = {
+        "commitment_language": [],
+        "change_talk": [],
+        "sustain_talk": [],
+        "trust_signals": [],
+        "urgency_language": [],
+        "objections": [],
+    }
+    interaction_count = 0
+    for (insights,) in rows:
+        if not isinstance(insights, dict):
+            continue
+        cs = insights.get("customer_signals")
+        if not isinstance(cs, dict):
+            continue
+        interaction_count += 1
+        for key in merged.keys():
+            v = cs.get(key)
+            if isinstance(v, list):
+                merged[key].extend(v)
+
+    radar = compute_behavior_radar(merged)
+    density = signal_density_from(merged)
+    readiness = compute_change_readiness(radar, signal_density=density)
+
+    return CustomerBehaviorSignalsOut(
+        customer_id=customer_id,
+        radar=BehaviorRadarOut(**radar.as_dict()),
+        change_readiness=ChangeReadinessOut(**readiness.as_dict()),
+        signal_density=density,
+        source_interaction_count=interaction_count,
+    )
