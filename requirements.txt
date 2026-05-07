@@ -124,6 +124,12 @@ pydub>=0.25                       # MP3/WAV/FLAC → PCM via ffmpeg shell-out
 # Each stream owns ONE block below. Append dependencies after your stream's
 # header line. Do not edit other streams' blocks.
 # stream-1/siprec:
+# Stream 1 ships SIPREC ingestion via a FreeSWITCH userspace SRS sidecar
+# that terminates SIP and SRTP off-Python. The control plane parses
+# multipart-MIME bodies, SDP, and RFC 7865 rs-metadata XML using only
+# stdlib (xml.etree, audioop, base64) — see services/telephony/siprec/.
+# Crypto-suite enumeration uses no external library because the SRS
+# performs the actual SRTP termination. No new Python deps required.
 # stream-2/uc:
 # stream-3/teams:
 # Reuses the existing `msal>=1.28` pin in the OAuth / Microsoft block above.
