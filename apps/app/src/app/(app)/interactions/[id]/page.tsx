@@ -36,6 +36,15 @@ import {
     type KBPickedAttachment,
 } from "@/components/kb-picker/kb-file-picker";
 
+type TabKey = "overview" | "transcript" | "coaching" | "compliance";
+
+const TABS: Array<{ key: TabKey; label: string }> = [
+    { key: "overview", label: "Overview" },
+    { key: "transcript", label: "Transcript" },
+    { key: "coaching", label: "Coaching" },
+    { key: "compliance", label: "Compliance" },
+];
+
 export default function InteractionDetailPage() {
     const params = useParams<{ id: string }>();
     const id = params?.id;
@@ -48,6 +57,21 @@ export default function InteractionDetailPage() {
     const [editing, setEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [confirmingDelete, setConfirmingDelete] = useState(false);
+    // Tab structure: Overview | Transcript | Coaching | Compliance.
+    // Hash drives initial tab so action-item deep-links (#follow-up,
+    // #coaching) and email outbox links land on the right pane.
+    const [tab, setTab] = useState<TabKey>("overview");
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const h = (window.location.hash || "").replace("#", "");
+        if (h === "transcript" || h === "coaching" || h === "compliance") {
+            setTab(h);
+        } else if (h === "follow-up") {
+            // The follow-up panel lives on the Overview tab; jump there
+            // and let the panel's own scrollIntoView handle the rest.
+            setTab("overview");
+        }
+    }, []);
 
     useEffect(() => {
         if (detail.data && !editing) {
@@ -226,12 +250,117 @@ export default function InteractionDetailPage() {
                 ) : null}
             </header>
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <section className="rounded-lg border border-border bg-bg-card lg:col-span-2">
+            <div
+                role="tablist"
+                aria-label="Interaction tabs"
+                className="flex flex-wrap gap-1 border-b border-border"
+            >
+                {TABS.map((t) => (
+                    <button
+                        key={t.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === t.key}
+                        onClick={() => setTab(t.key)}
+                        className={`-mb-px rounded-t-md border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                            tab === t.key
+                                ? "border-primary text-text"
+                                : "border-transparent text-text-muted hover:text-text"
+                        }`}
+                    >
+                        {t.label}
+                    </button>
+                ))}
+            </div>
+
+            {tab === "overview" && (
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                        <section className="rounded-lg border border-border bg-bg-card p-5 lg:col-span-2">
+                            <h3 className="text-sm font-semibold">Summary</h3>
+                            {i.insights?.summary ? (
+                                <p className="mt-3 text-sm text-text-muted">
+                                    {String(i.insights.summary)}
+                                </p>
+                            ) : (
+                                <p className="mt-3 text-sm text-text-subtle">
+                                    No summary yet — analysis is still in
+                                    progress or wasn&apos;t able to produce one.
+                                </p>
+                            )}
+                        </section>
+                        <aside>
+                            <section className="rounded-lg border border-border bg-bg-card p-5">
+                                <h3 className="text-sm font-semibold">
+                                    Scores
+                                </h3>
+                                <dl className="mt-3 space-y-2 text-sm">
+                                    <ScoreRow
+                                        label="Sentiment"
+                                        value={
+                                            i.insights?.sentiment_overall
+                                                ? String(
+                                                      i.insights
+                                                          .sentiment_overall,
+                                                  )
+                                                : "—"
+                                        }
+                                        accent={sent.tone}
+                                        accentText={sent.text}
+                                    />
+                                    <ScoreRow
+                                        label="Churn risk"
+                                        value={
+                                            (i.insights?.churn_risk_signal as
+                                                | string
+                                                | undefined) ?? "—"
+                                        }
+                                    />
+                                    <ScoreRow
+                                        label="Upsell"
+                                        value={
+                                            (i.insights?.upsell_signal as
+                                                | string
+                                                | undefined) ?? "—"
+                                        }
+                                    />
+                                    <ScoreRow
+                                        label="Complexity"
+                                        value={
+                                            i.complexity_score != null
+                                                ? i.complexity_score.toFixed(2)
+                                                : "—"
+                                        }
+                                    />
+                                    <ScoreRow
+                                        label="PII redacted"
+                                        value={i.pii_redacted ? "Yes" : "No"}
+                                    />
+                                </dl>
+                            </section>
+                        </aside>
+                    </div>
+
+                    <CallDynamicsChart
+                        trajectory={i.insights?.sentiment_trajectory}
+                        keyMoments={i.insights?.key_moments}
+                        durationSeconds={i.duration_seconds}
+                    />
+
+                    <TopicChips topics={i.insights?.topics} />
+
+                    <ActionItemsForInteraction interactionId={i.id} />
+
+                    <FollowUpPanel interactionId={i.id} />
+                </div>
+            )}
+
+            {tab === "transcript" && (
+                <section className="rounded-lg border border-border bg-bg-card">
                     <div className="border-b border-border px-5 py-3">
                         <h3 className="text-sm font-semibold">Transcript</h3>
                     </div>
-                    <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+                    <div className="max-h-[75vh] overflow-y-auto px-5 py-4">
                         {i.status === "processing" ? (
                             <p className="text-sm text-text-muted">
                                 Linda is transcribing this call. The transcript
@@ -257,82 +386,11 @@ export default function InteractionDetailPage() {
                         )}
                     </div>
                 </section>
+            )}
 
-                <aside className="space-y-6">
-                    <section className="rounded-lg border border-border bg-bg-card p-5">
-                        <h3 className="text-sm font-semibold">Scores</h3>
-                        <dl className="mt-3 space-y-2 text-sm">
-                            <ScoreRow
-                                label="Sentiment"
-                                value={
-                                    i.insights?.sentiment_score != null
-                                        ? `${i.insights.sentiment_score.toFixed(1)} / 10`
-                                        : "—"
-                                }
-                                accent={sent.tone}
-                                accentText={sent.text}
-                            />
-                            <ScoreRow
-                                label="Churn risk"
-                                value={
-                                    i.insights?.churn_risk != null
-                                        ? `${(i.insights.churn_risk * 100).toFixed(0)}%`
-                                        : "—"
-                                }
-                                accentText={
-                                    (i.insights?.churn_risk_signal as
-                                        | string
-                                        | undefined) ?? undefined
-                                }
-                            />
-                            <ScoreRow
-                                label="Upsell"
-                                value={
-                                    i.insights?.upsell_score != null
-                                        ? `${(i.insights.upsell_score * 100).toFixed(0)}%`
-                                        : "—"
-                                }
-                                accentText={
-                                    (i.insights?.upsell_signal as
-                                        | string
-                                        | undefined) ?? undefined
-                                }
-                            />
-                            <ScoreRow
-                                label="Complexity"
-                                value={
-                                    i.complexity_score != null
-                                        ? i.complexity_score.toFixed(2)
-                                        : "—"
-                                }
-                            />
-                            <ScoreRow
-                                label="PII redacted"
-                                value={i.pii_redacted ? "Yes" : "No"}
-                            />
-                        </dl>
-                        {i.insights?.summary ? (
-                            <div className="mt-4 rounded-md border border-border bg-bg-secondary p-3 text-xs text-text-muted">
-                                {String(i.insights.summary)}
-                            </div>
-                        ) : null}
-                    </section>
+            {tab === "coaching" && <CoachingTab insights={i.insights} />}
 
-                    <ActionItemsForInteraction interactionId={i.id} />
-                </aside>
-            </div>
-
-            <CallDynamicsChart
-                trajectory={i.insights?.sentiment_trajectory}
-                keyMoments={i.insights?.key_moments}
-                durationSeconds={i.duration_seconds}
-            />
-
-            <TopicChips topics={i.insights?.topics} />
-
-            <MethodologyScorecard coverage={i.insights?.methodology_coverage} />
-
-            <FollowUpPanel interactionId={i.id} />
+            {tab === "compliance" && <ComplianceTab insights={i.insights} />}
 
             <section className="flex items-center justify-between rounded-lg border border-border bg-bg-card p-5">
                 <div>
@@ -990,5 +1048,234 @@ function ActionItemsForInteraction({ interactionId }: { interactionId: string })
                 </p>
             )}
         </section>
+    );
+}
+
+/* ── Coaching tab ───────────────────────────────────────────────── */
+
+function CoachingTab({
+    insights,
+}: {
+    insights: import("@/lib/interactions").InteractionInsights | undefined;
+}) {
+    const coaching = insights?.coaching;
+    const evidence = insights?.evidence;
+    const rubric = insights?.rubric;
+
+    const wentWell = coaching?.what_went_well ?? [];
+    const improvements = coaching?.improvements ?? [];
+
+    return (
+        <div className="space-y-6">
+            {/*
+                Reinforcement parity: "What went well" sits left of
+                "Try next time" so the rep sees the positive read first.
+                We deliberately render both columns even when one side
+                is empty — an empty "well done" column is a stronger
+                signal than no column at all.
+            */}
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <section className="rounded-lg border border-border bg-bg-card p-5">
+                    <h3 className="text-sm font-semibold text-accent-emerald">
+                        What went well
+                    </h3>
+                    {wentWell.length > 0 ? (
+                        <ul className="mt-3 space-y-2 text-sm text-text">
+                            {wentWell.map((item, idx) => (
+                                <li key={idx} className="flex gap-2">
+                                    <span
+                                        aria-hidden
+                                        className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-accent-emerald"
+                                    />
+                                    <span>{item}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <p className="mt-3 text-sm text-text-subtle">
+                            No specific positives surfaced for this call.
+                        </p>
+                    )}
+                </section>
+                <section className="rounded-lg border border-border bg-bg-card p-5">
+                    <h3 className="text-sm font-semibold text-accent-amber">
+                        Try next time
+                    </h3>
+                    {improvements.length > 0 ? (
+                        <ul className="mt-3 space-y-2 text-sm text-text">
+                            {improvements.map((item, idx) => (
+                                <li key={idx} className="flex gap-2">
+                                    <span
+                                        aria-hidden
+                                        className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-accent-amber"
+                                    />
+                                    <span>{item}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <p className="mt-3 text-sm text-text-subtle">
+                            Nothing flagged for improvement on this call.
+                        </p>
+                    )}
+                </section>
+            </div>
+
+            {/* Evidence + rubric — Phase 3 surfacing. */}
+            {(evidence || rubric) && (
+                <section className="rounded-lg border border-border bg-bg-card p-5">
+                    <h3 className="text-sm font-semibold">
+                        Evidence-derived rubric
+                    </h3>
+                    <p className="mt-1 text-xs text-text-subtle">
+                        Computed deterministically from counted moments in the
+                        transcript — not from a model&apos;s gut feel.
+                    </p>
+                    <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <RubricCell
+                            label="Discovery"
+                            value={rubric?.discovery_quality}
+                            sub={
+                                evidence?.discovery_questions != null
+                                    ? `${evidence.discovery_questions} questions`
+                                    : undefined
+                            }
+                        />
+                        <RubricCell
+                            label="Commitments"
+                            value={rubric?.commitment_strength}
+                            sub={
+                                evidence?.commitment_count != null
+                                    ? `${evidence.commitment_count} secured`
+                                    : undefined
+                            }
+                        />
+                        <RubricCell
+                            label="Objection handling"
+                            value={rubric?.objection_resolution_rate}
+                            sub={
+                                evidence?.objection_count != null
+                                    ? `${
+                                          (evidence.objection_count || 0) -
+                                          (evidence.unresolved_objection_count ||
+                                              0)
+                                      } / ${evidence.objection_count} resolved`
+                                    : undefined
+                            }
+                        />
+                        <RubricCell
+                            label="Win likelihood"
+                            value={rubric?.win_likelihood}
+                            sub={
+                                evidence?.competitor_mention_count != null
+                                    ? `${evidence.competitor_mention_count} competitor mentions`
+                                    : undefined
+                            }
+                        />
+                    </div>
+                </section>
+            )}
+        </div>
+    );
+}
+
+function RubricCell({
+    label,
+    value,
+    sub,
+}: {
+    label: string;
+    value: number | undefined;
+    sub?: string;
+}) {
+    const pct =
+        typeof value === "number" ? Math.round(value * 100) : undefined;
+    return (
+        <div className="rounded-md border border-border bg-bg-secondary px-3 py-2">
+            <div className="text-xs uppercase tracking-wide text-text-subtle">
+                {label}
+            </div>
+            <div className="mt-1 text-lg font-semibold text-text">
+                {pct != null ? `${pct}%` : "—"}
+            </div>
+            {sub ? (
+                <div className="text-[11px] text-text-muted">{sub}</div>
+            ) : null}
+        </div>
+    );
+}
+
+/* ── Compliance tab ─────────────────────────────────────────────── */
+
+function ComplianceTab({
+    insights,
+}: {
+    insights: import("@/lib/interactions").InteractionInsights | undefined;
+}) {
+    const coaching = insights?.coaching;
+    const adherenceBand = coaching?.script_adherence_band as
+        | string
+        | undefined;
+    const adherenceScore = coaching?.script_adherence_score;
+    const gaps = coaching?.compliance_gaps ?? [];
+    const coverage = insights?.methodology_coverage;
+
+    const bandTone =
+        adherenceBand === "high"
+            ? "bg-accent-emerald/10 text-accent-emerald border-accent-emerald/40"
+            : adherenceBand === "medium"
+              ? "bg-accent-amber/10 text-accent-amber border-accent-amber/40"
+              : adherenceBand === "low" || adherenceBand === "failing"
+                ? "bg-accent-rose/10 text-accent-rose border-accent-rose/40"
+                : "bg-bg-secondary text-text-muted border-border";
+
+    return (
+        <div className="space-y-6">
+            <section className="rounded-lg border border-border bg-bg-card p-5">
+                <div className="flex flex-wrap items-baseline justify-between gap-3">
+                    <div>
+                        <h3 className="text-sm font-semibold">
+                            Script adherence
+                        </h3>
+                        <p className="mt-1 text-xs text-text-subtle">
+                            Bucketed call by call; mapped to a numeric score
+                            for trend dashboards.
+                        </p>
+                    </div>
+                    <span
+                        className={`rounded-full border px-3 py-1 text-xs capitalize ${bandTone}`}
+                    >
+                        {adherenceBand ?? "not scored"}
+                        {adherenceScore != null
+                            ? ` · ${adherenceScore.toFixed(0)} / 100`
+                            : ""}
+                    </span>
+                </div>
+                {gaps.length > 0 ? (
+                    <div className="mt-4">
+                        <h4 className="text-xs uppercase tracking-wide text-text-subtle">
+                            Compliance gaps
+                        </h4>
+                        <ul className="mt-2 space-y-1 text-sm text-text">
+                            {gaps.map((g, idx) => (
+                                <li
+                                    key={idx}
+                                    className="flex gap-2 rounded-md border border-accent-rose/30 bg-accent-rose/5 px-3 py-2"
+                                >
+                                    <span aria-hidden>⚠</span>
+                                    <span>{g}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : (
+                    <p className="mt-4 text-sm text-text-subtle">
+                        No compliance gaps flagged.
+                    </p>
+                )}
+            </section>
+
+            <MethodologyScorecard coverage={coverage} />
+        </div>
     );
 }

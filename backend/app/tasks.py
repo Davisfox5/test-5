@@ -1081,6 +1081,20 @@ def _run_pipeline_impl(
     # ── Step 13: Update interaction row ──────────────────────────────
     interaction.status = "analyzed"
     interaction.transcript = segments_dicts
+    # Phase 1: the LLM emits coarse buckets only. Code maps them to the
+    # numeric fields the rest of the platform consumes (analytics,
+    # contact health rollups, dashboards, training labels). Done BEFORE
+    # the dict copy so downstream reads off the same ``insights`` ref
+    # below see the derived numerics.
+    from backend.app.services.score_mapping import derive_numeric_scores
+    derive_numeric_scores(insights)
+    # Phase 3 foundation: derive deterministic rubric scores from the
+    # LLM's evidence counts (objections / commitments / discovery
+    # questions, etc.) and dual-log them alongside the bucket-mapped
+    # values. Lets us validate calibration before flipping to
+    # rubric-as-source-of-truth in Phase 4.
+    from backend.app.services.evidence_scoring import attach_rubric
+    attach_rubric(insights)
     # ``interaction.insights`` may already have been mutated above
     # (entity_resolution stashes suggestions there); merge rather than
     # overwrite when we replace the dict here.

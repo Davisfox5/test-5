@@ -56,6 +56,29 @@ export interface KeyMoment {
     end_time?: string;
 }
 
+export interface CoachingBlock {
+    what_went_well?: string[];
+    improvements?: string[];
+    script_adherence_band?: "high" | "medium" | "low" | "failing" | string;
+    script_adherence_score?: number;
+    compliance_gaps?: string[];
+}
+
+export interface EvidenceCounts {
+    objection_count?: number;
+    unresolved_objection_count?: number;
+    commitment_count?: number;
+    discovery_questions?: number;
+    competitor_mention_count?: number;
+}
+
+export interface RubricScores {
+    discovery_quality?: number;
+    commitment_strength?: number;
+    objection_resolution_rate?: number;
+    win_likelihood?: number;
+}
+
 export interface InteractionInsights {
     sentiment_score?: number;
     sentiment_overall?: string;
@@ -69,6 +92,9 @@ export interface InteractionInsights {
     inline_tags?: InlineTag[];
     methodology_coverage?: MethodologyCoverage;
     key_moments?: KeyMoment[];
+    coaching?: CoachingBlock;
+    evidence?: EvidenceCounts;
+    rubric?: RubricScores;
     [k: string]: unknown;
 }
 
