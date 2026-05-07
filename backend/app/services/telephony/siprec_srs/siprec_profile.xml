@@ -1,0 +1,57 @@
+<!--
+  FreeSWITCH SIP profile dedicated to the SIPREC SRS role.
+
+  This profile listens only on ${SIPREC_SRS_SIP_PORT} (TLS) and is
+  *not* usable for general voice traffic — its dialplan accepts only
+  INVITEs that look like SIPREC (multipart/mixed body with an
+  application/rs-metadata+xml part). A second non-SIPREC profile would
+  be a sign of misconfiguration; the SRS image is single-purpose.
+-->
+<profile name="siprec">
+  <settings>
+    <param name="user-agent-string" value="LINDA-SIPREC-SRS"/>
+    <param name="sip-port" value="$${siprec_sip_port}"/>
+    <param name="tls" value="true"/>
+    <param name="tls-only" value="true"/>
+    <param name="tls-bind-params" value="transport=tls"/>
+    <param name="tls-sip-port" value="$${siprec_sip_port}"/>
+    <param name="tls-cert-dir" value="/etc/freeswitch/tls"/>
+    <param name="tls-version" value="tlsv1.2,tlsv1.3"/>
+    <param name="tls-passphrase" value=""/>
+    <param name="tls-verify-policy" value="all"/>
+    <param name="tls-verify-depth" value="3"/>
+    <param name="tls-verify-date" value="true"/>
+    <param name="tls-verify-in-subjects" value="*"/>
+    <!--
+      mTLS: require the SBC to present a client certificate signed by a
+      CA in /etc/freeswitch/tls/ca.crt. This is the canonical Cisco
+      CUBE / Avaya SBCE production posture; relaxing it is a tenant
+      decision documented in USER_TODO.md.
+    -->
+    <param name="tls-verify-in-subjects" value=""/>
+
+    <param name="rtp-ip" value="$${siprec_rtp_external_ip}"/>
+    <param name="sip-ip" value="$${siprec_rtp_external_ip}"/>
+    <param name="rtp-timer-name" value="soft"/>
+    <param name="dtmf-duration" value="2000"/>
+    <param name="codec-prefs" value="PCMU,PCMA,L16"/>
+    <param name="dtmf-type" value="rfc2833"/>
+    <param name="rtp-timeout-sec" value="300"/>
+    <param name="rtp-hold-timeout-sec" value="1800"/>
+
+    <!-- SRTP: SDES + DTLS-SRTP both supported. The SBC's offer wins. -->
+    <param name="rtp-secure-media" value="optional"/>
+    <param name="rtp-secure-media-suites" value="AEAD_AES_256_GCM_8,AES_256_CM_HMAC_SHA1_80,AES_CM_128_HMAC_SHA1_80,AES_CM_128_HMAC_SHA1_32"/>
+
+    <!-- All SIPREC INVITEs land in the dialplan defined in siprec.xml.
+         Outbound calls are not initiated from this profile. -->
+    <param name="context" value="siprec"/>
+    <param name="dialplan" value="XML"/>
+    <param name="manage-presence" value="false"/>
+    <param name="inbound-codec-negotiation" value="generous"/>
+    <!-- Deny REGISTER and SUBSCRIBE; this profile never serves clients. -->
+    <param name="auth-calls" value="false"/>
+    <param name="accept-blind-reg" value="false"/>
+    <param name="accept-blind-auth" value="false"/>
+  </settings>
+</profile>

@@ -1,8 +1,16 @@
 # Fly.io config — LINDA staging
 #
-# One Fly app, three processes: api / worker / beat. External services:
+# Four processes: api / worker / beat / siprec_srs. External services:
 # Postgres on Neon, Redis on Upstash, audio staging on Tigris (Fly's S3-
 # compatible storage, attached via `fly storage create`).
+#
+# The siprec_srs process is the Stream 1 Session Recording Server
+# (SIPREC, RFC 7866) — a separate FreeSWITCH userspace machine that
+# terminates SIP-TLS + SRTP from the customer's SBC and forks plaintext
+# audio frames into the api process. Its image is built from
+# backend/app/services/telephony/siprec_srs/Dockerfile and pushed under
+# the role tag declared below; the user must build + push that image
+# before the first deploy can succeed (see USER_TODO.md).
 #
 # Production gets its own fly.production.toml when we cut over.
 
@@ -41,6 +49,13 @@ primary_region = "iad"
   api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"
   worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2"
   beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
+  # SIPREC SRS — uses a *different image* from api/worker/beat. The
+  # build/image directives below the [[vm]] blocks override the default
+  # Dockerfile for this process group. Until the user runs
+  # ``flyctl deploy --config fly.toml --image $REGISTRY/linda-siprec-srs:tag``
+  # this process will fail to start; the api/worker/beat processes
+  # are unaffected.
+  siprec_srs = "/usr/local/bin/entrypoint.sh freeswitch -nonat -nf"
 
 # Persistent storage for celerybeat-schedule. Without this the beat
 # scheduler resets its "last fired" state on every restart, which
@@ -93,3 +108,52 @@ primary_region = "iad"
   size = "shared-cpu-1x"
   memory = "1gb"
   processes = ["beat"]
+
+# SIPREC SRS sizing. FreeSWITCH userspace mode burns ~25 MHz per
+# concurrent call for SRTP termination + audio fork; performance-2x
+# (4 vCPU / 8 GB) handles ~150 concurrent calls comfortably. Per-customer
+# load limits are enforced at the SBC, not here. Down-size to
+# performance-1x for a single-customer pilot; up-size to performance-4x
+# for >300 concurrent calls.
+[[vm]]
+  size = "performance-2x"
+  memory = "8gb"
+  processes = ["siprec_srs"]
+
+# UDP services for SIP-TLS signaling and the RTP port range. Fly
+# Edge does TCP/HTTP load-balancing transparently but UDP needs an
+# explicit declaration. The port range is intentionally narrow (16k)
+# so each SRS machine's NAT mapping table stays small; high-volume
+# tenants get a dedicated machine. SIP-TLS is registered on the same
+# 5061 the customer's SBC dials directly via the public hostname.
+[[services]]
+  protocol = "udp"
+  internal_port = 5061
+  processes = ["siprec_srs"]
+
+  [[services.ports]]
+    port = 5061
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 5061
+  processes = ["siprec_srs"]
+
+  [[services.ports]]
+    port = 5061
+    handlers = ["tls"]
+    tls_options = { alpn = ["sip"] }
+
+# RTP port range — declared as a sidecar service. Fly bills UDP
+# services per-port-range, so widening this is a deliberate cost
+# decision (see USER_TODO.md → "Procure a Fly machine size capable of
+# media processing"). The image's RTP_PORT_MIN/MAX env vars must
+# match this range exactly or the SBC will see ICMP unreachable.
+[[services]]
+  protocol = "udp"
+  internal_port = 16384
+  processes = ["siprec_srs"]
+
+  [[services.ports]]
+    start_port = 16384
+    end_port = 32768

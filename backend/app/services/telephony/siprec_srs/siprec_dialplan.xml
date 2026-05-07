@@ -1,0 +1,31 @@
+<!--
+  Dialplan context for SIPREC INVITEs.
+
+  Every inbound INVITE is routed to the Lua handler at
+  /etc/freeswitch/scripts/siprec_handler.lua. The handler:
+
+  1. Extracts the multipart body from the SIP INVITE message.
+  2. POSTs recording.started to LINDA's /siprec/events.
+  3. Records the inbound RTP streams to disk and forks PCM frames
+     to /siprec/events as audio.frame events (one per 20 ms / per
+     SDP media stream).
+  4. POSTs recording.stopped on hangup with the reason code.
+
+  Production note: the actual audio fork is configured in
+  siprec_handler.lua via mod_audio_fork, *not* here. This dialplan
+  only routes; audio mechanics live where they're easier to iterate.
+-->
+<include>
+  <context name="siprec">
+    <extension name="any-siprec-invite">
+      <!-- Match any inbound INVITE; the Lua handler enforces SIPREC's
+           media-type and rs-metadata requirements and rejects with 415
+           if they're missing. -->
+      <condition field="destination_number" expression="^.*$">
+        <action application="answer"/>
+        <action application="lua" data="siprec_handler.lua"/>
+        <action application="hangup" data="NORMAL_CLEARING"/>
+      </condition>
+    </extension>
+  </context>
+</include>

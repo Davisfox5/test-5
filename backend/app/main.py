@@ -202,6 +202,9 @@ app.include_router(websocket_router, tags=["websocket"])
 # or remove the BEGIN/END markers.
 # See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
 # stream-1/siprec:
+from backend.app.api.siprec import siprec_router as _siprec_router  # noqa: E402
+
+app.include_router(_siprec_router, prefix=settings.API_V1_PREFIX, tags=["siprec"])
 # stream-2/uc:
 # stream-3/teams:
 # stream-4/audiohook:

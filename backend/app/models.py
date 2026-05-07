@@ -1948,7 +1948,69 @@ class DemoEmailCapture(Base):
 # See: /Users/davisfox/.claude/plans/fair-pushback-let-s-create-playful-puddle.md
 #
 # stream-1/siprec:
-# (SiprecSession goes here)
+class SiprecSession(Base):
+    """One SIPREC recording session as forked from a customer's SBC.
+
+    Sibling to :class:`LiveSession` (which we don't modify): the live
+    coaching pipeline reads from ``LiveSession`` regardless of the
+    ingest source, while ``SiprecSession`` carries the SIPREC-specific
+    metadata that has no analogue in CPaaS sources (the SRC's call id,
+    the rs-metadata XML, the negotiated crypto suite, consent
+    attestation). One-to-one with ``LiveSession`` via
+    ``live_session_id`` — populated by ``SiprecBridge.handle_started``
+    when the SRS reports ``recording.started``.
+    """
+
+    __tablename__ = "siprec_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    live_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("live_sessions.id", ondelete="SET NULL"), index=True
+    )
+    integration_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("integrations.id", ondelete="SET NULL"), index=True
+    )
+    # One of the SIPREC TelephonyProvider Literal values
+    # (siprec_cisco_cube | siprec_avaya_sbce | siprec_metaswitch).
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    # The recording session id from the rs-metadata XML root —
+    # globally unique-ish per SBC and the natural idempotency key for
+    # repeated ``recording.started`` deliveries.
+    src_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    # SBC-side dialog identifier (Call-ID header on the recorded
+    # call). Useful for correlating against the customer's CDRs.
+    src_call_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    # The full rs-metadata document as parsed JSON — participants,
+    # streams, communication-session refs.
+    src_metadata: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # Negotiated SDES suite (e.g. ``AES_256_CM_HMAC_SHA1_80``) or
+    # ``"DTLS_SRTP"`` when DTLS handled the key exchange. The master
+    # key is **never** stored — we only persist the suite name so
+    # ops can answer "did this customer use weak crypto?" without
+    # creating a key-leak surface.
+    sdp_crypto_suite: Mapped[Optional[str]] = mapped_column(String)
+    # Per-tenant attestation that legal consent for recording is in
+    # place. Defaults to False so the bridge fails closed in
+    # jurisdictions that require explicit consent capture.
+    is_consent_attested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # SRS-supplied stop reason (``hangup`` | ``timeout`` | ``error``
+    # | etc.) — left as freeform text because vendors are inconsistent.
+    end_reason: Mapped[Optional[str]] = mapped_column(String)
+
+    __table_args__ = (
+        UniqueConstraint("src_session_id", name="uq_siprec_sessions_src_session_id"),
+    )
 #
 # stream-2/uc:
 # (UcRecordingJob goes here)
