@@ -111,6 +111,7 @@ export default function CustomerDetailPage() {
                     <ChurnUpsellPairedBlock
                         churnRisk={c.churn_risk}
                         upsellScore={c.upsell_score}
+                        customerId={c.id}
                     />
                     <ContactsCard c={c} />
                 </div>
@@ -141,9 +142,11 @@ export default function CustomerDetailPage() {
 function ChurnUpsellPairedBlock({
     churnRisk,
     upsellScore,
+    customerId,
 }: {
     churnRisk: number | null;
     upsellScore: number | null;
+    customerId: string;
 }) {
     if (churnRisk == null && upsellScore == null) return null;
     return (
@@ -154,8 +157,21 @@ function ChurnUpsellPairedBlock({
                     label="Churn risk"
                     score={churnRisk}
                     invertColors
+                    customerId={customerId}
+                    cta={{
+                        label: "Draft a save play",
+                        href: `/action-items?new=1&customer_id=${customerId}&category=churn_save`,
+                    }}
                 />
-                <SignalLight label="Upsell opportunity" score={upsellScore} />
+                <SignalLight
+                    label="Upsell opportunity"
+                    score={upsellScore}
+                    customerId={customerId}
+                    cta={{
+                        label: "Draft an upsell pitch",
+                        href: `/action-items?new=1&customer_id=${customerId}&category=upsell_pitch`,
+                    }}
+                />
             </div>
         </section>
     );
@@ -165,10 +181,14 @@ function SignalLight({
     label,
     score,
     invertColors,
+    customerId,
+    cta,
 }: {
     label: string;
     score: number | null;
     invertColors?: boolean;
+    customerId?: string;
+    cta?: { label: string; href: string };
 }) {
     if (score == null) {
         return (
@@ -191,6 +211,14 @@ function SignalLight({
               low: "var(--text-subtle)",
           };
     const color = colorMap[bucket];
+    // Only surface the CTA when the bucket warrants action — i.e. when
+    // the signal is "live" (high/medium for churn, high/medium for
+    // upsell). Low+inverted (= low churn) is already a positive signal
+    // and doesn't need a button.
+    const showCta =
+        cta != null &&
+        (invertColors ? bucket !== "low" : bucket !== "low") &&
+        customerId != null;
     return (
         <div className="rounded-md border border-border-light bg-bg-secondary p-3 text-sm">
             <div className="flex items-center gap-2">
@@ -208,6 +236,14 @@ function SignalLight({
                 {(score * 100).toFixed(0)}% — based on the most recent analyzed
                 interaction
             </div>
+            {showCta && cta ? (
+                <Link
+                    href={cta.href}
+                    className="mt-2 inline-block rounded border border-border bg-bg-card px-2 py-1 text-xs text-primary hover:bg-card-hover"
+                >
+                    {cta.label} →
+                </Link>
+            ) : null}
         </div>
     );
 }

@@ -142,3 +142,55 @@ export function validateScorecard(
     }
     return { ok: errors.length === 0, errors };
 }
+
+/* ── Review queue ───────────────────────────────────────────────────── */
+
+export type TriagePriority = "high" | "medium" | "low";
+
+export interface ReviewQueueItem {
+    interaction_id: string;
+    title: string | null;
+    channel: string;
+    status: string;
+    duration_seconds: number | null;
+    created_at: string;
+    composite: number | null;
+    weakest_dimension: string | null;
+    weakest_score: number | null;
+    sentiment_overall: string | null;
+    churn_risk_signal: string | null;
+    triage_priority: TriagePriority;
+}
+
+export function useReviewQueue(triage?: TriagePriority) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["scorecard-review-queue", triage ?? "all"],
+        queryFn: () => {
+            const qs = triage ? `?triage=${triage}` : "";
+            return api.get<ReviewQueueItem[]>(
+                `/scorecards/review-queue${qs}`,
+            );
+        },
+        // The queue refreshes on a slow cadence — managers don't need
+        // sub-second freshness, and the underlying judge writes happen
+        // every few minutes at most. Keep this loose to avoid spamming
+        // the backend.
+        staleTime: 60_000,
+    });
+}
+
+export function useResolveReviewItem() {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (interactionId: string) =>
+            api.post<void>(
+                `/scorecards/review-queue/${interactionId}/resolve`,
+                {},
+            ),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["scorecard-review-queue"] });
+        },
+    });
+}

@@ -24,12 +24,20 @@ export default function ScorecardsPage() {
                         Templates Linda uses to grade your calls.
                     </p>
                 </div>
-                <Link
-                    href="/scorecards/new"
-                    className="rounded-md bg-primary text-white px-3 py-1.5 text-sm font-medium hover:bg-primary/90"
-                >
-                    + Create scorecard
-                </Link>
+                <div className="flex items-center gap-2">
+                    <Link
+                        href="/scorecards/review-queue"
+                        className="rounded-md border border-border bg-bg-secondary px-3 py-1.5 text-sm font-medium text-text hover:bg-card-hover"
+                    >
+                        Review queue
+                    </Link>
+                    <Link
+                        href="/scorecards/new"
+                        className="rounded-md bg-primary text-white px-3 py-1.5 text-sm font-medium hover:bg-primary/90"
+                    >
+                        + Create scorecard
+                    </Link>
+                </div>
             </header>
 
             {error ? (

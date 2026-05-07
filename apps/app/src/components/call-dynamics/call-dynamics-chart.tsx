@@ -42,6 +42,27 @@ const PIN_COLORS: Record<(typeof PIN_TYPES)[number], string> = {
     other: "var(--text-subtle)",
 };
 
+// Severity weights drive cluster ranking: a single objection is worth
+// more visual airtime than three "other" mentions because reps need to
+// know about it. Tuned so a cluster with 1 objection beats a cluster
+// with 2 questions, but a "win" still beats an "other".
+const PIN_SEVERITY: Record<(typeof PIN_TYPES)[number], number> = {
+    objection: 3,
+    risk: 3,
+    commitment: 2,
+    win: 2,
+    question: 1,
+    other: 0.5,
+};
+
+function clusterSeverity(items: Array<{ type: string }>): number {
+    let total = 0;
+    for (const m of items) {
+        total += PIN_SEVERITY[pinCategory(m.type)];
+    }
+    return total;
+}
+
 /**
  * Call Dynamics — single timeline with up to three toggleable layers:
  * customer mood (sentiment_trajectory), customer vocal energy (paralinguistics
@@ -170,9 +191,15 @@ export function CallDynamicsChart({
                     );
                     if (moments.length === 0) return null;
                     const clusters = clusterMoments(moments, 20);
-                    const ranked = [...clusters].sort(
-                        (a, b) => b.items.length - a.items.length,
-                    );
+                    // Rank by severity (a single objection beats two
+                    // "other" mentions). Ties broken by raw count, so
+                    // bigger clusters of equal severity still win.
+                    const ranked = [...clusters].sort((a, b) => {
+                        const sa = clusterSeverity(a.items);
+                        const sb = clusterSeverity(b.items);
+                        if (sb !== sa) return sb - sa;
+                        return b.items.length - a.items.length;
+                    });
                     const visible = ranked.slice(0, 6);
                     return visible.map((cluster, idx) => {
                         const t = cluster.tCenter;
@@ -194,7 +221,17 @@ export function CallDynamicsChart({
                                 <circle
                                     cx={cx}
                                     cy={padY + innerH - 4}
-                                    r={cluster.items.length > 1 ? 6 : 4}
+                                    r={(() => {
+                                        // Severity-weighted radius —
+                                        // a 1-item objection (sev=3)
+                                        // looks at least as big as a
+                                        // 2-item question cluster
+                                        // (sev=2).
+                                        const sev = clusterSeverity(
+                                            cluster.items,
+                                        );
+                                        return Math.min(8, 3 + sev * 0.7);
+                                    })()}
                                     fill={color}
                                     stroke="var(--bg-card)"
                                     strokeWidth={1.5}
