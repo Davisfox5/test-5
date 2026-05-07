@@ -126,5 +126,9 @@ pydub>=0.25                       # MP3/WAV/FLAC → PCM via ffmpeg shell-out
 # stream-1/siprec:
 # stream-2/uc:
 # stream-3/teams:
+# Reuses the existing `msal>=1.28` pin in the OAuth / Microsoft block above.
+# Teams compliance recording uses MSAL's `ConfidentialClientApplication` for
+# app-only (client-credentials) auth against Microsoft Graph; the user-OAuth
+# registry uses MSAL's delegated flow. Same library, two flows — one pin.
 # stream-4/audiohook:
 # === END MULTI-STREAM DEPS REGION ===
