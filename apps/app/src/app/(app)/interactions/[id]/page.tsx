@@ -1061,12 +1061,20 @@ function CoachingTab({
     const coaching = insights?.coaching;
     const evidence = insights?.evidence;
     const rubric = insights?.rubric;
+    const rapport = insights?.rapport;
+    const snippets = insights?.notable_snippets ?? [];
 
     const wentWell = coaching?.what_went_well ?? [];
     const improvements = coaching?.improvements ?? [];
 
     return (
         <div className="space-y-6">
+            {/* Rapport gauge — LSM-derived, transcript-only. Hidden
+                when the analysis pipeline couldn't compute it (single
+                speaker, empty transcript, etc.). */}
+            {typeof rapport?.lsm_overall === "number" && (
+                <RapportCard rapport={rapport} />
+            )}
             {/*
                 Reinforcement parity: "What went well" sits left of
                 "Try next time" so the rep sees the positive read first.
@@ -1175,7 +1183,142 @@ function CoachingTab({
                     </div>
                 </section>
             )}
+
+            {/* Notable snippets — LLM has been emitting these since
+                Phase 5b but no UI surface rendered them. They live here
+                because they double as coaching artifacts (manager picks
+                a great moment to share with the team). */}
+            {snippets.length > 0 && <NotableSnippetsCard snippets={snippets} />}
         </div>
+    );
+}
+
+function RapportCard({
+    rapport,
+}: {
+    rapport: NonNullable<
+        import("@/lib/interactions").InteractionInsights["rapport"]
+    >;
+}) {
+    const overall = rapport.lsm_overall ?? 0;
+    const pct = Math.round(overall * 100);
+    // Bands tuned around the Pennebaker reference: typical free-flow
+    // dialogue lands ~0.65–0.80; below 0.5 reads as misalignment.
+    const band =
+        overall >= 0.75
+            ? { label: "Strong mirroring", tone: "emerald" as const }
+            : overall >= 0.6
+              ? { label: "Aligned", tone: "amber" as const }
+              : { label: "Drifting", tone: "rose" as const };
+    const tone = {
+        emerald:
+            "border-accent-emerald/40 bg-accent-emerald/10 text-accent-emerald",
+        amber: "border-accent-amber/40 bg-accent-amber/10 text-accent-amber",
+        rose: "border-accent-rose/40 bg-accent-rose/10 text-accent-rose",
+    }[band.tone];
+    return (
+        <section className="rounded-lg border border-border bg-bg-card p-5">
+            <header className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                    <h3 className="text-sm font-semibold">Rapport</h3>
+                    <p className="mt-1 text-xs text-text-subtle">
+                        Linguistic Style Matching — how closely you and the
+                        customer mirror each other&apos;s function-word usage.
+                        Computed deterministically from the transcript; not a
+                        model gut-feel.
+                    </p>
+                </div>
+                <span
+                    className={`rounded-full border px-3 py-1 text-xs ${tone}`}
+                >
+                    {pct}% · {band.label}
+                </span>
+            </header>
+            {rapport.lsm_by_category && (
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {Object.entries(rapport.lsm_by_category)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([cat, val]) => (
+                            <div
+                                key={cat}
+                                className="rounded-md border border-border-light bg-bg-secondary px-3 py-2"
+                            >
+                                <div className="text-[11px] uppercase tracking-wide text-text-subtle">
+                                    {cat.replace(/_/g, " ")}
+                                </div>
+                                <div className="mt-1 text-sm font-semibold text-text">
+                                    {Math.round(val * 100)}%
+                                </div>
+                            </div>
+                        ))}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function NotableSnippetsCard({
+    snippets,
+}: {
+    snippets: NonNullable<
+        import("@/lib/interactions").InteractionInsights["notable_snippets"]
+    >;
+}) {
+    return (
+        <section className="rounded-lg border border-border bg-bg-card p-5">
+            <header>
+                <h3 className="text-sm font-semibold">Notable moments</h3>
+                <p className="mt-1 text-xs text-text-subtle">
+                    Linda flagged these as worth bookmarking — share-able
+                    coaching artifacts.
+                </p>
+            </header>
+            <ul className="mt-3 space-y-2">
+                {snippets.map((s, idx) => {
+                    const tone =
+                        s.quality === "positive"
+                            ? "border-accent-emerald/40"
+                            : s.quality === "negative"
+                              ? "border-accent-rose/40"
+                              : "border-border-light";
+                    return (
+                        <li
+                            key={idx}
+                            className={`rounded-md border ${tone} bg-bg-secondary px-3 py-2`}
+                        >
+                            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                                <span className="text-sm font-medium text-text">
+                                    {s.title || s.type || "Notable moment"}
+                                </span>
+                                {s.start_time && (
+                                    <span className="text-[11px] text-text-subtle">
+                                        {s.start_time}
+                                        {s.end_time ? ` – ${s.end_time}` : ""}
+                                    </span>
+                                )}
+                            </div>
+                            {s.description && (
+                                <p className="mt-1 text-xs text-text-muted">
+                                    {s.description}
+                                </p>
+                            )}
+                            {s.tags && s.tags.length > 0 && (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                    {s.tags.map((t, i) => (
+                                        <span
+                                            key={i}
+                                            className="rounded bg-bg-card px-1.5 py-0.5 text-[10px] text-text-subtle"
+                                        >
+                                            #{t}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                        </li>
+                    );
+                })}
+            </ul>
+        </section>
     );
 }
 

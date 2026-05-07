@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useState } from "react";
 import type { MethodologyCoverage } from "@/lib/interactions";
 
 /**
@@ -74,14 +76,54 @@ export function MethodologyScorecard({
                 })}
             </div>
             {coverage.next_question && (
-                <div className="mt-3 rounded-md border border-primary-soft bg-primary-soft/30 p-3 text-sm">
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                        Suggested next question
-                    </div>
-                    <div className="text-text">{coverage.next_question}</div>
-                </div>
+                <NextQuestionCallout question={coverage.next_question} />
             )}
         </section>
+    );
+}
+
+function NextQuestionCallout({ question }: { question: string }) {
+    const [copied, setCopied] = useState(false);
+    async function copy() {
+        try {
+            await navigator.clipboard.writeText(question);
+            setCopied(true);
+            // Reset the chip after a beat so the rep can copy again on
+            // a longer call. 1.5s is short enough to feel responsive
+            // and long enough to read the confirmation.
+            setTimeout(() => setCopied(false), 1500);
+        } catch {
+            // Clipboard can be blocked by Permissions-Policy on some
+            // tenants' deployments. Silent — the action-items link
+            // below still gives the rep a path.
+        }
+    }
+    return (
+        <div className="mt-3 rounded-md border border-primary-soft bg-primary-soft/30 p-3 text-sm">
+            <div className="mb-1 flex items-baseline justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                    Suggested next question
+                </span>
+                <div className="flex gap-2">
+                    <button
+                        type="button"
+                        onClick={copy}
+                        className="rounded border border-border bg-bg-card px-2 py-0.5 text-[11px] text-text hover:bg-card-hover"
+                    >
+                        {copied ? "Copied ✓" : "Copy"}
+                    </button>
+                    <Link
+                        href={`/action-items?new=1&category=discovery_followup&title=${encodeURIComponent(
+                            "Ask: " + question,
+                        )}`}
+                        className="rounded border border-border bg-bg-card px-2 py-0.5 text-[11px] text-primary hover:bg-card-hover"
+                    >
+                        Add to action items
+                    </Link>
+                </div>
+            </div>
+            <div className="text-text">{question}</div>
+        </div>
     );
 }
 

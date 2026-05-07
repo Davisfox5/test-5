@@ -1095,6 +1095,13 @@ def _run_pipeline_impl(
     # rubric-as-source-of-truth in Phase 4.
     from backend.app.services.evidence_scoring import attach_rubric
     attach_rubric(insights)
+    # Phase 5 rapport gauge — Linguistic Style Matching (LSM) is a
+    # transcript-only signal of how closely the rep and customer mirror
+    # each other's function-word usage. Cheap, deterministic, surfaces
+    # on the Coaching tab. The audio-driven vocal-accommodation
+    # counterpart is still gated on Phase 2 paralinguistic extraction.
+    from backend.app.services.rapport_lsm import attach_rapport
+    attach_rapport(insights, segments_dicts)
     # ``interaction.insights`` may already have been mutated above
     # (entity_resolution stashes suggestions there); merge rather than
     # overwrite when we replace the dict here.
