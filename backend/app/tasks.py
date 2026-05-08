@@ -1186,6 +1186,34 @@ def _run_pipeline_impl(
     )
     attach_rapport(insights, segments_dicts)
     attach_vocal_accommodation(insights, paralinguistic_raw)
+
+    # Phase 4 binary classifiers. When an active model exists for the
+    # tenant + target, we write a calibrated probability alongside the
+    # bucket-mapped numeric (dual-logging). Cold-start tenants get
+    # ``status="insufficient_data"`` and the rubric / bucket numerics
+    # remain the source of truth — no override. Best-effort: a missing
+    # ScorerVersion table or a malformed model row never blocks the
+    # pipeline.
+    try:
+        from backend.app.services.phase4_classifier import predict as _phase4_predict
+
+        classifier_block: Dict[str, Dict[str, Any]] = {}
+        for _target in ("churn", "upsell"):
+            pred = _phase4_predict(session, tenant.id, _target, insights)
+            classifier_block[_target] = {
+                "status": pred.status,
+                "probability": pred.probability,
+                "model_version": pred.model_version,
+                "label_horizon_days": pred.label_horizon_days,
+                "caveat": pred.caveat,
+            }
+        insights["classifier_predictions"] = classifier_block
+    except Exception:
+        logger.exception(
+            "Phase 4 classifier inference failed for %s (non-fatal)",
+            interaction_id,
+        )
+
     # ``interaction.insights`` may already have been mutated above
     # (entity_resolution stashes suggestions there); merge rather than
     # overwrite when we replace the dict here.
