@@ -1103,3 +1103,156 @@ async def resegment_transcripts(
         return TranscriptResegmentResponse(processed=len(out), rows=out)
     finally:
         session.close()
+
+
+# ── Phase 4 classifier training ─────────────────────────────────────
+
+
+class Phase4TrainRequest(BaseModel):
+    target: str = "churn"  # "churn" | "upsell"
+    label_horizon_days: int = 90  # 30 | 90 | 180 | 365
+
+
+class Phase4TrainResponse(BaseModel):
+    tenant_id: uuid.UUID
+    target: str
+    status: str  # "ok" | "learning" | "insufficient_data"
+    n_total: int
+    n_events: int
+    model_version: Optional[str] = None
+    log_loss: Optional[float] = None
+    metrics: dict = {}
+
+
+class Phase4StatusRow(BaseModel):
+    target: str
+    has_active_model: bool
+    model_version: Optional[str] = None
+    n_train: Optional[int] = None
+    n_events: Optional[int] = None
+    learning_mode: Optional[bool] = None
+    metrics: dict = {}
+
+
+class Phase4StatusResponse(BaseModel):
+    tenant_id: uuid.UUID
+    rows: List[Phase4StatusRow]
+
+
+@router.post(
+    "/admin/classifier/train",
+    response_model=Phase4TrainResponse,
+)
+async def classifier_train(
+    body: Phase4TrainRequest,
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Phase4TrainResponse:
+    """Train (or retrain) the Phase 4 binary classifier for this tenant.
+
+    Inline / synchronous: the LR fit is fast (pure Python, ~1k rows in
+    well under a second). Status comes back as ``"ok"`` once
+    ``RELIABLE_TRAIN_EVENTS`` is crossed; ``"learning"`` between
+    ``MIN_TRAIN_EVENTS`` and that threshold; ``"insufficient_data"``
+    when there isn't enough labeled outcome data yet — in which case
+    the rubric / bucket numerics stay the source of truth on every
+    interaction page.
+    """
+    from backend.app.services.phase4_classifier import (
+        SUPPORTED_LABEL_HORIZONS,
+        train_for_tenant,
+    )
+    from backend.app.tasks import _get_sync_session
+
+    if body.target not in {"churn", "upsell"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported target: {body.target!r}",
+        )
+    if body.label_horizon_days not in SUPPORTED_LABEL_HORIZONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported label_horizon_days: {body.label_horizon_days!r} "
+                f"(allowed: {SUPPORTED_LABEL_HORIZONS})"
+            ),
+        )
+
+    session = _get_sync_session()
+    try:
+        result = train_for_tenant(
+            session,
+            tenant.id,
+            target=body.target,
+            label_horizon_days=body.label_horizon_days,
+        )
+        return Phase4TrainResponse(
+            tenant_id=tenant.id,
+            target=result.target,
+            status=result.status,
+            n_total=result.n_total,
+            n_events=result.n_events,
+            model_version=result.model_version,
+            log_loss=result.log_loss,
+            metrics=result.metrics,
+        )
+    finally:
+        session.close()
+
+
+@router.get(
+    "/admin/classifier/status",
+    response_model=Phase4StatusResponse,
+)
+async def classifier_status(
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Phase4StatusResponse:
+    """Active model + calibration metrics per target.
+
+    Returns one row per supported target. ``has_active_model=False``
+    means cold-start (rubric is the source of truth). Use the
+    ``metrics`` dict to surface a calibration-curve UI.
+    """
+    from backend.app.models import ScorerVersion
+    from backend.app.tasks import _get_sync_session
+
+    session = _get_sync_session()
+    try:
+        rows: List[Phase4StatusRow] = []
+        for target in ("churn", "upsell"):
+            scorer_name = f"{target}_lr_phase4"
+            sv = (
+                session.query(ScorerVersion)
+                .filter(
+                    ScorerVersion.tenant_id == tenant.id,
+                    ScorerVersion.scorer_name == scorer_name,
+                    ScorerVersion.is_active.is_(True),
+                )
+                .order_by(ScorerVersion.created_at.desc())
+                .first()
+            )
+            if sv is None:
+                rows.append(
+                    Phase4StatusRow(
+                        target=target,
+                        has_active_model=False,
+                    )
+                )
+                continue
+            params = sv.parameters or {}
+            calibration = sv.calibration or {}
+            rows.append(
+                Phase4StatusRow(
+                    target=target,
+                    has_active_model=True,
+                    model_version=sv.version,
+                    n_train=int(params.get("n_train", 0)) or None,
+                    n_events=int(params.get("n_events", 0)) or None,
+                    learning_mode=bool(params.get("learning_mode", False)),
+                    metrics=(calibration.get("metrics_inline") or {}),
+                )
+            )
+        return Phase4StatusResponse(tenant_id=tenant.id, rows=rows)
+    finally:
+        session.close()
