@@ -45,7 +45,9 @@ export default function DashboardPage() {
     const accounts = useAccountHealth(30, 5);
     const isManager =
         me.data?.user?.role === "manager" || me.data?.user?.role === "admin";
-    const manager = useManagerOverview(30);
+    // Skip the manager-only endpoint for agents so we don't burn a 403
+    // on every page load. The flag flips once ``me`` resolves.
+    const manager = useManagerOverview(30, isManager);
     const recent = useInteractions(
         { limit: 5 },
         {
@@ -78,6 +80,12 @@ export default function DashboardPage() {
         return out;
     }, [trends.data]);
 
+    // Aggregate trend points across channels per date so the chart has
+    // one bar per day rather than one bar per channel-day. Sentiment is
+    // averaged weighted by per-channel call count. MUST stay above the
+    // early-return guards so the hook count is stable across renders.
+    const trendPoints = useMemoTrendPoints(trends.data);
+
     if (me.isLoading) return <p className="text-text-muted">Loading…</p>;
     if (me.error || !me.data)
         return (
@@ -87,11 +95,6 @@ export default function DashboardPage() {
     const { tenant, user } = me.data;
     const firstName = user?.name?.split(" ")[0];
     const isEmpty = !recent.isLoading && (recent.data?.length ?? 0) === 0;
-
-    // Aggregate trend points across channels per date so the chart has
-    // one bar per day rather than one bar per channel-day. Sentiment is
-    // averaged weighted by per-channel call count.
-    const trendPoints = useMemoTrendPoints(trends.data);
 
     return (
         <div className="space-y-6">

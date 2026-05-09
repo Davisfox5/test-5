@@ -180,7 +180,7 @@ export interface ManagerDashboardOverview {
     methodology: MethodologyAdherenceRow[];
 }
 
-export function useManagerOverview(windowDays = 30) {
+export function useManagerOverview(windowDays = 30, enabled = true) {
     const api = useApi();
     return useQuery({
         queryKey: ["manager-dashboard-overview", windowDays],
@@ -189,5 +189,8 @@ export function useManagerOverview(windowDays = 30) {
                 `/manager/dashboard/overview?window_days=${windowDays}`,
             ),
         retry: false,
+        // Skip the call entirely for agents — the endpoint is manager-
+        // gated and would 403, polluting the console with red noise.
+        enabled,
     });
 }
