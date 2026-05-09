@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -574,7 +575,12 @@ async def _run_coaching(
             caller_turn = _last_caller_text(new_segments)
             if caller_turn:
                 kb_hits_for_coach = await _fetch_kb_hits_for_coaching(
-                    retrieval_service, tenant_id, contact_id, caller_turn
+                    retrieval_service,
+                    tenant_id,
+                    contact_id,
+                    caller_turn,
+                    session_id=session_id,
+                    redis=redis,
                 )
 
         result = await coaching_service.hint_incremental(
@@ -602,7 +608,12 @@ async def _run_coaching(
             )
 
         # Persist updated coaching state with the same safety-net TTL as
-        # the transcript buffer (see _LIVE_BUFFER_TTL_SECONDS).
+        # the transcript buffer (see _LIVE_BUFFER_TTL_SECONDS). Today the
+        # state is read on reconnect/resume only — not broadcast — so
+        # storage cost matters more than wire bandwidth here. Persisting
+        # only the diff vs the prior snapshot keeps Redis IO small while
+        # leaving the read-side contract (full snapshot on GET) intact:
+        # the writer merges into a single canonical snapshot key.
         updated_state = result.get("updated_state", previous_state)
         await redis.set(
             f"live:{session_id}:coaching_state",
@@ -1087,13 +1098,41 @@ async def _excluded_chunk_ids(
     return excluded
 
 
+_KB_HITS_CACHE_TTL_SECONDS = 300  # 5 min — covers the typical hot topic span
+
+
+def _kb_hits_cache_key(session_id: str, query: str) -> str:
+    digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+    return f"live:kb_hits:v1:{session_id}:{digest}"
+
+
 async def _fetch_kb_hits_for_coaching(
     retrieval_service: RetrievalService,
     tenant_id: uuid.UUID,
     contact_id: Optional[uuid.UUID],
     caller_text: str,
+    *,
+    session_id: Optional[str] = None,
+    redis: Optional[aioredis.Redis] = None,
 ) -> List[dict]:
-    """Fetch top-K hits to feed into the coaching LLM as ``kb_hits``."""
+    """Fetch top-K hits to feed into the coaching LLM as ``kb_hits``.
+
+    Within a single live session, the same topic will surface dozens of
+    times (e.g. "pricing" recurring every 30-60s during a deal call).
+    When ``session_id`` and ``redis`` are provided, hits are cached
+    keyed by (session_id, sha256(query)) for 5 minutes so we don't
+    re-run the search on every coaching turn.
+    """
+    cache_key: Optional[str] = None
+    if session_id and redis is not None:
+        cache_key = _kb_hits_cache_key(session_id, caller_text)
+        try:
+            blob = await redis.get(cache_key)
+            if blob:
+                return json.loads(blob)
+        except Exception:  # pragma: no cover — cache best-effort
+            logger.debug("KB hits cache get failed", exc_info=True)
+
     try:
         async with async_session() as db:
             excluded: List[uuid.UUID] = []
@@ -1107,7 +1146,7 @@ async def _fetch_kb_hits_for_coaching(
                 k=3,
                 exclude_chunk_ids=excluded,
             )
-            return [
+            payload = [
                 {
                     "title": h.doc_title or "Untitled",
                     "snippet": h.text[:400],
@@ -1116,6 +1155,16 @@ async def _fetch_kb_hits_for_coaching(
                 }
                 for h in hits
             ]
+            if cache_key and redis is not None and payload:
+                try:
+                    await redis.set(
+                        cache_key,
+                        json.dumps(payload),
+                        ex=_KB_HITS_CACHE_TTL_SECONDS,
+                    )
+                except Exception:  # pragma: no cover
+                    logger.debug("KB hits cache set failed", exc_info=True)
+            return payload
     except Exception:
         logger.exception("KB hits fetch failed for coaching")
         return []

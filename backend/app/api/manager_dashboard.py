@@ -8,22 +8,40 @@ move to a materialized view later if a tenant gets noisy enough.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import Float as sa_Float
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant, require_role
+from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import Interaction, Tenant, User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ── Response cache (best-effort Redis) ───────────────────────────────────
+
+_DASHBOARD_CACHE_TTL_SECONDS = 60
+_DASHBOARD_CACHE_KEY = "dash:overview:v1:{tenant_id}:{window_days}"
+
+
+def _dashboard_redis():
+    try:
+        import redis  # type: ignore
+
+        return redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    except Exception:  # pragma: no cover
+        return None
 
 
 # ── Output shapes ───────────────────────────────────────────────────────
@@ -92,6 +110,7 @@ class TrainingGapReport(BaseModel):
 )
 async def manager_dashboard_overview(
     window_days: int = Query(30, ge=1, le=365),
+    nocache: int = Query(0, ge=0, le=1, description="Bypass Redis cache (QA tool)."),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -104,19 +123,46 @@ async def manager_dashboard_overview(
     3. Methodology adherence — per-framework, avg coverage ratio
        (covered / (covered + missing)) and the stage that was missed
        most often.
+
+    Result is cached in Redis for 60s (per tenant + window). Pass
+    ``?nocache=1`` to skip the cache layer for QA.
     """
+    cache_key = _DASHBOARD_CACHE_KEY.format(
+        tenant_id=tenant.id, window_days=window_days
+    )
+    r = _dashboard_redis() if not nocache else None
+    if r is not None:
+        try:
+            blob = r.get(cache_key)
+            if blob:
+                return DashboardOverview.model_validate_json(blob)
+        except Exception:  # pragma: no cover
+            logger.debug("dashboard cache get failed", exc_info=True)
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
 
     talk_listen = await _talk_listen_distribution(db, tenant.id, cutoff)
     churn = await _churn_throughput(db, tenant.id, cutoff, window_days)
     methodology = await _methodology_adherence(db, tenant.id, cutoff)
 
-    return DashboardOverview(
+    response = DashboardOverview(
         window_days=window_days,
         talk_listen=talk_listen,
         churn_throughput=churn,
         methodology=methodology,
     )
+
+    if r is not None:
+        try:
+            r.setex(
+                cache_key,
+                _DASHBOARD_CACHE_TTL_SECONDS,
+                response.model_dump_json(),
+            )
+        except Exception:  # pragma: no cover
+            logger.debug("dashboard cache set failed", exc_info=True)
+
+    return response
 
 
 @router.get(
@@ -134,15 +180,49 @@ async def manager_dashboard_training_gap(
     ``Interaction.call_metrics`` (deterministic) and
     ``insights.methodology_coverage`` (LLM-extracted). Per the Phase 5
     spec, these surface only for managers + admins — agents don't see
-    each other's diagnostics."""
+    each other's diagnostics.
+
+    The aggregation runs in SQL — Postgres extracts the JSONB scalars
+    and aggregates per-rep, so the wire payload is small (a few hundred
+    bytes per rep instead of full call_metrics + insights blobs).
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+
+    cm = Interaction.call_metrics
+    ins = Interaction.insights
+
+    # Prefer call_metrics->>'reflection_ratio'; fall back to the
+    # ``reflections_by_agent_count / agent_turn_count`` ratio that older
+    # seeds populate. NULLIF guards the division.
+    reflection_expr = func.coalesce(
+        cm["reflection_ratio"].as_float(),
+        cm["reflections_by_agent_count"].as_float()
+        / func.nullif(cm["agent_turn_count"].as_float(), 0.0),
+    )
+    open_q_expr = cm["open_question_rate"].as_float()
+
+    # Methodology coverage = covered / (covered + missing). We expose
+    # both array lengths and let Postgres do the division per-row.
+    covered_len = func.coalesce(
+        func.jsonb_array_length(ins["methodology_coverage"]["covered"]),
+        0,
+    )
+    missing_len = func.coalesce(
+        func.jsonb_array_length(ins["methodology_coverage"]["missing"]),
+        0,
+    )
+    methodology_expr = func.cast(covered_len, sa_Float()) / func.nullif(
+        func.cast(covered_len + missing_len, sa_Float()), 0.0
+    )
 
     stmt = (
         select(
-            User.id,
-            User.name,
-            Interaction.call_metrics,
-            Interaction.insights,
+            User.id.label("rep_id"),
+            User.name.label("rep_name"),
+            func.count(Interaction.id).label("call_count"),
+            func.avg(reflection_expr).label("reflection_rate"),
+            func.avg(open_q_expr).label("open_question_rate"),
+            func.avg(methodology_expr).label("avg_methodology_coverage"),
         )
         .select_from(Interaction)
         .join(User, User.id == Interaction.agent_id, isouter=True)
@@ -150,98 +230,28 @@ async def manager_dashboard_training_gap(
             Interaction.tenant_id == tenant.id,
             Interaction.created_at >= cutoff,
         )
+        .group_by(User.id, User.name)
+        .order_by(func.count(Interaction.id).desc())
     )
     rows = (await db.execute(stmt)).all()
 
-    by_rep: Dict[str, Dict] = {}
-    for rep_id, rep_name, call_metrics, insights in rows:
-        key = str(rep_id) if rep_id else "_unassigned"
-        bucket = by_rep.setdefault(
-            key,
-            {
-                "rep_id": str(rep_id) if rep_id else None,
-                "rep_name": rep_name,
-                "call_count": 0,
-                "reflection_rate_sum": 0.0,
-                "reflection_rate_n": 0,
-                "open_q_rate_sum": 0.0,
-                "open_q_rate_n": 0,
-                "methodology_sum": 0.0,
-                "methodology_n": 0,
-            },
+    out: List[RepTrainingGap] = [
+        RepTrainingGap(
+            rep_id=str(r.rep_id) if r.rep_id else None,
+            rep_name=r.rep_name,
+            call_count=int(r.call_count or 0),
+            reflection_rate=round(float(r.reflection_rate), 3)
+            if r.reflection_rate is not None
+            else None,
+            open_question_rate=round(float(r.open_question_rate), 3)
+            if r.open_question_rate is not None
+            else None,
+            avg_methodology_coverage=round(float(r.avg_methodology_coverage), 3)
+            if r.avg_methodology_coverage is not None
+            else None,
         )
-        bucket["call_count"] += 1
-
-        # Reflection rate — call_metrics may carry it under a few names
-        # depending on the seed; tolerate both shapes.
-        cm = call_metrics if isinstance(call_metrics, dict) else {}
-        rr = cm.get("reflection_ratio")
-        if rr is None:
-            ref_count = cm.get("reflections_by_agent_count")
-            agent_turns = cm.get("agent_turn_count")
-            if (
-                isinstance(ref_count, (int, float))
-                and isinstance(agent_turns, (int, float))
-                and agent_turns > 0
-            ):
-                rr = ref_count / agent_turns
-        if isinstance(rr, (int, float)):
-            bucket["reflection_rate_sum"] += float(rr)
-            bucket["reflection_rate_n"] += 1
-
-        # Open-question rate.
-        oq = cm.get("open_question_rate")
-        if isinstance(oq, (int, float)):
-            bucket["open_q_rate_sum"] += float(oq)
-            bucket["open_q_rate_n"] += 1
-
-        # Methodology coverage ratio.
-        ins = insights if isinstance(insights, dict) else {}
-        cov = ins.get("methodology_coverage")
-        if isinstance(cov, dict):
-            covered = cov.get("covered") or []
-            missing = cov.get("missing") or []
-            total = len(covered) + len(missing) if isinstance(covered, list) else 0
-            if total > 0:
-                ratio = len(covered) / total
-                bucket["methodology_sum"] += ratio
-                bucket["methodology_n"] += 1
-
-    out: List[RepTrainingGap] = []
-    for bucket in by_rep.values():
-        out.append(
-            RepTrainingGap(
-                rep_id=bucket["rep_id"],
-                rep_name=bucket["rep_name"],
-                call_count=bucket["call_count"],
-                reflection_rate=(
-                    round(
-                        bucket["reflection_rate_sum"]
-                        / bucket["reflection_rate_n"],
-                        3,
-                    )
-                    if bucket["reflection_rate_n"] > 0
-                    else None
-                ),
-                open_question_rate=(
-                    round(
-                        bucket["open_q_rate_sum"] / bucket["open_q_rate_n"],
-                        3,
-                    )
-                    if bucket["open_q_rate_n"] > 0
-                    else None
-                ),
-                avg_methodology_coverage=(
-                    round(
-                        bucket["methodology_sum"] / bucket["methodology_n"],
-                        3,
-                    )
-                    if bucket["methodology_n"] > 0
-                    else None
-                ),
-            )
-        )
-    out.sort(key=lambda r: r.call_count, reverse=True)
+        for r in rows
+    ]
     return TrainingGapReport(window_days=window_days, rows=out)
 
 

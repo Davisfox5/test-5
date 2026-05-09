@@ -31,7 +31,6 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import get_settings
 from backend.app.services import metrics as _metrics
 from backend.app.models import (
     Contact,
@@ -40,6 +39,7 @@ from backend.app.models import (
     KBDocument,
     Tenant,
 )
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -124,11 +124,68 @@ async def _conversation_messages(db: AsyncSession, conversation_id) -> List[Inte
     return result.scalars().all()
 
 
+_CONTACT_HISTORY_TTL_SECONDS = 120  # 2 min — covers the typical drafting burst
+_CONTACT_HISTORY_KEY = "contact:hist:v1:{}:{}"
+
+
+def _contact_history_redis():
+    try:
+        import redis  # type: ignore
+
+        from backend.app.config import get_settings
+
+        return redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _serialize_history(rows: List[Interaction]) -> str:
+    return json.dumps(
+        [
+            {
+                "id": str(r.id),
+                "channel": r.channel,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "insights": r.insights or {},
+            }
+            for r in rows
+        ]
+    )
+
+
+def _deserialize_history(blob: str) -> List[Interaction]:
+    data = json.loads(blob)
+    out: List[Interaction] = []
+    for item in data:
+        i = Interaction()
+        i.channel = item.get("channel")
+        i.insights = item.get("insights") or {}
+        ts = item.get("created_at")
+        if ts:
+            try:
+                i.created_at = datetime.fromisoformat(ts)
+            except ValueError:
+                i.created_at = None
+        out.append(i)
+    return out
+
+
 async def _contact_history(
     db: AsyncSession, tenant_id, contact_id, exclude_conversation_id, limit: int = 10
 ) -> List[Interaction]:
     if contact_id is None:
         return []
+
+    cache_key = _CONTACT_HISTORY_KEY.format(contact_id, exclude_conversation_id)
+    r = _contact_history_redis()
+    if r is not None:
+        try:
+            blob = r.get(cache_key)
+            if blob:
+                return _deserialize_history(blob)
+        except Exception:  # pragma: no cover — cache miss tolerance
+            logger.debug("contact_history cache get failed", exc_info=True)
+
     result = await db.execute(
         select(Interaction)
         .where(
@@ -139,7 +196,18 @@ async def _contact_history(
         .order_by(Interaction.created_at.desc())
         .limit(limit)
     )
-    return result.scalars().all()
+    rows = result.scalars().all()
+
+    if r is not None and rows:
+        try:
+            r.setex(
+                cache_key,
+                _CONTACT_HISTORY_TTL_SECONDS,
+                _serialize_history(rows),
+            )
+        except Exception:  # pragma: no cover
+            logger.debug("contact_history cache set failed", exc_info=True)
+    return rows
 
 
 async def _kb_excerpts(db: AsyncSession, tenant_id, query: str, k: int = 5) -> List[KBDocument]:
@@ -189,10 +257,10 @@ def _format_kb(docs: List[KBDocument]) -> str:
 
 
 class ReplyDrafter:
-    def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic(
-            api_key=get_settings().ANTHROPIC_API_KEY
-        )
+    def __init__(
+        self, client: Optional[anthropic.AsyncAnthropic] = None
+    ) -> None:
+        self._client = client or get_async_anthropic()
 
     async def draft(
         self,

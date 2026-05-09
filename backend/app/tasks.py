@@ -67,6 +67,11 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Expire task results after 1h. Without this, every Celery result
+    # accumulates in Redis forever (default behavior) and bloats memory
+    # over weeks. 1h is enough for in-flight chord aggregation and any
+    # short-lived consumer (CI, admin tools) that wants to fetch a result.
+    result_expires=3600,
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
         "tenant-insights-weekly": {
@@ -899,6 +904,7 @@ def _run_pipeline_impl(
             tenant_context=tenant_context,
             customer_brief=customer_brief,
             paralinguistic_block=paralinguistic_block,
+            complexity_score=complexity_score,
         )
     )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
@@ -1746,6 +1752,11 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             engine = interaction.engine or tenant.transcription_engine or "deepgram"
             keyterms = getattr(tenant, "keyterm_boost_list", None) or None
             language = getattr(tenant, "transcription_language", None) or "en"
+            # Tenants can opt to a cheaper Deepgram model (nova-2) for
+            # routine support traffic via features_enabled["deepgram_model"].
+            # Defaults to nova-3 when unset.
+            tenant_features_for_engine = getattr(tenant, "features_enabled", None) or {}
+            deepgram_model = tenant_features_for_engine.get("deepgram_model")
             svc = TranscriptionService()
 
             # Paralinguistic extraction needs a local file. In URL mode
@@ -1770,6 +1781,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                             engine="deepgram",
                             language=language,
                             keyterms=keyterms,
+                            model=deepgram_model,
                         )
                     )
                 else:
@@ -1800,6 +1812,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                             engine=engine,
                             language=language,
                             keyterms=keyterms,
+                            model=deepgram_model,
                         )
                     )
                 segments_dicts = _segments_to_dicts(segments)
@@ -2258,49 +2271,132 @@ def tenant_insights_weekly() -> Dict[str, Any]:
 # ── Orchestrator Celery tasks ────────────────────────────────────────────
 
 
-@celery_app.task(name="orchestrator_daily_all_tenants")
-def orchestrator_daily_all_tenants() -> Dict[str, Any]:
-    """Daily consolidation of delta reports into profile versions.
+@celery_app.task(name="_orchestrate_one_tenant")
+def _orchestrate_one_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant body of the daily orchestrator. Runs in its own worker
+    slot so the parent fan-out can parallelize across the fleet.
 
-    Iterates every tenant and runs :meth:`Orchestrator.run_daily`.  One
-    tenant failing does not block the others. Also refreshes each
-    tenant's paralinguistic baselines so scorers have up-to-date
-    percentiles for the "hot voice" / "flat tone" signals.
+    Returns a dict the chord callback can reduce — one tenant's failure
+    surfaces as ``success=False`` rather than aborting the whole run.
     """
     from backend.app.models import Tenant
     from backend.app.services.orchestrator import get_orchestrator
 
     session = _get_sync_session()
-    orch = get_orchestrator()
+    try:
+        tenant = session.get(Tenant, tenant_id)
+        if tenant is None:
+            return {"tenant_id": tenant_id, "success": False, "error": "missing"}
+        orch = get_orchestrator()
+        counts: Dict[str, int] = {}
+        baseline_refreshed = False
+        try:
+            counts = orch.run_daily(session, tenant.id) or {}
+        except Exception as exc:  # noqa: BLE001 — per-tenant isolation
+            logger.exception(
+                "Daily orchestrator failed for tenant %s", tenant_id
+            )
+            return {
+                "tenant_id": str(tenant_id),
+                "success": False,
+                "totals": {},
+                "baseline_refreshed": False,
+                "error": repr(exc),
+            }
+        try:
+            baseline_refreshed = bool(
+                _refresh_paralinguistic_baselines(session, tenant)
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Paralinguistic baseline refresh failed for tenant %s",
+                tenant_id,
+            )
+        return {
+            "tenant_id": str(tenant_id),
+            "success": True,
+            "totals": dict(counts),
+            "baseline_refreshed": baseline_refreshed,
+        }
+    finally:
+        session.close()
+
+
+@celery_app.task(name="_aggregate_orchestration")
+def _aggregate_orchestration(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Reduce per-tenant orchestration results back into the original
+    aggregate-shape return contract used by ``orchestrator_daily_all_tenants``."""
     totals: Dict[str, int] = {}
     baselines_refreshed = 0
     processed = 0
-    try:
-        for tenant in session.query(Tenant).all():
-            try:
-                counts = orch.run_daily(session, tenant.id)
-                for k, v in counts.items():
-                    totals[k] = totals.get(k, 0) + v
-                processed += 1
-            except Exception:  # noqa: BLE001 — per-tenant isolation
-                logger.exception(
-                    "Daily orchestrator failed for tenant %s", tenant.id
-                )
-            try:
-                if _refresh_paralinguistic_baselines(session, tenant):
-                    baselines_refreshed += 1
-            except Exception:
-                logger.exception(
-                    "Paralinguistic baseline refresh failed for tenant %s",
-                    tenant.id,
-                )
-    finally:
-        session.close()
+    failed: List[str] = []
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("success"):
+            processed += 1
+            for k, v in (r.get("totals") or {}).items():
+                totals[k] = totals.get(k, 0) + int(v)
+            if r.get("baseline_refreshed"):
+                baselines_refreshed += 1
+        else:
+            failed.append(str(r.get("tenant_id") or "unknown"))
     return {
         "tenants_processed": processed,
         "profile_updates": totals,
         "paralinguistic_baselines_refreshed": baselines_refreshed,
+        "failed_tenants": failed,
     }
+
+
+@celery_app.task(name="orchestrator_daily_all_tenants")
+def orchestrator_daily_all_tenants() -> Dict[str, Any]:
+    """Daily consolidation of delta reports into profile versions.
+
+    Fans out one task per tenant via a Celery chord so per-tenant work
+    runs in parallel across workers. The callback reduces the per-tenant
+    results back into the aggregate shape the beat-schedule consumer
+    expects (tenants_processed, profile_updates, paralinguistic_baselines_refreshed).
+
+    Failure semantics: a single tenant's exception no longer halts the
+    rest — it surfaces in ``failed_tenants`` instead.
+    """
+    from celery import chord, group
+
+    from backend.app.models import Tenant
+
+    session = _get_sync_session()
+    try:
+        tenant_ids = [str(t.id) for t in session.query(Tenant.id).all()]
+    finally:
+        session.close()
+
+    if not tenant_ids:
+        return {
+            "tenants_processed": 0,
+            "profile_updates": {},
+            "paralinguistic_baselines_refreshed": 0,
+            "failed_tenants": [],
+        }
+
+    header = group(_orchestrate_one_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_aggregate_orchestration.s())
+    # Block on the chord so the beat consumer still gets the aggregate
+    # dict it always returned. Timeout = generous; per-tenant tasks each
+    # have their own internal try/except, so the chord only stalls when
+    # workers are saturated.
+    try:
+        return async_result.get(disable_sync_subtasks=False, timeout=3600)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "orchestrator chord aggregation failed; returning partial state"
+        )
+        return {
+            "tenants_processed": 0,
+            "profile_updates": {},
+            "paralinguistic_baselines_refreshed": 0,
+            "failed_tenants": tenant_ids,
+        }
 
 
 def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:

@@ -26,13 +26,13 @@ from typing import Any, Dict, List, Optional
 import anthropic
 from sqlalchemy.orm import Session
 
-from backend.app.config import get_settings
 from backend.app.models import (
     FeedbackEvent,
     InsightQualityScore,
     Interaction,
     Tenant,
 )
+from backend.app.services.llm_client import get_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -152,8 +152,7 @@ _REPLY_WEIGHTS = {
 
 def _call_judge(rubric: str, user_content: str) -> Optional[Dict[str, Any]]:
     """Run the judge synchronously.  Returns parsed scores dict or None."""
-    settings = get_settings()
-    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = get_anthropic()
     try:
         response = client.messages.create(
             model=JUDGE_MODEL,

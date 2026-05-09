@@ -36,6 +36,62 @@ from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
 router = APIRouter()
 
 
+# ── Favicon proxy ────────────────────────────────────────
+#
+# Customer cards render upstream favicons (Google's S2 service today).
+# Hitting them direct from the browser means N DNS lookups + N HTTP
+# round-trips per page render. The proxy below adds a server-side cache
+# (24h immutable) and a single canonical URL so the browser dedupes
+# domain hits and the upstream is queried once per domain per day.
+
+import re as _re
+import httpx as _httpx
+from fastapi import Response as _Response
+
+_FAVICON_DOMAIN_RE = _re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$", _re.IGNORECASE)
+_FAVICON_UPSTREAM = (
+    "https://www.google.com/s2/favicons?domain={domain}&sz=64"
+)
+_FAVICON_TTL_SECONDS = 24 * 60 * 60
+
+
+@router.get("/favicons", response_class=_Response)
+async def proxy_favicon(
+    domain: str = Query(..., min_length=3, max_length=253),
+):
+    """Tenant-agnostic favicon proxy with a 24h browser cache header.
+
+    Lightweight enough to skip auth — favicons are public assets, and
+    the validation regex prevents the endpoint from being abused as a
+    generic open-proxy.
+    """
+    if not _FAVICON_DOMAIN_RE.match(domain):
+        raise HTTPException(status_code=400, detail="invalid domain")
+    url = _FAVICON_UPSTREAM.format(domain=domain)
+    try:
+        async with _httpx.AsyncClient(timeout=5.0, follow_redirects=True) as c:
+            up = await c.get(url)
+            up.raise_for_status()
+            content = up.content
+            content_type = up.headers.get("content-type", "image/png")
+    except _httpx.HTTPError:
+        # Return a tiny 1×1 transparent PNG so the browser doesn't show
+        # a broken-image icon on upstream failure.
+        content = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\x00\x01"
+            b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        content_type = "image/png"
+    return _Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": f"public, max-age={_FAVICON_TTL_SECONDS}, immutable",
+        },
+    )
+
+
 # ── Pydantic Schemas ─────────────────────────────────────
 
 

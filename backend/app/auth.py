@@ -411,6 +411,14 @@ async def _principal_from_session_jwt(
     if user is None:
         return None
     effective_role, is_previewing = _resolve_effective_role(user, user.tenant)
+    # Warm the per-tenant cache so subsequent non-auth Tenant lookups (Celery
+    # tasks, websocket handlers, services) skip the DB.
+    try:
+        from backend.app.services.tenant_cache import cache_set
+
+        cache_set(user.tenant)
+    except Exception:  # pragma: no cover — cache is best-effort
+        pass
     return AuthPrincipal(
         tenant=user.tenant,
         user=user,
@@ -452,6 +460,12 @@ async def _principal_from_api_key(
     # Defensive: ``scopes`` defaults to ``[]`` at the column level, but
     # legacy rows from before the q4e5f6a7b8c9 migration may have NULL.
     raw_scopes = api_key.scopes or []
+    try:
+        from backend.app.services.tenant_cache import cache_set
+
+        cache_set(api_key.tenant)
+    except Exception:  # pragma: no cover — cache is best-effort
+        pass
     return AuthPrincipal(
         tenant=api_key.tenant,
         user=None,

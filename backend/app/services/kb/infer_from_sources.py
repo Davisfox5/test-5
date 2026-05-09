@@ -38,7 +38,7 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.models import (
     CustomerOutcomeEvent,
     Interaction,
@@ -115,11 +115,7 @@ class InferFromSources:
     """Proposes tenant-brief updates from observed signals."""
 
     def __init__(self, client: Optional[anthropic.AsyncAnthropic] = None) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            settings = get_settings()
-            self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = client or get_async_anthropic()
 
     async def run(
         self,

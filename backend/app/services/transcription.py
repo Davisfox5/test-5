@@ -104,11 +104,17 @@ class TranscriptionService:
         engine: str = "deepgram",
         language: str = "en",
         keyterms: Optional[List[str]] = None,
+        model: Optional[str] = None,
     ) -> List[Segment]:
         """Transcribe audio using the specified engine.
 
         Exactly one of ``audio_path`` or ``audio_url`` must be provided.
         URL mode is only supported by the Deepgram engine.
+
+        ``model`` is an optional engine-specific model override. For
+        Deepgram, defaults to ``"nova-3"`` when unset; tenants on a
+        cheaper plan can request ``"nova-2"`` via
+        ``tenant.features_enabled["deepgram_model"]``.
         """
         if not audio_path and not audio_url:
             raise ValueError("Either audio_path or audio_url must be provided")
@@ -126,6 +132,7 @@ class TranscriptionService:
                 engine=engine,
                 language=language,
                 keyterms=keyterms,
+                model=model,
             )
         except Exception as exc:
             self._emit_failure_metric(engine, exc)
@@ -142,6 +149,7 @@ class TranscriptionService:
         engine: str,
         language: str,
         keyterms: Optional[List[str]],
+        model: Optional[str] = None,
     ) -> List[Segment]:
         if engine == "deepgram":
             return await self._transcribe_deepgram(
@@ -149,6 +157,7 @@ class TranscriptionService:
                 audio_url=audio_url,
                 language=language,
                 keyterms=keyterms,
+                model=model,
             )
         if engine == "whisper":
             if audio_url:
@@ -204,8 +213,14 @@ class TranscriptionService:
         audio_url: Optional[str],
         language: str,
         keyterms: Optional[List[str]],
+        model: Optional[str] = None,
     ) -> List[Segment]:
-        """Transcribe via Deepgram Nova-3 with native diarization."""
+        """Transcribe via Deepgram with native diarization.
+
+        Defaults to Nova-3 (highest accuracy). Tenants can opt their
+        low-value support traffic to ``nova-2`` for ~50% cost reduction
+        via ``tenant.features_enabled["deepgram_model"] = "nova-2"``.
+        """
         try:
             from deepgram import DeepgramClient, PrerecordedOptions, FileSource, UrlSource
         except ImportError:
@@ -219,8 +234,10 @@ class TranscriptionService:
             raise RuntimeError("DEEPGRAM_API_KEY is not configured")
 
         client = DeepgramClient(settings.DEEPGRAM_API_KEY)
+        # Whitelist allowed values to keep API surface predictable.
+        chosen_model = model if model in {"nova-3", "nova-2"} else "nova-3"
         options_kwargs: dict[str, Any] = {
-            "model": "nova-3",
+            "model": chosen_model,
             "diarize": True,
             "language": language,
             "smart_format": True,

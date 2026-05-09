@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -71,9 +71,10 @@ def _format_transcript(segments: List[Dict[str, Any]]) -> str:
 class ScorecardService:
     """Score a call against a QA template using Claude Haiku."""
 
-    def __init__(self) -> None:
-        settings = get_settings()
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    def __init__(
+        self, client: Optional[anthropic.AsyncAnthropic] = None
+    ) -> None:
+        self._client = client or get_async_anthropic()
 
     async def score(
         self,

@@ -46,8 +46,14 @@ primary_region = "iad"
   # strict scheme matching and rejects http→https mismatches with
   # AADSTS50011. The `*` allow list is fine here because nothing
   # external reaches uvicorn directly; Fly's edge is the only hop.
-  api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"
-  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2"
+  # Two workers per VM lets a slow request not block all others — the
+  # 2 GB shared-cpu-1x has ~600 MB headroom per worker after the venv
+  # and shared libs. Bump to 4 only if you upsize the machine.
+  api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=*"
+  # Celery on shared-cpu-2x: I/O heavy work (Anthropic, Deepgram, S3,
+  # Postgres) means concurrency higher than vCPU count is the right
+  # call. 4 keeps memory comfortable on the 4 GB VM.
+  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=4"
   beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
   # SIPREC SRS — uses a *different image* from api/worker/beat. The
   # build/image directives below the [[vm]] blocks override the default

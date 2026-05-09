@@ -78,11 +78,36 @@ def test_enterprise_tier_bumps_one_level(router):
     assert haiku_enterprise == Tier.SONNET
 
 
-def test_retry_count_bumps_one_level(router):
+def test_retry_without_reason_does_not_escalate(router):
+    # Old behavior auto-bumped on any retry; the cost-audit fix makes
+    # transient retries stay on the same tier so a flaky API call doesn't
+    # silently push traffic from Haiku → Sonnet → Opus.
     base = router.select_tier(_req(complexity_score=0.5))
     retry = router.select_tier(_req(complexity_score=0.5, retry_count=1))
-    assert retry.value != Tier.HAIKU.value  # either Sonnet or Opus
+    assert retry == base
+
+
+def test_retry_with_max_tokens_reason_escalates(router):
+    # When the retry is *because* the previous response was truncated,
+    # we genuinely need a more capable model.
+    retry = router.select_tier(
+        _req(complexity_score=0.5, retry_count=1, retry_reason="max_tokens")
+    )
     assert retry == Tier.OPUS  # Sonnet + bump = Opus
+
+
+def test_retry_with_context_length_reason_escalates(router):
+    retry = router.select_tier(
+        _req(complexity_score=0.1, retry_count=1, retry_reason="context_length")
+    )
+    assert retry == Tier.SONNET  # Haiku + bump = Sonnet
+
+
+def test_retry_with_transient_reason_does_not_escalate(router):
+    retry = router.select_tier(
+        _req(complexity_score=0.5, retry_count=1, retry_reason="server_error")
+    )
+    assert retry == Tier.SONNET  # same as base — no bump
 
 
 def test_build_system_payload_marks_cacheable_blocks():

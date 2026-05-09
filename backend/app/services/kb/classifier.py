@@ -25,7 +25,7 @@ from typing import Optional
 
 import anthropic
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +97,8 @@ async def classify(
 
 
 async def _haiku_classify(text: str) -> ClassifierResult:
-    settings = get_settings()
     try:
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        client = get_async_anthropic()
         resp = await client.messages.create(
             model=_CLASSIFIER_MODEL,
             max_tokens=120,

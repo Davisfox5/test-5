@@ -278,5 +278,8 @@ export function contactRoleLabel(
  */
 export function faviconFor(domain: string | null | undefined): string | null {
     if (!domain) return null;
-    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+    // Route through the backend proxy so the browser caches one URL per
+    // domain (24h immutable) instead of issuing fresh DNS/HTTP to
+    // Google's S2 service for every customer row that shares a domain.
+    return `/api/favicons?domain=${encodeURIComponent(domain)}`;
 }

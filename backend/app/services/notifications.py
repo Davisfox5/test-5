@@ -10,17 +10,56 @@ they piggyback on.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.config import get_settings
 from backend.app.models import Notification
 
 logger = logging.getLogger(__name__)
+
+
+# ── Redis pub/sub for SSE delivery ───────────────────────────────────────
+
+
+def _redis():
+    """Best-effort Redis client for the notification pub/sub channel."""
+    try:
+        import redis  # type: ignore
+
+        return redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def notification_channel(tenant_id: Any, user_id: Any) -> str:
+    return f"notif:{tenant_id}:{user_id}"
+
+
+def publish_notification(
+    *,
+    tenant_id: Any,
+    user_id: Any,
+    payload: Dict[str, Any],
+) -> None:
+    """Push a notification event to the per-user SSE channel.
+
+    Best-effort. The REST endpoints stay the source of truth — SSE just
+    eliminates the 30s poll on the client.
+    """
+    r = _redis()
+    if r is None:
+        return
+    try:
+        r.publish(notification_channel(tenant_id, user_id), json.dumps(payload, default=str))
+    except Exception:
+        logger.debug("publish_notification failed (non-fatal)", exc_info=True)
 
 
 class NotificationKind:
@@ -76,6 +115,18 @@ async def notify(
             interaction_id=interaction_id,
         )
         db.add(row)
+        # Best-effort SSE push so the client doesn't have to poll. The
+        # REST list endpoint is still the source of truth.
+        publish_notification(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            payload={
+                "type": "notification",
+                "kind": kind,
+                "title": title[:200],
+                "body": body,
+            },
+        )
         return row
     except Exception:
         logger.exception(

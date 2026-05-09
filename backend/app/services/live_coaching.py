@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
 from backend.app.services.kb.context_builder import format_brief_for_prompt
 from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
 )
+from backend.app.services.llm_client import get_async_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +55,10 @@ COACHING_SYSTEM_PROMPT = (
 class LiveCoachingService:
     """Provides incremental coaching hints during a live call."""
 
-    def __init__(self) -> None:
-        settings = get_settings()
-        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    def __init__(
+        self, client: Optional[anthropic.AsyncAnthropic] = None
+    ) -> None:
+        self.client = client or get_async_anthropic()
 
     async def hint_incremental(
         self,
@@ -103,28 +104,44 @@ class LiveCoachingService:
 
         user_message = "\n".join(user_parts)
 
-        # Stack tenant context → customer brief → analyst instructions.
-        prefix_parts: List[str] = []
+        # Build system as separate cacheable blocks so the static rubric
+        # (which dominates the prompt and is identical for every turn of a
+        # call) is reused via Anthropic's prompt cache. Tenant context is
+        # stable per tenant; the customer brief is per-session but still
+        # cacheable because hint_incremental fires every 30-60s with the
+        # same brief throughout the call.
+        system_blocks: List[Dict[str, Any]] = []
         tenant_text = format_brief_for_prompt(tenant_context or {})
         if tenant_text:
-            prefix_parts.append(tenant_text)
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": tenant_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
         customer_text = format_customer_brief_for_prompt(customer_brief or {})
         if customer_text:
-            prefix_parts.append(customer_text)
-        if prefix_parts:
-            system_prompt = (
-                "\n\n---\n\n".join(prefix_parts)
-                + "\n\n---\n\n"
-                + COACHING_SYSTEM_PROMPT
+            system_blocks.append(
+                {
+                    "type": "text",
+                    "text": customer_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
             )
-        else:
-            system_prompt = COACHING_SYSTEM_PROMPT
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": COACHING_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
 
         try:
             response = await self.client.messages.create(
                 model=COACHING_MODEL,
                 max_tokens=300,
-                system=system_prompt,
+                system=system_blocks,
                 messages=[{"role": "user", "content": user_message}],
             )
 
