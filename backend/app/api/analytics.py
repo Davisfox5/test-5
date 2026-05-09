@@ -53,6 +53,11 @@ class TrendPoint(BaseModel):
     interaction_count: int
     avg_sentiment: Optional[float]
     channel: Optional[str]
+    # Per-day rollups for the dashboard's combined trends chart.
+    # Populated only on the all-channels rows (channel=NULL) so callers
+    # who already filter by channel don't double-count.
+    avg_qa_score: Optional[float] = None
+    avg_rapport: Optional[float] = None
 
 
 class AgentStats(BaseModel):
@@ -114,7 +119,33 @@ class DashboardSummary(BaseModel):
     avg_sentiment_score: Optional[float]
     action_items_open: int
     avg_qa_score: Optional[float]
+    # ``avg_rapport`` is the LSM rapport gauge (0..1) averaged over the
+    # period; the SPA renders as a 0-100 score.
+    avg_rapport: Optional[float] = None
+    # Open action items past their due date.
+    overdue_action_items: int = 0
+    # Pipeline health — counts of interactions in each non-analyzed
+    # state. Surface as alert chips on the dashboard.
+    flagged_for_review_count: int = 0
+    failed_count: int = 0
+    processing_count: int = 0
+    # Risk + opportunity signal counts (high or medium signal level).
+    at_risk_count: int = 0
+    upsell_count: int = 0
     prev_period_deltas: Dict[str, Optional[float]]
+
+
+class AccountHealthRow(BaseModel):
+    customer_id: uuid.UUID
+    name: str
+    score: Optional[float]
+    last_touch_at: Optional[str]
+
+
+class AccountHealth(BaseModel):
+    at_risk: List[AccountHealthRow]
+    upsell: List[AccountHealthRow]
+    stale: List[AccountHealthRow]
 
 
 class TenantInsightRow(BaseModel):
@@ -127,7 +158,7 @@ class TenantInsightRow(BaseModel):
 
 # ── Interval helper ──────────────────────────────────────
 
-_PERIOD_DAYS = {"7d": 7, "30d": 30, "90d": 90}
+_PERIOD_DAYS = {"7d": 7, "14d": 14, "30d": 30, "60d": 60, "90d": 90}
 
 
 def _period_window(period: str) -> Tuple[datetime, datetime]:
@@ -168,7 +199,7 @@ def _interval(period: str) -> str:
     dependencies=[Depends(require_active_subscription)],
 )
 async def business_health(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -259,7 +290,7 @@ async def business_health(
     dependencies=[Depends(require_active_subscription)],
 )
 async def trends(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -269,18 +300,36 @@ async def trends(
 
     query = text("""
         SELECT
-            DATE(created_at) AS date,
-            channel,
+            DATE(i.created_at) AS date,
+            i.channel,
             COUNT(*) AS interaction_count,
-            AVG((insights->>'sentiment_score')::float) AS avg_sentiment
-        FROM interactions
-        WHERE tenant_id = :tenant_id
-          AND created_at >= :since
-        GROUP BY DATE(created_at), channel
+            AVG((i.insights->>'sentiment_score')::float) AS avg_sentiment
+        FROM interactions i
+        WHERE i.tenant_id = :tenant_id
+          AND i.created_at >= :since
+        GROUP BY DATE(i.created_at), i.channel
         ORDER BY date ASC, channel
     """)
     rows = (await db.execute(query, {"tenant_id": tenant_id, "since": since, "since_prior": since_prior})).fetchall()
-    return [
+
+    # All-channel daily rollup for QA + rapport. Joining QA scores via
+    # interaction_scores keeps the per-channel query cheap and lets us
+    # emit one extra "all" row per day with the supplemental fields.
+    daily_q = text("""
+        SELECT
+            DATE(i.created_at) AS date,
+            AVG(s.total_score) AS avg_qa,
+            AVG((i.insights->'rapport'->>'lsm_overall')::float) AS avg_rapport
+        FROM interactions i
+        LEFT JOIN interaction_scores s ON s.interaction_id = i.id
+        WHERE i.tenant_id = :tenant_id
+          AND i.created_at >= :since
+        GROUP BY DATE(i.created_at)
+        ORDER BY date ASC
+    """)
+    daily_rows = (await db.execute(daily_q, {"tenant_id": tenant_id, "since": since})).fetchall()
+
+    out: List[TrendPoint] = [
         TrendPoint(
             date=str(row[0]),
             channel=row[1],
@@ -289,6 +338,20 @@ async def trends(
         )
         for row in rows
     ]
+    # Append one all-channel row per date carrying the QA + rapport
+    # rollups. ``channel=None`` is the marker for the SPA chart layer.
+    for row in daily_rows:
+        out.append(
+            TrendPoint(
+                date=str(row[0]),
+                channel=None,
+                interaction_count=0,
+                avg_sentiment=None,
+                avg_qa_score=float(row[1]) if row[1] is not None else None,
+                avg_rapport=float(row[2]) if row[2] is not None else None,
+            )
+        )
+    return out
 
 
 @router.get(
@@ -467,7 +530,7 @@ async def client_trends(
     dependencies=[Depends(require_active_subscription)],
 )
 async def competitive_analysis(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -510,7 +573,7 @@ async def competitive_analysis(
     dependencies=[Depends(require_active_subscription)],
 )
 async def topics_trend(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -578,7 +641,7 @@ async def topics_trend(
     dependencies=[Depends(require_active_subscription)],
 )
 async def product_feedback(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -622,7 +685,7 @@ async def product_feedback(
     dependencies=[Depends(require_active_subscription)],
 )
 async def coaching_insights(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -678,7 +741,7 @@ async def coaching_insights(
     dependencies=[Depends(require_active_subscription)],
 )
 async def risk_signals(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -749,7 +812,7 @@ async def risk_signals(
 
 @router.get("/analytics/dashboard", response_model=DashboardSummary)
 async def dashboard(
-    period: str = Query("30d", pattern="^(7d|30d|90d)$"),
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -785,9 +848,47 @@ async def dashboard(
 
     ai_q = text("""
         SELECT COUNT(*) FROM action_items
-        WHERE tenant_id = :tenant_id AND status IN ('pending','in_progress')
+        WHERE tenant_id = :tenant_id AND status IN ('open','pending','in_progress')
     """)
     ai_row = (await db.execute(ai_q, {"tenant_id": tenant_id})).fetchone()
+
+    overdue_q = text("""
+        SELECT COUNT(*) FROM action_items
+        WHERE tenant_id = :tenant_id
+          AND status IN ('open','pending','in_progress')
+          AND due_date IS NOT NULL
+          AND due_date < CURRENT_DATE
+    """)
+    overdue_row = (await db.execute(overdue_q, {"tenant_id": tenant_id})).fetchone()
+
+    rapport_q = text("""
+        SELECT AVG((insights->'rapport'->>'lsm_overall')::float)
+        FROM interactions
+        WHERE tenant_id = :tenant_id
+          AND created_at >= :since
+          AND insights->'rapport' ? 'lsm_overall'
+    """)
+    rapport_row = (await db.execute(rapport_q, params)).fetchone()
+
+    pipeline_q = text("""
+        SELECT
+            SUM(CASE WHEN status = 'flagged_for_review' THEN 1 ELSE 0 END) AS flagged,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+            SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing
+        FROM interactions
+        WHERE tenant_id = :tenant_id
+    """)
+    pipe = (await db.execute(pipeline_q, {"tenant_id": tenant_id})).fetchone()
+
+    signal_q = text("""
+        SELECT
+            SUM(CASE WHEN insights->>'churn_risk_signal' IN ('high','medium') THEN 1 ELSE 0 END) AS at_risk,
+            SUM(CASE WHEN insights->>'upsell_signal'     IN ('high','medium') THEN 1 ELSE 0 END) AS upsell
+        FROM interactions
+        WHERE tenant_id = :tenant_id
+          AND created_at >= :since
+    """)
+    sig = (await db.execute(signal_q, params)).fetchone()
 
     def _delta(a, b):
         if a is None or b is None or b == 0:
@@ -800,17 +901,153 @@ async def dashboard(
     prev_sent = float(prev[1]) if prev and prev[1] is not None else None
     cur_qa = float(cur[2]) if cur and cur[2] is not None else None
     prev_qa = float(prev[2]) if prev and prev[2] is not None else None
+    rapport = float(rapport_row[0]) if rapport_row and rapport_row[0] is not None else None
 
     return DashboardSummary(
         total_interactions=cur_total,
         avg_sentiment_score=cur_sent,
         action_items_open=int(ai_row[0] or 0) if ai_row else 0,
         avg_qa_score=cur_qa,
+        avg_rapport=rapport,
+        overdue_action_items=int(overdue_row[0] or 0) if overdue_row else 0,
+        flagged_for_review_count=int(pipe[0] or 0) if pipe else 0,
+        failed_count=int(pipe[1] or 0) if pipe else 0,
+        processing_count=int(pipe[2] or 0) if pipe else 0,
+        at_risk_count=int(sig[0] or 0) if sig else 0,
+        upsell_count=int(sig[1] or 0) if sig else 0,
         prev_period_deltas={
             "total_interactions_pct": _delta(cur_total, prev_total),
             "avg_sentiment_pct": _delta(cur_sent, prev_sent),
             "avg_qa_pct": _delta(cur_qa, prev_qa),
         },
+    )
+
+
+@router.get(
+    "/analytics/account-health",
+    response_model=AccountHealth,
+    dependencies=[Depends(require_active_subscription)],
+)
+async def account_health(
+    stale_days: int = Query(30, ge=7, le=180),
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """At-risk, upsell, and stale-account top-N lists for the dashboard.
+
+    Each row returns the latest analyzed-call signal for that customer
+    so the SPA can render a single risk/opportunity score without a
+    second round-trip into ``/customers/list``.
+    """
+    tenant_id = str(tenant.id)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+
+    # Latest churn / upsell / sentiment per customer — derived from the
+    # most-recent analyzed interaction joined to its participating
+    # contact's customer_id. Done as a single CTE per metric so the
+    # aggregate scans the index once.
+    # ``Interaction.customer_id`` is the resolver-set FK; fall back to
+    # ``contacts.customer_id`` when only the contact was identified.
+    at_risk_q = text("""
+        WITH latest AS (
+            SELECT DISTINCT ON (cust_id)
+                cust_id,
+                created_at AS last_touch_at,
+                churn_risk
+            FROM (
+                SELECT
+                    COALESCE(i.customer_id, c.customer_id) AS cust_id,
+                    i.created_at,
+                    (i.insights->>'churn_risk')::float AS churn_risk
+                FROM interactions i
+                LEFT JOIN contacts c ON c.id = i.contact_id
+                WHERE i.tenant_id = :tenant_id
+                  AND i.insights ? 'churn_risk'
+            ) s
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, created_at DESC
+        )
+        SELECT cu.id, cu.name, l.churn_risk, l.last_touch_at
+        FROM latest l
+        JOIN customers cu ON cu.id = l.cust_id
+        WHERE cu.tenant_id = :tenant_id
+          AND l.churn_risk IS NOT NULL
+        ORDER BY l.churn_risk DESC
+        LIMIT :limit
+    """)
+
+    upsell_q = text("""
+        WITH latest AS (
+            SELECT DISTINCT ON (cust_id)
+                cust_id,
+                created_at AS last_touch_at,
+                upsell_score
+            FROM (
+                SELECT
+                    COALESCE(i.customer_id, c.customer_id) AS cust_id,
+                    i.created_at,
+                    (i.insights->>'upsell_score')::float AS upsell_score
+                FROM interactions i
+                LEFT JOIN contacts c ON c.id = i.contact_id
+                WHERE i.tenant_id = :tenant_id
+                  AND i.insights ? 'upsell_score'
+            ) s
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, created_at DESC
+        )
+        SELECT cu.id, cu.name, l.upsell_score, l.last_touch_at
+        FROM latest l
+        JOIN customers cu ON cu.id = l.cust_id
+        WHERE cu.tenant_id = :tenant_id
+          AND l.upsell_score IS NOT NULL
+        ORDER BY l.upsell_score DESC
+        LIMIT :limit
+    """)
+
+    # Stale = customers with at least one historical interaction whose
+    # most-recent touch is older than the cutoff. Brand-new customers
+    # with zero interactions don't count as "stale" — they're "new".
+    stale_q = text("""
+        WITH latest AS (
+            SELECT cust_id, MAX(created_at) AS last_touch_at
+            FROM (
+                SELECT
+                    COALESCE(i.customer_id, c.customer_id) AS cust_id,
+                    i.created_at
+                FROM interactions i
+                LEFT JOIN contacts c ON c.id = i.contact_id
+                WHERE i.tenant_id = :tenant_id
+            ) s
+            WHERE cust_id IS NOT NULL
+            GROUP BY cust_id
+        )
+        SELECT cu.id, cu.name, NULL::float AS score, l.last_touch_at
+        FROM latest l
+        JOIN customers cu ON cu.id = l.cust_id
+        WHERE cu.tenant_id = :tenant_id
+          AND l.last_touch_at < :cutoff
+        ORDER BY l.last_touch_at ASC
+        LIMIT :limit
+    """)
+
+    def _row(r) -> AccountHealthRow:
+        return AccountHealthRow(
+            customer_id=r[0],
+            name=r[1],
+            score=float(r[2]) if r[2] is not None else None,
+            last_touch_at=str(r[3]) if r[3] is not None else None,
+        )
+
+    p = {"tenant_id": tenant_id, "limit": limit, "cutoff": cutoff}
+    at_risk_rows = (await db.execute(at_risk_q, p)).fetchall()
+    upsell_rows = (await db.execute(upsell_q, p)).fetchall()
+    stale_rows = (await db.execute(stale_q, p)).fetchall()
+
+    return AccountHealth(
+        at_risk=[_row(r) for r in at_risk_rows],
+        upsell=[_row(r) for r in upsell_rows],
+        stale=[_row(r) for r in stale_rows],
     )
 
 

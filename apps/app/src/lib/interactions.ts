@@ -363,6 +363,13 @@ export interface DashboardSummary {
     avg_sentiment_score: number | null;
     action_items_open: number;
     avg_qa_score: number | null;
+    avg_rapport: number | null;
+    overdue_action_items: number;
+    flagged_for_review_count: number;
+    failed_count: number;
+    processing_count: number;
+    at_risk_count: number;
+    upsell_count: number;
     prev_period_deltas: {
         total_interactions_pct?: number | null;
         avg_sentiment_pct?: number | null;
@@ -370,7 +377,7 @@ export interface DashboardSummary {
     };
 }
 
-export type DashboardPeriod = "7d" | "30d" | "90d";
+export type DashboardPeriod = "7d" | "14d" | "30d" | "60d" | "90d";
 
 export function useDashboardSummary(period: DashboardPeriod = "30d") {
     const api = useApi();
