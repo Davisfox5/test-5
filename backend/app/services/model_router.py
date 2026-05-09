@@ -30,7 +30,6 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import anthropic
 
-from backend.app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +85,12 @@ class LLMRequest:
     transcript_tokens: int = 0
     tenant_tier: str = "standard"            # "standard" | "enterprise"
     retry_count: int = 0
+    # Why this retry is happening, when known. ``"max_tokens"`` and
+    # ``"context_length"`` legitimately need a more capable model;
+    # everything else (transient 5xx, rate-limit, network) should retry
+    # on the same tier with backoff. Default ``None`` keeps existing
+    # callers safe — old ``retry_count > 0`` no longer auto-escalates.
+    retry_reason: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
     prefer_batch: bool = False
@@ -125,10 +130,9 @@ class ModelRouter:
     _COMPLEXITY_SONNET_MAX = 0.75
 
     def __init__(self, client: Optional[anthropic.AsyncAnthropic] = None) -> None:
-        settings = get_settings()
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.ANTHROPIC_API_KEY
-        )
+        from backend.app.services.llm_client import get_async_anthropic
+
+        self._client = client or get_async_anthropic()
 
     # ── Tier selection ────────────────────────────────────────────────
 
@@ -163,9 +167,23 @@ class ModelRouter:
         if req.transcript_tokens > self._LARGE_TRANSCRIPT_TOKENS:
             tier = Tier.SONNET
 
-        # Enterprise tier and retries bump one tier up (never above Opus).
-        if req.tenant_tier == "enterprise" or req.retry_count > 0:
+        # Enterprise tier always bumps. Retries only escalate when the
+        # failure mode actually warrants a more capable model — output
+        # truncation or context-length overflow. Transient errors retry
+        # at the same tier (with backoff handled by the caller).
+        _ESCALATING_RETRY_REASONS = {"max_tokens", "context_length"}
+        if req.tenant_tier == "enterprise":
             tier = self._bump(tier)
+        elif req.retry_count > 0 and req.retry_reason in _ESCALATING_RETRY_REASONS:
+            tier = self._bump(tier)
+        elif req.retry_count > 0 and req.retry_reason is None:
+            # Surface stale call sites that still rely on the old "any
+            # retry → bump" behavior. One-release transition warning.
+            logger.warning(
+                "model_router retry without retry_reason; staying on %s "
+                "(set req.retry_reason to escalate)",
+                tier,
+            )
         return tier
 
     @staticmethod

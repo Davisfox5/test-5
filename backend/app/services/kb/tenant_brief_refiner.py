@@ -37,8 +37,8 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import get_settings
 from backend.app.models import CustomerOutcomeEvent, Interaction, Tenant
+from backend.app.services.llm_client import get_async_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +82,7 @@ class TenantBriefRefiner:
     """Reads the last N days of interactions and refines the playbook."""
 
     def __init__(self, client: Optional[anthropic.AsyncAnthropic] = None) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            settings = get_settings()
-            self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = client or get_async_anthropic()
 
     async def refine(
         self,

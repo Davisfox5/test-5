@@ -29,8 +29,8 @@ import time
 
 import anthropic
 
-from backend.app.config import get_settings
 from backend.app.services import metrics as _metrics
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -158,10 +158,10 @@ def _prefilter(email: EmailForClassification) -> Optional[ClassificationResult]:
 
 
 class EmailClassifier:
-    def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic(
-            api_key=get_settings().ANTHROPIC_API_KEY
-        )
+    def __init__(
+        self, client: Optional[anthropic.AsyncAnthropic] = None
+    ) -> None:
+        self._client = client or get_async_anthropic()
 
     async def classify(
         self,
@@ -195,7 +195,13 @@ class EmailClassifier:
             response = await self._client.messages.create(
                 model=HAIKU_MODEL,
                 max_tokens=256,
-                system=system_prompt,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": user_content}],
             )
             _metrics.LLM_LATENCY.labels(

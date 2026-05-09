@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import get_settings
+from backend.app.services.llm_client import get_async_anthropic
 from backend.app.models import Tenant
 from backend.app.services.kb.context_builder import (
     _empty_personal_touches,
@@ -247,11 +247,7 @@ class OnboardingInterview:
     """Stateful interview agent."""
 
     def __init__(self, client: Optional[anthropic.AsyncAnthropic] = None) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            settings = get_settings()
-            self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self._client = client or get_async_anthropic()
 
     @staticmethod
     def new_state() -> Dict[str, Any]:

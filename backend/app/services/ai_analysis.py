@@ -13,7 +13,7 @@ from backend.app.services.kb.context_builder import format_brief_for_prompt
 from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
 )
-from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -204,6 +204,7 @@ class AIAnalysisService:
         tenant_context: Optional[Dict[str, Any]] = None,
         customer_brief: Optional[Dict[str, Any]] = None,
         paralinguistic_block: Optional[Any] = None,
+        complexity_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -306,11 +307,25 @@ class AIAnalysisService:
             }
         )
 
+        # Tiered max_tokens: cheaper baseline for simple calls; full ceiling
+        # for high-complexity main analysis or long inputs. Explicit overrides
+        # are honored but capped to the tier's hard ceiling.
+        approx_input_tokens = (
+            sum(len(b.get("text", "")) for b in system_blocks) + len(user_content)
+        ) // 4
+        budget = compute_max_tokens(
+            tier,
+            input_tokens=approx_input_tokens,
+            task_type="main_analysis",
+            complexity_score=complexity_score,
+            explicit_override=max_tokens_override,
+        )
+
         try:
             t0 = time.perf_counter()
             response = await self._client.messages.create(
                 model=model,
-                max_tokens=max_tokens_override or 8192,
+                max_tokens=budget,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_content}],
             )

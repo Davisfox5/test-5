@@ -26,11 +26,14 @@ if "sslmode=" in _db_url:
     _ssl_ctx.verify_mode = _ssl_module.CERT_NONE
     _connect_args = {"ssl": _ssl_ctx}
 
+# Pool sized for FastAPI concurrency + Celery workers sharing the same DB.
+# 20/10 was tight enough that requests would queue under modest load; 50/20
+# leaves headroom without exceeding typical managed-Postgres connection caps.
 engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=50,
+    max_overflow=20,
     pool_pre_ping=True,
     connect_args=_connect_args,
 )

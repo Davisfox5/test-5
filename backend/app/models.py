@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -281,6 +282,14 @@ class Customer(Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
 
+    __table_args__ = (
+        # Tenant-scoped lookups + name-ordered pagination for the
+        # contact list; ``ix_customer_tenant_id`` backs IN/JOIN
+        # filters from CustomerOwner and elsewhere.
+        Index("ix_customer_tenant_id", "tenant_id"),
+        Index("ix_customer_tenant_name", "tenant_id", "name"),
+    )
+
 
 class CustomerOwner(Base):
     """Many-to-many: which Linda users own a Customer.
@@ -360,6 +369,12 @@ class EmailSend(Base):
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        # Backs the audit/list flows that page email sends in tenant +
+        # newest-first order.
+        Index("ix_email_send_tenant_created", "tenant_id", "created_at"),
     )
 
 
@@ -552,6 +567,16 @@ class Interaction(Base):
     scores: Mapped[List["InteractionScore"]] = relationship(back_populates="interaction", cascade="all, delete-orphan")
     snippets: Mapped[List["InteractionSnippet"]] = relationship(back_populates="interaction", cascade="all, delete-orphan")
     comments: Mapped[List["InteractionComment"]] = relationship(back_populates="interaction", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Hot dashboards filter by tenant + window — composite makes the
+        # range scan cheap. The single-column tenant/agent/contact
+        # indexes back per-rep slices and joins from related tables.
+        Index("ix_interaction_tenant_created", "tenant_id", "created_at"),
+        Index("ix_interaction_tenant_id", "tenant_id"),
+        Index("ix_interaction_agent_id", "agent_id"),
+        Index("ix_interaction_contact_id", "contact_id"),
+    )
 
 
 # ──────────────────────────────────────────────────────────
@@ -2197,3 +2222,22 @@ class AudiohookSession(Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 # === END MULTI-STREAM MODELS REGION ===
+
+
+# Wire the tenant-config cache invalidation listener once models are loaded.
+# Importing at module bottom avoids a circular import (tenant_cache itself
+# imports ``Tenant`` from this module).
+def _register_tenant_cache_listener() -> None:
+    try:
+        from backend.app.services.tenant_cache import register_invalidation_listener
+
+        register_invalidation_listener()
+    except Exception:  # pragma: no cover — best-effort
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "tenant_cache listener registration skipped", exc_info=True
+        )
+
+
+_register_tenant_cache_listener()
