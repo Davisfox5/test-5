@@ -629,6 +629,62 @@ class InternalOverrideIn(BaseModel):
     enabled: bool
 
 
+@router.post("/admin/diag/repair-test")
+async def diag_repair_test(
+    body: Dict[str, str],
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Run the analysis-service JSON repair path against a payload.
+
+    POST body: ``{"interaction_id": "<uuid>"}`` — uses that row's
+    ``insights.summary`` (which the analysis service writes the raw
+    LLM text into on parse-failure) and runs json-repair on it.
+    Returns ``{recovered_keys: [...], topics_count: N, ...}`` or the
+    raw exception so we can tell if repair is firing at all.
+    """
+    from sqlalchemy import select
+    from backend.app.models import Interaction
+    import uuid as _uuid, json as _json, re as _re
+
+    iid = body.get("interaction_id")
+    if not iid:
+        raise HTTPException(400, "interaction_id required")
+    stmt = select(Interaction).where(
+        Interaction.id == _uuid.UUID(iid),
+        Interaction.tenant_id == principal.tenant.id,
+    )
+    db_session = principal.db_session if hasattr(principal, "db_session") else None
+    # No db session injected on principal; use the FastAPI dep instead.
+    from backend.app.db import async_session
+    async with async_session() as db:
+        row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Not found")
+    raw = ((row.insights or {}).get("summary") or "")
+    cleaned = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = _re.sub(r"\s*```$", "", cleaned)
+    out: Dict[str, Any] = {
+        "raw_len": len(raw),
+        "cleaned_len": len(cleaned),
+    }
+    try:
+        _json.loads(cleaned)
+        out["json_loads"] = "OK (no repair needed)"
+    except _json.JSONDecodeError as e:
+        out["json_loads_error"] = str(e)
+    try:
+        from json_repair import repair_json
+        repaired = repair_json(cleaned, return_objects=True)
+        out["repair_type"] = type(repaired).__name__
+        if isinstance(repaired, dict):
+            out["repair_keys"] = sorted(repaired.keys())
+            out["topics_count"] = len(repaired.get("topics") or [])
+            out["sentiment_overall"] = repaired.get("sentiment_overall")
+    except Exception as e:
+        out["repair_error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 @router.get("/admin/diag/deps")
 async def diag_deps(
     principal: AuthPrincipal = Depends(get_current_principal),
