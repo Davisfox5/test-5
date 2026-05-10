@@ -642,13 +642,26 @@ async def redrive_interaction(
     if not interaction:
         raise HTTPException(status_code=404, detail="Interaction not found")
 
-    if interaction.status not in ("failed", "processing", "transcription_failed", "transcription_pending"):
+    if interaction.status not in (
+        "failed",
+        "processing",
+        "transcription_failed",
+        "transcription_pending",
+        # Allow re-running already-analyzed rows too — common case is
+        # "the analysis was truncated / low-quality and I want to retry
+        # with new code (json-repair, bigger budget, different model)".
+        # Transcript is preserved on redrive so this only re-pays the
+        # Anthropic cost, not Deepgram.
+        "analyzed",
+        "flagged_for_review",
+        "completed",
+        "done",
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Re-drive only valid for failed/processing rows; this one is "
-                f"'{interaction.status}'. Delete and re-ingest if you want to "
-                "rerun an already-analyzed interaction."
+                f"Re-drive only valid for retryable statuses; this one is "
+                f"'{interaction.status}'."
             ),
         )
 
