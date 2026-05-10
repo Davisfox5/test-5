@@ -26,25 +26,26 @@ def test_expansion_clamped_to_tier_ceiling():
 
 
 def test_main_analysis_high_complexity_gets_full_ceiling():
-    # Sonnet ceiling is 4096.
+    # Sonnet ceiling is 8192 (raised to fit long-form structured analysis).
     out = compute_max_tokens(
         "sonnet",
         input_tokens=2000,
         task_type="main_analysis",
         complexity_score=0.9,
     )
-    assert out == 4096
+    assert out == 8192
 
 
 def test_main_analysis_low_complexity_does_not_force_ceiling():
-    # Complexity 0.5 should not trigger the high-complexity branch.
+    # Low complexity AND short input — neither boost trigger fires, so
+    # the budget stays well below the (now 8192) sonnet ceiling.
     out = compute_max_tokens(
         "sonnet",
         input_tokens=2000,
         task_type="main_analysis",
         complexity_score=0.5,
     )
-    assert out < 4096
+    assert out < 8192
 
 
 def test_explicit_override_is_honored_within_ceiling():
