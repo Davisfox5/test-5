@@ -85,11 +85,15 @@ def compute_max_tokens(
     if explicit_override is not None and explicit_override > 0:
         budget = min(explicit_override, ceiling)
 
-    if (
-        task_type == "main_analysis"
-        and complexity_score is not None
-        and complexity_score > 0.8
-    ):
+    # Main-analysis ceiling boost — fire on EITHER high complexity OR
+    # long input. The original gate keyed only on ``complexity_score >
+    # 0.8``, which left long-but-low-complexity calls (e.g. 15-min
+    # earnings call narration) truncating mid-JSON when the structured
+    # output exceeds the base+expansion budget. Use either signal so
+    # the response actually fits.
+    is_long_input = input_tokens > 4000
+    is_complex = complexity_score is not None and complexity_score > 0.8
+    if task_type == "main_analysis" and (is_complex or is_long_input):
         budget = ceiling
 
     return max(budget, 256)  # never go below a usable floor
