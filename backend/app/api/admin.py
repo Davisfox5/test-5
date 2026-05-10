@@ -629,6 +629,41 @@ class InternalOverrideIn(BaseModel):
     enabled: bool
 
 
+@router.get("/admin/diag/interaction/{interaction_id}")
+async def diag_interaction(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Dump every column on an interaction row — bypasses the
+    InteractionOut serializer so we can see internal fields like
+    ``audio_s3_key`` / ``audio_url`` that aren't normally exposed.
+    Tenant-scoped so this is safe to leave on; it just answers
+    "what's actually in the DB row?" for a given id.
+    """
+    from sqlalchemy import select
+    from backend.app.models import Interaction
+
+    stmt = select(Interaction).where(
+        Interaction.id == interaction_id,
+        Interaction.tenant_id == principal.tenant.id,
+    )
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    out: Dict[str, Any] = {}
+    for col in row.__table__.columns:
+        v = getattr(row, col.name, None)
+        if isinstance(v, (uuid.UUID,)):
+            v = str(v)
+        elif hasattr(v, "isoformat"):
+            v = v.isoformat()
+        elif isinstance(v, (list, dict)):
+            v = v if len(str(v)) < 500 else f"<{type(v).__name__} len={len(v)}>"
+        out[col.name] = v
+    return out
+
+
 class AnalysisTierOverrideIn(BaseModel):
     # ``None`` clears the override and lets triage pick per-call.
     tier: Optional[str] = None
