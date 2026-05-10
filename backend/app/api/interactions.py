@@ -685,6 +685,19 @@ async def delete_interaction(
         raise HTTPException(status_code=404, detail="Interaction not found")
 
     snapshot = {"title": interaction.title, "channel": interaction.channel}
+
+    # LiveSession.interaction_id is a nullable FK without ON DELETE
+    # cascade — null those references first so the interaction row can
+    # actually be deleted. The column is already Optional, so this is
+    # data-correct (the live session just loses its back-pointer).
+    from backend.app.models import LiveSession
+    from sqlalchemy import update as _sql_update
+    await db.execute(
+        _sql_update(LiveSession)
+        .where(LiveSession.interaction_id == interaction_id)
+        .values(interaction_id=None)
+    )
+
     await db.delete(interaction)
     await db.flush()
     await audit_log(

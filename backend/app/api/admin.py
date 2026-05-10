@@ -629,6 +629,56 @@ class InternalOverrideIn(BaseModel):
     enabled: bool
 
 
+class AnalysisTierOverrideIn(BaseModel):
+    # ``None`` clears the override and lets triage pick per-call.
+    tier: Optional[str] = None
+
+
+@router.post(
+    "/admin/tenant-settings/analysis-tier-override",
+    response_model=TenantSettingsOut,
+)
+async def set_analysis_tier_override(
+    body: AnalysisTierOverrideIn,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Pin every analysis call to a specific model tier.
+
+    Writes ``parameter_overrides.analysis.force_tier`` on the tenant's
+    ``TenantPromptConfig``. The orchestrator already honors that key
+    (``tasks.py`` line 898) — this is just the admin-facing way to set
+    it without dropping into psql. ``tier=None`` clears the pin.
+    """
+    from backend.app.models import TenantPromptConfig
+    from sqlalchemy import select
+
+    if body.tier is not None and body.tier not in ("haiku", "sonnet", "opus"):
+        raise HTTPException(
+            status_code=400,
+            detail="tier must be one of: haiku, sonnet, opus, or null to clear",
+        )
+    tenant = principal.tenant
+    stmt = select(TenantPromptConfig).where(
+        TenantPromptConfig.tenant_id == tenant.id
+    )
+    config = (await db.execute(stmt)).scalar_one_or_none()
+    if config is None:
+        config = TenantPromptConfig(tenant_id=tenant.id, parameter_overrides={})
+        db.add(config)
+        await db.flush()
+
+    overrides = dict(config.parameter_overrides or {})
+    analysis = dict(overrides.get("analysis") or {})
+    if body.tier is None:
+        analysis.pop("force_tier", None)
+    else:
+        analysis["force_tier"] = body.tier
+    overrides["analysis"] = analysis
+    config.parameter_overrides = overrides
+    return _tenant_settings_payload(tenant)
+
+
 @router.post(
     "/admin/tenant-settings/internal-override",
     response_model=TenantSettingsOut,
