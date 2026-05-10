@@ -1877,7 +1877,9 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
         logger.exception(
             "Voice pipeline failed for interaction %s", interaction_id
         )
-        # Update status to failed.
+        # Update status to failed AND surface the exception in
+        # ``insights['error']`` so the API + dashboard can show what
+        # actually broke. Without this the row just goes opaque.
         try:
             interaction = (
                 session.query(Interaction)
@@ -1886,6 +1888,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             )
             if interaction:
                 interaction.status = "failed"
+                err_payload = {
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "step": "voice_pipeline",
+                    "retry_count": self.request.retries,
+                }
+                # Preserve any prior insights instead of clobbering.
+                merged = dict(interaction.insights or {})
+                merged.update(err_payload)
+                interaction.insights = merged
                 session.commit()
         except Exception:
             logger.exception("Failed to update interaction status to 'failed'")
@@ -1985,6 +1996,14 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             )
             if interaction:
                 interaction.status = "failed"
+                err_payload = {
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "step": "text_pipeline",
+                    "retry_count": self.request.retries,
+                }
+                merged = dict(interaction.insights or {})
+                merged.update(err_payload)
+                interaction.insights = merged
                 session.commit()
         except Exception:
             logger.exception("Failed to update interaction status to 'failed'")
