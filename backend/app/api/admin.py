@@ -625,6 +625,34 @@ async def change_plan_tier(
     return _tenant_settings_payload(tenant)
 
 
+class InternalOverrideIn(BaseModel):
+    enabled: bool
+
+
+@router.post(
+    "/admin/tenant-settings/internal-override",
+    response_model=TenantSettingsOut,
+)
+async def set_internal_override(
+    body: InternalOverrideIn,
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Mark a tenant as internal / staging-test — bypasses the subscription gate.
+
+    Sets a sentinel ``stripe_subscription_id='internal_test'`` so that
+    ``require_active_subscription`` (which only null-checks the field)
+    treats the tenant as paid without an actual Stripe link. Used for
+    internal QA and end-to-end staging tests where we want unlimited
+    access on an enterprise tier without wiring real billing.
+
+    Reversible: ``{"enabled": false}`` clears the sentinel so the gate
+    re-asserts.
+    """
+    tenant = principal.tenant
+    tenant.stripe_subscription_id = "internal_test" if body.enabled else None
+    return _tenant_settings_payload(tenant)
+
+
 @router.post(
     "/admin/tenant-settings/reset-features",
     response_model=TenantSettingsOut,
