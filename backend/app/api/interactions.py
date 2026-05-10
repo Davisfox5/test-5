@@ -352,6 +352,15 @@ async def upload_voice_interaction(
         interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
         return interaction
 
+    # Commit BEFORE queueing the Celery task — otherwise the worker
+    # picks up the message, reads the row, and sees ``audio_s3_key=None``
+    # because the API session hasn't committed yet. The worker then
+    # parks the row in ``transcription_pending`` and exits. This race
+    # was silently bricking every voice upload until uncovered during
+    # the first end-to-end Earnings22 ingest.
+    await db.commit()
+    await db.refresh(interaction)
+
     # Dispatch the batch pipeline. ``process_voice_interaction`` already
     # handles both the "transcript already populated" path (live calls)
     # and the "audio_s3_key present" path we're setting up here.
@@ -519,6 +528,12 @@ async def ingest_recording(
             interaction.status = "failed"
             interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
             return interaction
+
+    # Commit BEFORE queueing the worker so the row's audio_s3_key /
+    # audio_url is visible to the Celery task. Same race fix as the
+    # /interactions/upload sibling above.
+    await db.commit()
+    await db.refresh(interaction)
 
     # Dispatch the same voice pipeline used for the manual upload path.
     try:
