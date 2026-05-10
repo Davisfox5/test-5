@@ -710,7 +710,18 @@ async def set_analysis_tier_override(
     else:
         analysis["force_tier"] = body.tier
     overrides["analysis"] = analysis
-    config.parameter_overrides = overrides
+
+    # Persist via an explicit UPDATE — JSONB attribute reassignment on
+    # an existing row was not reliably triggering SQLAlchemy's dirty
+    # tracking in production, so the override silently failed to land.
+    # Same lesson as the /interactions/upload race fix.
+    from sqlalchemy import update as _sql_update
+    await db.execute(
+        _sql_update(TenantPromptConfig)
+        .where(TenantPromptConfig.tenant_id == tenant.id)
+        .values(parameter_overrides=overrides)
+    )
+    await db.commit()
     return _tenant_settings_payload(tenant)
 
 
