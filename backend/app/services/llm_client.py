@@ -45,7 +45,11 @@ def get_anthropic() -> anthropic.Anthropic:
 # Typical observed completion size by tier.
 _BASE_MAX_TOKENS = {"haiku": 1024, "sonnet": 2048, "opus": 4096}
 # Hard upper bound — explicit overrides are still capped here.
-_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 4096, "opus": 8192}
+# Sonnet's prior 4096 ceiling was below what real long-form structured
+# analysis needs (15-min earnings calls land around 3500–4000 tokens of
+# structured JSON output and get clipped mid-delimiter). Sonnet 3.5+
+# supports 8192 natively; raise the ceiling to match.
+_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 8192, "opus": 8192}
 
 
 def compute_max_tokens(
