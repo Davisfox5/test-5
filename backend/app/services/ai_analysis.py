@@ -340,15 +340,34 @@ class AIAnalysisService:
                     "AI analysis hit max_tokens — output truncated at %d chars",
                     len(raw_text),
                 )
-            result: Dict[str, Any] = json.loads(_strip_json_fences(raw_text))
-            return result
-
-        except json.JSONDecodeError as exc:
-            logger.error("AI analysis JSON parse error: %s — raw: %s", exc, raw_text)
-            return {
-                "summary": raw_text,
-                "error": f"JSON parse error: {exc}",
-            }
+            cleaned = _strip_json_fences(raw_text)
+            try:
+                result: Dict[str, Any] = json.loads(cleaned)
+                return result
+            except json.JSONDecodeError as parse_exc:
+                # Best-effort repair: truncated responses (max_tokens cut off
+                # the model mid-emit) leave dangling strings / arrays /
+                # objects that ``json-repair`` can stitch closed. We accept
+                # the partial result rather than leaving every long-form
+                # call with empty insights.
+                logger.warning(
+                    "AI analysis JSON parse failed (%s); attempting repair",
+                    parse_exc,
+                )
+                try:
+                    from json_repair import repair_json  # type: ignore
+                    repaired = repair_json(cleaned, return_objects=True)
+                    if isinstance(repaired, dict) and repaired:
+                        repaired.setdefault("_recovered", True)
+                        return repaired
+                except Exception as repair_exc:
+                    logger.error("json-repair fallback failed: %s", repair_exc)
+                # Final fallback — preserve the raw text in summary so the
+                # row isn't completely empty.
+                return {
+                    "summary": raw_text,
+                    "error": f"JSON parse error: {parse_exc}",
+                }
         except anthropic.APIError as exc:
             logger.error("Anthropic API error during analysis: %s", exc)
             return {"error": f"Anthropic API error: {exc}"}
