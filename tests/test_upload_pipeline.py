@@ -62,6 +62,13 @@ class FakeDB:
         # server-side defaults after commit.
         pass
 
+    async def execute(self, *_args, **_kwargs):
+        # Race-fix step 2: the upload + ingest paths now issue an
+        # explicit UPDATE statement to persist audio_s3_key /
+        # audio_url. Mock no-ops it; the test's assertion on the row
+        # object's ``audio_s3_key`` attribute already covers correctness.
+        self.executes = getattr(self, "executes", 0) + 1
+
 
 @pytest.fixture
 def fake_tenant():

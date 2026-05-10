@@ -352,14 +352,18 @@ async def upload_voice_interaction(
         interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
         return interaction
 
-    # Commit BEFORE queueing the Celery task — otherwise the worker
-    # picks up the message, reads the row, and sees ``audio_s3_key=None``
-    # because the API session hasn't committed yet. The worker then
-    # parks the row in ``transcription_pending`` and exits. This race
-    # was silently bricking every voice upload until uncovered during
-    # the first end-to-end Earnings22 ingest.
+    # Persist audio_s3_key via an explicit UPDATE — relying on dirty-
+    # attribute detection on a freshly-flushed row was leaving the
+    # column NULL in production despite the in-memory assignment.
+    # Then commit BEFORE queueing the Celery task so the worker reads
+    # a row that actually has the audio pointer set.
+    from sqlalchemy import update as _sql_update
+    await db.execute(
+        _sql_update(Interaction)
+        .where(Interaction.id == interaction.id)
+        .values(audio_s3_key=stored.s3_key)
+    )
     await db.commit()
-    await db.refresh(interaction)
 
     # Dispatch the batch pipeline. ``process_voice_interaction`` already
     # handles both the "transcript already populated" path (live calls)
@@ -529,11 +533,21 @@ async def ingest_recording(
             interaction.insights = {"error": f"upload_failed: {exc}"[:500]}
             return interaction
 
-    # Commit BEFORE queueing the worker so the row's audio_s3_key /
-    # audio_url is visible to the Celery task. Same race fix as the
-    # /interactions/upload sibling above.
+    # Persist via explicit UPDATE — same lesson as /upload above.
+    from sqlalchemy import update as _sql_update_ir
+    if resolved_url:
+        await db.execute(
+            _sql_update_ir(Interaction)
+            .where(Interaction.id == interaction.id)
+            .values(audio_url=resolved_url)
+        )
+    elif interaction.audio_s3_key:
+        await db.execute(
+            _sql_update_ir(Interaction)
+            .where(Interaction.id == interaction.id)
+            .values(audio_s3_key=interaction.audio_s3_key)
+        )
     await db.commit()
-    await db.refresh(interaction)
 
     # Dispatch the same voice pipeline used for the manual upload path.
     try:
