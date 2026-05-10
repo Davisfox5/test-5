@@ -51,6 +51,17 @@ class FakeDB:
     async def flush(self):
         self.flushes += 1
 
+    async def commit(self):
+        # Race-fix: the upload + ingest endpoints now commit before
+        # dispatching the Celery task so the worker sees ``audio_s3_key``.
+        # The mock just records the call.
+        self.commits = getattr(self, "commits", 0) + 1
+
+    async def refresh(self, row):
+        # No-op for the mock — production uses this to re-read
+        # server-side defaults after commit.
+        pass
+
 
 @pytest.fixture
 def fake_tenant():

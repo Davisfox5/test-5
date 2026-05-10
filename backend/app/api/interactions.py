@@ -646,7 +646,11 @@ async def redrive_interaction(
     interaction.complexity_score = None
     interaction.analysis_tier = None
     interaction.pii_redacted = False
-    await db.flush()
+    # Same race-fix as the upload endpoints: commit before dispatch so
+    # the Celery worker sees the cleared state and not the prior
+    # half-completed run.
+    await db.commit()
+    await db.refresh(interaction)
 
     # Pick the right pipeline task. Voice goes to the audio path, every
     # other channel goes through the text pipeline. The tasks themselves
