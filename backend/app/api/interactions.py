@@ -654,7 +654,15 @@ async def redrive_interaction(
 
     before = {"status": interaction.status}
     interaction.status = "processing"
-    interaction.transcript = []
+    # Preserve the transcript when one already exists — re-running the
+    # whole pipeline against a cached transcript avoids paying for
+    # Deepgram a second time. The voice worker already does this:
+    # ``if interaction.transcript and len(interaction.transcript) > 0``
+    # short-circuits transcription and uses the existing segments. Only
+    # clear it when there's nothing useful to keep (a partial / failed
+    # transcription leaves it empty already, so this is a no-op there).
+    if not interaction.transcript:
+        interaction.transcript = []
     interaction.insights = {}
     interaction.call_metrics = {}
     interaction.complexity_score = None
