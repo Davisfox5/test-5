@@ -629,6 +629,26 @@ class InternalOverrideIn(BaseModel):
     enabled: bool
 
 
+@router.get("/admin/diag/deps")
+async def diag_deps(
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Confirm key runtime deps are importable in this image.
+
+    Cheap to call; only verifies that ``import`` works (no I/O).
+    Useful for checking whether a freshly-pinned package actually
+    landed in the deployed Docker image after a CI build.
+    """
+    out: Dict[str, Any] = {}
+    for name in ("json_repair", "deepgram", "anthropic", "boto3", "spacy"):
+        try:
+            mod = __import__(name)
+            out[name] = getattr(mod, "__version__", "unknown")
+        except Exception as exc:
+            out[name] = f"ImportError: {exc}"
+    return out
+
+
 @router.get("/admin/diag/interaction/{interaction_id}")
 async def diag_interaction(
     interaction_id: uuid.UUID,
