@@ -14,7 +14,7 @@ httpx>=0.27
 anthropic>=0.28                   # Claude Haiku/Sonnet/Opus
 
 # === Speech-to-Text ===
-deepgram-sdk>=3                   # Live + batch ASR + diarization
+deepgram-sdk>=3,<4                # Live + batch ASR + diarization (pin <4 — 4.x restructured PrerecordedOptions out of the top-level namespace)
 faster-whisper>=1.0               # Self-hosted batch ASR
 pyannote.audio>=3.1,<4            # Self-hosted speaker diarization
 # pyannote.audio depends on `lightning>=2.0.1`, but the `lightning`
