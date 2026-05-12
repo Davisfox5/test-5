@@ -148,6 +148,7 @@ export default function DashboardPage() {
                 <span className="text-xs uppercase tracking-wide text-text-subtle">
                     Period
                 </span>
+                <HelpTip text="Pick the date range for every metric on this page; charts and counts update everywhere." />
                 <div className="inline-flex rounded-md border border-border">
                     {PERIODS.map((p) => (
                         <button
@@ -179,6 +180,7 @@ export default function DashboardPage() {
                             : "—"
                     }
                     delta={summary.data?.prev_period_deltas?.total_interactions_pct}
+                    help="Total number of calls Linda analyzed in the selected period."
                 />
                 <StatCard
                     label="Action items"
@@ -198,6 +200,7 @@ export default function DashboardPage() {
                             ? "rose"
                             : "subtle"
                     }
+                    help="Open follow-ups Linda extracted from your calls — things a rep committed to do or you owe a customer."
                 />
                 <StatCard
                     label="Avg sentiment"
@@ -213,6 +216,7 @@ export default function DashboardPage() {
                             : undefined
                     }
                     delta={summary.data?.prev_period_deltas?.avg_sentiment_pct}
+                    help="Average customer mood across every call in this period, scored 0–10 by Linda after reading the transcript."
                 />
                 <StatCard
                     label="QA score"
@@ -228,6 +232,7 @@ export default function DashboardPage() {
                             : undefined
                     }
                     delta={summary.data?.prev_period_deltas?.avg_qa_pct}
+                    help="Average score each call earned against your team's scorecards, from 0 to 100; blank if no scorecard is set up."
                 />
                 <StatCard
                     label="Rapport (LSM)"
@@ -240,6 +245,7 @@ export default function DashboardPage() {
                     suffix={
                         summary.data?.avg_rapport != null ? "/ 100" : undefined
                     }
+                    help="How much the rep mirrored the customer's word choice and rhythm — a 0–100 indicator of conversational connection."
                 />
                 <StatCard
                     label="Talk %"
@@ -258,6 +264,7 @@ export default function DashboardPage() {
                             : undefined
                     }
                     hint={!isManager ? "Manager view" : undefined}
+                    help="Average share of each call the rep was speaking; in sales contexts, lower (more listening) usually wins. Manager view only."
                 />
             </section>
 
@@ -270,6 +277,7 @@ export default function DashboardPage() {
                     avg={signals.data?.avg_churn_risk ?? null}
                     loading={summary.isLoading}
                     href="/customers?risk=churn"
+                    help="Calls in this period where Linda heard cancellation signals, dissatisfaction, or warning language — sized 0 to 1."
                 />
                 <SignalCard
                     title="Upsell opportunity"
@@ -278,6 +286,7 @@ export default function DashboardPage() {
                     avg={signals.data?.avg_upsell_score ?? null}
                     loading={summary.isLoading}
                     href="/customers?signal=upsell"
+                    help="Calls in this period where Linda heard buying signals — interest in upgrades, more seats, or expanded use — sized 0 to 1."
                 />
             </section>
 
@@ -296,6 +305,7 @@ export default function DashboardPage() {
                             tone="rose"
                             href="/action-items?status=open"
                             label={`${summary.data.overdue_action_items} overdue action item${summary.data.overdue_action_items === 1 ? "" : "s"}`}
+                            help="Open follow-ups whose due date has already passed."
                         />
                     )}
                     {summary.data.flagged_for_review_count > 0 && (
@@ -303,6 +313,7 @@ export default function DashboardPage() {
                             tone="amber"
                             href="/customers?tab=all-interactions&status=flagged_for_review"
                             label={`${summary.data.flagged_for_review_count} awaiting review`}
+                            help="Calls where Linda's confidence was low — a manager should glance before trusting the analysis."
                         />
                     )}
                     {summary.data.failed_count > 0 && (
@@ -310,6 +321,7 @@ export default function DashboardPage() {
                             tone="rose"
                             href="/customers?tab=all-interactions&status=failed"
                             label={`${summary.data.failed_count} failed`}
+                            help="Calls that errored during analysis — open one to see the reason and retry."
                         />
                     )}
                     {summary.data.processing_count > 0 && (
@@ -317,13 +329,17 @@ export default function DashboardPage() {
                             tone="amber"
                             href="/customers?tab=all-interactions&status=processing"
                             label={`${summary.data.processing_count} processing`}
+                            help="Calls Linda is currently transcribing or analyzing — they'll appear in Recent calls once done."
                         />
                     )}
                 </section>
             ) : null}
 
             {/* Trends chart — calls + sentiment + QA + rapport */}
-            <Panel title={`Trends · last ${period}`}>
+            <Panel
+                title={`Trends · last ${period}`}
+                help="Bars are daily call volume; the three lines are average sentiment, QA score, and rapport — all rescaled to a shared 0–100 axis so you can spot drift at a glance."
+            >
                 {trends.isLoading ? (
                     <div className="px-3 py-6 text-sm text-text-subtle">
                         Loading trends…
@@ -351,6 +367,7 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <Panel
                     title="Recent calls"
+                    help="The five most recent calls in your account, newest first."
                     action={
                         <Link
                             href="/customers?tab=all-interactions"
@@ -384,6 +401,7 @@ export default function DashboardPage() {
 
                 <Panel
                     title="Open action items"
+                    help="The five most recent open follow-ups Linda pulled out of your calls — assignee, due date, and priority included."
                     action={
                         <Link
                             href="/action-items"
@@ -414,7 +432,10 @@ export default function DashboardPage() {
 
             {/* Channel breakdown + Top topics */}
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                <Panel title="By channel">
+                <Panel
+                    title="By channel"
+                    help="How your call volume splits across voice, email, and chat in the selected period — and the average sentiment for each."
+                >
                     {business.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : business.error ? (
@@ -433,7 +454,10 @@ export default function DashboardPage() {
                     )}
                 </Panel>
 
-                <Panel title="Top topics">
+                <Panel
+                    title="Top topics"
+                    help="The most-discussed subjects across your calls this period, with how often each came up."
+                >
                     {business.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : business.error ? (
@@ -466,7 +490,10 @@ export default function DashboardPage() {
 
             {/* Coaching focus + Top blockers (gaps) */}
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                <Panel title="Coaching focus">
+                <Panel
+                    title="Coaching focus"
+                    help="The single coaching theme to work on this week, plus a 'keep doing' reinforcing strength — picked from across all recent calls."
+                >
                     {coaching.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : coaching.error ? (
@@ -488,7 +515,10 @@ export default function DashboardPage() {
                     )}
                 </Panel>
 
-                <Panel title="Top blockers">
+                <Panel
+                    title="Top blockers"
+                    help="The objections and compliance gaps Linda has heard most often across recent calls — fix these and your win rate climbs."
+                >
                     {coaching.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : coaching.error ? (
@@ -523,7 +553,10 @@ export default function DashboardPage() {
 
             {/* Account health */}
             <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <Panel title="At-risk accounts">
+                <Panel
+                    title="At-risk accounts"
+                    help="Customers whose most recent call showed the strongest cancellation signals — call them before they cancel."
+                >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : accounts.error ? (
@@ -541,7 +574,10 @@ export default function DashboardPage() {
                         />
                     )}
                 </Panel>
-                <Panel title="Expansion opportunities">
+                <Panel
+                    title="Expansion opportunities"
+                    help="Customers whose most recent call showed the strongest buying signals — these are your warmest upsell targets right now."
+                >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : accounts.error ? (
@@ -559,7 +595,10 @@ export default function DashboardPage() {
                         />
                     )}
                 </Panel>
-                <Panel title="Stale accounts">
+                <Panel
+                    title="Stale accounts"
+                    help="Customers you haven't spoken to in 30+ days — a nudge here often prevents a quiet churn later."
+                >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
                     ) : accounts.error ? (
@@ -582,6 +621,7 @@ export default function DashboardPage() {
             {/* Integration health */}
             <Panel
                 title="Integrations"
+                help="Which CRMs, calendars, and inboxes are wired to your account; expired tokens are flagged in amber."
                 action={
                     <Link
                         href="/settings"
@@ -634,6 +674,31 @@ export default function DashboardPage() {
 
 /* ── Subcomponents ──────────────────────────────────────────────────── */
 
+function HelpTip({ text }: { text: string }) {
+    // Small "?" badge in the corner of a card/panel. Mouseover surfaces a
+    // one-sentence plain-language explanation. Implemented with a CSS-only
+    // tooltip (no JS state) so it's cheap and SSR-friendly. Tooltip uses
+    // ``group-hover`` from the parent ``group`` wrapper.
+    return (
+        <span className="group/help relative inline-flex shrink-0">
+            <button
+                type="button"
+                tabIndex={0}
+                aria-label="What is this?"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border bg-bg-secondary text-[10px] font-semibold leading-none text-text-subtle hover:bg-bg-card-hover hover:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+                ?
+            </button>
+            <span
+                role="tooltip"
+                className="pointer-events-none absolute right-0 top-5 z-20 hidden w-56 rounded-md border border-border bg-bg-card px-3 py-2 text-xs font-normal leading-snug text-text-muted shadow-lg group-hover/help:block group-focus-within/help:block"
+            >
+                {text}
+            </span>
+        </span>
+    );
+}
+
 function StatCard({
     label,
     value,
@@ -642,6 +707,7 @@ function StatCard({
     delta,
     hint,
     hintTone,
+    help,
 }: {
     label: string;
     value: string;
@@ -650,12 +716,16 @@ function StatCard({
     delta?: number | null;
     hint?: string;
     hintTone?: "rose" | "subtle";
+    help?: string;
 }) {
     return (
         <div className="rounded-lg border border-border bg-bg-card p-4">
-            <p className="text-xs uppercase tracking-wide text-text-subtle">
-                {label}
-            </p>
+            <div className="flex items-start justify-between gap-2">
+                <p className="text-xs uppercase tracking-wide text-text-subtle">
+                    {label}
+                </p>
+                {help ? <HelpTip text={help} /> : null}
+            </div>
             <div className="mt-2 flex items-baseline gap-2">
                 {loading ? (
                     <span
@@ -709,6 +779,7 @@ function SignalCard({
     avg,
     loading,
     href,
+    help,
 }: {
     title: string;
     tone: "rose" | "emerald";
@@ -716,6 +787,7 @@ function SignalCard({
     avg: number | null;
     loading?: boolean;
     href: string;
+    help?: string;
 }) {
     const dot = tone === "rose" ? "bg-accent-rose" : "bg-accent-emerald";
     return (
@@ -728,9 +800,12 @@ function SignalCard({
                     <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
                     <p className="text-sm font-semibold">{title}</p>
                 </div>
-                <span className="text-xs text-text-subtle group-hover:text-text-muted">
-                    View →
-                </span>
+                <div className="flex items-center gap-2">
+                    {help ? <HelpTip text={help} /> : null}
+                    <span className="text-xs text-text-subtle group-hover:text-text-muted">
+                        View →
+                    </span>
+                </div>
             </div>
             <div className="mt-2 flex items-baseline gap-3">
                 {loading ? (
@@ -757,31 +832,40 @@ function AlertChip({
     tone,
     href,
     label,
+    help,
 }: {
     tone: "rose" | "amber";
     href: string;
     label: string;
+    help?: string;
 }) {
     const cls =
         tone === "rose"
             ? "border-accent-rose/40 text-accent-rose hover:bg-accent-rose/10"
             : "border-accent-amber/40 text-accent-amber hover:bg-accent-amber/10";
     return (
-        <Link
-            href={href}
-            className={`inline-flex items-center gap-2 rounded-full border bg-bg-card px-3 py-1.5 text-xs ${cls}`}
-        >
-            {label} →
-        </Link>
+        <span className="inline-flex items-center gap-1.5">
+            <Link
+                href={href}
+                className={`inline-flex items-center gap-2 rounded-full border bg-bg-card px-3 py-1.5 text-xs ${cls}`}
+            >
+                {label} →
+            </Link>
+            {help ? <HelpTip text={help} /> : null}
+        </span>
     );
 }
 
 function QuickActionStrip() {
     return (
         <section
-            className="flex flex-wrap gap-2"
+            className="flex flex-wrap items-center gap-2"
             aria-label="Quick actions"
         >
+            <span className="mr-1 text-xs uppercase tracking-wide text-text-subtle">
+                Quick actions
+            </span>
+            <HelpTip text="One-click entry points to the things you do most often on Linda — start here." />
             <Link
                 href="/customers?tab=all-interactions"
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover"
@@ -1030,16 +1114,21 @@ function IntegrationStatus({
 function Panel({
     title,
     action,
+    help,
     children,
 }: {
     title: string;
     action?: React.ReactNode;
+    help?: string;
     children: React.ReactNode;
 }) {
     return (
         <section className="rounded-lg border border-border bg-bg-card">
             <div className="flex items-center justify-between border-b border-border px-5 py-3">
-                <h3 className="text-sm font-semibold">{title}</h3>
+                <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold">{title}</h3>
+                    {help ? <HelpTip text={help} /> : null}
+                </div>
                 {action}
             </div>
             <div className="px-2 py-1">{children}</div>
