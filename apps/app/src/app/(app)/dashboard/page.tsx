@@ -311,7 +311,7 @@ export default function DashboardPage() {
                     {summary.data.flagged_for_review_count > 0 && (
                         <AlertChip
                             tone="amber"
-                            href="/customers?tab=all-interactions&status=flagged_for_review"
+                            href="/interactions?status=flagged_for_review"
                             label={`${summary.data.flagged_for_review_count} awaiting review`}
                             help="Calls where Linda's confidence was low — a manager should glance before trusting the analysis."
                         />
@@ -319,7 +319,7 @@ export default function DashboardPage() {
                     {summary.data.failed_count > 0 && (
                         <AlertChip
                             tone="rose"
-                            href="/customers?tab=all-interactions&status=failed"
+                            href="/interactions?status=failed"
                             label={`${summary.data.failed_count} failed`}
                             help="Calls that errored during analysis — open one to see the reason and retry."
                         />
@@ -327,7 +327,7 @@ export default function DashboardPage() {
                     {summary.data.processing_count > 0 && (
                         <AlertChip
                             tone="amber"
-                            href="/customers?tab=all-interactions&status=processing"
+                            href="/interactions?status=processing"
                             label={`${summary.data.processing_count} processing`}
                             help="Calls Linda is currently transcribing or analyzing — they'll appear in Recent calls once done."
                         />
@@ -370,7 +370,7 @@ export default function DashboardPage() {
                     help="The five most recent calls in your account, newest first."
                     action={
                         <Link
-                            href="/customers?tab=all-interactions"
+                            href="/interactions"
                             className="text-sm text-primary hover:underline"
                         >
                             View all →
@@ -648,7 +648,7 @@ export default function DashboardPage() {
                             n={1}
                             title="Upload a call"
                             body="Drop in a recording and Linda transcribes + analyzes it in minutes."
-                            href="/customers?tab=all-interactions"
+                            href="/interactions"
                             cta="Upload"
                         />
                         <QuickStep
@@ -867,7 +867,7 @@ function QuickActionStrip() {
             </span>
             <HelpTip text="One-click entry points to the things you do most often on Linda — start here." />
             <Link
-                href="/customers?tab=all-interactions"
+                href="/interactions"
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover"
             >
                 + Upload a call

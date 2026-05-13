@@ -1,22 +1,14 @@
 "use client";
 
 /**
- * Customers — the spine of the app shell.
+ * Customers — every account Linda has identified, with four switchable
+ * list views (table / grid / hybrid / kanban). Sort + filter + search
+ * apply to all four since they share a data shape.
  *
- * Top-level sibling tabs (per the redesign plan):
- *   - Customers (the four switchable list views)
- *   - All Interactions (the demoted-from-sidebar global feed)
- *
- * Tab state lives in ``?tab=...`` so links can deep-link to the right
- * sibling and the browser back-button works. The legacy /interactions
- * list page redirects here — see /interactions/page.tsx.
- *
- * The four customer-list views (table / grid / hybrid / kanban) sit
- * under the Customers sibling-tab. Sort + filter + search apply to
- * all four — the data shape is identical.
+ * The global call feed lives at /interactions; the per-account drill-down
+ * still lives at /customers/{id}.
  */
 
-import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useState } from "react";
 import {
     useCustomerList,
@@ -26,9 +18,7 @@ import { CustomerGridView } from "./_views/grid-view";
 import { CustomerHybridView } from "./_views/hybrid-view";
 import { CustomerKanbanView } from "./_views/kanban-view";
 import { CustomerTableView } from "./_views/table-view";
-import { AllInteractionsView } from "./_views/all-interactions-view";
 
-type SiblingTab = "customers" | "all-interactions";
 type ViewKey = "table" | "grid" | "hybrid" | "kanban";
 
 const VIEW_LABEL: Record<ViewKey, string> = {
@@ -46,75 +36,7 @@ const SORT_OPTIONS: { value: CustomerListSort; label: string }[] = [
     { value: "multithreading_90d", label: "Multithreading (90d)" },
 ];
 
-const SIBLING_TABS: { key: SiblingTab; label: string }[] = [
-    { key: "customers", label: "Customers" },
-    { key: "all-interactions", label: "All Interactions" },
-];
-
-function readTab(value: string | null): SiblingTab {
-    return value === "all-interactions" ? "all-interactions" : "customers";
-}
-
 export default function CustomersPage() {
-    const searchParams = useSearchParams();
-    const router = useRouter();
-    const pathname = usePathname();
-    const tab = readTab(searchParams?.get("tab") ?? null);
-
-    const setTab = (next: SiblingTab) => {
-        const params = new URLSearchParams(searchParams?.toString() ?? "");
-        if (next === "customers") {
-            params.delete("tab");
-        } else {
-            params.set("tab", next);
-        }
-        const qs = params.toString();
-        router.replace(qs ? `${pathname}?${qs}` : pathname);
-    };
-
-    return (
-        <div className="space-y-6">
-            <header>
-                <h1 className="text-2xl font-bold">Customers</h1>
-                <p className="text-sm text-text-muted">
-                    Every account Linda has identified from your calls. Click a
-                    row to see the full record, or switch to All Interactions
-                    for the global call feed.
-                </p>
-            </header>
-
-            <div
-                role="tablist"
-                aria-label="Customers sections"
-                className="flex gap-2 border-b border-border"
-            >
-                {SIBLING_TABS.map((t) => {
-                    const active = tab === t.key;
-                    return (
-                        <button
-                            key={t.key}
-                            type="button"
-                            role="tab"
-                            aria-selected={active}
-                            onClick={() => setTab(t.key)}
-                            className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors ${
-                                active
-                                    ? "border-primary text-primary"
-                                    : "border-transparent text-text-muted hover:text-text"
-                            }`}
-                        >
-                            {t.label}
-                        </button>
-                    );
-                })}
-            </div>
-
-            {tab === "customers" ? <CustomersTab /> : <AllInteractionsView />}
-        </div>
-    );
-}
-
-function CustomersTab() {
     const [sort, setSort] = useState<CustomerListSort>("latest_interaction");
     const [nameFilter, setNameFilter] = useState("");
     const [view, setView] = useState<ViewKey>("table");
@@ -125,6 +47,14 @@ function CustomersTab() {
 
     return (
         <div className="space-y-6">
+            <header>
+                <h1 className="text-2xl font-bold">Customers</h1>
+                <p className="text-sm text-text-muted">
+                    Every account Linda has identified from your calls. Click a
+                    row to see the full record.
+                </p>
+            </header>
+
             <div className="flex flex-wrap items-center gap-3">
                 <input
                     type="search"

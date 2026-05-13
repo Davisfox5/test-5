@@ -48,11 +48,6 @@ function formatRole(role: UserRole): string {
 // drift out of sync.
 export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
-    // Customers is the spine of the app shell. Per the plan, the
-    // global "Interactions" feed has been demoted to a sibling tab on
-    // /customers (``?tab=all-interactions``) so analysts work from the
-    // account, not from a flat call list. /interactions/{id} detail
-    // pages still exist and stay reachable.
     { href: "/customers", label: "Customers", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
     { href: "/action-items", label: "Action Items", minRole: "agent" },

@@ -347,7 +347,7 @@ function EmptyState() {
             <p className="text-text-subtle text-sm">
                 Send one from any interaction&apos;s detail page —{" "}
                 <Link
-                    href="/customers?tab=all-interactions"
+                    href="/interactions"
                     className="text-primary hover:underline"
                 >
                     open /interactions

@@ -393,7 +393,7 @@ function EmptyState() {
             </p>
             <p className="text-text-subtle text-sm mt-1">
                 Upload a call from{" "}
-                <Link href="/customers?tab=all-interactions" className="text-primary hover:underline">
+                <Link href="/interactions" className="text-primary hover:underline">
                     /interactions
                 </Link>{" "}
                 to get started.
