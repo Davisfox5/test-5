@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 
 import {
     ActionItem,
@@ -11,18 +12,28 @@ import {
     useUpdateActionItem,
 } from "@/lib/action-items";
 
-type Tab = "open" | "done" | "snoozed";
+type Tab = "open" | "overdue" | "done" | "snoozed";
 
 const TABS: { key: Tab; label: string; status: string }[] = [
     { key: "open", label: "Open", status: "pending" },
+    // Overdue uses the same ``status=open`` base set but adds a
+    // server-side ``overdue=true`` filter (only items past due_date).
+    { key: "overdue", label: "Overdue", status: "pending" },
     { key: "done", label: "Done", status: "done" },
     { key: "snoozed", label: "Snoozed", status: "snoozed" },
 ];
+
+const TAB_KEYS = new Set<Tab>(["open", "overdue", "done", "snoozed"]);
 
 const DONE_STATUSES = new Set(["done", "completed"]);
 
 function statusForTab(tab: Tab): string {
     return TABS.find((t) => t.key === tab)?.status ?? "pending";
+}
+
+function readTab(value: string | null): Tab {
+    if (value && TAB_KEYS.has(value as Tab)) return value as Tab;
+    return "open";
 }
 
 function fmtDate(value: string | null | undefined): string {
@@ -39,7 +50,23 @@ function inOneDayISODate(): string {
 }
 
 export default function ActionItemsPage() {
-    const [tab, setTab] = useState<Tab>("open");
+    // Tab state lives in ?tab=... so the dashboard's "Overdue" alert
+    // chip can deep-link straight here.
+    const searchParams = useSearchParams();
+    const router = useRouter();
+    const pathname = usePathname();
+    const tab = readTab(searchParams?.get("tab") ?? null);
+    const setTab = (next: Tab) => {
+        const params = new URLSearchParams(searchParams?.toString() ?? "");
+        if (next === "open") {
+            params.delete("tab");
+        } else {
+            params.set("tab", next);
+        }
+        const qs = params.toString();
+        router.replace(qs ? `${pathname}?${qs}` : pathname);
+    };
+
     const [q, setQ] = useState("");
     const [assignee, setAssignee] = useState<string>("");
     const [dueFrom, setDueFrom] = useState<string>("");
@@ -48,6 +75,7 @@ export default function ActionItemsPage() {
 
     const filters: ActionItemFilters = useMemo(() => {
         const f: ActionItemFilters = { status: statusForTab(tab), limit: 100 };
+        if (tab === "overdue") f.overdue = true;
         if (assignee) f.assigned_to = assignee;
         if (q) f.q = q;
         return f;

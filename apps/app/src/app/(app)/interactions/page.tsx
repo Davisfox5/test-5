@@ -1,14 +1,19 @@
 "use client";
 
 /**
- * Global Interactions list — replaces the prior redirect stub. Same
- * drill-down depth as the customer-page Interactions tab; sort + filter
- * lives at the top of the list.
+ * Global Interactions list — every call across the tenant.
+ *
+ * Two top-level tabs:
+ *   - All — every interaction, filterable by channel/status/sort
+ *   - Needs Review — calls in {flagged_for_review, failed, processing};
+ *     the dashboard's awaiting-review / failed / processing alert chips
+ *     deep-link straight here with ``?status=...``.
  */
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useApi } from "@/lib/api";
 import {
     formatDuration,
@@ -17,6 +22,7 @@ import {
     type InteractionOut,
 } from "@/lib/interactions";
 
+type Tab = "all" | "needs-review";
 type SortKey = "newest" | "oldest" | "longest" | "shortest" | "churn_high";
 
 const SORT_LABEL: Record<SortKey, string> = {
@@ -27,10 +33,43 @@ const SORT_LABEL: Record<SortKey, string> = {
     churn_high: "Highest churn risk",
 };
 
+const NEEDS_REVIEW_STATUSES = new Set([
+    "flagged_for_review",
+    "failed",
+    "transcription_failed",
+    "processing",
+    "transcription_pending",
+]);
+
+function readTab(value: string | null): Tab {
+    return value === "needs-review" ? "needs-review" : "all";
+}
+
 export default function GlobalInteractionsPage() {
     const api = useApi();
+    const searchParams = useSearchParams();
+    const router = useRouter();
+    const pathname = usePathname();
+    const tab = readTab(searchParams?.get("tab") ?? null);
+    const setTab = (next: Tab) => {
+        const params = new URLSearchParams(searchParams?.toString() ?? "");
+        if (next === "all") {
+            params.delete("tab");
+            params.delete("status");
+        } else {
+            params.set("tab", next);
+        }
+        const qs = params.toString();
+        router.replace(qs ? `${pathname}?${qs}` : pathname);
+    };
+
     const [channel, setChannel] = useState("");
-    const [status, setStatus] = useState("");
+    // Status filter — for the Needs-Review tab, this defaults to the
+    // chip's deep-linked value but the user can change it via the
+    // select, narrowing within the needs-review universe.
+    const initialStatus =
+        tab === "needs-review" ? searchParams?.get("status") ?? "" : "";
+    const [status, setStatus] = useState(initialStatus);
     const [query, setQuery] = useState("");
     const [sort, setSort] = useState<SortKey>("newest");
 
@@ -49,7 +88,11 @@ export default function GlobalInteractionsPage() {
     });
 
     const items = data ?? [];
-    const sortedItems = [...items].sort((a, b) => {
+    const filteredByTab = useMemo(() => {
+        if (tab !== "needs-review") return items;
+        return items.filter((i) => NEEDS_REVIEW_STATUSES.has(i.status));
+    }, [items, tab]);
+    const sortedItems = [...filteredByTab].sort((a, b) => {
         switch (sort) {
             case "oldest":
                 return a.created_at.localeCompare(b.created_at);
@@ -73,9 +116,44 @@ export default function GlobalInteractionsPage() {
             <div className="flex items-baseline justify-between gap-4">
                 <h1 className="text-2xl font-bold">Interactions</h1>
                 <span className="text-xs text-text-subtle">
-                    {items.length} call{items.length === 1 ? "" : "s"}
+                    {sortedItems.length} call
+                    {sortedItems.length === 1 ? "" : "s"}
                 </span>
             </div>
+
+            <div
+                role="tablist"
+                aria-label="Interaction sections"
+                className="flex gap-2 border-b border-border"
+            >
+                {(["all", "needs-review"] as Tab[]).map((t) => {
+                    const active = tab === t;
+                    return (
+                        <button
+                            key={t}
+                            type="button"
+                            role="tab"
+                            aria-selected={active}
+                            onClick={() => setTab(t)}
+                            className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors ${
+                                active
+                                    ? "border-primary text-primary"
+                                    : "border-transparent text-text-muted hover:text-text"
+                            }`}
+                        >
+                            {t === "all" ? "All" : "Needs Review"}
+                        </button>
+                    );
+                })}
+            </div>
+
+            {tab === "needs-review" ? (
+                <p className="text-sm text-text-muted">
+                    Calls Linda couldn&apos;t complete or wants you to glance
+                    at: flagged for review, processing, or failed. Open one
+                    to see the reason and retry.
+                </p>
+            ) : null}
 
             <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-bg-card p-4">
                 <FilterField label="Search">

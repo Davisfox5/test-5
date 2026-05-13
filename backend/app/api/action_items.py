@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import (
@@ -63,6 +63,10 @@ class ActionItemOut(BaseModel):
     completed_at: Optional[datetime] = None
     dismissed_at: Optional[datetime] = None
     created_at: datetime
+    # Derived from the joined parent interaction so dashboard rows can
+    # deep-link straight to the customer profile. Populated by the list
+    # endpoint via an extra column.
+    customer_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 
@@ -274,13 +278,28 @@ async def list_action_items(
     priority: Optional[str] = Query(None, description="Filter by priority"),
     category: Optional[str] = Query(None, description="Filter by category"),
     assigned_to: Optional[uuid.UUID] = Query(None, description="Filter by assigned user"),
+    overdue: Optional[bool] = Query(None, description="If true, only items past due_date"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    from backend.app.models import Interaction, Contact
+    from datetime import date as _date
+
+    # Join interaction + contact to derive the customer the action item
+    # belongs to. The interaction's direct customer_id wins; falls back
+    # to the contact's customer_id when the resolver only tagged the
+    # contact.
     stmt = (
-        select(ActionItem)
+        select(
+            ActionItem,
+            func.coalesce(Interaction.customer_id, Contact.customer_id).label(
+                "derived_customer_id"
+            ),
+        )
+        .join(Interaction, Interaction.id == ActionItem.interaction_id)
+        .outerjoin(Contact, Contact.id == Interaction.contact_id)
         .where(ActionItem.tenant_id == tenant.id)
         .order_by(ActionItem.created_at.desc())
         .limit(limit)
@@ -298,9 +317,22 @@ async def list_action_items(
         stmt = stmt.where(ActionItem.category == category)
     if assigned_to is not None:
         stmt = stmt.where(ActionItem.assigned_to == assigned_to)
+    if overdue:
+        # Overdue = still open AND due date in the past. Used by the
+        # dashboard's "Overdue action items" alert chip.
+        stmt = stmt.where(
+            ActionItem.status.in_(("open", "pending", "in_progress")),
+            ActionItem.due_date.isnot(None),
+            ActionItem.due_date < _date.today(),
+        )
 
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    rows = (await db.execute(stmt)).all()
+    out: List[ActionItemOut] = []
+    for ai, derived_customer_id in rows:
+        payload = ActionItemOut.model_validate(ai)
+        payload.customer_id = derived_customer_id
+        out.append(payload)
+    return out
 
 
 @router.get("/action-items/{action_item_id}", response_model=ActionItemOut)

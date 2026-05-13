@@ -137,7 +137,146 @@ export default function CoachingPage() {
                     }
                 />
             )}
+
+            {/* Metric drilldowns — dashboard KPI cards deep-link here via
+                hash anchors (#metric-sentiment / -qa / -rapport /
+                -talk-listen). Plain-language explanation of each metric
+                + how it's calculated; the live-coaching widgets above
+                use these signals, so seeing the math helps reps trust
+                the numbers. */}
+            <MetricsDrilldown />
         </div>
+    );
+}
+
+function MetricsDrilldown() {
+    return (
+        <section className="mt-10 space-y-8">
+            <header>
+                <h3 className="text-lg font-semibold">Metric reference</h3>
+                <p className="mt-1 text-sm text-text-muted">
+                    The dashboard KPIs link straight to these sections.
+                    Each metric: what it measures, how Linda calculates
+                    it, and what to do with it.
+                </p>
+            </header>
+
+            <MetricBlock
+                id="metric-sentiment"
+                title="Average sentiment"
+                scale="0–10 scale"
+                description="How positive the customer's tone is on a call, scored 0 (frustrated, hostile) to 10 (delighted, advocating). The number on the dashboard is the simple mean across every analyzed call in the selected period."
+                calculation={[
+                    "Linda passes the full transcript to Claude with an instruction to score the customer's overall emotional valence on a 0-to-10 scale, calibrated against a small reference set of labeled calls.",
+                    "Calls where the customer barely speaks (one-sided rep monologue) are still scored but with lower confidence — those get filtered out of the trend line if the customer-speech duration is under 10% of the call.",
+                ]}
+                howToUse={[
+                    "Spotting drift: a 3-week downward slope is a stronger signal than any single call. Use the Trends chart for this.",
+                    "Don't optimize for the number itself — chasing high sentiment can lead reps to avoid hard conversations. Customers giving you bad news is a HEALTHY signal, not a bad one.",
+                ]}
+            />
+
+            <MetricBlock
+                id="metric-qa"
+                title="QA score"
+                scale="0–100 scale"
+                description="How well each call performs against your team's custom scorecards. Each scorecard is a weighted rubric (e.g. 'opened with permission' / 'recapped at the end') and every call gets one composite score."
+                calculation={[
+                    "Each scorecard rubric criterion is scored individually (0–5 typically) by Linda based on the transcript. Criteria are weight-multiplied and summed, then normalized to a 0–100 scale.",
+                    "Calls without an applicable scorecard show as null — the metric average on the dashboard skips them. If your dashboard shows '—' for QA score, you likely haven't configured a scorecard yet.",
+                ]}
+                howToUse={[
+                    "Coach to the criterion, not the total: 'your discovery score is low' is actionable; 'your QA score is low' is not.",
+                    "Calibrate scorecards monthly. If 90% of calls score above 80, the scorecard isn't discriminating — make the criteria harder.",
+                ]}
+            />
+
+            <MetricBlock
+                id="metric-rapport"
+                title="Rapport (LSM)"
+                scale="0–100 scale (rescaled from 0–1)"
+                description="Linguistic Style Matching — a measure of how much the rep mirrored the customer's word choice and rhythm. High LSM correlates with conversational connection and is one of the strongest predictors of repeat business."
+                calculation={[
+                    "We tokenize both speakers' turns and compute, for each function-word category (pronouns, articles, conjunctions, etc.), how often each speaker uses words in that category. LSM = 1 - normalized absolute difference, averaged across categories.",
+                    "Result is 0 to 1; we display 0 to 100 for legibility. Single-speaker calls (earnings-call monologues) don't generate a score — they need two-sided dialogue.",
+                ]}
+                howToUse={[
+                    "Below 60: rep is talking past the customer (using different vocabulary, formality). Coach toward active mirroring.",
+                    "Above 85: very strong rapport. Cross-reference with sentiment — if rapport is high and sentiment is low, the customer is COMFORTABLE telling the rep bad news, which is its own kind of trust signal.",
+                ]}
+            />
+
+            <MetricBlock
+                id="metric-talk-listen"
+                title="Talk %"
+                scale="0–100% (rep share of speaking time)"
+                description="What fraction of the call the rep was speaking, averaged across all reps in the selected period. Industry benchmarks for sales discovery: 40–55% rep is healthy; over 65% usually correlates with worse outcomes."
+                calculation={[
+                    "We diarize the call (separate speaker tracks) and compute the rep's total speaking seconds divided by total call seconds (excluding silence). Aggregation is a simple mean across calls.",
+                    "Inbound support calls naturally skew higher rep-talk (rep is delivering information). The benchmark of 40–55% applies to sales discovery; calibrate to your context.",
+                ]}
+                howToUse={[
+                    "Watch the per-rep distribution, not the tenant average. A single rep at 75% drags the team mean — coach that rep specifically.",
+                    "Pair with sentiment: high talk % + low sentiment = rep is steamrolling. High talk % + high sentiment = customer was already sold and just wanted info.",
+                ]}
+            />
+        </section>
+    );
+}
+
+function MetricBlock({
+    id,
+    title,
+    scale,
+    description,
+    calculation,
+    howToUse,
+}: {
+    id: string;
+    title: string;
+    scale: string;
+    description: string;
+    calculation: string[];
+    howToUse: string[];
+}) {
+    return (
+        <article
+            id={id}
+            // ``scroll-mt-20`` keeps the anchor target clear of the
+            // top-of-page sticky nav when the user lands here from a
+            // KPI-card hash link.
+            className="scroll-mt-20 rounded-lg border border-border bg-bg-card p-6"
+        >
+            <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-3">
+                <h4 className="text-base font-semibold">{title}</h4>
+                <span className="text-xs uppercase tracking-wide text-text-subtle">
+                    {scale}
+                </span>
+            </header>
+            <p className="mt-3 text-sm text-text-muted">{description}</p>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wide text-text-subtle">
+                        How it&apos;s calculated
+                    </h5>
+                    <div className="mt-2 space-y-2 text-sm text-text-muted">
+                        {calculation.map((p, i) => (
+                            <p key={i}>{p}</p>
+                        ))}
+                    </div>
+                </div>
+                <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wide text-text-subtle">
+                        How to use it
+                    </h5>
+                    <div className="mt-2 space-y-2 text-sm text-text-muted">
+                        {howToUse.map((p, i) => (
+                            <p key={i}>{p}</p>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </article>
     );
 }
 

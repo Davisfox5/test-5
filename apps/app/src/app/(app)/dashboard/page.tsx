@@ -22,9 +22,33 @@ import {
     useManagerOverview,
     type AccountHealthRow,
 } from "@/lib/analytics";
-import { useNotifications } from "@/lib/notifications";
 import { useOAuthStatus } from "@/lib/oauth";
 import { TrendsChart } from "@/components/dashboard/trends-chart";
+import { UploadModal } from "@/components/upload-modal";
+import { InviteTeammatesDialog } from "@/components/dashboard/invite-teammates-dialog";
+
+// Build the destination URL for a dashboard row pointing at a call —
+// land inside the customer profile (Interactions tab, scrolled to the
+// matching row) when the resolver linked it to a customer; otherwise
+// fall back to the standalone interaction page.
+function callHref(row: { id: string; customer_id: string | null }): string {
+    if (row.customer_id) {
+        return `/customers/${row.customer_id}?tab=interactions&focus=interaction-${row.id}`;
+    }
+    return `/interactions/${row.id}`;
+}
+
+// Same idea for action items — anchor to the Action items tab.
+function actionItemHref(item: {
+    id: string;
+    interaction_id: string;
+    customer_id: string | null;
+}): string {
+    if (item.customer_id) {
+        return `/customers/${item.customer_id}?tab=action_items&focus=action-${item.id}`;
+    }
+    return `/interactions/${item.interaction_id}`;
+}
 
 const PERIODS: { value: DashboardPeriod; label: string }[] = [
     { value: "7d", label: "7d" },
@@ -56,8 +80,9 @@ export default function DashboardPage() {
         },
     );
     const actionItems = useOpenActionItems(5);
-    const notifs = useNotifications();
     const oauth = useOAuthStatus();
+    const [uploadOpen, setUploadOpen] = useState(false);
+    const [inviteOpen, setInviteOpen] = useState(false);
 
     const qaByDate = useMemo(() => {
         const out: Record<string, number> = {};
@@ -124,20 +149,15 @@ export default function DashboardPage() {
                         )}
                     </p>
                 </div>
-                {(notifs.data?.unread_count ?? 0) > 0 ? (
-                    <Link
-                        href="/notifications"
-                        className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-card px-3 py-1.5 text-xs hover:bg-bg-card-hover"
-                    >
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent-rose" />
-                        {notifs.data?.unread_count} new notification
-                        {notifs.data?.unread_count === 1 ? "" : "s"}
-                    </Link>
-                ) : null}
+                {/* Notifications bell lives in the global app-shell header
+                    (top-right). No duplicate badge here. */}
             </header>
 
             {/* Quick actions — persistent (no longer empty-state-only) */}
-            <QuickActionStrip />
+            <QuickActionStrip
+                onUpload={() => setUploadOpen(true)}
+                onInvite={() => setInviteOpen(true)}
+            />
 
             {/* Period selector */}
             <div
@@ -181,6 +201,7 @@ export default function DashboardPage() {
                     }
                     delta={summary.data?.prev_period_deltas?.total_interactions_pct}
                     help="Total number of calls Linda analyzed in the selected period."
+                    href="/interactions"
                 />
                 <StatCard
                     label="Action items"
@@ -201,6 +222,7 @@ export default function DashboardPage() {
                             : "subtle"
                     }
                     help="Open follow-ups Linda extracted from your calls — things a rep committed to do or you owe a customer."
+                    href="/action-items"
                 />
                 <StatCard
                     label="Avg sentiment"
@@ -217,6 +239,7 @@ export default function DashboardPage() {
                     }
                     delta={summary.data?.prev_period_deltas?.avg_sentiment_pct}
                     help="Average customer mood across every call in this period, scored 0–10 by Linda after reading the transcript."
+                    href="/coaching#metric-sentiment"
                 />
                 <StatCard
                     label="QA score"
@@ -233,6 +256,7 @@ export default function DashboardPage() {
                     }
                     delta={summary.data?.prev_period_deltas?.avg_qa_pct}
                     help="Average score each call earned against your team's scorecards, from 0 to 100; blank if no scorecard is set up."
+                    href="/coaching#metric-qa"
                 />
                 <StatCard
                     label="Rapport (LSM)"
@@ -246,6 +270,7 @@ export default function DashboardPage() {
                         summary.data?.avg_rapport != null ? "/ 100" : undefined
                     }
                     help="How much the rep mirrored the customer's word choice and rhythm — a 0–100 indicator of conversational connection."
+                    href="/coaching#metric-rapport"
                 />
                 <StatCard
                     label="Talk %"
@@ -265,6 +290,7 @@ export default function DashboardPage() {
                     }
                     hint={!isManager ? "Manager view" : undefined}
                     help="Average share of each call the rep was speaking; in sales contexts, lower (more listening) usually wins. Manager view only."
+                    href={isManager ? "/coaching#metric-talk-listen" : undefined}
                 />
             </section>
 
@@ -276,7 +302,7 @@ export default function DashboardPage() {
                     count={summary.data?.at_risk_count ?? 0}
                     avg={signals.data?.avg_churn_risk ?? null}
                     loading={summary.isLoading}
-                    href="/customers?risk=churn"
+                    href="/customers?tab=at-risk"
                     help="Calls in this period where Linda heard cancellation signals, dissatisfaction, or warning language — sized 0 to 1."
                 />
                 <SignalCard
@@ -285,7 +311,7 @@ export default function DashboardPage() {
                     count={summary.data?.upsell_count ?? 0}
                     avg={signals.data?.avg_upsell_score ?? null}
                     loading={summary.isLoading}
-                    href="/customers?signal=upsell"
+                    href="/customers?tab=upsells"
                     help="Calls in this period where Linda heard buying signals — interest in upgrades, more seats, or expanded use — sized 0 to 1."
                 />
             </section>
@@ -303,7 +329,7 @@ export default function DashboardPage() {
                     {summary.data.overdue_action_items > 0 && (
                         <AlertChip
                             tone="rose"
-                            href="/action-items?status=open"
+                            href="/action-items?tab=overdue"
                             label={`${summary.data.overdue_action_items} overdue action item${summary.data.overdue_action_items === 1 ? "" : "s"}`}
                             help="Open follow-ups whose due date has already passed."
                         />
@@ -311,7 +337,7 @@ export default function DashboardPage() {
                     {summary.data.flagged_for_review_count > 0 && (
                         <AlertChip
                             tone="amber"
-                            href="/customers?tab=all-interactions&status=flagged_for_review"
+                            href="/interactions?tab=needs-review&status=flagged_for_review"
                             label={`${summary.data.flagged_for_review_count} awaiting review`}
                             help="Calls where Linda's confidence was low — a manager should glance before trusting the analysis."
                         />
@@ -319,7 +345,7 @@ export default function DashboardPage() {
                     {summary.data.failed_count > 0 && (
                         <AlertChip
                             tone="rose"
-                            href="/customers?tab=all-interactions&status=failed"
+                            href="/interactions?tab=needs-review&status=failed"
                             label={`${summary.data.failed_count} failed`}
                             help="Calls that errored during analysis — open one to see the reason and retry."
                         />
@@ -327,7 +353,7 @@ export default function DashboardPage() {
                     {summary.data.processing_count > 0 && (
                         <AlertChip
                             tone="amber"
-                            href="/customers?tab=all-interactions&status=processing"
+                            href="/interactions?tab=needs-review&status=processing"
                             label={`${summary.data.processing_count} processing`}
                             help="Calls Linda is currently transcribing or analyzing — they'll appear in Recent calls once done."
                         />
@@ -370,7 +396,7 @@ export default function DashboardPage() {
                     help="The five most recent calls in your account, newest first."
                     action={
                         <Link
-                            href="/customers?tab=all-interactions"
+                            href="/interactions"
                             className="text-sm text-primary hover:underline"
                         >
                             View all →
@@ -668,6 +694,17 @@ export default function DashboardPage() {
                     </ol>
                 </section>
             ) : null}
+
+            {/* Quick-action dialogs — mounted at the page root so the
+                modal overlay sits above the dashboard grid. */}
+            <UploadModal
+                open={uploadOpen}
+                onClose={() => setUploadOpen(false)}
+            />
+            <InviteTeammatesDialog
+                open={inviteOpen}
+                onClose={() => setInviteOpen(false)}
+            />
         </div>
     );
 }
@@ -708,6 +745,7 @@ function StatCard({
     hint,
     hintTone,
     help,
+    href,
 }: {
     label: string;
     value: string;
@@ -717,9 +755,10 @@ function StatCard({
     hint?: string;
     hintTone?: "rose" | "subtle";
     help?: string;
+    href?: string;
 }) {
-    return (
-        <div className="rounded-lg border border-border bg-bg-card p-4">
+    const inner = (
+        <>
             <div className="flex items-start justify-between gap-2">
                 <p className="text-xs uppercase tracking-wide text-text-subtle">
                     {label}
@@ -768,6 +807,21 @@ function StatCard({
                     {hint}
                 </p>
             ) : null}
+        </>
+    );
+    if (href) {
+        return (
+            <Link
+                href={href}
+                className="rounded-lg border border-border bg-bg-card p-4 hover:bg-bg-card-hover focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+                {inner}
+            </Link>
+        );
+    }
+    return (
+        <div className="rounded-lg border border-border bg-bg-card p-4">
+            {inner}
         </div>
     );
 }
@@ -856,7 +910,13 @@ function AlertChip({
     );
 }
 
-function QuickActionStrip() {
+function QuickActionStrip({
+    onUpload,
+    onInvite,
+}: {
+    onUpload: () => void;
+    onInvite: () => void;
+}) {
     return (
         <section
             className="flex flex-wrap items-center gap-2"
@@ -866,30 +926,31 @@ function QuickActionStrip() {
                 Quick actions
             </span>
             <HelpTip text="One-click entry points to the things you do most often on Linda — start here." />
-            <Link
-                href="/customers?tab=all-interactions"
+            <button
+                type="button"
+                onClick={onUpload}
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover"
             >
                 + Upload a call
-            </Link>
+            </button>
+            {/* Connect CRM stays as a direct link to Settings for now —
+                Settings is slated for a redesign, so revisit this when the
+                CRM-connections deep link gets a stable hash. */}
             <Link
-                href="/settings"
+                href="/settings#integrations"
                 className="inline-flex items-center gap-2 rounded-md border border-border bg-bg-card px-3 py-1.5 text-sm hover:bg-bg-card-hover"
             >
                 Connect CRM
             </Link>
-            <Link
-                href="/settings"
+            <button
+                type="button"
+                onClick={onInvite}
                 className="inline-flex items-center gap-2 rounded-md border border-border bg-bg-card px-3 py-1.5 text-sm hover:bg-bg-card-hover"
             >
                 Invite teammates
-            </Link>
-            <Link
-                href="/notifications"
-                className="inline-flex items-center gap-2 rounded-md border border-border bg-bg-card px-3 py-1.5 text-sm hover:bg-bg-card-hover"
-            >
-                Notifications
-            </Link>
+            </button>
+            {/* Notifications button removed — the bell in the global
+                app-shell header is the single entry point now. */}
         </section>
     );
 }
@@ -1141,7 +1202,7 @@ function RecentCallRow({ row }: { row: InteractionOut }) {
     return (
         <li>
             <Link
-                href={`/interactions/${row.id}`}
+                href={callHref(row)}
                 className="flex items-center justify-between gap-3 rounded-md px-3 py-3 hover:bg-bg-card-hover"
             >
                 <div className="min-w-0 flex-1">
@@ -1168,7 +1229,7 @@ function ActionItemRow({ item }: { item: ActionItemOut }) {
     return (
         <li>
             <Link
-                href={`/interactions/${item.interaction_id}`}
+                href={actionItemHref(item)}
                 className="flex items-center justify-between gap-3 rounded-md px-3 py-3 hover:bg-bg-card-hover"
             >
                 <div className="min-w-0 flex-1">

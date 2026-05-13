@@ -3,17 +3,18 @@
 /**
  * Customers — the spine of the app shell.
  *
- * Top-level sibling tabs (per the redesign plan):
+ * Top-level sibling tabs:
  *   - Customers (the four switchable list views)
- *   - All Interactions (the demoted-from-sidebar global feed)
+ *   - At-Risk (churn-signal accounts with save-play guidance)
+ *   - Upsell Opportunities (buying-signal accounts with strategy guidance)
  *
- * Tab state lives in ``?tab=...`` so links can deep-link to the right
- * sibling and the browser back-button works. The legacy /interactions
- * list page redirects here — see /interactions/page.tsx.
+ * The old "All Interactions" tab was removed — the global call feed
+ * now lives on /interactions, which gives us one canonical location
+ * for that view and removes the redundancy noted in the dashboard
+ * audit.
  *
- * The four customer-list views (table / grid / hybrid / kanban) sit
- * under the Customers sibling-tab. Sort + filter + search apply to
- * all four — the data shape is identical.
+ * Tab state lives in ``?tab=...`` so dashboard signal-cards can
+ * deep-link straight to At-Risk / Upsells.
  */
 
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
@@ -26,9 +27,10 @@ import { CustomerGridView } from "./_views/grid-view";
 import { CustomerHybridView } from "./_views/hybrid-view";
 import { CustomerKanbanView } from "./_views/kanban-view";
 import { CustomerTableView } from "./_views/table-view";
-import { AllInteractionsView } from "./_views/all-interactions-view";
+import { AtRiskView } from "./_views/at-risk-view";
+import { UpsellOpportunitiesView } from "./_views/upsell-opportunities-view";
 
-type SiblingTab = "customers" | "all-interactions";
+type SiblingTab = "customers" | "at-risk" | "upsells";
 type ViewKey = "table" | "grid" | "hybrid" | "kanban";
 
 const VIEW_LABEL: Record<ViewKey, string> = {
@@ -48,11 +50,14 @@ const SORT_OPTIONS: { value: CustomerListSort; label: string }[] = [
 
 const SIBLING_TABS: { key: SiblingTab; label: string }[] = [
     { key: "customers", label: "Customers" },
-    { key: "all-interactions", label: "All Interactions" },
+    { key: "at-risk", label: "At-Risk" },
+    { key: "upsells", label: "Upsell Opportunities" },
 ];
 
 function readTab(value: string | null): SiblingTab {
-    return value === "all-interactions" ? "all-interactions" : "customers";
+    if (value === "at-risk") return "at-risk";
+    if (value === "upsells") return "upsells";
+    return "customers";
 }
 
 export default function CustomersPage() {
@@ -77,9 +82,13 @@ export default function CustomersPage() {
             <header>
                 <h1 className="text-2xl font-bold">Customers</h1>
                 <p className="text-sm text-text-muted">
-                    Every account Linda has identified from your calls. Click a
-                    row to see the full record, or switch to All Interactions
-                    for the global call feed.
+                    Every account Linda has identified from your calls. Use
+                    the tabs to focus on at-risk accounts or upsell
+                    opportunities; the global call feed lives at{" "}
+                    <a href="/interactions" className="text-primary hover:underline">
+                        Interactions
+                    </a>
+                    .
                 </p>
             </header>
 
@@ -109,7 +118,13 @@ export default function CustomersPage() {
                 })}
             </div>
 
-            {tab === "customers" ? <CustomersTab /> : <AllInteractionsView />}
+            {tab === "customers" ? (
+                <CustomersTab />
+            ) : tab === "at-risk" ? (
+                <AtRiskView />
+            ) : (
+                <UpsellOpportunitiesView />
+            )}
         </div>
     );
 }

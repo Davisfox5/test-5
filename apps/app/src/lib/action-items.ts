@@ -80,6 +80,8 @@ export interface ActionItemFilters {
     q?: string;
     limit?: number;
     offset?: number;
+    // Server-side filter: only items past due_date AND still open.
+    overdue?: boolean;
 }
 
 export interface ActionItemPatch {
@@ -110,6 +112,7 @@ function buildQueryString(filters: ActionItemFilters): string {
     if (filters.category) params.set("category", filters.category);
     if (filters.limit !== undefined) params.set("limit", String(filters.limit));
     if (filters.offset !== undefined) params.set("offset", String(filters.offset));
+    if (filters.overdue) params.set("overdue", "true");
     const qs = params.toString();
     return qs ? `?${qs}` : "";
 }

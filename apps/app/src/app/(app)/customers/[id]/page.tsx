@@ -12,8 +12,8 @@
  */
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useCustomerDetail } from "@/lib/customers";
 import { CustomerBehaviorSignals } from "@/components/customer-signals/customer-behavior-signals";
 import {
@@ -36,9 +36,41 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 
 export default function CustomerDetailPage() {
     const params = useParams<{ id: string }>();
+    const searchParams = useSearchParams();
     const id = params?.id;
     const detail = useCustomerDetail(id);
-    const [tab, setTab] = useState<TabKey>("signals");
+
+    // Deep-link support — the dashboard's Recent Calls + Open Action
+    // Items rows link here with ``?tab=interactions&focus=interaction-
+    // <id>`` (or ``?tab=action_items&focus=action-<id>``). The tab
+    // param picks the right pane; the focus param is consumed by an
+    // effect below that scrolls the matching DOM node into view and
+    // applies a brief highlight class.
+    const initialTab = ((): TabKey => {
+        const t = searchParams?.get("tab");
+        if (t === "interactions" || t === "action_items" || t === "notes" || t === "signals") {
+            return t as TabKey;
+        }
+        return "signals";
+    })();
+    const [tab, setTab] = useState<TabKey>(initialTab);
+    const focus = searchParams?.get("focus") ?? null;
+
+    useEffect(() => {
+        if (!focus || detail.isLoading) return;
+        // Give the tab pane a tick to render before we look for the node.
+        const tid = setTimeout(() => {
+            const el = document.getElementById(focus);
+            if (!el) return;
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            // Brief outline highlight so the user sees which row we landed on.
+            el.classList.add("ring-2", "ring-primary");
+            setTimeout(() => {
+                el.classList.remove("ring-2", "ring-primary");
+            }, 2400);
+        }, 80);
+        return () => clearTimeout(tid);
+    }, [focus, tab, detail.isLoading]);
 
     if (!id) return null;
 

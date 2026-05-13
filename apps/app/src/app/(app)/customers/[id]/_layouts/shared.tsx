@@ -332,8 +332,9 @@ export function InteractionRow({
 }) {
     return (
         <Link
+            id={`interaction-${ix.id}`}
             href={`/interactions/${ix.id}`}
-            className="block px-5 py-4 hover:bg-bg-card-hover"
+            className="block px-5 py-4 transition-colors hover:bg-bg-card-hover"
         >
             <div className="flex items-baseline justify-between gap-4">
                 <div className="font-medium text-text">
@@ -395,8 +396,9 @@ export function ActionItemsCard({ c }: { c: CustomerDetail }) {
 export function ActionItemRow({ ai }: { ai: CustomerActionItemSummary }) {
     return (
         <Link
+            id={`action-${ai.id}`}
             href={`/interactions/${ai.interaction_id}`}
-            className="block px-5 py-3 hover:bg-bg-card-hover"
+            className="block px-5 py-3 transition-colors hover:bg-bg-card-hover"
         >
             <div className="flex items-baseline justify-between gap-4">
                 <div className="font-medium text-text">{ai.title}</div>

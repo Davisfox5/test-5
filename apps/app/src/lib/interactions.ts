@@ -142,6 +142,10 @@ export interface InteractionOut {
     pii_redacted: boolean;
     detected_language: string | null;
     created_at: string;
+    // Both are nullable in DB — backend exposes them so dashboard rows
+    // can deep-link straight to the relevant customer profile.
+    customer_id: string | null;
+    contact_id: string | null;
 }
 
 export interface TranscriptTurn {
@@ -426,6 +430,9 @@ export interface ActionItemOut {
     email_draft: Record<string, unknown> | null;
     automation_status: string;
     created_at: string;
+    // Derived from the parent interaction so dashboard rows can deep-
+    // link straight into the customer profile.
+    customer_id: string | null;
 }
 
 export function useOpenActionItems(limit = 5) {
