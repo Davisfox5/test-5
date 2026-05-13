@@ -674,7 +674,7 @@ export default function DashboardPage() {
                             n={1}
                             title="Upload a call"
                             body="Drop in a recording and Linda transcribes + analyzes it in minutes."
-                            href="/customers?tab=all-interactions"
+                            href="/interactions"
                             cta="Upload"
                         />
                         <QuickStep
