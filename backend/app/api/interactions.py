@@ -667,14 +667,18 @@ async def redrive_interaction(
 
     before = {"status": interaction.status}
     interaction.status = "processing"
-    # Preserve the transcript when one already exists — re-running the
-    # whole pipeline against a cached transcript avoids paying for
-    # Deepgram a second time. The voice worker already does this:
-    # ``if interaction.transcript and len(interaction.transcript) > 0``
-    # short-circuits transcription and uses the existing segments. Only
-    # clear it when there's nothing useful to keep (a partial / failed
-    # transcription leaves it empty already, so this is a no-op there).
-    if not interaction.transcript:
+    # Voice channel: preserve the transcript so we don't re-pay Deepgram
+    # for the same audio. The worker short-circuits transcription when
+    # interaction.transcript is non-empty.
+    #
+    # Text channel (email / chat): CLEAR the transcript so the
+    # segmenter re-runs against raw_text. We want this — the segmenter
+    # is the canonical first step and it's where the LLM speaker-
+    # tagging fallback lives. Preserving a stale single-segment
+    # transcript would lock us into the old segmentation.
+    if interaction.channel != "voice":
+        interaction.transcript = []
+    elif not interaction.transcript:
         interaction.transcript = []
     interaction.insights = {}
     interaction.call_metrics = {}
