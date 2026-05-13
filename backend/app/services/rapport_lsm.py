@@ -183,7 +183,18 @@ def compute_lsm_for_transcript(
             continue
         role = _classify_role(turn.get("speaker"), turn.get("role"))
         if role == "other":
-            label = str(turn.get("speaker") or "").strip().lower()
+            # Deepgram emits ``speaker_id="0"/"1"`` on every segment but
+            # leaves ``speaker`` / ``role`` unset, so the role-name
+            # heuristic above falls through. Use ``speaker_id`` as the
+            # fallback label so the rolling rep/customer assignment can
+            # still discriminate two voices. Without this, rapport was
+            # silently returning None on every voice call (diagnosed in
+            # the post-Earnings22 output review).
+            label = str(
+                turn.get("speaker")
+                or turn.get("speaker_id")
+                or ""
+            ).strip().lower()
             if label:
                 if label not in fallback_label_to_role:
                     if "rep" not in fallback_label_to_role.values():

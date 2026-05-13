@@ -1,24 +1,28 @@
 """Speaker-tag parser for text-ingested transcripts.
 
-The text-ingest path used to wrap ``raw_text`` in a single segment with
-``start=0``, ``end=0``, ``speaker_id=None`` — which made the
-interaction-detail page render every call as one wall-of-paragraph
-attributed to "Speaker 1" at 0:00. This parser splits the text into
-proper turns when it can identify speaker labels.
+Canonical first step of the text-ingest pipeline. Every downstream
+analyzer (AI analysis prompt, call_metrics, rapport LSM, inline tags)
+consumes speaker-tagged segments, so if this step produces a single
+blob the rest of the pipeline silently degrades.
 
-Recognized shapes:
+Two-stage strategy:
 
-  REP: Hi David, thanks for making time today.
-  PROSPECT: No problem, Maria.
-  Maria Chen: That's a fair concern.
-  CSM: ...
+1. **Pattern parser** (``parse_speaker_tagged``) — recognizes explicit
+   speaker tags like ``REP:``, ``CSM:``, ``Maria Chen:``. Fast, free,
+   zero LLM dependency. Works for any source that already tags
+   speakers (Gong/Chorus/Otter exports, in-house transcripts, our
+   synthetic seed data).
+2. **LLM fallback** (``parse_via_llm``) — fires when the pattern
+   parser yields < 2 distinct speakers. Sends the raw text to Haiku
+   with instructions to rewrite it as ``REP: ...`` / ``CUSTOMER: ...``
+   lines, then re-runs the pattern parser on the labeled output.
+   Used for third-party transcription services that emit
+   un-diarized text (most do, today), or for sources like AIxBlock's
+   call-center corpus where speakers are implicit.
 
-Anything before the first speaker-tagged line (title block, "Date:",
-"Participants:" header) is treated as preamble and dropped from the
-rendered transcript. If the parser finds NO speaker tags it falls
-back to a single segment matching the legacy behavior — so any
-unstructured text, real Deepgram output, or random pasted notes
-still works.
+If both stages fail, we fall back to the legacy single-segment so
+downstream code still gets a contract-shaped output — but most
+analyzers will degrade. The fallback should be rare in production.
 
 When timestamps are missing (text ingest never has them), turns are
 distributed evenly across the interaction's ``duration_seconds`` so
@@ -27,9 +31,12 @@ the SPA's scrub bar still renders something sensible.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # A line is a speaker turn when it starts (column 0) with one of:
@@ -126,30 +133,134 @@ def parse_speaker_tagged(raw_text: str) -> List[ParsedTurn]:
     return turns
 
 
+def _distinct_labels(turns: List[ParsedTurn]) -> int:
+    return len({t.label for t in turns})
+
+
+def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
+    """Use Haiku to tag speakers in un-diarized text.
+
+    Sends the raw transcript to Claude Haiku with instructions to emit
+    a re-formatted version where every utterance is prefixed with
+    ``REP:`` or ``CUSTOMER:``. We then re-run the deterministic
+    pattern parser on Haiku's output — this keeps the contract narrow
+    (Haiku can't hallucinate a 3-speaker call into existence) and
+    reuses the existing speaker-id assignment logic.
+
+    Synchronous + blocking — meant to be called from the worker, not
+    the API. Returns ``[]`` on any failure so the caller can fall
+    back to the legacy single-segment behavior.
+    """
+    if not raw_text or len(raw_text.strip()) < 80:
+        # Too short to be worth an LLM call.
+        return []
+    try:
+        import anthropic
+        from backend.app.config import get_settings
+    except Exception:
+        return []
+
+    settings = get_settings()
+    api_key = getattr(settings, "ANTHROPIC_API_KEY", None)
+    if not api_key:
+        return []
+
+    system_prompt = (
+        "You are a transcript formatter. Add speaker labels to the call "
+        "transcript below.\n\n"
+        "Rules:\n"
+        "1. Use exactly two labels: ``REP:`` for the call-center agent / "
+        "salesperson / rep, and ``CUSTOMER:`` for the person being called "
+        "or who called in.\n"
+        "2. Put EACH utterance on its own line, prefixed with the label "
+        "and a single space (no trailing punctuation in the label).\n"
+        "3. Do NOT add, remove, paraphrase, or summarize words. Preserve "
+        "the verbatim text. Just split it into turns and label them.\n"
+        "4. Identify turn boundaries by question-then-response shape, "
+        "topic shifts, or natural conversational rhythm.\n"
+        "5. The first speaker is almost always the REP for outbound "
+        "calls and the CUSTOMER for inbound calls. Use call content to "
+        "decide; if unclear, default to REP-first.\n"
+        "6. Output ONLY the labeled transcript. No preamble, no notes, "
+        "no markdown fences."
+    )
+
+    try:
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=getattr(settings, "ANTHROPIC_TIMEOUT_SECONDS", 60),
+        )
+        # Cap input + output to keep this cheap. Haiku at $0.25/M in +
+        # $1.25/M out — even a 10K-token transcript costs < $0.02 per
+        # call to segment. Worth it to unblock downstream analysis.
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=8192,
+            system=system_prompt,
+            messages=[{"role": "user", "content": raw_text}],
+        )
+        labeled = resp.content[0].text if resp.content else ""
+    except Exception:
+        logger.exception("LLM speaker-tagging failed; falling back")
+        return []
+
+    turns = parse_speaker_tagged(labeled)
+    if _distinct_labels(turns) < 2:
+        # Haiku produced output but it didn't yield 2+ speakers — the
+        # input probably wasn't actually a two-party conversation.
+        return []
+    return turns
+
+
 def segments_from_text(
     raw_text: Optional[str],
     *,
     duration_seconds: Optional[float] = None,
+    use_llm_fallback: bool = True,
 ) -> List[Dict[str, Any]]:
     """Build pipeline-ready segments from a text transcript.
 
-    Returns a list of dicts shaped like the rest of the pipeline expects
-    (``start``, ``end``, ``text``, ``speaker_id``, ``confidence``). When
-    speaker-tag parsing finds nothing usable, falls back to a single
-    segment so downstream code keeps the same contract.
+    Two-stage extraction:
+
+    1. Pattern parser — picks up any explicit ``REP:`` / ``CSM:`` /
+       ``Maria Chen:`` tags. Fast path.
+    2. LLM fallback — when the pattern parser produces fewer than 2
+       distinct speakers AND ``use_llm_fallback`` is true, Haiku adds
+       labels and we re-parse.
+
+    Returns a list of dicts shaped ``{start, end, text, speaker_id,
+    speaker, speaker_label, confidence}``. When both stages fail, falls
+    back to a single-segment with ``speaker_id=None`` so downstream
+    code still gets a contract-shaped output — but most analyzers
+    will degrade silently. The fallback should be rare in production.
 
     ``duration_seconds`` (optional) is used to distribute synthetic
     timestamps evenly across the call when the source didn't carry
-    them. Without it, all turns get ``start=0``, ``end=0`` — same as
-    the legacy single-segment behavior, just split by speaker.
+    them. Without it, turns get ``start=0``, ``end=0``.
     """
     if not raw_text:
         return []
 
+    # Stage 1: pattern parser.
     turns = parse_speaker_tagged(raw_text)
+
+    # Stage 2: LLM fallback when the pattern parser didn't find a real
+    # two-party conversation. Disabled in tests via ``use_llm_fallback``.
+    if use_llm_fallback and _distinct_labels(turns) < 2:
+        llm_turns = parse_via_llm(raw_text)
+        if llm_turns:
+            logger.info(
+                "Speaker segmentation: LLM fallback produced %d turns "
+                "across %d speakers (pattern parser yielded %d turns)",
+                len(llm_turns),
+                _distinct_labels(llm_turns),
+                len(turns),
+            )
+            turns = llm_turns
+
     if not turns:
-        # Legacy single-segment fallback so nothing weirder than the
-        # old behavior happens for inputs we can't parse.
+        # Legacy single-segment fallback — kept so anything truly
+        # unstructured still flows through the pipeline.
         return [
             {
                 "start": 0.0,

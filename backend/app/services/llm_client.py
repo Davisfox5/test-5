@@ -45,11 +45,18 @@ def get_anthropic() -> anthropic.Anthropic:
 # Typical observed completion size by tier.
 _BASE_MAX_TOKENS = {"haiku": 1024, "sonnet": 2048, "opus": 4096}
 # Hard upper bound — explicit overrides are still capped here.
-# Sonnet's prior 4096 ceiling was below what real long-form structured
-# analysis needs (15-min earnings calls land around 3500–4000 tokens of
-# structured JSON output and get clipped mid-delimiter). Sonnet 3.5+
-# supports 8192 natively; raise the ceiling to match.
-_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 8192, "opus": 8192}
+#
+# History:
+# * 4096 was insufficient — earnings calls hit it.
+# * 8192 was insufficient too — coaching / evidence / rubric / methodology
+#   / churn / upsell are the LAST fields in the JSON shape and 6/10 voice
+#   + 35/51 chat calls landed with json-repair recovery and most of
+#   those trailing fields blank.
+# * 16384 gives the typical sales/earnings call ~2× headroom over what
+#   we observed pre-truncation, which should restore the missing
+#   components. Sonnet 4.6 supports up to 64K natively; we have plenty
+#   of upside if even 16K still clips on multi-arc enterprise calls.
+_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 16384, "opus": 16384}
 
 
 def compute_max_tokens(
