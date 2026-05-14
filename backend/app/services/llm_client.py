@@ -46,25 +46,17 @@ def get_anthropic() -> anthropic.Anthropic:
 _BASE_MAX_TOKENS = {"haiku": 1024, "sonnet": 2048, "opus": 4096}
 # Hard upper bound — explicit overrides are still capped here.
 #
-# History:
-# * 4096 was insufficient — earnings calls hit it.
-# * 8192 was insufficient too — coaching / evidence / rubric / methodology
-#   / churn / upsell are the LAST fields in the JSON shape and 6/10 voice
-#   + 35/51 chat calls landed with json-repair recovery and most of
-#   those trailing fields blank.
-# * 16384 helped but ~2/3 long sales calls (>40K input chars) still
-#   clipped — observed in the post-segmentation verification.
-# * 32768 still wasn't enough — chat-channel insurance + medical_
-#   equipment rows came back with _recovered=YES and lost everything
-#   after action_items. The post-segmentation verification (24-80
-#   segment scripted sales calls) was apparently producing >130K
-#   chars of structured output.
-# * 65536 (64K) is Sonnet 4.6's native ceiling. Going to the max
-#   instead of incrementing again. Cost concern: only calls that
-#   actually generate this much pay for it. Voice calls of comparable
-#   size completed cleanly at 16K, so the high cap is a safety net,
-#   not a baseline.
-_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 65536, "opus": 32768}
+# Set to 8K based on observed natural output sizes. The earlier
+# escalation through 8K→16K→32K→64K chased the wrong problem: the
+# ``is_complex or is_long_input`` gate was suppressing every short
+# call to ~2K, so the ceiling was never being applied. With the gate
+# removed (commit 31a541a), 8K is plenty:
+#   * Voice calls naturally generate well under 8K (verified)
+#   * Chat truncation we saw earlier was the gate firing at 2421,
+#     not the 8K cap actually being hit
+# If a tenant's calls genuinely need more than 8K of structured
+# output later, raise this knob then — measurement first.
+_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 8192, "opus": 8192}
 
 
 def compute_max_tokens(
