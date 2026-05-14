@@ -773,6 +773,10 @@ def _run_pipeline_impl(
         "duration": interaction.duration_seconds,
         "caller_info": interaction.caller_phone or "",
     }
+    # Release the connection before this LLM call so Neon doesn't
+    # kill it during the 5-15s Haiku round-trip. The next DB query
+    # (variant lookup) will check out a fresh connection.
+    session.commit()
     triage_result: Dict[str, Any] = _loop.run(
         _get_triage_service().score_complexity(compressed_text, metadata)
     )
@@ -906,6 +910,11 @@ def _run_pipeline_impl(
             if _customer:
                 customer_brief = dict(_customer.customer_brief or {})
 
+    # Release the connection before the main analysis — this is the
+    # longest LLM call in the pipeline (30-90s on Sonnet). Without
+    # this, the connection sits idle during analyze() and Neon kills
+    # it before the post-analysis save can run.
+    session.commit()
     insights: Dict[str, Any] = _loop.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
@@ -1963,6 +1972,14 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
         elif interaction.raw_text:
             from backend.app.services.text_segmenter import segments_from_text
 
+            # Release the DB connection back to the pool before this
+            # call — segments_from_text may invoke a 30-60s Haiku LLM
+            # round-trip for un-tagged inputs, and holding the
+            # connection idle during that time triggers Neon's
+            # server-side idle-cutoff (TCP keepalives at the OS layer
+            # aren't propagated through Neon's proxy). Committing now
+            # is safe — at this point we've only done READ queries.
+            session.commit()
             segments_dicts = segments_from_text(
                 interaction.raw_text,
                 duration_seconds=interaction.duration_seconds,
