@@ -110,7 +110,12 @@ class CallMetricsService:
 
         for idx, seg in enumerate(segments):
             duration = max(seg.end - seg.start, 0.0)
-            sid = seg.speaker_id or "__unknown__"
+            # Explicit None check — ``or`` collapses integer 0 (the
+            # first speaker in some emitters) to the fallback string.
+            sid = (
+                seg.speaker_id if seg.speaker_id is not None
+                else "__unknown__"
+            )
             speaker_talk_time[sid] += duration
             words = seg.text.split()
             speaker_word_count[sid] += len(words)
@@ -243,7 +248,11 @@ class CallMetricsService:
         question_count: int = 0
 
         for seg in segments:
-            sid = seg.speaker_id or "__unknown__"
+            # Explicit None check — see audio path comment above.
+            sid = (
+                seg.speaker_id if seg.speaker_id is not None
+                else "__unknown__"
+            )
             words = seg.text.split()
             speaker_word_count[sid] += len(words)
 

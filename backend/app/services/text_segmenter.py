@@ -300,17 +300,22 @@ def segments_from_text(
 
 def _assign_speaker_ids(
     turns: List[ParsedTurn],
-) -> Tuple[Dict[str, int], Dict[str, str]]:
-    """Map raw labels → stable integer speaker ids + display names.
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Map raw labels → stable string speaker ids + display names.
 
-    Display name is the original label (REP / Maria Chen / CSM) — the
-    extractor's later entity-resolution step does the heavy lifting on
-    mapping these back to canonical Users / Contacts.
+    Returns STRING ids ("0", "1", …) to match Deepgram's convention so
+    every downstream consumer (call_metrics, rapport, inline_tags) can
+    treat speaker_id uniformly. The earlier integer scheme triggered a
+    Python falsy bug in call_metrics (``sid = seg.speaker_id or
+    "__unknown__"`` collapses ``0`` to the fallback) which mis-bucketed
+    every REP segment as unknown.
+
+    Display name is the original label (REP / Maria Chen / CSM).
     """
-    label_to_id: Dict[str, int] = {}
+    label_to_id: Dict[str, str] = {}
     label_to_speaker: Dict[str, str] = {}
     for t in turns:
         if t.label not in label_to_id:
-            label_to_id[t.label] = len(label_to_id)
+            label_to_id[t.label] = str(len(label_to_id))
             label_to_speaker[t.label] = t.label
     return label_to_id, label_to_speaker

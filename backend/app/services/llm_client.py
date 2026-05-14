@@ -52,11 +52,12 @@ _BASE_MAX_TOKENS = {"haiku": 1024, "sonnet": 2048, "opus": 4096}
 #   / churn / upsell are the LAST fields in the JSON shape and 6/10 voice
 #   + 35/51 chat calls landed with json-repair recovery and most of
 #   those trailing fields blank.
-# * 16384 gives the typical sales/earnings call ~2× headroom over what
-#   we observed pre-truncation, which should restore the missing
-#   components. Sonnet 4.6 supports up to 64K natively; we have plenty
-#   of upside if even 16K still clips on multi-arc enterprise calls.
-_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 16384, "opus": 16384}
+# * 16384 helped but ~2/3 long sales calls (>40K input chars) still
+#   clipped — observed in the post-segmentation verification.
+# * 32768 gives ~4× headroom over the typical pre-truncation size of
+#   ~8K output tokens. Sonnet 4.6 supports up to 64K natively, so this
+#   is still half the available cap.
+_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 32768, "opus": 32768}
 
 
 def compute_max_tokens(
