@@ -54,10 +54,17 @@ _BASE_MAX_TOKENS = {"haiku": 1024, "sonnet": 2048, "opus": 4096}
 #   those trailing fields blank.
 # * 16384 helped but ~2/3 long sales calls (>40K input chars) still
 #   clipped — observed in the post-segmentation verification.
-# * 32768 gives ~4× headroom over the typical pre-truncation size of
-#   ~8K output tokens. Sonnet 4.6 supports up to 64K natively, so this
-#   is still half the available cap.
-_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 32768, "opus": 32768}
+# * 32768 still wasn't enough — chat-channel insurance + medical_
+#   equipment rows came back with _recovered=YES and lost everything
+#   after action_items. The post-segmentation verification (24-80
+#   segment scripted sales calls) was apparently producing >130K
+#   chars of structured output.
+# * 65536 (64K) is Sonnet 4.6's native ceiling. Going to the max
+#   instead of incrementing again. Cost concern: only calls that
+#   actually generate this much pay for it. Voice calls of comparable
+#   size completed cleanly at 16K, so the high cap is a safety net,
+#   not a baseline.
+_CEILING_MAX_TOKENS = {"haiku": 2048, "sonnet": 65536, "opus": 32768}
 
 
 def compute_max_tokens(

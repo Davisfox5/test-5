@@ -26,7 +26,7 @@ def test_expansion_clamped_to_tier_ceiling():
 
 
 def test_main_analysis_high_complexity_gets_full_ceiling():
-    # Sonnet ceiling is 32768 (raised to fit long-form structured
+    # Sonnet ceiling is 65536 (raised to fit long-form structured
     # analysis with all 14 fields including coaching / evidence /
     # rubric / methodology).
     out = compute_max_tokens(
@@ -35,19 +35,19 @@ def test_main_analysis_high_complexity_gets_full_ceiling():
         task_type="main_analysis",
         complexity_score=0.9,
     )
-    assert out == 32768
+    assert out == 65536
 
 
 def test_main_analysis_low_complexity_does_not_force_ceiling():
     # Low complexity AND short input — neither boost trigger fires, so
-    # the budget stays well below the (now 32768) sonnet ceiling.
+    # the budget stays well below the (now 65536) sonnet ceiling.
     out = compute_max_tokens(
         "sonnet",
         input_tokens=2000,
         task_type="main_analysis",
         complexity_score=0.5,
     )
-    assert out < 32768
+    assert out < 65536
 
 
 def test_explicit_override_is_honored_within_ceiling():
