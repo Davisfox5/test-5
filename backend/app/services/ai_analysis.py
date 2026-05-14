@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
-import time
+import anthropic  # noqa: F401 — referenced in the ``except anthropic.APIError`` clause below
 
 from backend.app.services import metrics as _metrics
 from backend.app.services.kb.context_builder import format_brief_for_prompt
