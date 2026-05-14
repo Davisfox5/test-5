@@ -334,15 +334,27 @@ class AIAnalysisService:
             )
 
             raw_text = response.content[0].text
-            # Surface truncation as a retry signal (caller marks row as failed).
-            if response.stop_reason == "max_tokens":
+            stop_reason = response.stop_reason
+            # Stamp every result with stop_reason + raw response length
+            # so we have postmortem visibility without log access. When
+            # we see ``_stop_reason='max_tokens'`` AND a low _raw_chars
+            # we know the cap is firing; when stop_reason='end_turn'
+            # but parse fails we know the issue is malformed JSON not
+            # truncation.
+            stamp = {
+                "_stop_reason": stop_reason,
+                "_raw_chars": len(raw_text),
+                "_max_tokens_budget": budget,
+            }
+            if stop_reason == "max_tokens":
                 logger.warning(
-                    "AI analysis hit max_tokens — output truncated at %d chars",
-                    len(raw_text),
+                    "AI analysis hit max_tokens — output truncated at %d chars (budget=%d)",
+                    len(raw_text), budget,
                 )
             cleaned = _strip_json_fences(raw_text)
             try:
                 result: Dict[str, Any] = json.loads(cleaned)
+                result.update(stamp)
                 return result
             except json.JSONDecodeError as parse_exc:
                 # Best-effort repair: truncated responses (max_tokens cut off
@@ -359,15 +371,18 @@ class AIAnalysisService:
                     repaired = repair_json(cleaned, return_objects=True)
                     if isinstance(repaired, dict) and repaired:
                         repaired.setdefault("_recovered", True)
+                        repaired.update(stamp)
                         return repaired
                 except Exception as repair_exc:
                     logger.error("json-repair fallback failed: %s", repair_exc)
                 # Final fallback — preserve the raw text in summary so the
                 # row isn't completely empty.
-                return {
+                fallback = {
                     "summary": raw_text,
                     "error": f"JSON parse error: {parse_exc}",
                 }
+                fallback.update(stamp)
+                return fallback
         except anthropic.APIError as exc:
             logger.error("Anthropic API error during analysis: %s", exc)
             return {"error": f"Anthropic API error: {exc}"}
