@@ -38,16 +38,23 @@ def test_main_analysis_high_complexity_gets_full_ceiling():
     assert out == 65536
 
 
-def test_main_analysis_low_complexity_does_not_force_ceiling():
-    # Low complexity AND short input — neither boost trigger fires, so
-    # the budget stays well below the (now 65536) sonnet ceiling.
+def test_main_analysis_always_gets_ceiling_regardless_of_complexity():
+    # The earlier behavior gated the ceiling on complexity > 0.8 OR
+    # input > 4000 tokens, which left every short low-complexity call
+    # capped at ~2-4K output tokens — well below what the structured-
+    # analysis JSON spec actually needs. Diagnostic stamps in
+    # production caught the bug: a 24-segment chat had budget=2421
+    # yet stop_reason='max_tokens' at 9258 chars of output. Policy is
+    # now: main_analysis always gets the ceiling. ``max_tokens`` is
+    # an upper bound, not a target, so this only costs more on calls
+    # that actually generate more.
     out = compute_max_tokens(
         "sonnet",
         input_tokens=2000,
         task_type="main_analysis",
-        complexity_score=0.5,
+        complexity_score=0.3,
     )
-    assert out < 65536
+    assert out == 65536
 
 
 def test_explicit_override_is_honored_within_ceiling():

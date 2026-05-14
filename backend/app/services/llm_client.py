@@ -104,15 +104,22 @@ def compute_max_tokens(
     if explicit_override is not None and explicit_override > 0:
         budget = min(explicit_override, ceiling)
 
-    # Main-analysis ceiling boost — fire on EITHER high complexity OR
-    # long input. The original gate keyed only on ``complexity_score >
-    # 0.8``, which left long-but-low-complexity calls (e.g. 15-min
-    # earnings call narration) truncating mid-JSON when the structured
-    # output exceeds the base+expansion budget. Use either signal so
-    # the response actually fits.
-    is_long_input = input_tokens > 4000
-    is_complex = complexity_score is not None and complexity_score > 0.8
-    if task_type == "main_analysis" and (is_complex or is_long_input):
+    # Main-analysis ALWAYS gets the ceiling. The structured-analysis
+    # output is roughly constant-size regardless of input length
+    # (we ask for the same set of fields whether the call is 2 min
+    # or 30 min), so gating the ceiling on input length was a
+    # premature optimization — it left every call shorter than 4K
+    # input tokens truncating at base*expansion (~2-4K output tokens).
+    # The diagnostic stamps caught it: a 24-segment chat call had
+    # budget=2421 yet stop_reason='max_tokens' at 9258 chars of
+    # output — the call wanted to emit more but was artificially
+    # capped well below the configured 64K ceiling.
+    #
+    # Note: ``max_tokens`` is an upper bound, not a target. We don't
+    # pay for the budget — only for what the model actually generates.
+    # So budgeting high is free; the cost variation lives in the
+    # natural verbosity of the output, not the cap.
+    if task_type == "main_analysis":
         budget = ceiling
 
     return max(budget, 256)  # never go below a usable floor
