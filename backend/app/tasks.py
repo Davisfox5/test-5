@@ -326,7 +326,24 @@ elif _sync_db_url.startswith("postgres://"):
 # to do the equivalent for the sync engine. Without this, every Celery
 # task fails before its first DB read with "invalid connection option
 # 'ssl'", which is silent because tasks just retry forever.
-_sync_connect_args: Dict[str, Any] = {}
+_sync_connect_args: Dict[str, Any] = {
+    # TCP keepalive — the worker holds a connection through the whole
+    # pipeline, which includes a 30-60s LLM call where no DB traffic
+    # flows. Neon (and any pgbouncer / load balancer in between)
+    # kills idle TCP connections; without keepalives the next
+    # post-analysis save fails with "SSL connection has been closed
+    # unexpectedly". keepalives=1 enables OS-level TCP keepalive;
+    # _idle=30 says "if no traffic for 30s, start probing";
+    # _interval=10 says "probe every 10s after that";
+    # _count=3 says "give up after 3 failed probes". With these
+    # settings the connection stays alive during a 60-90s LLM call.
+    # ``pool_pre_ping`` still catches connections that died *between*
+    # tasks; this addresses the in-task case.
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+}
 if "ssl=" in _sync_db_url or "sslmode=" in _sync_db_url:
     _sync_db_url = _sync_db_url.split("?")[0]
     _sync_connect_args["sslmode"] = "require"
@@ -336,14 +353,10 @@ _sync_engine = create_engine(
     pool_size=5,
     max_overflow=5,
     pool_pre_ping=True,
-    # Recycle pooled connections after 4 minutes. Neon (managed Postgres)
-    # closes long-idle connections from the server side; pool_pre_ping
-    # catches the corpse on checkout, but a connection that goes idle
-    # *after* checkout (between sync ORM calls in the middle of one
-    # task) can be killed mid-pipeline. The trace caught this as
-    # "psycopg2.OperationalError: SSL connection has been closed
-    # unexpectedly" during analysis_prep. 240s is comfortably below
-    # Neon's idle cap with margin for one full pipeline run.
+    # Recycle pooled connections after 4 minutes. Neon closes long-
+    # idle connections server-side; pool_pre_ping catches the corpse
+    # on checkout. The TCP keepalive settings above handle the
+    # mid-task idle case (long LLM call with no DB activity).
     pool_recycle=240,
     connect_args=_sync_connect_args,
 )
