@@ -328,21 +328,22 @@ elif _sync_db_url.startswith("postgres://"):
 # 'ssl'", which is silent because tasks just retry forever.
 _sync_connect_args: Dict[str, Any] = {
     # TCP keepalive — the worker holds a connection through the whole
-    # pipeline, which includes a 30-60s LLM call where no DB traffic
-    # flows. Neon (and any pgbouncer / load balancer in between)
-    # kills idle TCP connections; without keepalives the next
-    # post-analysis save fails with "SSL connection has been closed
-    # unexpectedly". keepalives=1 enables OS-level TCP keepalive;
-    # _idle=30 says "if no traffic for 30s, start probing";
-    # _interval=10 says "probe every 10s after that";
-    # _count=3 says "give up after 3 failed probes". With these
-    # settings the connection stays alive during a 60-90s LLM call.
-    # ``pool_pre_ping`` still catches connections that died *between*
-    # tasks; this addresses the in-task case.
+    # pipeline, which now includes TWO long idle gaps where no DB
+    # traffic flows: (1) the LLM speaker-segmenter (~30-60s Haiku
+    # call) and (2) the main analysis (~30-90s Sonnet call). Neon
+    # (and any pgbouncer in between) kills idle TCP connections.
+    #
+    # ``keepalives_idle=10`` — start probing after only 10 seconds
+    # of idle, well below Neon's apparent idle cutoff. The earlier
+    # 30s threshold left long-text rows still failing intermittently
+    # (~1 in 3 attempts) because the connection died before the
+    # first probe fired.
+    # ``keepalives_interval=5`` — probe every 5s once started.
+    # ``keepalives_count=6`` — give up after 6 missed probes (30s).
     "keepalives": 1,
-    "keepalives_idle": 30,
-    "keepalives_interval": 10,
-    "keepalives_count": 3,
+    "keepalives_idle": 10,
+    "keepalives_interval": 5,
+    "keepalives_count": 6,
 }
 if "ssl=" in _sync_db_url or "sslmode=" in _sync_db_url:
     _sync_db_url = _sync_db_url.split("?")[0]
