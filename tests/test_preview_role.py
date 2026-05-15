@@ -232,10 +232,15 @@ async def test_403_when_tenant_not_sandbox(
 
 
 @pytest.mark.asyncio
-async def test_403_when_trial_expired(
+async def test_200_when_trial_expired(
     me_client, test_session_factory, sandbox_tenant_and_user
 ):
-    """Sandbox tenants past their trial cutoff get the trial-expired 403."""
+    """Sandbox tenants past their trial cutoff can still set a preview role.
+
+    The trial-active gate was intentionally dropped so a buying decision
+    that drags past day 14 doesn't silently kill the role switcher. The
+    sandbox-tier gate remains, so this still blocks paid tenants.
+    """
     tenant, _ = sandbox_tenant_and_user
     async with test_session_factory() as session:
         db_tenant = (
@@ -245,8 +250,8 @@ async def test_403_when_trial_expired(
         await session.commit()
 
     resp = await me_client.post("/api/v1/me/preview-role", json={"role": "manager"})
-    assert resp.status_code == 403
-    assert resp.json()["detail"] == "trial expired; preview role is unavailable"
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "manager"
 
 
 @pytest.mark.asyncio
@@ -302,7 +307,7 @@ async def test_422_for_invalid_role(me_client):
     assert resp.status_code == 422
 
 
-# ── Resolver gate: overlay applied only when all three layers pass ───
+# ── Resolver gate: overlay applied only when both layers pass ─────────
 
 
 @pytest.mark.asyncio
@@ -318,15 +323,21 @@ async def test_resolver_does_not_apply_overlay_for_non_sandbox_tenant(
 
 
 @pytest.mark.asyncio
-async def test_resolver_does_not_apply_overlay_when_trial_expired(
+async def test_resolver_still_applies_overlay_when_trial_expired(
     sandbox_tenant_and_user,
 ):
+    """Trial-active is no longer a resolver gate — overlay still applies.
+
+    Sandbox prospects whose 14-day window has lapsed must still be able
+    to preview Admin / Manager / Agent views while a buying conversation
+    is in flight.
+    """
     tenant, user = sandbox_tenant_and_user
     user.preview_role = "manager"
     tenant.trial_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
     role, is_previewing = _resolve_effective_role(user, tenant)
-    assert role == "admin"
-    assert is_previewing is False
+    assert role == "manager"
+    assert is_previewing is True
 
 
 @pytest.mark.asyncio

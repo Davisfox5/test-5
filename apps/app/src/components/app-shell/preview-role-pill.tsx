@@ -17,10 +17,12 @@ function roleLabel(role: UserRole): string {
 /**
  * Sandbox-only role-preview switcher. Renders a dropdown pill in the
  * app-shell header that lets a single trial user preview the agent /
- * manager / admin views without seeding extra test users. Only visible
- * on sandbox-tier tenants whose trial is still active — the backend
- * applies the same gate, so a non-sandbox tenant could never honour a
- * preview-role override even if the pill *were* rendered.
+ * manager / admin views without seeding extra test users. Visible on
+ * any sandbox-tier tenant (regardless of trial-active state, so the
+ * affordance survives an expired-but-still-evaluating sandbox); the
+ * backend applies the matching tier gate, so a non-sandbox tenant
+ * could never honour a preview-role override even if the pill *were*
+ * rendered.
  *
  * When the override is currently being applied, also renders a thin
  * status banner under the header inviting the user to switch back to
@@ -49,7 +51,7 @@ export function PreviewRolePill() {
     if (!data) return null;
     const { tenant, user } = data;
     if (!user) return null;
-    if (tenant.plan_tier !== "sandbox" || !tenant.trial_active) return null;
+    if (tenant.plan_tier !== "sandbox") return null;
 
     const currentPreview = user.preview_role;
     // Visual selection: prefer the stored preview_role (so the pill

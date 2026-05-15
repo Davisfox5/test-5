@@ -322,33 +322,22 @@ class AuthPrincipal:
 _PREVIEW_ROLE_VALUES = frozenset({"agent", "manager", "admin"})
 
 
-def _now_aware_for(dt: datetime) -> datetime:
-    """Return ``datetime.now()`` matched to ``dt``'s tz-awareness.
-
-    Postgres returns ``trial_ends_at`` as a tz-aware UTC datetime, but
-    SQLite (used in tests) returns it naive. Matching the comparator
-    avoids the ``can't compare offset-naive and offset-aware datetimes``
-    TypeError without relaxing the production code path.
-    """
-    if dt.tzinfo is None:
-        return datetime.utcnow()
-    return datetime.now(timezone.utc)
-
-
 def _resolve_effective_role(user: User, tenant: Tenant) -> Tuple[str, bool]:
     """Return ``(effective_role, is_previewing)`` for an interactive user.
 
-    The sandbox preview overlay applies only when *all three* gates
-    pass:
+    The sandbox preview overlay applies only when *both* gates pass:
 
     1. The tenant is on the sandbox tier (the only free trial tier).
-    2. The trial is still active (``trial_ends_at > now()``).
-    3. ``user.preview_role`` is one of the three valid role names.
+    2. ``user.preview_role`` is one of the three valid role names.
+
+    The trial-active gate was intentionally dropped so a sandbox tenant
+    whose 14-day window has lapsed can still flip between agent /
+    manager / admin views while a buying decision is in flight. The
+    override remains render-time-only — the DB row is never mutated and
+    no security boundary is relaxed.
 
     On any failure the user's real ``users.role`` is returned (with a
-    safe ``"agent"`` fallback for legacy NULL rows). The DB row is never
-    mutated — preview is a render-time overlay, never a security
-    boundary.
+    safe ``"agent"`` fallback for legacy NULL rows).
     """
     real = user.role or "agent"
     # ``getattr`` rather than direct access so legacy / mocked User and
@@ -359,11 +348,6 @@ def _resolve_effective_role(user: User, tenant: Tenant) -> Tuple[str, bool]:
     if preview not in _PREVIEW_ROLE_VALUES:
         return real, False
     if getattr(tenant, "plan_tier", None) != "sandbox":
-        return real, False
-    trial_ends_at = getattr(tenant, "trial_ends_at", None)
-    if trial_ends_at is None:
-        return real, False
-    if trial_ends_at <= _now_aware_for(trial_ends_at):
         return real, False
     return preview, True
 
