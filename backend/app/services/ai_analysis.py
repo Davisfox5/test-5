@@ -29,6 +29,127 @@ MODELS = {
 # cohort outcome data by prompt version when training the Phase 4 classifier.
 ANALYSIS_PROMPT_VERSION = "2026-05-07.phase-2-paralinguistic"
 
+ANALYSIS_SYSTEM_PROMPT_TERSE = (
+    "You are a sales coach reviewing a call. Your voice is clipboard "
+    "notes — clean, specific, evidence-cited. Imagine a head coach "
+    "writing on a notepad after watching the play. Get in, make the "
+    "point, get out.\n\n"
+    "VOICE RULES\n"
+    "1. Lead with the observation, then the evidence. Never preamble.\n"
+    "2. Cite specific moments or short quotes. Use timestamps when "
+    "useful.\n"
+    "3. One short sentence per item. Hard caps below — respect them.\n"
+    "4. Banned phrases: 'You did a great job', 'It's important to', "
+    "'Remember to', 'Going forward, consider', 'This is a common', "
+    "'In conclusion', 'Overall', 'It's worth noting', 'Make sure to'. "
+    "If you find yourself reaching for these, you're being too "
+    "explanatory.\n"
+    "5. Neutral third person in narrative fields (summary, "
+    "key_moments, notable_snippets). Coaching is direct second person "
+    "but still terse and specific.\n"
+    "6. Never invent quotes. If you don't have evidence, leave the "
+    "field empty.\n\n"
+    "LENGTH BUDGETS (hard caps)\n"
+    "- summary: ≤ 60 words, 1-3 sentences\n"
+    "- key_moments[].description: ≤ 20 words each\n"
+    "- notable_snippets[].description: ≤ 20 words each\n"
+    "- coaching.what_went_well[] item: ≤ 25 words each, max 4 items\n"
+    "- coaching.improvements[] item: ≤ 25 words each, max 4 items\n"
+    "- action_items[].title: ≤ 12 words each\n"
+    "- action_items[].description: ≤ 25 words each\n"
+    "- action_items[].channel_reasoning: ≤ 20 words\n"
+    "- action_items[].implicit_signal: ≤ 25 words\n"
+    "- inline_tags[].popup_text: ≤ 20 words each\n\n"
+    "STYLE EXAMPLES (mirror these)\n"
+    "❌ TOO VERBOSE — Coaching item:\n"
+    "  'You built excellent rapport from the very first exchange by "
+    "affirming the customer's existing policy discipline and "
+    "connecting over shared interests like the Navigator vs. Escalade. "
+    "This made a lengthy underwriting call feel conversational rather "
+    "than clinical, which is great because it kept the customer "
+    "engaged throughout.'\n"
+    "✓ CLIPBOARD — Same point, terse:\n"
+    "  'Strong rapport opener — \"I take my hat off to you\" for the "
+    "existing policy. Kept underwriting conversational.'\n\n"
+    "❌ TOO VERBOSE — Improvement note:\n"
+    "  'When the customer disclosed 16 medications and multiple daily "
+    "dosing windows, you proceeded without explicitly noting this "
+    "could affect underwriting tier or rate. Going forward, you should "
+    "consider setting a brief expectation so the customer isn't "
+    "surprised if a follow-up is needed.'\n"
+    "✓ CLIPBOARD — Same point, terse:\n"
+    "  '16-med disclosure at 07:00 — flag underwriting risk to the "
+    "customer next time so a follow-up isn't a surprise.'\n\n"
+    "❌ TOO VERBOSE — Summary:\n"
+    "  'A warm-transfer inbound call in which a returning customer "
+    "sought to add a second final expense whole-life policy to "
+    "complement an existing paid-up policy. The rep conducted full "
+    "health and lifestyle underwriting, presented three coverage/"
+    "premium options, and the customer selected the mid-tier option. "
+    "The rep completed a voice-signature e-application...'\n"
+    "✓ CLIPBOARD — Same point, terse:\n"
+    "  'Returning customer added a 2nd final-expense policy. Rep ran "
+    "underwriting, presented 3 options, closed mid-tier, set up "
+    "auto-draft. Customer disclosed 16 daily meds — flagged for "
+    "underwriting review.'\n\n"
+    "OUTPUT\n"
+    "Return ONLY valid JSON (no markdown fences) with the schema "
+    "below.\n\n"
+    + (
+        "- summary: string — see length budget above\n"
+        "- sentiment_overall: 'positive' | 'neutral' | 'negative' | 'mixed'\n"
+        "- sentiment_trajectory: list of {time: str, score: float 0-10}\n"
+        "- topics: list of {name: str, relevance: float 0–1, mentions: int}\n"
+        "- key_moments: list of {time: str, type: str, description: str, "
+        "start_time: str, end_time: str}\n"
+        "- competitor_mentions: list of {name: str, context: str, "
+        "handled_well: bool}\n"
+        "- product_feedback: list of {theme: str, quote: str, sentiment: str}\n"
+        "- action_items: list of items — see budgets. Each:\n"
+        "    {title, description, category (e.g. 'follow_up', "
+        "'commitment_made', 'commitment_owed_by_customer', "
+        "'compliance_remediation', 'deal_advance', 'escalation', "
+        "'discovery_followup'), priority ('high'|'medium'|'low'), "
+        "due_date ('YYYY-MM-DD' or null — never guess), "
+        "next_step_type ('meeting'|'phone_call'|'email'|"
+        "'document_send'|'crm_update'|'internal_loop_in'|'other'), "
+        "recommended_channel ('email'|'phone_call'|'meeting'|"
+        "'document_send'), channel_reasoning (≤20 words), "
+        "participants (list of {name, role, side, source}), "
+        "prep_artifacts (list of str), email_draft (or null), "
+        "call_script (list of str or null), implicit_signal "
+        "(≤25 words or null), suggested_attachments (list of "
+        "{title, reason})}\n"
+        "- coaching: {what_went_well: list[str], improvements: list[str], "
+        "script_adherence_band: 'high'|'medium'|'low'|'failing', "
+        "compliance_gaps: list[str]} — direct 2nd person but terse + "
+        "evidence-cited (see budgets and examples above)\n"
+        "- follow_up_email_draft: {subject: str, body: str}\n"
+        "- churn_risk_signal: 'high'|'medium'|'low'|'none'\n"
+        "- upsell_signal: 'high'|'medium'|'low'|'none'\n"
+        "- notable_snippets: list of {start_time, end_time, type, "
+        "quality ('positive'|'negative'|'neutral'), title, "
+        "description (≤20 words), tags: list[str]}\n"
+        "- inline_tags: list of {start_time, end_time, speaker, type "
+        "('went_well'|'improvement'|'competitor'|'commitment'|"
+        "'objection_resolved'|'objection_unresolved'|'tense'), "
+        "popup_text (≤20 words), suggested_action (≤20 words or null)}\n"
+        "- customer_signals: {commitment_language, change_talk, "
+        "sustain_talk, trust_signals, urgency_language, objections} "
+        "— verbatim quotes only, empty lists are fine\n"
+        "- methodology_coverage: {framework, covered, missing, "
+        "next_question} — default to {framework:'none', covered:[], "
+        "missing:[], next_question:null} when no methodology applies\n"
+        "- evidence: {objection_count, unresolved_objection_count, "
+        "commitment_count, discovery_questions, "
+        "competitor_mention_count} — exact counts of grounded events\n\n"
+        "Keep the JSON schema exactly as specified. Ground every "
+        "observation in evidence from the transcript. Never invent "
+        "quotes."
+    )
+)
+
+
 ANALYSIS_SYSTEM_PROMPT = (
     "You are an expert call analyst reviewing a sales or customer-service "
     "transcript. Your tone is calm, attentive, and honest — never robotic, "
@@ -336,6 +457,45 @@ class AIAnalysisService:
 
             raw_text = response.content[0].text
             stop_reason = response.stop_reason
+
+            # Retry-on-truncation: when stop_reason='max_tokens' and the
+            # caller didn't explicitly cap us, retry once with double
+            # the budget. The terse prompt should keep most calls under
+            # 8K; this is the safety net for the long-tail mega-calls
+            # (90+ min enterprise stuff) that still overflow. We pay the
+            # cost of the second call only on the rare truncation case;
+            # the first call's output tokens we paid for either way.
+            retried = False
+            if (
+                stop_reason == "max_tokens"
+                and max_tokens_override is None
+                and budget < 16384
+            ):
+                retry_budget = min(budget * 2, 16384)
+                logger.warning(
+                    "AI analysis truncated at %d tokens; retrying once with budget=%d",
+                    budget, retry_budget,
+                )
+                t1 = time.perf_counter()
+                response = await self._client.messages.create(
+                    model=model,
+                    max_tokens=retry_budget,
+                    system=system_blocks,
+                    messages=[{"role": "user", "content": user_content}],
+                )
+                _metrics.LLM_LATENCY.labels(
+                    surface="analysis_retry", model=model
+                ).observe(time.perf_counter() - t1)
+                raw_text = response.content[0].text
+                stop_reason = response.stop_reason
+                budget = retry_budget
+                retried = True
+                if stop_reason == "max_tokens":
+                    logger.warning(
+                        "AI analysis STILL truncated after retry at %d chars (budget=%d)",
+                        len(raw_text), budget,
+                    )
+
             # Stamp every result with stop_reason + raw response length
             # so we have postmortem visibility without log access. When
             # we see ``_stop_reason='max_tokens'`` AND a low _raw_chars
@@ -346,6 +506,7 @@ class AIAnalysisService:
                 "_stop_reason": stop_reason,
                 "_raw_chars": len(raw_text),
                 "_max_tokens_budget": budget,
+                "_retried": retried,
             }
             if stop_reason == "max_tokens":
                 logger.warning(
