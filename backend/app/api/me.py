@@ -7,10 +7,13 @@ into the flat-feature shape the SPA's ``useMe()`` consumes.
 
 Also hosts the sandbox-only preview-role switcher
 (``POST /me/preview-role``). The override is a render-time overlay
-gated at three layers (tier + trial-active + role validity); the
-underlying ``users.role`` column is never mutated by this endpoint, so
-the override never relaxes a security boundary. See the principal
-resolver in :mod:`backend.app.auth` for the load-bearing gate.
+gated at two layers (sandbox tier + role validity); the underlying
+``users.role`` column is never mutated by this endpoint, so the
+override never relaxes a security boundary. The trial-active gate
+that used to wrap this was removed so a sandbox tenant can keep
+previewing roles after the 14-day window — useful when a buying
+decision drags past the trial. See the principal resolver in
+:mod:`backend.app.auth` for the load-bearing gate.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, _now_aware_for, get_current_principal
+from backend.app.auth import AuthPrincipal, get_current_principal
 from backend.app.db import get_db
 from backend.app.models import User
 from backend.app.plans import TierSpec, limits_for, trial_is_active, trial_is_expired
@@ -79,9 +82,7 @@ class UserOut(BaseModel):
     # nav + role-gated UI should read this directly.
     role: str
     # The user's stored override (``users.preview_role``). Surfaced so
-    # the switcher can render which option is checked even when the
-    # override isn't being applied (e.g. a sandbox tenant whose trial
-    # just expired — the row stays put until the user clears it).
+    # the switcher can render which option is checked.
     preview_role: Optional[PreviewRole]
     # The user's underlying ``users.role`` (no preview overlay). Lets
     # the SPA render "Switch back to admin" when the preview differs.
@@ -184,9 +185,9 @@ async def set_preview_role(
 ) -> Dict[str, Any]:
     """Set or clear the calling user's preview role for the sandbox UI.
 
-    Sandbox-tier tenants only, and only while the trial is still active.
-    The override is render-time only — the user's real role is unchanged
-    and remains the source of truth for security. ``role: null`` clears.
+    Sandbox-tier tenants only. The override is render-time only — the
+    user's real role is unchanged and remains the source of truth for
+    security. ``role: null`` clears.
     """
     # API-key callers don't have a human user behind them; preview is
     # an interactive-session feature only.
@@ -201,16 +202,6 @@ async def set_preview_role(
         raise HTTPException(
             status_code=403,
             detail="preview role is sandbox-only",
-        )
-
-    # Same trial-active gate as the principal resolver. We re-check
-    # here rather than relying on resolver state so a sandbox tenant
-    # whose trial expired between requests can't sneak a write through.
-    trial_ends_at = tenant.trial_ends_at
-    if trial_ends_at is None or trial_ends_at <= _now_aware_for(trial_ends_at):
-        raise HTTPException(
-            status_code=403,
-            detail="trial expired; preview role is unavailable",
         )
 
     # Look the user up in *this* request's DB session — the principal's
