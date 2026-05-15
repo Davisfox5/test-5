@@ -344,6 +344,16 @@ _FEATURE_FLAG_SPEC: List[Dict[str, Any]] = [
         ),
     },
     {
+        "key": "terse_analysis_prompt",
+        "default": False,
+        "label": "Clipboard-voice analysis (terse)",
+        "help": (
+            "Use the coach's-clipboard analysis prompt: short, evidence-cited, "
+            "one sentence per coaching point. Off-by-default while we A/B "
+            "against the verbose prompt; flip on per tenant to opt in."
+        ),
+    },
+    {
         "key": "paralinguistic_live",
         "default": False,
         "label": "Live voice coaching",
