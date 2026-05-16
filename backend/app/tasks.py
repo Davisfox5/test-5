@@ -867,10 +867,7 @@ def _run_pipeline_impl(
 
     # ── Step 9: AI analysis ──────────────────────────────────────────
     # Prompt-variant routing + personalization blocks.
-    from backend.app.services.ai_analysis import (
-        ANALYSIS_SYSTEM_PROMPT,
-        ANALYSIS_SYSTEM_PROMPT_TERSE,
-    )
+    from backend.app.services.ai_analysis import ANALYSIS_SYSTEM_PROMPT_TERSE
     from backend.app.services.personalization_service import (
         build_analysis_context_block,
         build_rag_context_block,
@@ -881,27 +878,18 @@ def _run_pipeline_impl(
         to_uuid as _variant_to_uuid,
     )
 
-    # Terse-prompt feature flag — tenants with
-    # ``features_enabled['terse_analysis_prompt']`` get the
-    # clipboard-voice prompt with strict length budgets and few-shot
-    # examples. Default OFF so we can A/B against the old prompt
-    # without breaking incumbent tenants. The flag is read here
-    # (not inside the analyzer) so prompt-variant routing still works
-    # for tenants that have configured a custom variant.
-    _tenant_features = getattr(tenant, "features_enabled", None) or {}
-    _fallback_prompt = (
-        ANALYSIS_SYSTEM_PROMPT_TERSE
-        if _tenant_features.get("terse_analysis_prompt")
-        else ANALYSIS_SYSTEM_PROMPT
-    )
-
+    # Terse clipboard-voice prompt is the default and only path. The
+    # verbose ANALYSIS_SYSTEM_PROMPT still lives in ai_analysis.py and
+    # can be opted into via TenantPromptConfig.variant_template for
+    # tenants that explicitly request the long-form analysis at a
+    # higher price tier; it is not exposed via features_enabled.
     variant = select_variant_sync(
         session,
         tenant,
         surface="analysis",
         tier=recommended_tier,
         channel=interaction.channel,
-        fallback_template=_fallback_prompt,
+        fallback_template=ANALYSIS_SYSTEM_PROMPT_TERSE,
     )
     tenant_block = build_analysis_context_block(session, tenant)
     rag_block = build_rag_context_block(
