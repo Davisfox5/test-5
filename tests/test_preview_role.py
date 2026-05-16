@@ -1,9 +1,11 @@
-"""Tests for the sandbox-only role-preview switcher.
+"""Tests for the role-preview switcher.
 
-Covers the three-layer security gate (tier + trial-active + role
-validity), the ``POST /me/preview-role`` endpoint, the principal-
-resolver overlay, the Stripe-webhook tier-transition clearing, and the
-DB-level CHECK constraint that pins the column vocabulary.
+Covers the two-layer eligibility gate (tenant-allows-preview + role
+validity, where tenant-allows-preview = sandbox-tier OR per-tenant
+``role_preview_enabled``), the ``POST /me/preview-role`` endpoint, the
+principal-resolver overlay, the Stripe-webhook tier-transition
+clearing, and the DB-level CHECK constraint pinning the column
+vocabulary.
 """
 
 from __future__ import annotations
@@ -214,21 +216,41 @@ async def test_post_writes_audit_log_row(
 
 
 @pytest.mark.asyncio
-async def test_403_when_tenant_not_sandbox(
+async def test_403_when_tenant_not_sandbox_and_override_off(
     me_client, test_session_factory, sandbox_tenant_and_user
 ):
-    """Tenants on starter/growth/enterprise can't write a preview role."""
+    """Paid-tier tenants with role_preview_enabled=False are rejected."""
     tenant, _ = sandbox_tenant_and_user
     async with test_session_factory() as session:
         db_tenant = (
             await session.execute(select(Tenant).where(Tenant.id == tenant.id))
         ).scalar_one()
         db_tenant.plan_tier = "starter"
+        db_tenant.role_preview_enabled = False
         await session.commit()
 
     resp = await me_client.post("/api/v1/me/preview-role", json={"role": "manager"})
     assert resp.status_code == 403
-    assert resp.json()["detail"] == "preview role is sandbox-only"
+    assert resp.json()["detail"] == "preview role is not enabled for this tenant"
+
+
+@pytest.mark.asyncio
+async def test_200_when_paid_tier_with_role_preview_override(
+    me_client, test_session_factory, sandbox_tenant_and_user
+):
+    """Per-tenant escape hatch: paid tier + override-on accepts the write."""
+    tenant, _ = sandbox_tenant_and_user
+    async with test_session_factory() as session:
+        db_tenant = (
+            await session.execute(select(Tenant).where(Tenant.id == tenant.id))
+        ).scalar_one()
+        db_tenant.plan_tier = "enterprise"
+        db_tenant.role_preview_enabled = True
+        await session.commit()
+
+    resp = await me_client.post("/api/v1/me/preview-role", json={"role": "manager"})
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "manager"
 
 
 @pytest.mark.asyncio
@@ -311,15 +333,30 @@ async def test_422_for_invalid_role(me_client):
 
 
 @pytest.mark.asyncio
-async def test_resolver_does_not_apply_overlay_for_non_sandbox_tenant(
+async def test_resolver_does_not_apply_overlay_for_paid_tier_without_override(
     test_session_factory, sandbox_tenant_and_user
 ):
     tenant, user = sandbox_tenant_and_user
     user.preview_role = "manager"
     tenant.plan_tier = "starter"
+    tenant.role_preview_enabled = False
     role, is_previewing = _resolve_effective_role(user, tenant)
     assert role == "admin"
     assert is_previewing is False
+
+
+@pytest.mark.asyncio
+async def test_resolver_applies_overlay_for_paid_tier_with_override(
+    sandbox_tenant_and_user,
+):
+    """The per-tenant escape hatch lets a paid-tier tenant use the pill."""
+    tenant, user = sandbox_tenant_and_user
+    user.preview_role = "manager"
+    tenant.plan_tier = "enterprise"
+    tenant.role_preview_enabled = True
+    role, is_previewing = _resolve_effective_role(user, tenant)
+    assert role == "manager"
+    assert is_previewing is True
 
 
 @pytest.mark.asyncio

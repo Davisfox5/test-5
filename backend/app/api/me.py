@@ -27,7 +27,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import AuthPrincipal, get_current_principal
+from backend.app.auth import (
+    AuthPrincipal,
+    _tenant_allows_role_preview,
+    get_current_principal,
+)
 from backend.app.db import get_db
 from backend.app.models import User
 from backend.app.plans import TierSpec, limits_for, trial_is_active, trial_is_expired
@@ -70,6 +74,10 @@ class TenantOut(BaseModel):
     # uses this to decide between the first-time plan picker (false)
     # and the Stripe billing portal (true) on /billing.
     has_subscription: bool
+    # True iff this tenant may render the role-preview pill regardless
+    # of tier. Mirrors the backend predicate so the SPA doesn't have to
+    # reimplement "sandbox OR override-on" in two places.
+    role_preview_enabled: bool
     limits: PlanLimitsOut
 
 
@@ -171,6 +179,7 @@ async def me(
                 tenant.stripe_subscription_id
                 and tenant.stripe_subscription_id.strip()
             ),
+            role_preview_enabled=_tenant_allows_role_preview(tenant),
             limits=_plan_limits_out(limits_for(tenant)),
         ),
         user=_user_out(principal),
@@ -183,11 +192,12 @@ async def set_preview_role(
     db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(get_current_principal),
 ) -> Dict[str, Any]:
-    """Set or clear the calling user's preview role for the sandbox UI.
+    """Set or clear the calling user's preview role.
 
-    Sandbox-tier tenants only. The override is render-time only — the
-    user's real role is unchanged and remains the source of truth for
-    security. ``role: null`` clears.
+    Allowed on sandbox tenants or any tenant with
+    ``role_preview_enabled = True``. The override is render-time only —
+    the user's real role is unchanged and remains the source of truth
+    for security. ``role: null`` clears.
     """
     # API-key callers don't have a human user behind them; preview is
     # an interactive-session feature only.
@@ -198,10 +208,10 @@ async def set_preview_role(
         )
 
     tenant = principal.tenant
-    if tenant.plan_tier != "sandbox":
+    if not _tenant_allows_role_preview(tenant):
         raise HTTPException(
             status_code=403,
-            detail="preview role is sandbox-only",
+            detail="preview role is not enabled for this tenant",
         )
 
     # Look the user up in *this* request's DB session — the principal's

@@ -82,6 +82,16 @@ class Tenant(Base):
     # Per-tenant operating brief consumed by orchestrator + agents.
     tenant_context: Mapped[dict] = mapped_column(JSONB, default=dict)
     is_white_label: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Per-tenant escape hatch for the sandbox-only role-preview pill. When
+    # True, the principal resolver and ``POST /me/preview-role`` treat the
+    # tenant like a sandbox tenant for the purposes of role-preview only —
+    # so a non-sandbox tenant (typically an internal/demo enterprise
+    # tenant) can flip between agent/manager/admin views without being
+    # demoted to the sandbox tier and losing its feature set. Defaults
+    # False; sandbox tenants honour the pill regardless of this flag.
+    role_preview_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # ── Plan + trial (Tier 1/2/3 customer-facing) ──────────
     # plan_tier: sandbox | starter | growth | enterprise
     plan_tier: Mapped[str] = mapped_column(String, nullable=False, default="sandbox", server_default="sandbox")
@@ -138,12 +148,13 @@ class User(Base):
     # integrations, webhooks; managers can monitor calls + approve most
     # things agents can't; agents are the call-handling role.
     role: Mapped[str] = mapped_column(String, default="agent")
-    # Sandbox-only render-time role override. NULL means "no preview,
-    # use the real role". Honored by the principal resolver only when
-    # the tenant is on sandbox AND the trial is still active — see the
-    # three-layer gate in :mod:`backend.app.auth`. The DB-level CHECK
-    # constraint pins the vocabulary to ``{agent, manager, admin}``;
-    # this column never relaxes ``users.role`` for security purposes.
+    # Render-time role override for demo / internal-evaluation use. NULL
+    # means "no preview, use the real role". Honored by the principal
+    # resolver only when the tenant is on the sandbox tier *or* has
+    # ``tenants.role_preview_enabled`` flipped on — see the two-layer
+    # gate in :mod:`backend.app.auth`. The DB-level CHECK constraint
+    # pins the vocabulary to ``{agent, manager, admin}``; this column
+    # never relaxes ``users.role`` for security purposes.
     preview_role: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")

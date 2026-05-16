@@ -325,9 +325,11 @@ _PREVIEW_ROLE_VALUES = frozenset({"agent", "manager", "admin"})
 def _resolve_effective_role(user: User, tenant: Tenant) -> Tuple[str, bool]:
     """Return ``(effective_role, is_previewing)`` for an interactive user.
 
-    The sandbox preview overlay applies only when *both* gates pass:
+    The role-preview overlay applies only when *both* gates pass:
 
-    1. The tenant is on the sandbox tier (the only free trial tier).
+    1. The tenant is on the sandbox tier OR has
+       ``role_preview_enabled = True`` (per-tenant escape hatch for
+       internal/demo tenants on paid tiers).
     2. ``user.preview_role`` is one of the three valid role names.
 
     The trial-active gate was intentionally dropped so a sandbox tenant
@@ -343,13 +345,25 @@ def _resolve_effective_role(user: User, tenant: Tenant) -> Tuple[str, bool]:
     # ``getattr`` rather than direct access so legacy / mocked User and
     # Tenant objects (e.g. in tests, or hypothetical pre-migration
     # rows) don't explode here. The defaults all fall through to "no
-    # preview" exactly as the production NULL / non-sandbox state would.
+    # preview" exactly as the production NULL / non-eligible state.
     preview = getattr(user, "preview_role", None)
     if preview not in _PREVIEW_ROLE_VALUES:
         return real, False
-    if getattr(tenant, "plan_tier", None) != "sandbox":
+    if not _tenant_allows_role_preview(tenant):
         return real, False
     return preview, True
+
+
+def _tenant_allows_role_preview(tenant: Tenant) -> bool:
+    """True iff this tenant may have role-preview overlays applied.
+
+    Sandbox tenants always qualify; non-sandbox tenants qualify only
+    when ``role_preview_enabled`` is flipped on (intended for internal
+    / demo tenants running on a paid tier).
+    """
+    if getattr(tenant, "plan_tier", None) == "sandbox":
+        return True
+    return bool(getattr(tenant, "role_preview_enabled", False))
 
 
 # ── FastAPI dependencies ───────────────────────────────────────────────
