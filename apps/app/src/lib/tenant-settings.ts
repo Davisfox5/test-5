@@ -57,6 +57,10 @@ export interface TenantSettings {
     seat_limit?: number;
     admin_seat_limit?: number;
     tier_catalog?: TierCatalogEntry[];
+    // Per-tenant escape hatch for the role-preview pill. Sandbox tier
+    // honours the pill regardless of this flag; paid tiers honour it
+    // only when this is True.
+    role_preview_enabled: boolean;
 }
 
 export interface TenantSettingsPatch {
@@ -71,6 +75,7 @@ export interface TenantSettingsPatch {
     // Retention overrides. Send ``null`` to clear; omit to leave alone.
     audio_retention_hours_override?: number | null;
     feedback_retention_days_override?: number | null;
+    role_preview_enabled?: boolean;
 }
 
 export function useTenantSettings() {
@@ -111,8 +116,13 @@ export function useUpdateTenantSettings() {
                 qc.setQueryData(["tenant-settings"], context.previous);
             }
         },
-        onSettled: () => {
+        onSettled: (_data, _err, patch) => {
             qc.invalidateQueries({ queryKey: ["tenant-settings"] });
+            // The role-preview pill renders against tenant.role_preview_enabled
+            // in /me, so refetch that too when the override flips.
+            if (patch?.role_preview_enabled !== undefined) {
+                qc.invalidateQueries({ queryKey: ["me"] });
+            }
         },
     });
 }
