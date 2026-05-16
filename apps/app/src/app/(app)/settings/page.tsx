@@ -158,6 +158,28 @@ export default function SettingsPage() {
                         />
                     </Section>
 
+                    <Section
+                        title="Developer tools"
+                        subtitle="Workspace affordances that bypass the usual tier gating. Use for internal demos and evaluation."
+                    >
+                        <AdminGate role={me?.user?.role}>
+                            <FlagRow
+                                spec={{
+                                    key: "role_preview_enabled",
+                                    default: false,
+                                    label: "Enable role-preview switcher",
+                                    help:
+                                        "Shows the 'View as Agent / Manager / Admin' pill in the header so you can preview each role's UI without seeding extra users. Sandbox tier already has this on; flipping it on here unlocks the same affordance on a paid tier.",
+                                }}
+                                value={settings.role_preview_enabled}
+                                disabled={!isAdmin || update.isPending}
+                                onChange={(next) =>
+                                    update.mutate({ role_preview_enabled: next })
+                                }
+                            />
+                        </AdminGate>
+                    </Section>
+
                     {update.isError ? (
                         <ErrorCard
                             message={`Couldn't save: ${humanizeError(
