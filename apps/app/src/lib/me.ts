@@ -33,6 +33,11 @@ export interface Tenant {
     // whether /billing shows the first-time plan picker or the
     // Stripe billing portal CTA.
     has_subscription: boolean;
+    // True iff this tenant may render the role-preview pill. The
+    // backend computes "sandbox OR override-on" and surfaces it as a
+    // single boolean so the SPA doesn't have to keep the predicate
+    // in sync.
+    role_preview_enabled: boolean;
     limits: PlanLimits;
 }
 

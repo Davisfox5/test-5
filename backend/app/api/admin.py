@@ -409,6 +409,7 @@ class TenantSettingsOut(BaseModel):
     question_keyterms: List[str]
     features_enabled: Dict[str, Any]
     feature_flag_spec: List[Dict[str, Any]]
+    role_preview_enabled: bool
 
 
 # Sentinel — distinguishes "field omitted" from "field set to null". Using
@@ -434,6 +435,10 @@ class TenantSettingsPatch(BaseModel):
     # event_retention sweep); omitting the field leaves it untouched.
     audio_retention_hours_override: Optional[int] = None
     feedback_retention_days_override: Optional[int] = None
+    # Per-tenant escape hatch for the role-preview pill. Set True on an
+    # internal / demo tenant running a paid tier to surface the
+    # agent/manager/admin switcher without demoting to sandbox.
+    role_preview_enabled: Optional[bool] = None
 
 
 def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
@@ -481,6 +486,9 @@ def _tenant_settings_payload(tenant: Tenant) -> Dict[str, Any]:
         "seat_limit": tenant.seat_limit,
         "admin_seat_limit": tenant.admin_seat_limit,
         "tier_catalog": list_tiers(),
+        # Role-preview pill escape hatch — surface so the settings UI
+        # can render a checkbox alongside the tier picker.
+        "role_preview_enabled": bool(getattr(tenant, "role_preview_enabled", False)),
     }
 
 
@@ -538,6 +546,8 @@ async def patch_tenant_settings(
         tenant.question_keyterms = [
             str(s).strip() for s in (updates["question_keyterms"] or []) if str(s).strip()
         ][:50]
+    if "role_preview_enabled" in updates:
+        tenant.role_preview_enabled = bool(updates["role_preview_enabled"])
     if "features_enabled" in updates:
         merged = dict(tenant.features_enabled or {})
         allowed = {spec["key"] for spec in _FEATURE_FLAG_SPEC}
