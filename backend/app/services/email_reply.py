@@ -5,7 +5,7 @@ Context sources assembled into the Sonnet prompt:
 1.  **Global knowledge base** (``kb_documents``) — product docs, playbooks,
     approved language the tenant wants on brand.
 2.  **Contact history** — all prior Interactions with this contact
-    (voice + email + chat), their AI-generated summaries and sentiment
+    (voice + email + transcript), their AI-generated summaries and sentiment
     trajectory.  This is the "client-specific" side.
 3.  **Current conversation thread** — the ordered set of messages in
     the active ``Conversation``, including the latest customer message

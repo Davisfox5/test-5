@@ -96,10 +96,19 @@ class TriageService:
         )
 
         try:
+            # Triage system prompt is constant across all calls; wrap it as
+            # a cacheable system block so we hit Anthropic's prompt cache on
+            # every triage after the first within the cache TTL window.
             response = await self._client.messages.create(
                 model=HAIKU_MODEL,
                 max_tokens=512,
-                system=TRIAGE_SYSTEM_PROMPT,
+                system=[
+                    {
+                        "type": "text",
+                        "text": TRIAGE_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": user_content}],
             )
 

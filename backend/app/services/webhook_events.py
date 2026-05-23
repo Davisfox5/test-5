@@ -14,7 +14,7 @@ from typing import Dict, List
 # event_name → description. Order matters for the picker — group by domain.
 WEBHOOK_EVENTS: Dict[str, str] = {
     # Interactions
-    "interaction.analyzed":        "AI analysis finished for a call / chat / email.",
+    "interaction.analyzed":        "AI analysis finished for a call / transcript / email.",
     "interaction.outcome_inferred": "Call outcome (won/lost/resolved/…) classified.",
 
     # Customer lifecycle (maps 1:1 with CustomerOutcomeEvent.event_type)

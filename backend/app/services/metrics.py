@@ -125,7 +125,7 @@ PIPELINE_STAGE_LATENCY = Histogram(
     "linda_pipeline_stage_seconds",
     "Voice + text pipeline stage durations.",
     # ``stage`` maps to Step 1..17 in tasks._run_pipeline_impl.
-    # ``channel`` is voice|email|chat. ``status`` is success|error.
+    # ``channel`` is voice|email|transcript. ``status`` is success|error.
     ["stage", "channel", "status"],
     # Cover both fast stages (ms-scale — search indexing) and slow
     # ones (minutes — large Whisper transcripts).

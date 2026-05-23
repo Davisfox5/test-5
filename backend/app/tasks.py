@@ -1935,7 +1935,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
 @celery_app.task(bind=True, name="process_text_interaction", max_retries=3)
 def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
-    """Batch pipeline for a text-based interaction (email, chat).
+    """Batch pipeline for a text-based interaction (email, transcript).
 
     Similar to :func:`process_voice_interaction` but skips audio download
     and transcription (steps 3–4).  Uses ``raw_text`` from the interaction

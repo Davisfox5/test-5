@@ -642,7 +642,7 @@
                     title: 'New Scorecard Template',
                     body:
                         '<label>Template name<input type="text" id="tplName" placeholder="e.g. Retention QA"></label>' +
-                        '<label>Channel<select id="tplChannel"><option value="all">All channels</option><option value="voice">Voice</option><option value="chat">Chat</option><option value="email">Email</option></select></label>' +
+                        '<label>Channel<select id="tplChannel"><option value="all">All channels</option><option value="voice">Voice</option><option value="transcript">Transcript</option><option value="email">Email</option></select></label>' +
                         '<label>Default criteria<textarea id="tplCriteria">Greeting & Rapport (20%)\nNeeds Discovery (25%)\nProduct Knowledge (20%)\nObjection Handling (20%)\nClose & Next Steps (15%)</textarea></label>',
                     actions: [
                         { label: 'Cancel', kind: 'outline' },

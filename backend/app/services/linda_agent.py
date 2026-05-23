@@ -107,7 +107,7 @@ TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query."},
-                "channel": {"type": "string", "description": "Optional channel filter (phone, email, chat, zoom, meet)."},
+                "channel": {"type": "string", "description": "Optional channel filter (voice, email, transcript, zoom, meet)."},
                 "date_from": {"type": "string", "description": "Optional ISO date lower bound."},
                 "date_to": {"type": "string", "description": "Optional ISO date upper bound."},
                 "limit": {"type": "integer", "description": "Max results (default 10)."},

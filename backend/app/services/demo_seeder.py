@@ -68,13 +68,13 @@ _SCORECARD_FIXTURES = [
             {"key": "resolution_path", "label": "Owned a clear resolution path", "weight": 2.0},
             {"key": "followup", "label": "Scheduled follow-up", "weight": 1.0},
         ],
-        "channel_filter": ["voice", "email", "chat"],
+        "channel_filter": ["voice", "email", "transcript"],
         "is_default": False,
     },
 ]
 
 
-# 8 sample interactions across all three channels (4 voice, 2 email, 2 chat).
+# 8 sample interactions across all three channels (4 voice, 2 email, 2 transcript).
 # Each carries a short transcript snippet + insights with sentiment,
 # churn_risk_signal, upsell_signal, topics, summary, action_items.
 _INTERACTION_FIXTURES = [
@@ -203,8 +203,8 @@ _INTERACTION_FIXTURES = [
         "outcome_value": -1.0,
     },
     {
-        "channel": "chat",
-        "title": "Live chat: trial walkthrough",
+        "channel": "transcript",
+        "title": "Uploaded transcript: trial walkthrough",
         "raw_text": (
             "[customer] How do I import historical calls?\n"
             "[agent] You can drag a folder of mp3s into /interactions or POST to "
@@ -223,8 +223,8 @@ _INTERACTION_FIXTURES = [
         "outcome_value": 0.5,
     },
     {
-        "channel": "chat",
-        "title": "Live chat: feature request",
+        "channel": "transcript",
+        "title": "Uploaded transcript: feature request",
         "raw_text": (
             "[customer] Can you push action items into Notion?\n"
             "[agent] Notion isn't a first-class CRM target yet — Salesforce, HubSpot, "
@@ -291,7 +291,7 @@ _ACTION_ITEM_FIXTURES = [
     {
         "interaction_idx": 7,
         "title": "Add Notion to integrations roadmap",
-        "description": "Recurring request — feature surfaced in chat.",
+        "description": "Recurring request. Feature surfaced in an uploaded transcript.",
         "priority": "low",
         "status": "snoozed",
         "category": "product",

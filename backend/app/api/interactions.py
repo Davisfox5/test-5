@@ -1,4 +1,4 @@
-"""Interactions API — unified CRUD for voice, email, chat.
+"""Interactions API — unified CRUD for voice, email, transcript.
 
 SMS and WhatsApp channels are not supported. Old rows with those values
 from prior backfills remain readable (the column is a free-form string),
@@ -35,8 +35,14 @@ router = APIRouter()
 # ── Pydantic Schemas ─────────────────────────────────────
 
 
-_SUPPORTED_CHANNELS = ("voice", "email", "chat")
+_SUPPORTED_CHANNELS = ("voice", "email", "transcript")
 _REJECTED_CHANNELS = ("sms", "whatsapp")
+
+# Legacy alias map. Older callers (and one historical DB seed) used
+# ``channel='chat'`` for what is now ``'transcript'`` (uploaded text
+# transcript of a call). Normalize on input so the wire stays
+# backwards-compatible while the storage value standardizes.
+_CHANNEL_ALIASES = {"chat": "transcript"}
 
 
 class InteractionCreate(BaseModel):
@@ -101,7 +107,7 @@ class InteractionUpdate(BaseModel):
 
 @router.get("/interactions", response_model=List[InteractionOut])
 async def list_interactions(
-    channel: Optional[str] = Query(None, description="Filter by channel: voice|email|chat"),
+    channel: Optional[str] = Query(None, description="Filter by channel: voice|email|transcript"),
     status: Optional[str] = Query(None),
     q: Optional[str] = Query(None, description="Free-text search across title / raw_text / caller_phone"),
     date_from: Optional[datetime] = Query(None, description="Inclusive lower bound on created_at"),
@@ -214,7 +220,7 @@ async def create_interaction(
     tenant: Tenant = Depends(get_current_tenant),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
-    """Create a text-based interaction (email, chat).
+    """Create a text-based interaction (email, transcript).
 
     For voice uploads, use POST /interactions/upload instead. Email
     ingestion normally runs through the OAuth poller, not this endpoint.
@@ -222,6 +228,7 @@ async def create_interaction(
     400 carrying the exact ``detail`` the SPA renders inline.
     """
     channel = (body.channel or "").strip().lower()
+    channel = _CHANNEL_ALIASES.get(channel, channel)
     if channel in _REJECTED_CHANNELS:
         raise HTTPException(
             status_code=400,
@@ -260,7 +267,7 @@ async def create_interaction(
         after={"channel": interaction.channel, "source": interaction.source, "title": interaction.title},
     )
 
-    # Dispatch the text-analysis pipeline (email/chat share the same branch).
+    # Dispatch the text-analysis pipeline (email/transcript share the same branch).
     try:
         from backend.app.tasks import process_text_interaction
 
@@ -671,7 +678,7 @@ async def redrive_interaction(
     # for the same audio. The worker short-circuits transcription when
     # interaction.transcript is non-empty.
     #
-    # Text channel (email / chat): CLEAR the transcript so the
+    # Text channel (email / transcript): CLEAR the transcript so the
     # segmenter re-runs against raw_text. We want this — the segmenter
     # is the canonical first step and it's where the LLM speaker-
     # tagging fallback lives. Preserving a stale single-segment

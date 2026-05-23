@@ -465,12 +465,14 @@ class Contact(Base):
 
 
 # ──────────────────────────────────────────────────────────
-# INTERACTIONS (omnichannel — voice, email, chat)
+# INTERACTIONS (omnichannel — voice, email, transcript)
 #
 # Old SMS / WhatsApp rows from prior backfills remain readable (the
 # ``channel`` column is a free-form string), but the API only accepts
-# voice / email / chat. See ``backend/app/api/interactions.py`` for the
-# create-side rejection.
+# voice / email / transcript. See ``backend/app/api/interactions.py`` for
+# the create-side rejection. ``transcript`` is the uploaded-text path
+# (caller pastes a call transcript); legacy callers using ``"chat"`` are
+# remapped to ``"transcript"`` by the API.
 # ──────────────────────────────────────────────────────────
 
 
@@ -498,7 +500,7 @@ class Interaction(Base):
         ForeignKey("campaigns.id", ondelete="SET NULL")
     )
 
-    # Type and source — voice|email|chat. The API rejects any other
+    # Type and source — voice|email|transcript. The API rejects any other
     # value with a 400 (see backend/app/api/interactions.py).
     channel: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String)
@@ -1539,7 +1541,7 @@ class CorrectionEvent(Base):
 
 
 # ──────────────────────────────────────────────────────────
-# CONVERSATIONS (threading across email / voice / chat)
+# CONVERSATIONS (threading across email / voice / transcript)
 # Also used by Ask Linda for chat conversations + write proposals.
 # ──────────────────────────────────────────────────────────
 

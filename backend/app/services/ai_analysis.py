@@ -401,11 +401,26 @@ class AIAnalysisService:
 
         raw_text = ""
 
-        # Assemble system blocks. Tenant context first (most stable for prompt
-        # caching), customer brief second, analyst instructions last. If a
-        # system_prompt_override is provided (prompt-variant path), it replaces
-        # the analyst instructions block.
+        # Assemble system blocks. Order matters for prompt caching: Anthropic
+        # caches request prefixes, so the MOST stable content goes first to
+        # maximize hit rate across calls.
+        #
+        # Order (most-stable to least-stable):
+        #   1. Analyst instructions (system_prompt). Identical for every
+        #      analysis call platform-wide — highest hit rate.
+        #   2. Tenant context. Stable within a tenant, varies across tenants.
+        #   3. Customer brief. Varies per customer (lowest hit rate).
+        #
+        # Three cache breakpoints (well under Anthropic's max of 4). The user
+        # message (transcript) is not cached because it's unique per call.
         system_blocks: List[Dict[str, Any]] = []
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
         tenant_text = (
             None
             if tenant_context_block  # already appended to user message above
@@ -428,13 +443,6 @@ class AIAnalysisService:
                     "cache_control": {"type": "ephemeral"},
                 }
             )
-        system_blocks.append(
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        )
 
         # Tiered max_tokens: cheaper baseline for simple calls; full ceiling
         # for high-complexity main analysis or long inputs. Explicit overrides

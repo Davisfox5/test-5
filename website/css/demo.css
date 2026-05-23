@@ -1678,7 +1678,7 @@
 
 .channel-icon-svg.voice { background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); }
 .channel-icon-svg.email { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
-.channel-icon-svg.chat { background: rgba(139, 92, 246, 0.15); color: var(--secondary); }
+.channel-icon-svg.transcript { background: rgba(139, 92, 246, 0.15); color: var(--secondary); }
 
 /* Topic pills */
 .topic-pill {
