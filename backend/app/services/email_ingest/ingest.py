@@ -353,4 +353,20 @@ async def ingest_email(
     except Exception:  # pragma: no cover
         logger.exception("Failed to enqueue text pipeline; analysis deferred")
 
+    # Inbound emails get a parallel pass through the Action Plan
+    # matcher so a reply to a sent step lands a StepResponse + Call D
+    # extraction without waiting on the full analysis pipeline.
+    # Outbound emails skip this hook — they're tied to a step via the
+    # explicit POST /sent endpoint, not via the inbound matcher.
+    if email.direction == "inbound":
+        try:
+            from backend.app.tasks import action_plan_match_inbound_email
+
+            action_plan_match_inbound_email.delay(str(interaction.id))
+        except Exception:
+            logger.exception(
+                "Failed to enqueue action_plan_match_inbound_email "
+                "(non-fatal)"
+            )
+
     return interaction.id

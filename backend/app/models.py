@@ -92,6 +92,15 @@ class Tenant(Base):
     role_preview_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Per-tenant default domain for the Action Plan synthesizer. Drives
+    # which domain template (sales / customer_service / it_support /
+    # generic) governs candidate generation, tone, and customer-endpoint
+    # archetype. Per-user override via ``users.default_domain``; per-call
+    # override via triage when its domain_prediction confidence >= 0.8.
+    # Vocabulary pinned by CHECK constraint.
+    default_domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="generic", server_default="generic"
+    )
     # ── Plan + trial (Tier 1/2/3 customer-facing) ──────────
     # plan_tier: sandbox | starter | growth | enterprise
     plan_tier: Mapped[str] = mapped_column(String, nullable=False, default="sandbox", server_default="sandbox")
@@ -137,6 +146,13 @@ class User(Base):
             "preview_role IS NULL OR preview_role IN ('agent', 'manager', 'admin')",
             name="ck_users_preview_role",
         ),
+        # Per-user Action Plan domain override; NULL means inherit tenant
+        # default. Vocabulary matches ``tenants.default_domain``.
+        CheckConstraint(
+            "default_domain IS NULL OR default_domain IN "
+            "('sales', 'customer_service', 'it_support', 'generic')",
+            name="ck_users_default_domain",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -165,6 +181,12 @@ class User(Base):
     # When non-NULL, the user was suspended for a system reason (e.g. tier_downgrade).
     suspension_reason: Mapped[Optional[str]] = mapped_column(String)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Per-user override of ``tenants.default_domain`` for Action Plan
+    # synthesis. NULL = inherit. We picked per-user over a Team table
+    # because a Team model would carry a lot of incidental scope for
+    # the single concern this addresses; if Teams ever land, the column
+    # moves to teams cleanly.
+    default_domain: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -646,6 +668,358 @@ class ActionItem(Base):
     interaction: Mapped[Interaction] = relationship(back_populates="action_items")
 
 
+# ──────────────────────────────────────────────────────────
+# ACTION PLANS — the DAG-based successor to ActionItem.
+#
+# An Action Plan is the workflow synthesized for an interaction (or a
+# manually-created plan via Linda chat). It is a directed acyclic graph
+# of Action Steps that flow toward a customer-facing endpoint and,
+# optionally, post-completion steps (CRM writes, internal logging).
+# See backend/app/services/action_plan/ for synthesis + execution.
+#
+# ActionItem still exists; it is the legacy flat-list shape and is being
+# phased out as consumers migrate to plans. Both coexist during cutover.
+# ──────────────────────────────────────────────────────────
+
+
+class ActionPlan(Base):
+    __tablename__ = "action_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    # Plans usually attach to an interaction (one plan per interaction —
+    # enforced by the unique index). Manually-created plans (Linda chat,
+    # admin UI) leave this NULL.
+    interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    # Cached for plan list views so they don't have to join through interactions.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    # Short goal string — "Close Apex deal", "Resolve refund + retention", etc.
+    goal: Mapped[Optional[str]] = mapped_column(String)
+    # Which domain template generated the plan. Vocabulary pinned by CHECK.
+    domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="generic", server_default="generic"
+    )
+    # 'draft' | 'active' | 'completed' | 'abandoned'.
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
+    # The customer-facing endpoint step (hybrid policy: present if any
+    # customer-facing step exists, else NULL — plan still has steps).
+    # Not a hard FK to avoid a CASCADE cycle with action_steps.plan_id.
+    customer_endpoint_step_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    # Procedures retrieved at synthesis that drove this plan.
+    # Shape: [{doc_id, chunk_id, version, title, compliance_level}].
+    procedures_applied: Mapped[list] = mapped_column(JSONB, default=list)
+    # CRM data snapshot at synthesis time (per-provider dict).
+    external_context_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Bumped when a re-plan happens (goal edit, domain switch, etc.).
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    manually_created: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    steps: Mapped[List["ActionStep"]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        order_by="ActionStep.created_at",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "domain IN ('sales', 'customer_service', 'it_support', 'generic')",
+            name="ck_action_plans_domain",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'completed', 'abandoned')",
+            name="ck_action_plans_status",
+        ),
+        Index("ix_action_plans_tenant_status", "tenant_id", "status"),
+    )
+
+
+class ActionStep(Base):
+    __tablename__ = "action_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    assigned_to: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    # ── Core content (kept close to legacy ActionItem fields) ──
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    # One-sentence "what this achieves" — feeds Call C as the step intent.
+    intent: Mapped[Optional[str]] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
+    # 'email' | 'phone_call' | 'meeting' | 'document_send' | 'research'
+    # | 'system_write' | 'note'. The artifact shape itself is determined
+    # by what Call C produces; this is informational meta.
+    recommended_channel: Mapped[Optional[str]] = mapped_column(String(32))
+    channel_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    # [{name, role, side: 'customer'|'vendor', source: ...}]
+    participants: Mapped[list] = mapped_column(JSONB, default=list)
+    prep_artifacts: Mapped[list] = mapped_column(JSONB, default=list)
+    implicit_signal: Mapped[Optional[str]] = mapped_column(Text)
+
+    # ── State machine ──
+    # 'blocked' | 'ready' | 'in_progress' | 'awaiting_response' | 'done'
+    # | 'skipped' | 'deleted'. The engine transitions these.
+    state: Mapped[str] = mapped_column(
+        String, nullable=False, default="ready", server_default="ready"
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    skipped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # ── Graph structure ──
+    # Array of step ids this step depends on. The engine derives readiness
+    # from this + each upstream's state.
+    depends_on: Mapped[list] = mapped_column(JSONB, default=list)
+    # [{slot_key, description, required: bool, filled_by_step_id,
+    #   filled_value, filled_at}] — declared at synthesis; filled at runtime.
+    input_slots: Mapped[list] = mapped_column(JSONB, default=list)
+    # [{slot_key, description, type}] — what this step is expected to produce.
+    output_schema: Mapped[list] = mapped_column(JSONB, default=list)
+    # {slot_key: value} — what was actually produced (filled by Call D
+    # from inbound emails / notes, or by the agent's manual override).
+    output_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # ── KB grounding ──
+    # {doc_id, chunk_id, version, snippet, compliance_level} or NULL when
+    # the step is AI-suggested (no procedure backed it).
+    kb_source: Mapped[Optional[dict]] = mapped_column(JSONB)
+    # Denormalized from kb_source for fast filter / sort.
+    # 'must' | 'should' | 'may' or NULL for AI-suggested.
+    compliance_level: Mapped[Optional[str]] = mapped_column(String(8))
+
+    # 'preparation' | 'customer_endpoint' | 'post_completion'.
+    role_in_plan: Mapped[str] = mapped_column(
+        String(20), default="preparation", server_default="preparation"
+    )
+
+    # ── Integration target (system_write steps) ──
+    # When set, the step writes to an external system. Provider must be in
+    # the tenant's connected Integration rows or the step would not have
+    # been synthesized (capability gate enforced at retrieval time).
+    target_integration: Mapped[Optional[str]] = mapped_column(String(32))
+    integration_operation: Mapped[Optional[str]] = mapped_column(String(64))
+
+    # ── Artifact freshness / regen scheduling ──
+    artifact_version: Mapped[int] = mapped_column(Integer, default=0)
+    artifact_stale: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    # When set, the regen scheduler waits until this timestamp before
+    # firing the next regeneration (30s debounce after the most recent
+    # upstream slot fill). NULL = no pending regen.
+    regen_debounce_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    feedback_score: Mapped[int] = mapped_column(Integer, default=0)
+    calendar_event_id: Mapped[Optional[str]] = mapped_column(String)
+    # Free-form reason logged when the agent skips a step.
+    skip_reason: Mapped[Optional[str]] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    plan: Mapped[ActionPlan] = relationship(back_populates="steps")
+    artifacts: Mapped[List["StepArtifact"]] = relationship(
+        back_populates="step",
+        cascade="all, delete-orphan",
+        order_by="StepArtifact.version",
+    )
+    responses: Mapped[List["StepResponse"]] = relationship(
+        back_populates="step",
+        cascade="all, delete-orphan",
+        order_by="StepResponse.received_at",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('blocked', 'ready', 'in_progress', 'awaiting_response', "
+            "'done', 'skipped', 'deleted')",
+            name="ck_action_steps_state",
+        ),
+        CheckConstraint(
+            "role_in_plan IN ('preparation', 'customer_endpoint', 'post_completion')",
+            name="ck_action_steps_role_in_plan",
+        ),
+        CheckConstraint(
+            "compliance_level IS NULL OR compliance_level IN ('must', 'should', 'may')",
+            name="ck_action_steps_compliance_level",
+        ),
+        Index("ix_action_steps_plan_state", "plan_id", "state"),
+        Index("ix_action_steps_tenant_assigned", "tenant_id", "assigned_to"),
+        Index("ix_action_steps_regen_due", "regen_debounce_until"),
+    )
+
+
+class StepArtifact(Base):
+    """Versioned drafts produced by Call C for a step.
+
+    Append-only — every regeneration creates a new row. The latest version
+    (max ``version`` per ``step_id``) is the active artifact. Older rows
+    let the agent diff "what I had vs what the AI just regenerated."
+    """
+
+    __tablename__ = "step_artifacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    step_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_steps.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 'email' | 'script' | 'research' | 'meeting' | 'system_write_payload' | 'note'.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Discriminated payload by kind. Examples:
+    #   email   -> {subject, body, cc, bcc, unfilled_slots}
+    #   script  -> {opening_line, bullets, closing_line, unfilled_slots}
+    #   research-> {starting_points: [{url_or_source, why}], key_questions, unfilled_slots}
+    #   meeting -> {agenda, proposed_times, pre_read, unfilled_slots}
+    #   system_write_payload -> {integration, operation, payload, unfilled_slots}
+    #   note    -> {body, unfilled_slots}
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # 'haiku' | 'sonnet' — the Anthropic tier that rendered this version,
+    # for cost auditing and quality A/B analysis.
+    model_tier: Mapped[Optional[str]] = mapped_column(String(16))
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    step: Mapped[ActionStep] = relationship(back_populates="artifacts")
+
+    __table_args__ = (
+        UniqueConstraint("step_id", "version", name="uq_step_artifact_version"),
+        Index("ix_step_artifacts_step_version", "step_id", "version"),
+    )
+
+
+class StepResponse(Base):
+    """Anything that fulfills (or partially fulfills) a step.
+
+    Created when an inbound email matches a step via RFC 822 References,
+    when an agent adds a manual note, or when a step is manually marked
+    done. ``extracted_data`` carries the Call D extraction; the engine
+    flows those values into downstream input_slots.
+    """
+
+    __tablename__ = "step_responses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    step_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_steps.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    # 'inbound_email' | 'manual_note' | 'auto_mark_done' | 'outbound_email_sent'.
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    # FK-by-id (not declared FK) to email_messages to keep the schemas
+    # weakly coupled — the email_ingest table lives in a separate concern.
+    email_message_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    # Outbound provider_message_id from EmailSend, set when source=
+    # 'outbound_email_sent' so we can match an inbound reply later.
+    outbound_message_id: Mapped[Optional[str]] = mapped_column(String)
+    note_text: Mapped[Optional[str]] = mapped_column(Text)
+    # Call D output — extracted slot values from the source content.
+    extracted_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Per-slot reason when extraction couldn't fill a slot.
+    unfilled_reasons: Mapped[dict] = mapped_column(JSONB, default=dict)
+    extraction_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    # {slot_key: verbatim_snippet} — supports the UI "what the AI based the
+    # extraction on" affordance.
+    source_quotes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # Set when the agent edits extracted values after the auto-apply.
+    agent_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    step: Mapped[ActionStep] = relationship(back_populates="responses")
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('inbound_email', 'manual_note', 'auto_mark_done', "
+            "'outbound_email_sent')",
+            name="ck_step_responses_source",
+        ),
+        Index("ix_step_responses_step_received", "step_id", "received_at"),
+        Index(
+            "ix_step_responses_outbound_msg",
+            "outbound_message_id",
+        ),
+    )
+
+
+class KBIntegrationGap(Base):
+    """Procedures that reference integrations the tenant has not connected.
+
+    Populated by the Document Orchestrator whenever it extracts a
+    ``procedure`` chunk whose required_integrations include a provider
+    not currently connected. Cleared (or re-evaluated) when an
+    integration is added or removed. Drives the admin
+    "KB-integration alignment" report.
+    """
+
+    __tablename__ = "kb_integration_gaps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("kb_chunks.id", ondelete="CASCADE")
+    )
+    doc_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("kb_documents.id", ondelete="CASCADE")
+    )
+    procedure_title: Mapped[Optional[str]] = mapped_column(String)
+    required_provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation: Mapped[Optional[str]] = mapped_column(String(64))
+    # 'must' | 'should' | 'may' — copied from the procedure.
+    compliance_level: Mapped[str] = mapped_column(
+        String(8), default="should", server_default="should"
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chunk_id", "required_provider", "operation",
+            name="uq_kb_integration_gap",
+        ),
+        Index("ix_kb_integration_gaps_tenant_provider", "tenant_id", "required_provider"),
+    )
+
+
 class CategoryTaxonomy(Base):
     """Per-tenant canonical category set for action items.
 
@@ -1056,9 +1430,42 @@ class KBChunk(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[Optional[int]] = mapped_column(Integer)
     content_hash: Mapped[Optional[str]] = mapped_column(String)
+    # ── Document Orchestrator output ──
+    # The orchestrator pass at ingest classifies each span of a document
+    # into one of these kinds and extracts structured metadata. Default
+    # 'context' on rows written before the orchestrator existed.
+    # Vocabulary: 'procedure' | 'policy' | 'escalation_path' | 'template'
+    # | 'context' | 'faq' | 'glossary' | 'contact_directory'.
+    kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="context", server_default="context"
+    )
+    # Kind-specific structured fields. For 'procedure':
+    #   {triggers: [str], required_steps: [{title, description, output_slots: [...]}],
+    #    required_integrations: [{provider, operation, when}],
+    #    applies_when: str, compliance_level: 'must'|'should'|'may'}
+    # For 'policy': {rule, scope, exceptions, compliance_level}
+    # For 'escalation_path': {trigger, target_role_or_team, urgency, prerequisites}
+    # For 'template': {template_name, applies_to, body, variables}
+    # For 'faq': {question, answer, applies_to}
+    # For 'glossary': {term, definition}
+    # For 'contact_directory': {entries: [{name, role, when_to_loop_in}]}
+    # Empty dict for 'context' or when orchestrator yields none.
+    extracted_metadata: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # Orchestrator's confidence in the classification (0..1). Spans with
+    # confidence < 0.5 land as kind='context' regardless of the model's
+    # initial pick and are surfaced to an admin review queue.
+    classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    # Source span in the original document (character offsets). Lets the
+    # admin UI show the orchestrator's pick in situ.
+    source_span_start: Mapped[Optional[int]] = mapped_column(Integer)
+    source_span_end: Mapped[Optional[int]] = mapped_column(Integer)
     # pgvector column is added by the migration (sqlalchemy doesn't ship a vector type).
     # We access it via raw SQL in PgVectorStore.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_kb_chunks_tenant_kind", "tenant_id", "kind"),
+    )
 
 
 class PinnedKBCard(Base):

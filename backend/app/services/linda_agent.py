@@ -182,15 +182,63 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["target", "fields"],
         },
     },
+    {
+        "name": "propose_action_plan",
+        "description": (
+            "Propose creating a 1-step Action Plan. Use this when the user "
+            "asks Linda to set up a single follow-up task (rather than a "
+            "multi-step workflow synthesized from a call). The user "
+            "confirms from the UI to materialize the plan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "interaction_id": {
+                    "type": "string",
+                    "description": "Related interaction UUID, if any (optional).",
+                },
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "intent": {
+                    "type": "string",
+                    "description": "One-sentence statement of what this step achieves.",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": (
+                        "email | phone_call | meeting | document_send | "
+                        "research | note. Defaults to 'note' when omitted."
+                    ),
+                },
+                "domain": {
+                    "type": "string",
+                    "description": (
+                        "sales | customer_service | it_support | generic. "
+                        "Defaults to the tenant or per-team default."
+                    ),
+                },
+                "assignee_email": {"type": "string"},
+                "due_date": {"type": "string", "description": "ISO date."},
+                "priority": {"type": "string", "description": "high | medium | low"},
+            },
+            "required": ["title"],
+        },
+    },
 ]
 
 READ_TOOLS = {"search_interactions", "get_action_items", "get_interaction_detail"}
-DRAFT_TOOLS = {"propose_action_item", "propose_email_draft", "propose_crm_update"}
+DRAFT_TOOLS = {
+    "propose_action_item",
+    "propose_email_draft",
+    "propose_crm_update",
+    "propose_action_plan",
+}
 
 DRAFT_KIND_BY_TOOL = {
     "propose_action_item": "action_item",
     "propose_email_draft": "email_draft",
     "propose_crm_update": "crm_update",
+    "propose_action_plan": "action_plan",
 }
 
 

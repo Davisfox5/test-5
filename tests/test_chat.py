@@ -139,7 +139,15 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
     names = {t["name"] for t in TOOLS}
     assert names == READ_TOOLS | DRAFT_TOOLS
     assert READ_TOOLS == {"search_interactions", "get_action_items", "get_interaction_detail"}
-    assert DRAFT_TOOLS == {"propose_action_item", "propose_email_draft", "propose_crm_update"}
+    assert DRAFT_TOOLS == {
+        "propose_action_item",
+        "propose_email_draft",
+        "propose_crm_update",
+        # propose_action_plan creates a 1-step Action Plan via the chat
+        # endpoint's proposal-execution branch in api/chat.py. Mirrors the
+        # action-plans REST surface for Linda-initiated single-step plans.
+        "propose_action_plan",
+    }
     for tool in TOOLS:
         assert tool["input_schema"]["type"] == "object"
 

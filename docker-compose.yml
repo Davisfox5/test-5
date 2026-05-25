@@ -1,0 +1,37 @@
+# Local-dev infrastructure.
+#
+# Postgres is hosted on Neon for both dev and staging, so it lives
+# outside this file — keep DATABASE_URL pointing at your Neon branch.
+# This compose file is just Redis (Celery broker + SSE pub/sub +
+# rate-limiter) so a fresh `git clone` can run the worker without an
+# Upstash account.
+#
+# Usage:
+#   docker compose up -d redis      # start Redis on localhost:6379
+#   docker compose down             # stop
+#   docker compose logs -f redis    # tail
+#
+# Set REDIS_URL=redis://localhost:6379/0 in .env to point at this.
+# Staging uses Upstash; see docs/REDIS_SETUP.md.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: linda-redis-dev
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

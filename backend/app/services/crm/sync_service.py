@@ -465,3 +465,93 @@ async def _upsert_deal(
     merged_meta.update(deal.metadata or {})
     existing.metadata_json = merged_meta
     existing.last_synced_at = datetime.now(timezone.utc)
+
+
+# ──────────────────────────────────────────────────────────
+# Per-customer live refresh (Action Plan synthesizer hook)
+# ──────────────────────────────────────────────────────────
+
+
+async def refresh_customer_deals(
+    *,
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    provider: str,
+) -> int:
+    """Refresh CRM deal records for ONE customer + ONE provider.
+
+    Called from the Action Plan synthesizer's external_context layer
+    when the cached ``CrmDealRecord.last_synced_at`` is older than the
+    locked 15-minute freshness window. The full ``sync_crm_for_tenant``
+    pass is too heavy for a per-call hook (it walks every account); this
+    routine just streams the provider's deals and persists matches for
+    the target customer.
+
+    Failures are surfaced as exceptions so the caller can fall back to
+    the stale cache (the locked decision is: use stale if live fails).
+
+    Returns the number of deal rows touched.
+    """
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.tenant_id != tenant_id:
+        return 0
+
+    adapter = await _build_adapter(db, tenant_id, provider)
+    try:
+        # Existing customer external-id map for this provider, so we
+        # can match a streamed deal to the in-scope customer without
+        # re-syncing the whole account list.
+        existing_customer_rows = (
+            await db.execute(
+                select(Customer).where(
+                    Customer.tenant_id == tenant_id,
+                    Customer.id == customer_id,
+                )
+            )
+        ).scalars().all()
+        customer_ext_ids = set()
+        # External ids may live in ``metadata_`` under provider-scoped
+        # keys (e.g., metadata_['crm_external_ids']['hubspot']). Be
+        # permissive about shape — we only need a match set.
+        for cust in existing_customer_rows:
+            meta = cust.metadata_ or {}
+            ext_map = meta.get("crm_external_ids") if isinstance(meta, dict) else {}
+            if isinstance(ext_map, dict):
+                ext_id = ext_map.get(provider)
+                if ext_id:
+                    customer_ext_ids.add(str(ext_id))
+
+        # Customer-internal-id map shape expected by _upsert_deal.
+        customer_ext_to_internal: Dict[str, uuid.UUID] = {
+            ext: customer_id for ext in customer_ext_ids
+        }
+        # Contact map is left empty — we don't have a 1:1 contact in
+        # scope for this hook; _upsert_deal handles a missing contact
+        # cleanly.
+        contact_ext_to_internal: Dict[str, uuid.UUID] = {}
+
+        touched = 0
+        try:
+            async for deal in adapter.iter_deals():
+                if (
+                    deal.customer_external_id
+                    and deal.customer_external_id in customer_ext_ids
+                ):
+                    await _upsert_deal(
+                        db,
+                        tenant_id=tenant_id,
+                        provider=provider,
+                        deal=deal,
+                        customer_ext_to_internal=customer_ext_to_internal,
+                        contact_ext_to_internal=contact_ext_to_internal,
+                    )
+                    touched += 1
+        except CrmCapabilityMissing:
+            # Adapter doesn't pull deals (Pipedrive does, the others
+            # may not in stub form). Nothing to refresh; not an error.
+            return 0
+        await db.flush()
+        return touched
+    finally:
+        await adapter.close()

@@ -299,4 +299,139 @@ async def _execute_proposal(
         # proposal and return — the scheduler/Celery worker can pick it up.
         return None
 
+    if proposal.kind == "action_plan":
+        # Linda-proposed Action Plan: one Plan + one Step + one v1
+        # artifact. Pipeline-synthesized plans (Step 14a in tasks.py)
+        # are the multi-step path; this is the lightweight "Linda
+        # creates a single follow-up" path. Both write to the same
+        # tables so the canvas renders them identically.
+        from backend.app.models import (
+            ActionPlan,
+            ActionStep,
+            StepArtifact,
+        )
+        from backend.app.services.action_plan.domains import REGISTRY as DOMAIN_REGISTRY
+
+        interaction_id = payload.get("interaction_id")
+        try:
+            interaction_uuid = (
+                uuid.UUID(interaction_id) if interaction_id else None
+            )
+        except ValueError:
+            interaction_uuid = None
+
+        assignee_id: Optional[uuid.UUID] = None
+        if payload.get("assignee_email"):
+            assignee_id = (
+                await db.execute(
+                    select(User.id).where(
+                        User.tenant_id == tenant.id,
+                        User.email == payload["assignee_email"],
+                    )
+                )
+            ).scalar_one_or_none()
+
+        due: Optional[date] = None
+        if payload.get("due_date"):
+            try:
+                due = date.fromisoformat(payload["due_date"])
+            except ValueError:
+                due = None
+
+        domain = payload.get("domain")
+        if domain not in DOMAIN_REGISTRY:
+            domain = tenant.default_domain or "generic"
+
+        channel = payload.get("channel") or "note"
+        # Map channel -> artifact kind, matching the synthesizer's mapping.
+        artifact_kind = {
+            "email": "email",
+            "phone_call": "script",
+            "meeting": "meeting",
+            "document_send": "email",
+            "research": "research",
+            "system_write": "system_write_payload",
+            "note": "note",
+        }.get(channel, "note")
+
+        title = payload["title"]
+        description = payload.get("description")
+        intent = payload.get("intent") or description or title
+
+        plan = ActionPlan(
+            tenant_id=tenant.id,
+            interaction_id=interaction_uuid,
+            goal=title[:200],
+            domain=domain,
+            status="active",
+            manually_created=True,
+            procedures_applied=[],
+            external_context_snapshot={},
+        )
+        db.add(plan)
+        await db.flush()
+
+        step = ActionStep(
+            plan_id=plan.id,
+            tenant_id=tenant.id,
+            assigned_to=assignee_id,
+            title=title[:255],
+            description=description,
+            intent=intent,
+            priority=payload.get("priority", "medium"),
+            due_date=due,
+            recommended_channel=channel,
+            participants=[],
+            prep_artifacts=[],
+            state="ready",
+            depends_on=[],
+            input_slots=[],
+            output_schema=[],
+            output_data={},
+            role_in_plan="customer_endpoint",
+            artifact_version=1,
+            artifact_stale=False,
+        )
+        db.add(step)
+        await db.flush()
+        plan.customer_endpoint_step_id = step.id
+
+        # Lightweight placeholder artifact - the user can regenerate or
+        # edit from the UI. We don't call Call C here because the
+        # confirmation endpoint should stay snappy; the regen scheduler
+        # will refresh later if the step gets slot data.
+        placeholder_payload: dict
+        if artifact_kind == "email":
+            placeholder_payload = {
+                "subject": title,
+                "body": description or "(Add body here)",
+                "cc": [],
+                "bcc": [],
+                "unfilled_slots": [],
+            }
+        elif artifact_kind == "script":
+            placeholder_payload = {
+                "opening_line": "",
+                "bullets": [description or title],
+                "closing_line": "",
+                "unfilled_slots": [],
+            }
+        else:
+            placeholder_payload = {
+                "body": description or title,
+                "unfilled_slots": [],
+            }
+        db.add(
+            StepArtifact(
+                step_id=step.id,
+                tenant_id=tenant.id,
+                version=1,
+                kind=artifact_kind,
+                payload=placeholder_payload,
+                model_tier=None,
+            )
+        )
+        await db.flush()
+        return plan.id
+
     raise HTTPException(status_code=422, detail=f"unknown proposal kind: {proposal.kind}")
