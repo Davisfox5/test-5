@@ -30,7 +30,7 @@ cutover so the existing pipeline + Linda agent + API endpoints
 continue to work. Removal lands in a later migration once consumers
 have moved to action_plans / action_steps.
 
-Revision ID: ap_001_action_plans_kb_orchestrator
+Revision ID: ap_001_action_plans
 Revises: tnt_001_role_preview_enabled
 Create Date: 2026-05-25
 """
@@ -43,7 +43,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
-revision: str = "ap_001_action_plans_kb_orchestrator"
+revision: str = "ap_001_action_plans"
 down_revision: Union[str, None] = "tnt_001_role_preview_enabled"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
