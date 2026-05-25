@@ -1466,3 +1466,124 @@ async def classifier_status(
         return Phase4StatusResponse(tenant_id=tenant.id, rows=rows)
     finally:
         session.close()
+
+
+# ──────────────────────────────────────────────────────────
+# KB-integration alignment report
+# ──────────────────────────────────────────────────────────
+# When the Document Orchestrator extracts a procedure whose
+# ``required_integrations`` reference a provider the tenant has NOT
+# connected, a row lands in ``kb_integration_gaps``. This screen lets
+# admins see those gaps so they can either connect the missing
+# integration or revise the procedure. The locked decision is that the
+# action plan synthesizer never recommends steps targeting unconnected
+# providers — the gaps surface here, not in agent flows.
+
+
+class KbIntegrationGapRow(BaseModel):
+    id: uuid.UUID
+    chunk_id: uuid.UUID
+    doc_id: uuid.UUID
+    doc_title: Optional[str]
+    procedure_title: Optional[str]
+    required_provider: str
+    operation: Optional[str]
+    compliance_level: str
+    detected_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class KbIntegrationGapsResponse(BaseModel):
+    items: List[KbIntegrationGapRow]
+    total: int
+    # Provider-level rollup so the admin UI can render "3 HubSpot gaps"
+    # without re-aggregating client-side.
+    by_provider: Dict[str, int]
+
+
+@router.get(
+    "/admin/kb-integration-gaps",
+    response_model=KbIntegrationGapsResponse,
+)
+async def list_kb_integration_gaps(
+    provider: Optional[str] = Query(
+        None,
+        description="Filter to one provider (hubspot|salesforce|etc.).",
+    ),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    _: AuthPrincipal = Depends(require_role("admin")),
+):
+    """List procedure rows whose required_integrations reference
+    providers the tenant has not connected.
+
+    Drives the admin "KB-integration alignment" report. Sorted by most
+    severe (compliance='must') first, then most recent.
+    """
+    from backend.app.models import KBDocument, KBIntegrationGap
+
+    severity_rank = {"must": 0, "should": 1, "may": 2}
+
+    stmt = (
+        select(KBIntegrationGap, KBDocument.title)
+        .join(KBDocument, KBDocument.id == KBIntegrationGap.doc_id)
+        .where(KBIntegrationGap.tenant_id == tenant.id)
+        .order_by(KBIntegrationGap.detected_at.desc())
+    )
+    if provider:
+        stmt = stmt.where(KBIntegrationGap.required_provider == provider)
+
+    rows = (await db.execute(stmt)).all()
+    rows_sorted = sorted(
+        rows,
+        key=lambda r: (
+            severity_rank.get(r[0].compliance_level, 3),
+            -r[0].detected_at.timestamp(),
+        ),
+    )
+
+    items: List[KbIntegrationGapRow] = []
+    by_provider: Dict[str, int] = {}
+    for gap, doc_title in rows_sorted:
+        items.append(
+            KbIntegrationGapRow(
+                id=gap.id,
+                chunk_id=gap.chunk_id,
+                doc_id=gap.doc_id,
+                doc_title=doc_title,
+                procedure_title=gap.procedure_title,
+                required_provider=gap.required_provider,
+                operation=gap.operation,
+                compliance_level=gap.compliance_level,
+                detected_at=gap.detected_at,
+            )
+        )
+        by_provider[gap.required_provider] = (
+            by_provider.get(gap.required_provider, 0) + 1
+        )
+    return KbIntegrationGapsResponse(
+        items=items, total=len(items), by_provider=by_provider,
+    )
+
+
+@router.post(
+    "/admin/kb-integration-gaps/reevaluate", status_code=202,
+)
+async def reevaluate_kb_integration_gaps(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    _: AuthPrincipal = Depends(require_role("admin")),
+):
+    """Recompute ``kb_integration_gaps`` against the current Integration
+    set. Called automatically on integration connect/disconnect; this
+    manual trigger covers the "I just edited a procedure, recompute now"
+    admin case without a full KB re-ingest.
+
+    Returns the count cleared + added so admins can sanity-check.
+    """
+    from backend.app.services.kb.orchestrator import reevaluate_gaps
+
+    result = await reevaluate_gaps(db, tenant_id=tenant.id)
+    await db.commit()
+    return result

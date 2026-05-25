@@ -426,7 +426,9 @@ async def _upsert_integration(
     enc_access = encrypt_token(access_token)
     enc_refresh = encrypt_token(refresh_token)
 
+    is_new_provider = False
     if existing is None:
+        is_new_provider = True
         row = Integration(
             tenant_id=tenant_id,
             # NULL when the OAuth flow had no associated user — tenant-wide integration.
@@ -442,18 +444,37 @@ async def _upsert_integration(
         )
         db.add(row)
         await db.flush()
-        return row
+        result_row = row
+    else:
+        existing.access_token = enc_access
+        if enc_refresh:
+            existing.refresh_token = enc_refresh
+        existing.scopes = scopes
+        existing.expires_at = expires_at
+        if provider_config:
+            merged = dict(existing.provider_config or {})
+            merged.update(provider_config)
+            existing.provider_config = merged
+        result_row = existing
 
-    existing.access_token = enc_access
-    if enc_refresh:
-        existing.refresh_token = enc_refresh
-    existing.scopes = scopes
-    existing.expires_at = expires_at
-    if provider_config:
-        merged = dict(existing.provider_config or {})
-        merged.update(provider_config)
-        existing.provider_config = merged
-    return existing
+    # Locked: connecting a new integration auto-enables any previously
+    # gated procedures. We re-evaluate the gap table so the admin
+    # alignment report shrinks immediately and the action plan
+    # synthesizer's retrieval pass starts surfacing those procedures.
+    # Token refreshes (existing rows) don't change the connected-
+    # provider set, so we skip the re-eval there.
+    if is_new_provider:
+        try:
+            from backend.app.services.kb.orchestrator import reevaluate_gaps
+
+            await reevaluate_gaps(db, tenant_id=tenant_id)
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "kb_integration_gaps re-evaluation after connect failed "
+                "(non-fatal)"
+            )
+    return result_row
 
 
 # ── Endpoints ───────────────────────────────────────────
@@ -1121,3 +1142,18 @@ async def oauth_revoke(
             status_code=404, detail=f"No {provider} integration found"
         )
     await db.delete(integration)
+    await db.flush()
+    # Locked: when an integration is removed, any previously-actionable
+    # procedures that depended on it become gated again. Re-evaluate
+    # synchronously so the admin sees the gap report update immediately.
+    # Failure to re-evaluate must not block the revoke — log and move on.
+    try:
+        from backend.app.services.kb.orchestrator import reevaluate_gaps
+
+        await reevaluate_gaps(db, tenant_id=tenant.id)
+    except Exception:
+        import logging as _log
+        _log.getLogger(__name__).exception(
+            "kb_integration_gaps re-evaluation after revoke failed "
+            "(non-fatal)"
+        )

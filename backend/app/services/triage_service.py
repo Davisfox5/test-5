@@ -16,7 +16,12 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # Bumped manually whenever ``TRIAGE_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.triage_prompt_version``.
-TRIAGE_PROMPT_VERSION = "2026-05-05.phase-5a"
+TRIAGE_PROMPT_VERSION = "2026-05-25.action-plan-domain-classification"
+
+# Threshold above which a per-call domain prediction overrides the
+# team/tenant default. Locked at 0.8: only high-confidence
+# reclassifications flip the active template for a single call.
+DOMAIN_OVERRIDE_CONFIDENCE_THRESHOLD = 0.8
 
 TRIAGE_SYSTEM_PROMPT = (
     "You are an expert call analyst doing a fast first-pass triage on a "
@@ -28,7 +33,22 @@ TRIAGE_SYSTEM_PROMPT = (
     "person (\"The customer asked about renewal pricing.\", \"Routine "
     "check-in with no open issues.\")\n"
     "- sentiment_overall: one of 'positive', 'neutral', 'negative', 'mixed'\n"
-    "- topics: list of short topic labels mentioned in the call\n\n"
+    "- topics: list of short topic labels mentioned in the call\n"
+    "- domain_prediction: {domain, confidence} where domain is one of "
+    "'sales' | 'customer_service' | 'it_support' | 'generic' and "
+    "confidence is a float 0.0-1.0. This classifies which playbook the "
+    "downstream Action Plan synthesizer should use. Decision guide:\n"
+    "  * 'sales' - prospecting, demo, pricing, contract, renewal expansion, "
+    "competitive eval. Customer is evaluating buying or expanding.\n"
+    "  * 'customer_service' - post-sale support, refunds, billing disputes, "
+    "retention, account changes, complaint resolution.\n"
+    "  * 'it_support' - bugs, incidents, repro requests, integration "
+    "issues, performance problems, technical how-tos.\n"
+    "  * 'generic' - the call doesn't fit any of the above cleanly OR is "
+    "ambiguous. Use generic when uncertain rather than guessing.\n"
+    "  Set confidence to >= 0.8 only when the domain is unambiguous "
+    "(clear churn-and-refund call, clear demo, clear bug report). "
+    "Set 0.5-0.7 for partial signals. Set < 0.5 when guessing.\n\n"
     "Factors that increase complexity: multiple topics, escalation language, "
     "compliance/legal references, competitor mentions, churn signals, technical "
     "troubleshooting, emotional distress, multi-party involvement.\n\n"
@@ -121,6 +141,29 @@ class TriageService:
             result.setdefault("sentiment_overall", "neutral")
             result.setdefault("topics", [])
 
+            # Normalize the domain prediction. Defaults to generic with
+            # confidence 0.0 when the model didn't include it (older
+            # prompts) or returned a bad shape — the Action Plan
+            # synthesizer falls back to the team/tenant default in that
+            # case, exactly as if no prediction had been made.
+            dp = result.get("domain_prediction")
+            if not isinstance(dp, dict):
+                dp = {}
+            dp_domain = str(dp.get("domain") or "generic").strip()
+            if dp_domain not in {
+                "sales", "customer_service", "it_support", "generic",
+            }:
+                dp_domain = "generic"
+            try:
+                dp_conf = float(dp.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                dp_conf = 0.0
+            dp_conf = max(0.0, min(1.0, dp_conf))
+            result["domain_prediction"] = {
+                "domain": dp_domain,
+                "confidence": dp_conf,
+            }
+
             # Determine tier recommendation.
             score = float(result["complexity_score"])
             result["recommended_tier"] = "haiku" if score < 0.4 else "sonnet"
@@ -135,6 +178,7 @@ class TriageService:
                 "sentiment_overall": "neutral",
                 "topics": [],
                 "recommended_tier": "sonnet",
+                "domain_prediction": {"domain": "generic", "confidence": 0.0},
                 "error": str(exc),
             }
         except anthropic.APIError as exc:
@@ -145,5 +189,6 @@ class TriageService:
                 "sentiment_overall": "neutral",
                 "topics": [],
                 "recommended_tier": "sonnet",
+                "domain_prediction": {"domain": "generic", "confidence": 0.0},
                 "error": str(exc),
             }

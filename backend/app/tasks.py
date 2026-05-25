@@ -1367,6 +1367,75 @@ def _run_pipeline_impl(
         )
         session.add(action)
 
+    # ── Step 14a: Synthesize Action Plan (new DAG-based workflow) ────
+    # The Action Plan is the DAG-based successor to ActionItem. It runs
+    # alongside ActionItem during the cutover so consumers can migrate
+    # at their own pace; both surfaces stay populated for the same
+    # interaction. Per the locked failure-mode decision, plan synthesis
+    # never blocks the pipeline — on any error we log and continue;
+    # the user just sees the legacy action_items list until the next
+    # call goes through cleanly.
+    #
+    # The synthesizer wants an AsyncSession; the pipeline holds a sync
+    # one. We open a short-lived async session over the same database
+    # and commit its changes independently — they're orthogonal to the
+    # sync session's writes (different rows).
+    try:
+        from backend.app.db import async_session as _async_session_factory
+        from backend.app.services.action_plan.synthesizer import (
+            ActionPlanSynthesizer,
+            SynthesisFailedError,
+            SynthesisInputs,
+        )
+
+        # Flush sync-session writes so the async session sees a
+        # consistent Tenant / Interaction row (they're tracked by id
+        # via FK, so as long as the rows exist in the DB the async
+        # session can refer to them).
+        session.flush()
+
+        async def _run_plan_synthesis() -> None:
+            async with _async_session_factory() as async_db:
+                synthesizer = ActionPlanSynthesizer()
+                # Re-fetch the tenant + interaction from the async
+                # session so the ORM identity map is clean.
+                from backend.app.models import Interaction as _IxModel
+                from backend.app.models import Tenant as _TenantModel
+
+                async_tenant = await async_db.get(_TenantModel, tenant.id)
+                async_ix = await async_db.get(_IxModel, interaction.id)
+                if async_tenant is None or async_ix is None:
+                    return
+                try:
+                    txt = compressed_for_llm or ""
+                except NameError:
+                    txt = (async_ix.raw_text or "")
+                await synthesizer.synthesize(
+                    async_db,
+                    SynthesisInputs(
+                        tenant=async_tenant,
+                        interaction=async_ix,
+                        transcript_text=txt,
+                        triage=(triage_result if isinstance(triage_result, dict) else {}),
+                        customer_id=async_ix.customer_id,
+                        acting_user_id=async_ix.agent_id,
+                    ),
+                )
+                await async_db.commit()
+
+        _loop.run(_run_plan_synthesis())
+    except SynthesisFailedError as _plan_exc:  # type: ignore[name-defined]
+        logger.warning(
+            "Action plan synthesis failed for interaction %s (non-fatal): %s",
+            interaction.id, _plan_exc,
+        )
+    except Exception:
+        logger.exception(
+            "Action plan synthesis raised unexpectedly for interaction %s "
+            "(non-fatal); pipeline continues",
+            interaction.id,
+        )
+
     # ── Step 15: Insert interaction scores ───────────────────────────
     for sc in scorecard_results:
         score_row = InteractionScore(
@@ -3470,3 +3539,109 @@ def trial_expiry_daily() -> Dict[str, Any]:
         return emitted
 
     return asyncio.run(_runner())
+
+
+# ──────────────────────────────────────────────────────────
+# Action Plan: inbound email matcher (Celery task)
+# ──────────────────────────────────────────────────────────
+
+
+@celery_app.task(
+    name="action_plan_match_inbound_email", bind=True, max_retries=2,
+)
+def action_plan_match_inbound_email(
+    self,
+    interaction_id_str: str,
+) -> Optional[str]:
+    """For an inbound email Interaction, try to match it to an open
+    Action Step via RFC 822 References + run Call D extraction.
+
+    Returns the matched step_id (str) when one was found, None
+    otherwise. Failures here NEVER bubble: we log and move on so a
+    flaky LLM call doesn't kill email ingest.
+    """
+
+    async def _runner() -> Optional[str]:
+        from backend.app.db import async_session as _async_session_factory
+        from backend.app.models import ActionStep as _StepModel
+        from backend.app.models import Interaction as _IxModel
+        from backend.app.services.action_plan.engine import ActionPlanEngine
+        from backend.app.services.action_plan.extractor import (
+            ResponseExtractor,
+            match_inbound_email,
+        )
+
+        async with _async_session_factory() as db:
+            ix = await db.get(_IxModel, uuid.UUID(interaction_id_str))
+            if ix is None or ix.channel != "email" or ix.direction != "inbound":
+                return None
+            match = await match_inbound_email(
+                db,
+                tenant_id=ix.tenant_id,
+                in_reply_to=ix.in_reply_to,
+                references=list(ix.references or []),
+            )
+            if match.step_id is None or match.reason in {"no_match", "step_closed"}:
+                return None
+            step = await db.get(_StepModel, match.step_id)
+            if step is None:
+                return None
+            extractor = ResponseExtractor()
+            body = ix.raw_text or ""
+            extraction = await extractor.extract_for_step(
+                step=step,
+                source_label="inbound email",
+                source_content=body,
+            )
+            from backend.app.models import StepResponse as _RespModel
+            response = _RespModel(
+                step_id=step.id,
+                tenant_id=step.tenant_id,
+                source="inbound_email",
+                email_message_id=ix.id,
+                extracted_data=extraction.extracted,
+                source_quotes=extraction.source_quotes,
+                unfilled_reasons=extraction.unfilled_reasons,
+                extraction_confidence=extraction.confidence,
+            )
+            db.add(response)
+            await db.flush()
+            engine = ActionPlanEngine()
+            await engine.apply_response(db, step=step, response=response)
+            await db.commit()
+            return str(step.id)
+
+    try:
+        return asyncio.run(_runner())
+    except Exception:  # noqa: BLE001 - never let matching kill the task
+        logger.exception(
+            "action_plan_match_inbound_email failed for interaction %s "
+            "(non-fatal)",
+            interaction_id_str,
+        )
+        return None
+
+
+@celery_app.task(
+    name="action_plan_run_due_regenerations", bind=True,
+)
+def action_plan_run_due_regenerations(self) -> int:
+    """Beat-scheduled tick that runs Call C for every step whose
+    debounce timer has elapsed. Returns the count regenerated."""
+
+    async def _runner() -> int:
+        from backend.app.db import async_session as _async_session_factory
+        from backend.app.services.action_plan.engine import (
+            run_due_regenerations,
+        )
+
+        async with _async_session_factory() as db:
+            count = await run_due_regenerations(db, limit=100)
+            await db.commit()
+            return count
+
+    try:
+        return asyncio.run(_runner())
+    except Exception:
+        logger.exception("action_plan_run_due_regenerations failed (non-fatal)")
+        return 0
