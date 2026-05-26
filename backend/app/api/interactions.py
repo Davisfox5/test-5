@@ -87,6 +87,13 @@ class InteractionOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):  # type: ignore[override]
+        instance = super().model_validate(obj, *args, **kwargs)
+        if instance.channel == "chat":
+            instance.channel = "transcript"
+        return instance
+
 
 class InteractionDetail(InteractionOut):
     transcript: list
