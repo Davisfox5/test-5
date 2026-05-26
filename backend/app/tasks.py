@@ -64,7 +64,14 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    task_track_started=True,
+    # task_track_started was True historically — Celery wrote a STARTED
+    # state to the result backend on dequeue, then SUCCESS/FAILURE on
+    # completion. We never read STARTED anywhere (grep -r STARTED
+    # confirms zero callers in app code; only CRM/audiohook string
+    # literals match). Disabling halves task result-backend writes,
+    # which is the second-largest contributor to Redis command volume
+    # on Upstash's per-command billing.
+    task_track_started=False,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     # Expire task results after 1h. Without this, every Celery result
@@ -72,6 +79,39 @@ celery_app.conf.update(
     # over weeks. 1h is enough for in-flight chord aggregation and any
     # short-lived consumer (CI, admin tools) that wants to fetch a result.
     result_expires=3600,
+    # ── Redis broker tuning for per-command billing ──
+    # Celery's default Redis transport polls BRPOP with a ~1s block,
+    # which generates one command per worker per second even when the
+    # queues are completely idle (4 workers = 345K commands/day on
+    # staging baseline, ~70% of Upstash's free-tier 500K cap before
+    # any actual work).
+    # Raising the BRPOP block timeout to 30s drops that floor by 30x.
+    # Trade-off: task pickup latency on an empty queue can be up to
+    # 30s; with task_acks_late this only affects how quickly an
+    # already-running worker reaches for the *next* task, never how
+    # quickly an enqueued task starts running on an idle worker
+    # (LPUSH wakes any blocked BRPOP immediately).
+    # visibility_timeout is the existing default; we name it
+    # explicitly so it doesn't drift if Celery changes upstream.
+    broker_transport_options={
+        "socket_timeout": 30,
+        "socket_connect_timeout": 30,
+        "socket_keepalive": True,
+        "visibility_timeout": 3600,
+        # The poll/BRPOP block window. See comment above.
+        "polling_interval": 30.0,
+    },
+    redis_backend_transport_options={
+        "socket_timeout": 30,
+        "socket_connect_timeout": 30,
+        "socket_keepalive": True,
+    },
+    # mingle/gossip are worker-to-worker coordination over Redis
+    # pub/sub. On a single-worker fly process they're pure overhead
+    # (and they spike on every deploy). Disabling saves a startup
+    # pub/sub burst per machine restart.
+    worker_enable_remote_control=False,
+    worker_send_task_events=False,
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
         "tenant-insights-weekly": {
@@ -118,11 +158,15 @@ celery_app.conf.update(
             "task": "email_ingest_poll",
             "schedule": 900.0,  # 15 minutes
         },
-        # Sample Celery queue depths into Prometheus gauges every 30s
-        # so dashboards + alerts can see backpressure.
+        # Sample Celery queue depths into Prometheus gauges. Previously
+        # every 30s, which generated ~5.7K commands/day for a gauge
+        # nobody watches in real time. 5 min is plenty for backpressure
+        # alerts (a queue going from 0 to "spiking" is a multi-minute
+        # event in practice, not a per-second one) and drops the cost
+        # by 10x.
         "sample-queue-depth": {
             "task": "sample_queue_depth",
-            "schedule": 30.0,
+            "schedule": 300.0,
         },
         # Nightly GDPR-export backup per tenant — lands in the staging
         # bucket under backups/{tenant}/{timestamp}.ndjson.gz. Tenants
