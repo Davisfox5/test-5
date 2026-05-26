@@ -52,8 +52,18 @@ primary_region = "iad"
   api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=*"
   # Celery on shared-cpu-2x: I/O heavy work (Anthropic, Deepgram, S3,
   # Postgres) means concurrency higher than vCPU count is the right
-  # call. 4 keeps memory comfortable on the 4 GB VM.
-  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=4"
+  # call.
+  # Was 4; dropped to 2 because Celery's Redis transport polls each
+  # worker child process with a BRPOP that costs one command per
+  # iteration on Upstash. At concurrency=4 with polling_interval=30s
+  # (set in tasks.py), the idle baseline is ~12K commands/day. Pre-
+  # tuning it was ~345K/day. If staging traffic grows to where
+  # tasks queue behind one another regularly, raise back to 4 — the
+  # broker tuning means the cost-per-extra-worker is now ~3K/day, not
+  # ~86K/day.
+  # NOTE: also disabled mingle/gossip in tasks.py so adding workers
+  # doesn't fire pub/sub bursts on every deploy.
+  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2 --without-mingle --without-gossip"
   beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
   # SIPREC SRS — uses a *different image* from api/worker/beat. The
   # build/image directives below the [[vm]] blocks override the default
@@ -79,6 +89,19 @@ primary_region = "iad"
   policy    = "on-failure"
   retries   = 10
   processes = ["worker", "beat"]
+
+# STAGING-ONLY off-hours cost saver (manual, not in this file):
+# Celery workers can't use Fly's auto_stop_machines pattern — that's
+# HTTP-traffic-gated and a stopped worker means tasks pile up with
+# nothing to drain. For staging, where you're paying per-command on
+# Upstash, the practical savings is:
+#   fly scale count 0 --process-group worker --app linda-staging   # nightly
+#   fly scale count 1 --process-group worker --app linda-staging   # morning
+# Wrap in a GHA cron if you want it automated. Tasks enqueued while
+# workers are at count=0 wait on the broker queue until a worker
+# spins back up (Celery's task_acks_late + the broker's
+# visibility_timeout cover this safely).
+# Production should NOT do this — workers always on.
 
 [http_service]
   internal_port = 8000

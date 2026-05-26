@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 import uuid as _uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from threading import RLock
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +40,80 @@ logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 300  # 5 min — staleness window for tenant config
 _KEY_PREFIX = "tenant:cfg:v1:"
+
+# ── Process-local L1 cache in front of Redis (L2) ─────────────────────
+# Every uvicorn worker holds its own LRU. A 60s TTL means a tenant
+# that hits an api worker repeatedly within a minute does NOT hit
+# Redis at all — the L1 covers it. Cross-process invalidation still
+# works because the SQLAlchemy ``after_update`` listener fires in
+# whichever process did the write, and on the next request other
+# processes will see the stale L1 entry for up to 60s before it
+# expires. That bounded staleness is the same trade-off the L2 Redis
+# cache already accepted (its TTL is 300s).
+#
+# Why bother adding L1 when L2 exists: Upstash bills per command.
+# A single GET we don't issue is a command we don't pay for. With
+# even modest traffic the L1 absorbs ~90%+ of tenant-config reads.
+_L1_TTL_SECONDS = 60
+_L1_MAX_ENTRIES = 256
+# Allow disabling via env for diagnosing cache-staleness issues.
+_L1_ENABLED = os.environ.get("TENANT_CACHE_L1_DISABLED", "").lower() not in {
+    "1",
+    "true",
+    "yes",
+}
+
+# Map: tenant_id (str) -> (expires_at_unix, serialized_payload_dict).
+# We store the serialized dict rather than a Tenant instance so the L1
+# value is independent of SQLAlchemy session lifecycles and identity
+# maps (a cached Tenant pinned to a closed session would explode on
+# attribute access).
+_L1: "Dict[str, Tuple[float, Dict[str, Any]]]" = {}
+_L1_LOCK = RLock()
+
+
+def _l1_get(tenant_id: Any) -> Optional[Dict[str, Any]]:
+    if not _L1_ENABLED:
+        return None
+    key = str(tenant_id)
+    with _L1_LOCK:
+        entry = _L1.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at < time.time():
+            _L1.pop(key, None)
+            return None
+        return payload
+
+
+def _l1_set(tenant_id: Any, payload: Dict[str, Any]) -> None:
+    if not _L1_ENABLED:
+        return
+    key = str(tenant_id)
+    with _L1_LOCK:
+        # Cheap LRU-ish eviction: when over budget, drop expired entries
+        # first; if still over, drop the oldest expires_at.
+        if len(_L1) >= _L1_MAX_ENTRIES:
+            now = time.time()
+            stale_keys = [k for k, (exp, _) in _L1.items() if exp < now]
+            for k in stale_keys:
+                _L1.pop(k, None)
+            if len(_L1) >= _L1_MAX_ENTRIES:
+                # Drop a quarter of the entries, oldest first.
+                victims = sorted(_L1.items(), key=lambda kv: kv[1][0])[
+                    : max(1, _L1_MAX_ENTRIES // 4)
+                ]
+                for k, _ in victims:
+                    _L1.pop(k, None)
+        _L1[key] = (time.time() + _L1_TTL_SECONDS, payload)
+
+
+def _l1_invalidate(tenant_id: Any) -> None:
+    if not _L1_ENABLED:
+        return
+    with _L1_LOCK:
+        _L1.pop(str(tenant_id), None)
 
 
 # ── Redis access (best-effort) ────────────────────────────────────────────
@@ -117,6 +194,12 @@ def _deserialize(data: Dict[str, Any]) -> Tenant:
 
 
 def cache_get(tenant_id: Any) -> Optional[Tenant]:
+    # L1 first — process-local; never touches Redis on hit.
+    cached_payload = _l1_get(tenant_id)
+    if cached_payload is not None:
+        return _deserialize(cached_payload)
+
+    # L1 miss — fall through to L2 (Redis).
     r = _redis()
     if r is None:
         return None
@@ -124,13 +207,17 @@ def cache_get(tenant_id: Any) -> Optional[Tenant]:
         raw = r.get(_key(tenant_id))
         if not raw:
             return None
-        return _deserialize(json.loads(raw))
+        payload = json.loads(raw)
+        _l1_set(tenant_id, payload)
+        return _deserialize(payload)
     except Exception:
         logger.debug("tenant_cache get failed (non-fatal)", exc_info=True)
         return None
 
 
 def cache_set(tenant: Tenant) -> None:
+    payload = _serialize(tenant)
+    _l1_set(tenant.id, payload)
     r = _redis()
     if r is None:
         return
@@ -138,13 +225,14 @@ def cache_set(tenant: Tenant) -> None:
         r.setex(
             _key(tenant.id),
             _CACHE_TTL_SECONDS,
-            json.dumps(_serialize(tenant), default=str),
+            json.dumps(payload, default=str),
         )
     except Exception:
         logger.debug("tenant_cache set failed (non-fatal)", exc_info=True)
 
 
 def invalidate(tenant_id: Any) -> None:
+    _l1_invalidate(tenant_id)
     r = _redis()
     if r is None:
         return
