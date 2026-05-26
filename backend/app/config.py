@@ -72,7 +72,13 @@ class Settings(BaseSettings):
     # no extra infrastructure. Flip to "qdrant" after running a reindex once the
     # pgvector health signals start firing.
     VECTOR_BACKEND: Literal["pgvector", "qdrant"] = "pgvector"
-    QDRANT_URL: str = "http://localhost:6333"
+    # QDRANT_URL is intentionally an empty default rather than
+    # http://localhost:6333. The readiness probe at /api/v1/ready
+    # treats an empty URL as "not configured" and skips the connect
+    # attempt; the old localhost default caused the probe to fail on
+    # every pgvector-only deployment (no qdrant in the container).
+    # Set this to a real URL only when flipping VECTOR_BACKEND to "qdrant".
+    QDRANT_URL: str = ""
     QDRANT_API_KEY: str = ""
 
     # ── Embeddings (Voyage AI) ───────────────────────────
