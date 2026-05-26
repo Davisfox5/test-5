@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,12 +87,15 @@ class InteractionOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_validator("channel", mode="before")
     @classmethod
-    def model_validate(cls, obj, *args, **kwargs):  # type: ignore[override]
-        instance = super().model_validate(obj, *args, **kwargs)
-        if instance.channel == "chat":
-            instance.channel = "transcript"
-        return instance
+    def _alias_chat_to_transcript(cls, v):
+        # Legacy DB rows still store channel='chat'; canonicalize on read.
+        # field_validator fires in FastAPI's response-serialization path
+        # (where the previous model_validate override did not).
+        if v == "chat":
+            return "transcript"
+        return v
 
 
 class InteractionDetail(InteractionOut):

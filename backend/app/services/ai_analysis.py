@@ -289,6 +289,41 @@ ANALYSIS_SYSTEM_PROMPT = (
 )
 
 
+def _strip_dashes(obj: Any) -> None:
+    """Recursively replace em-dashes / en-dashes in string values with '. '.
+
+    The terse prompt instructs the model to never emit em-dashes, but a few
+    still leak through, especially when the model echoes verbatim customer
+    quotes that contained one in the source transcript. This is the
+    belt-and-suspenders pass: walk the parsed insights dict in place and
+    canonicalize the offending glyphs out of every string. The replacement
+    is '. ' (period + space) so sentence breaks read naturally; a leftover
+    double-space gets collapsed.
+    """
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, str):
+                obj[k] = _scrub_str(v)
+            else:
+                _strip_dashes(v)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, str):
+                obj[i] = _scrub_str(v)
+            else:
+                _strip_dashes(v)
+
+
+def _scrub_str(s: str) -> str:
+    if "—" not in s and "–" not in s:
+        return s
+    out = s.replace(" — ", ". ").replace("—", ". ").replace(" – ", ". ").replace("–", ". ")
+    # Collapse accidental double spaces created by the substitution.
+    while "  " in out:
+        out = out.replace("  ", " ")
+    return out.strip()
+
+
 def _format_transcript(
     segments: List[Dict[str, Any]],
     inline_tags: Optional[Dict[int, str]] = None,
@@ -531,6 +566,7 @@ class AIAnalysisService:
             cleaned = _strip_json_fences(raw_text)
             try:
                 result: Dict[str, Any] = json.loads(cleaned)
+                _strip_dashes(result)
                 result.update(stamp)
                 return result
             except json.JSONDecodeError as parse_exc:
@@ -548,6 +584,7 @@ class AIAnalysisService:
                     repaired = repair_json(cleaned, return_objects=True)
                     if isinstance(repaired, dict) and repaired:
                         repaired.setdefault("_recovered", True)
+                        _strip_dashes(repaired)
                         repaired.update(stamp)
                         return repaired
                 except Exception as repair_exc:
