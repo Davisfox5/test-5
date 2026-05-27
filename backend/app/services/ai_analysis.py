@@ -39,14 +39,16 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "2. Cite specific moments or short quotes. Use timestamps when "
     "useful.\n"
     "3. One short sentence per item. Hard caps below. Respect them.\n"
-    "4. NEVER use em-dashes (—) or en-dashes (–) anywhere in "
-    "your output. Zero. Not in summary, not in coaching, not in "
-    "snippets, not in JSON string values, not anywhere. Use periods, "
-    "colons, commas, semicolons, or parentheses instead. This is "
-    "non-negotiable. If your draft contains an em-dash or en-dash, "
-    "rewrite it before emitting.\n"
-    "5. Banned phrases and characters: em-dash (—), en-dash "
-    "(–), 'You did a great job', 'It's important to', "
+    "4. NEVER use em-dashes (—) or en-dashes (–) in your analysis "
+    "prose. Not in summary, key_moments, coaching, notable_snippets, "
+    "action_items, methodology next_question, email drafts, or any "
+    "other field you generate. Use periods, colons, commas, semicolons, "
+    "or parentheses instead. The ONLY exception is verbatim customer "
+    "quotes inside the customer_signals subtree and any 'quote' field: "
+    "if the speaker actually used an em-dash, keep it faithfully there. "
+    "Everywhere else, zero.\n"
+    "5. Banned phrases in analysis prose (em-dash and en-dash banned per "
+    "rule 4 above): 'You did a great job', 'It's important to', "
     "'Remember to', 'Going forward, consider', 'This is a common', "
     "'In conclusion', 'Overall', 'It's worth noting', 'Make sure to'. "
     "If you find yourself reaching for these, you're being too "
@@ -101,7 +103,9 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "underwriting review.'\n\n"
     "OUTPUT\n"
     "Return ONLY valid JSON (no markdown fences) with the schema "
-    "below. No em-dashes or en-dashes anywhere in any string value.\n\n"
+    "below. No em-dashes or en-dashes in analysis prose; verbatim "
+    "customer quotes (customer_signals subtree, 'quote' fields) "
+    "preserve speaker punctuation as-is.\n\n"
     + (
         "- summary: string. See length budget above.\n"
         "- sentiment_overall: 'positive' | 'neutral' | 'negative' | 'mixed'\n"
@@ -152,7 +156,8 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "competitor_mention_count}. Exact counts of grounded events.\n\n"
         "Keep the JSON schema exactly as specified. Ground every "
         "observation in evidence from the transcript. Never invent "
-        "quotes. No em-dashes or en-dashes in any string value."
+        "quotes. No em-dashes or en-dashes in analysis prose; verbatim "
+        "quotes preserve speaker punctuation."
     )
 )
 
@@ -289,19 +294,29 @@ ANALYSIS_SYSTEM_PROMPT = (
 )
 
 
-def _strip_dashes(obj: Any) -> None:
-    """Recursively replace em-dashes / en-dashes in string values with '. '.
+# Subtrees / keys whose values are verbatim customer quotes from the
+# transcript. Em-dashes inside these are preserved because they belong
+# to the customer's actual speech, not to our analysis prose.
+_VERBATIM_SUBTREES = {"customer_signals"}
+_VERBATIM_VALUE_KEYS = {"quote"}
 
-    The terse prompt instructs the model to never emit em-dashes, but a few
-    still leak through, especially when the model echoes verbatim customer
-    quotes that contained one in the source transcript. This is the
-    belt-and-suspenders pass: walk the parsed insights dict in place and
-    canonicalize the offending glyphs out of every string. The replacement
-    is '. ' (period + space) so sentence breaks read naturally; a leftover
-    double-space gets collapsed.
+
+def _strip_dashes(obj: Any) -> None:
+    """Recursively scrub em-dashes / en-dashes from analysis prose only.
+
+    Field-aware: preserves em-dashes inside fields that hold verbatim
+    customer quotes from the source transcript (the ``customer_signals``
+    subtree, anything keyed ``quote``). Strips them from everything else.
+
+    The replacement is '. ' (period + space) so sentence breaks read
+    naturally; a leftover double-space gets collapsed.
     """
     if isinstance(obj, dict):
         for k, v in list(obj.items()):
+            if k in _VERBATIM_SUBTREES:
+                continue  # preserve entire subtree as verbatim
+            if k in _VERBATIM_VALUE_KEYS and isinstance(v, str):
+                continue  # preserve this single value as verbatim
             if isinstance(v, str):
                 obj[k] = _scrub_str(v)
             else:
