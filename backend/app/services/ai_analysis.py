@@ -27,7 +27,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-07.phase-2-paralinguistic"
+ANALYSIS_PROMPT_VERSION = "2026-05-27.objections-struct-and-server-counts"
 
 ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "You are a sales coach reviewing a call. Your voice is clipboard "
@@ -121,7 +121,14 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "'commitment_made', 'commitment_owed_by_customer', "
         "'compliance_remediation', 'deal_advance', 'escalation', "
         "'discovery_followup'), priority ('high'|'medium'|'low'), "
-        "due_date ('YYYY-MM-DD' or null; never guess), "
+        "due_date ('YYYY-MM-DD' or null). POPULATE this when the call "
+        "references any temporal anchor: a weekday ('Thursday', 'by "
+        "Friday'), a relative phrase ('tomorrow', 'next week', 'this "
+        "week'), or an explicit date. Resolve the weekday to the next "
+        "occurrence after the call date. Only emit null when the action "
+        "has no temporal anchor anywhere in the transcript. Don't "
+        "fabricate dates, but don't be so conservative you leave null "
+        "when the customer literally said 'Thursday'. "
         "next_step_type ('meeting'|'phone_call'|'email'|"
         "'document_send'|'crm_update'|'internal_loop_in'|'other'), "
         "recommended_channel ('email'|'phone_call'|'meeting'|"
@@ -144,16 +151,26 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "- inline_tags: list of {start_time, end_time, speaker, type "
         "('went_well'|'improvement'|'competitor'|'commitment'|"
         "'objection_resolved'|'objection_unresolved'|'tense'), "
-        "popup_text (≤20 words), suggested_action (≤20 words or null)}\n"
-        "- customer_signals: {commitment_language, change_talk, "
-        "sustain_talk, trust_signals, urgency_language, objections}. "
-        "Verbatim quotes only; empty lists are fine.\n"
+        "popup_text (≤20 words), suggested_action (≤20 words or null)}. "
+        "If the source transcript has no time markers (text-only "
+        "upload with no segment timestamps), emit start_time=null and "
+        "end_time=null instead of '00:00-00:00' placeholders.\n"
+        "- customer_signals: {commitment_language: list[str], "
+        "change_talk: list[str], sustain_talk: list[str], "
+        "trust_signals: list[str], urgency_language: list[str], "
+        "objections: list of {quote: str, resolved: bool}}. The five "
+        "list-of-string fields are verbatim customer quotes; objections "
+        "use the structured form so we can track which were handled. "
+        "Empty lists are fine.\n"
         "- methodology_coverage: {framework, covered, missing, "
         "next_question}. Default to {framework:'none', covered:[], "
         "missing:[], next_question:null} when no methodology applies.\n"
-        "- evidence: {objection_count, unresolved_objection_count, "
-        "commitment_count, discovery_questions, "
-        "competitor_mention_count}. Exact counts of grounded events.\n\n"
+        "- evidence: {discovery_questions: int}. Just emit "
+        "discovery_questions (the rep's open questions that produced new "
+        "information). The other counts (objection_count, "
+        "unresolved_objection_count, commitment_count, "
+        "competitor_mention_count) are computed server-side from the "
+        "lists above so you don't need to emit them.\n\n"
         "Keep the JSON schema exactly as specified. Ground every "
         "observation in evidence from the transcript. Never invent "
         "quotes. No em-dashes or en-dashes in analysis prose; verbatim "
@@ -337,6 +354,75 @@ def _scrub_str(s: str) -> str:
     while "  " in out:
         out = out.replace("  ", " ")
     return out.strip()
+
+
+def _recompute_evidence(result: Dict[str, Any]) -> None:
+    """Replace model-emitted evidence counts with deterministic ones.
+
+    The prompt frames evidence.* as MEASUREMENTS, but in practice the
+    model was approximating: commitment_count off by one on multiple
+    rows vs the actual length of customer_signals.commitment_language,
+    unresolved_objection_count drifting from objections[].resolved.
+    Count the lists ourselves so the numbers match exactly.
+
+    ``discovery_questions`` is the one count we still trust the model
+    on, because there is no corresponding list to derive it from.
+    """
+    cs = result.get("customer_signals") or {}
+    ev = result.get("evidence")
+    if not isinstance(ev, dict):
+        ev = {}
+        result["evidence"] = ev
+
+    objs = cs.get("objections") or []
+    ev["objection_count"] = len(objs)
+    # Structured objections are dicts with ``resolved: bool``; legacy
+    # rows that came back as bare strings are conservatively counted
+    # as unresolved (we have no signal otherwise).
+    ev["unresolved_objection_count"] = sum(
+        1
+        for o in objs
+        if (isinstance(o, dict) and o.get("resolved") is False)
+        or isinstance(o, str)
+    )
+    ev["commitment_count"] = len(cs.get("commitment_language") or [])
+    ev["competitor_mention_count"] = len(result.get("competitor_mentions") or [])
+    # discovery_questions: preserve the model's emission, default to 0.
+    ev.setdefault("discovery_questions", 0)
+
+
+# Placeholder timestamp values the model emits when the source transcript
+# has no real segment timestamps. The frontend renders inline overlays
+# anchored to these times; bogus zeros pin every tag to the start of the
+# call, which is worse than just hiding them.
+_ZERO_TIMESTAMPS = {"00:00", "0:00", "00:00:00", "0:00:00", ""}
+
+
+def _scrub_zero_timestamps(result: Dict[str, Any]) -> None:
+    """Convert placeholder ``"00:00-00:00"`` timestamps to None.
+
+    Applies to per-moment fields the UI uses to anchor overlays
+    (inline_tags, notable_snippets, key_moments). Leaves real
+    timestamps alone. Only triggers when BOTH start and end are zero
+    on the same item; partial-zero anchors are kept (a snippet from
+    the very start of a call genuinely begins at 00:00).
+    """
+    for field in ("inline_tags", "notable_snippets", "key_moments"):
+        items = result.get(field)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            start_zero = str(item.get("start_time", "")).strip() in _ZERO_TIMESTAMPS
+            end_zero = str(item.get("end_time", "")).strip() in _ZERO_TIMESTAMPS
+            if start_zero and end_zero:
+                item["start_time"] = None
+                item["end_time"] = None
+            # ``key_moments`` also has a ``time`` shorthand field.
+            if field == "key_moments":
+                if str(item.get("time", "")).strip() in _ZERO_TIMESTAMPS:
+                    item["time"] = None
 
 
 def _format_transcript(
@@ -582,6 +668,8 @@ class AIAnalysisService:
             try:
                 result: Dict[str, Any] = json.loads(cleaned)
                 _strip_dashes(result)
+                _recompute_evidence(result)
+                _scrub_zero_timestamps(result)
                 result.update(stamp)
                 return result
             except json.JSONDecodeError as parse_exc:
@@ -600,6 +688,8 @@ class AIAnalysisService:
                     if isinstance(repaired, dict) and repaired:
                         repaired.setdefault("_recovered", True)
                         _strip_dashes(repaired)
+                        _recompute_evidence(repaired)
+                        _scrub_zero_timestamps(repaired)
                         repaired.update(stamp)
                         return repaired
                 except Exception as repair_exc:
