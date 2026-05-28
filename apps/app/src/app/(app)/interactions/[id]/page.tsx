@@ -19,10 +19,13 @@ import {
 import {
     useFollowUpDraft,
     useSendFollowUp,
+    useRegenerateFollowUpDraft,
+    useDiscardFollowUpDraft,
     type EmailSendOut,
 } from "@/lib/communications";
 import { useOAuthStatus } from "@/lib/oauth";
 import { type ActionItem } from "@/lib/action-items";
+import { useActionPlans } from "@/lib/action-plans";
 import { ActionItemCard } from "@/components/action-item/action-item-card";
 import { MethodologyScorecard } from "@/components/methodology/methodology-scorecard";
 import { CallDynamicsChart } from "@/components/call-dynamics/call-dynamics-chart";
@@ -353,9 +356,17 @@ export default function InteractionDetailPage() {
                         trajectory={i.insights?.sentiment_trajectory}
                         keyMoments={i.insights?.key_moments}
                         durationSeconds={i.duration_seconds}
+                        onSeek={(seconds) => {
+                            // Jump to the transcript tab and scroll to the
+                            // closest turn. The transcript renderer reads
+                            // the ``#t=<seconds>`` hash on mount to pick
+                            // a target.
+                            setTab("transcript");
+                            window.location.hash = `t=${seconds}`;
+                        }}
                     />
 
-                    <TopicChips topics={i.insights?.topics} />
+                    <TopicChips topics={i.insights?.topics} interactionId={i.id} />
 
                     <ActionItemsForInteraction interactionId={i.id} />
 
@@ -367,6 +378,7 @@ export default function InteractionDetailPage() {
                 <section className="rounded-lg border border-border bg-bg-card">
                     <div className="border-b border-border px-5 py-3">
                         <h3 className="text-sm font-semibold">Transcript</h3>
+                        <TranscriptTimestampHint turns={i.transcript} channel={i.channel} />
                     </div>
                     <div className="max-h-[75vh] overflow-y-auto px-5 py-4">
                         {i.status === "processing" ? (
@@ -441,6 +453,32 @@ export default function InteractionDetailPage() {
                 )}
             </section>
         </div>
+    );
+}
+
+/**
+ * Render a one-liner above the transcript when every turn shows "0:00".
+ * That happens on uploaded text transcripts which never carried real
+ * segment timestamps. Without a hint, reps read "0:00 0:00 0:00..." and
+ * assume something's broken.
+ */
+function TranscriptTimestampHint({
+    turns,
+    channel,
+}: {
+    turns: TranscriptTurn[] | null | undefined;
+    channel: string;
+}) {
+    if (!turns || turns.length < 2) return null;
+    const allZero = turns.every((t) => {
+        const tm = String((t as { time?: string; start_time?: string }).time ?? (t as { start_time?: string }).start_time ?? "").trim();
+        return tm === "" || tm === "0:00" || tm === "00:00";
+    });
+    if (!allZero) return null;
+    return (
+        <p className="mt-1 text-xs text-text-subtle">
+            Timestamps show 0:00 because this {channel === "transcript" ? "transcript was uploaded as text" : "source had no segment timing"}. Linda preserves turn order but can&apos;t anchor to a clock.
+        </p>
     );
 }
 
@@ -763,9 +801,35 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
         }
     }
 
-    function handleRegenerate() {
-        setHydrated(false);
-        draft.refetch();
+    const regen = useRegenerateFollowUpDraft(interactionId);
+    const discard = useDiscardFollowUpDraft(interactionId);
+
+    async function handleRegenerate() {
+        try {
+            await regen.mutateAsync();
+            setHydrated(false);
+            // The hook invalidates the draft query; useEffect picks
+            // up the new data and hydrates the form fields.
+        } catch (err) {
+            window.alert(`Regenerate failed: ${(err as Error).message}`);
+        }
+    }
+
+    async function handleDiscard() {
+        const ok = window.confirm(
+            "Discard the saved AI draft for this interaction? This removes the stored draft so it won't reappear on next visit.",
+        );
+        if (!ok) return;
+        try {
+            await discard.mutateAsync();
+            setHydrated(false);
+            setSubject("");
+            setBody("");
+            setRecipients([""]);
+            setCollapsed(true);
+        } catch (err) {
+            window.alert(`Discard failed: ${(err as Error).message}`);
+        }
     }
 
     return (
@@ -786,22 +850,34 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
                     <button
                         type="button"
                         onClick={handleRegenerate}
-                        disabled={draft.isFetching}
+                        disabled={regen.isPending || discard.isPending}
                         className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary disabled:opacity-50"
                     >
-                        {draft.isFetching ? "Regenerating…" : "Regenerate"}
+                        {regen.isPending ? "Regenerating…" : "Regenerate"}
                     </button>
                     <button
                         type="button"
-                        onClick={() => setCollapsed(true)}
-                        className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary"
+                        onClick={handleDiscard}
+                        disabled={discard.isPending || regen.isPending}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-bg-secondary disabled:opacity-50"
                     >
-                        Discard draft
+                        {discard.isPending ? "Discarding…" : "Discard draft"}
                     </button>
                 </div>
             </div>
 
-            {!hasAnyProvider ? (
+            {/* Provider connection status — surfaces whether the rep can
+                actually click Send before they spend time on the body. */}
+            {hasAnyProvider ? (
+                <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-accent-emerald/10 px-2 py-0.5 text-[11px] text-accent-emerald">
+                    <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-accent-emerald" />
+                    {hasGoogle && hasMicrosoft
+                        ? "Gmail and Outlook connected"
+                        : hasGoogle
+                          ? "Gmail connected"
+                          : "Outlook connected"}
+                </div>
+            ) : (
                 <div className="mt-4 rounded-md border border-accent-amber/40 bg-accent-amber/10 p-3 text-xs text-text-muted">
                     No Gmail or Outlook integration is connected for this
                     tenant.{" "}
@@ -813,7 +889,7 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
                     </Link>{" "}
                     to send this follow-up.
                 </div>
-            ) : null}
+            )}
 
             <div className="mt-4 space-y-3">
                 <label className="block text-sm">
@@ -1046,10 +1122,11 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
 
 function ActionItemsForInteraction({ interactionId }: { interactionId: string }) {
     const api = useApi();
+    const plans = useActionPlans({ interactionId });
     const items = useQuery({
         queryKey: ["action-items", "by-interaction", interactionId],
         queryFn: async () => {
-            // No /interactions/{id}/action-items endpoint — pull a wide
+            // No /interactions/{id}/action-items endpoint. Pull a wide
             // window from /action-items and filter client-side. Fine for
             // a single-call detail page; switch to a server filter if
             // tenants ever generate >200 items per call.
@@ -1060,27 +1137,115 @@ function ActionItemsForInteraction({ interactionId }: { interactionId: string })
         },
     });
 
+    const planList = plans.data?.items ?? [];
+    const hasPlans = planList.length > 0;
+
     return (
-        <section className="rounded-lg border border-border bg-bg-card p-5">
-            <h3 className="text-sm font-semibold">Action items</h3>
-            {items.isLoading ? (
-                <p className="mt-3 text-sm text-text-subtle">Loading…</p>
-            ) : items.error ? (
-                <p className="mt-3 text-sm text-accent-rose">
-                    Couldn&apos;t load action items.
-                </p>
-            ) : items.data && items.data.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                    {items.data.map((it) => (
-                        <ActionItemCard key={it.id} item={it} />
-                    ))}
-                </div>
-            ) : (
-                <p className="mt-3 text-sm text-text-subtle">
-                    No action items pulled from this interaction yet.
-                </p>
+        <div className="space-y-4">
+            {hasPlans && (
+                <section className="rounded-lg border border-border bg-bg-card p-5">
+                    <div className="flex items-baseline justify-between">
+                        <h3 className="text-sm font-semibold">Action plan</h3>
+                        <span className="text-xs text-text-subtle">
+                            {planList.length === 1
+                                ? "1 plan"
+                                : `${planList.length} plans`}
+                            {" · "}grouped into ordered steps
+                        </span>
+                    </div>
+                    <div className="mt-3 space-y-4">
+                        {planList.map((plan) => (
+                            <PlanSummary key={plan.id} plan={plan} />
+                        ))}
+                    </div>
+                </section>
             )}
-        </section>
+            <section className="rounded-lg border border-border bg-bg-card p-5">
+                <h3 className="text-sm font-semibold">
+                    {hasPlans ? "Individual action items" : "Action items"}
+                </h3>
+                {hasPlans && (
+                    <p className="mt-1 text-xs text-text-subtle">
+                        Standalone items not assigned to a plan above.
+                    </p>
+                )}
+                {items.isLoading ? (
+                    <p className="mt-3 text-sm text-text-subtle">Loading…</p>
+                ) : items.error ? (
+                    <p className="mt-3 text-sm text-accent-rose">
+                        Couldn&apos;t load action items.
+                    </p>
+                ) : items.data && items.data.length > 0 ? (
+                    <div className="mt-3 space-y-2">
+                        {items.data.map((it) => (
+                            <ActionItemCard key={it.id} item={it} />
+                        ))}
+                    </div>
+                ) : (
+                    <p className="mt-3 text-sm text-text-subtle">
+                        No standalone action items for this interaction.
+                    </p>
+                )}
+            </section>
+        </div>
+    );
+}
+
+function PlanSummary({ plan }: { plan: import("@/lib/action-plans").ActionPlan }) {
+    const steps = plan.steps ?? [];
+    const total = steps.length;
+    const done = steps.filter((s) => s.state === "done").length;
+    const ready = steps.filter((s) => s.state === "ready" || s.state === "in_progress").length;
+    return (
+        <article className="rounded-md border border-border-light bg-bg-secondary p-3">
+            <header className="flex items-baseline justify-between gap-3">
+                <Link
+                    href={`/action-plans/${plan.id}`}
+                    className="font-medium text-text hover:underline"
+                >
+                    {plan.goal || "Untitled plan"}
+                </Link>
+                <span className="text-xs text-text-muted">
+                    {done}/{total} done{ready ? `, ${ready} ready` : ""}
+                </span>
+            </header>
+            <ol className="mt-2 space-y-1 text-xs">
+                {steps.slice(0, 8).map((step, i) => (
+                    <li key={step.id} className="flex items-start gap-2">
+                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-border bg-bg-card text-[10px] text-text-muted">
+                            {i + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                            <span
+                                className={`truncate ${
+                                    step.state === "done"
+                                        ? "text-text-subtle line-through"
+                                        : "text-text"
+                                }`}
+                            >
+                                {step.title}
+                            </span>
+                            {step.recommended_channel && (
+                                <span className="ml-2 text-text-subtle">
+                                    {step.recommended_channel.replace(/_/g, " ")}
+                                </span>
+                            )}
+                        </div>
+                    </li>
+                ))}
+                {steps.length > 8 && (
+                    <li className="text-text-subtle">
+                        +{steps.length - 8} more.{" "}
+                        <Link
+                            href={`/action-plans/${plan.id}`}
+                            className="text-primary hover:underline"
+                        >
+                            Open plan
+                        </Link>
+                    </li>
+                )}
+            </ol>
+        </article>
     );
 }
 

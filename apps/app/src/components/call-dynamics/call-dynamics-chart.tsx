@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { SentimentTrajectoryPoint } from "@/lib/interactions";
+import { useContextDrawer } from "@/components/context-drawer/context-drawer";
 
 interface KeyMoment {
     time: string;
@@ -105,6 +106,7 @@ export function CallDynamicsChart({
     const [pinFilter, setPinFilter] = useState<
         Set<(typeof PIN_TYPES)[number]>
     >(() => new Set(PIN_TYPES));
+    const drawer = useContextDrawer();
 
     if (points.length === 0) {
         return null;
@@ -268,7 +270,21 @@ export function CallDynamicsChart({
                                     style={{ cursor: "pointer" }}
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        if (onSeek) onSeek(Math.round(t));
+                                        // Open a drawer with full details
+                                        // of every moment in this cluster.
+                                        // The rep can read the descriptions
+                                        // and then jump to the transcript
+                                        // from inside the drawer.
+                                        drawer.open({
+                                            title: `Moments at ${formatSeconds(t)}`,
+                                            body: (
+                                                <ClusterDrawerBody
+                                                    items={cluster.items}
+                                                    timeSeconds={t}
+                                                    onJump={onSeek}
+                                                />
+                                            ),
+                                        });
                                     }}
                                 >
                                     <title>
@@ -322,38 +338,59 @@ export function CallDynamicsChart({
                 </text>
             </svg>
             {keyMoments && keyMoments.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-1 text-xs">
-                    <span className="text-text-muted">Pins:</span>
-                    {PIN_TYPES.map((type) => {
-                        const active = pinFilter.has(type);
-                        return (
-                            <button
-                                key={type}
-                                type="button"
-                                title={PIN_DEFINITIONS[type]}
-                                onClick={() =>
-                                    setPinFilter((prev) => {
-                                        const next = new Set(prev);
-                                        if (next.has(type)) next.delete(type);
-                                        else next.add(type);
-                                        return next;
-                                    })
-                                }
-                                className={`rounded-full border px-2 py-0.5 capitalize transition-colors ${
-                                    active
-                                        ? "border-transparent text-white"
-                                        : "border-border bg-bg-secondary text-text-muted"
-                                }`}
-                                style={
-                                    active
-                                        ? { backgroundColor: PIN_COLORS[type] }
-                                        : undefined
-                                }
-                            >
-                                {type}
-                            </button>
-                        );
-                    })}
+                <div className="mt-2 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-1">
+                        <span className="text-text-muted">Filter:</span>
+                        {PIN_TYPES.map((type) => {
+                            const active = pinFilter.has(type);
+                            return (
+                                <button
+                                    key={type}
+                                    type="button"
+                                    title={PIN_DEFINITIONS[type]}
+                                    onClick={() =>
+                                        setPinFilter((prev) => {
+                                            const next = new Set(prev);
+                                            if (next.has(type)) next.delete(type);
+                                            else next.add(type);
+                                            return next;
+                                        })
+                                    }
+                                    className={`rounded-full border px-2 py-0.5 capitalize transition-colors ${
+                                        active
+                                            ? "border-transparent text-white"
+                                            : "border-border bg-bg-secondary text-text-muted"
+                                    }`}
+                                    style={
+                                        active
+                                            ? { backgroundColor: PIN_COLORS[type] }
+                                            : undefined
+                                    }
+                                >
+                                    {type}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {/* Visible legend so the rep can decode the colors
+                        without hovering each filter button. */}
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-text-muted sm:grid-cols-3">
+                        {PIN_TYPES.map((type) => (
+                            <div key={type} className="flex items-start gap-1.5">
+                                <span
+                                    aria-hidden
+                                    className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full"
+                                    style={{ backgroundColor: PIN_COLORS[type] }}
+                                />
+                                <span>
+                                    <span className="font-medium capitalize text-text">
+                                        {type}.
+                                    </span>{" "}
+                                    {PIN_DEFINITIONS[type]}
+                                </span>
+                            </div>
+                        ))}
+                    </dl>
                 </div>
             )}
             <p className="mt-1 text-xs text-text-subtle">
@@ -461,4 +498,71 @@ function clusterMoments(moments: KeyMoment[], windowSec: number): MomentCluster[
         }
     }
     return clusters;
+}
+
+/**
+ * Drawer body rendered when the rep clicks a chart pin (or cluster).
+ *
+ * Lists every moment in the cluster with its description and offers a
+ * "Jump to transcript at HH:MM" button so the rep can land on the
+ * source segment. Replaces the prior behavior where pin clicks just
+ * seek-fired with no detail.
+ */
+function ClusterDrawerBody({
+    items,
+    timeSeconds,
+    onJump,
+}: {
+    items: KeyMoment[];
+    timeSeconds: number;
+    onJump?: (seconds: number) => void;
+}) {
+    return (
+        <div className="space-y-3 text-sm text-text">
+            <p className="text-xs text-text-subtle">
+                {items.length === 1
+                    ? "One moment at "
+                    : `${items.length} moments grouped near `}
+                <span className="font-medium">{formatSeconds(timeSeconds)}</span>.
+            </p>
+            <ul className="space-y-2">
+                {items.map((m, i) => {
+                    const cat = pinCategory(m.type);
+                    return (
+                        <li
+                            key={i}
+                            className="rounded border border-border-light bg-bg-secondary p-2"
+                        >
+                            <div className="flex items-baseline justify-between gap-2">
+                                <span
+                                    className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide"
+                                    style={{ color: PIN_COLORS[cat] }}
+                                >
+                                    <span
+                                        aria-hidden
+                                        className="inline-block h-1.5 w-1.5 rounded-full"
+                                        style={{ backgroundColor: PIN_COLORS[cat] }}
+                                    />
+                                    {m.type}
+                                </span>
+                                <span className="text-[11px] text-text-subtle">
+                                    {m.start_time || m.time}
+                                </span>
+                            </div>
+                            <p className="mt-1 text-xs text-text">{m.description}</p>
+                        </li>
+                    );
+                })}
+            </ul>
+            {onJump && (
+                <button
+                    type="button"
+                    onClick={() => onJump(Math.round(timeSeconds))}
+                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-hover"
+                >
+                    Jump to transcript at {formatSeconds(timeSeconds)}
+                </button>
+            )}
+        </div>
+    );
 }

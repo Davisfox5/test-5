@@ -157,6 +157,54 @@ export function useSendFollowUp(interactionId: string | undefined) {
     });
 }
 
+/**
+ * Regenerate the follow-up email draft for an interaction.
+ *
+ * Hits the focused backend endpoint (one Sonnet call seeded with the
+ * existing summary + action items), then invalidates the draft query
+ * so the form re-hydrates with the new subject/body.
+ */
+export function useRegenerateFollowUpDraft(interactionId: string | undefined) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: () =>
+            api.post<FollowUpDraftOut>(
+                `/interactions/${interactionId}/follow-up-draft/regenerate`,
+                {},
+            ),
+        onSuccess: () => {
+            qc.invalidateQueries({
+                queryKey: ["follow-up-draft", interactionId],
+            });
+        },
+    });
+}
+
+/**
+ * Discard the saved follow-up draft for an interaction.
+ *
+ * Sends DELETE so the backend actually removes
+ * insights.follow_up_email_draft. The UI was previously just hiding
+ * the panel locally, which left the next visit re-rendering the same
+ * stale draft.
+ */
+export function useDiscardFollowUpDraft(interactionId: string | undefined) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: () =>
+            api.del<void>(
+                `/interactions/${interactionId}/follow-up-draft`,
+            ),
+        onSuccess: () => {
+            qc.invalidateQueries({
+                queryKey: ["follow-up-draft", interactionId],
+            });
+        },
+    });
+}
+
 export function useCommunicationsList(
     filters: CommunicationsListFilters = {},
 ) {

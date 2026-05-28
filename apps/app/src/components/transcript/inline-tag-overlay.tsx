@@ -55,6 +55,15 @@ export function findTagForTurn(
         const a = parseTimeToSeconds(tag.start_time);
         const b = parseTimeToSeconds(tag.end_time);
         if (Number.isNaN(a) || Number.isNaN(b)) return false;
+        // Skip placeholder tags emitted by older analyses (before the
+        // server-side null-scrub landed). When start AND end are both
+        // exactly 0, the tag has no real anchor and would falsely paint
+        // every turn at time 0 (which is every turn on a text-upload
+        // with no timestamps). New analyses emit null start_time and
+        // end_time in this case; parseTimeToSeconds(null)=NaN and the
+        // upstream NaN-check skips them. This guard handles the legacy
+        // rows.
+        if (a === 0 && b === 0) return false;
         return t >= a && t <= b;
     });
 }

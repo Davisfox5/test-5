@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
     type ActionItem,
     useUpdateActionItem,
@@ -88,14 +88,14 @@ function CompactRow({
                 {item.recommended_channel && (
                     <span
                         title={`Channel: ${item.recommended_channel}`}
-                        className="text-base"
+                        className="inline-flex items-center text-text-muted"
                         aria-hidden
                     >
                         {channelIcon}
                     </span>
                 )}
                 {item.due_date && <DueDatePill due={item.due_date} />}
-                <PriorityDot priority={item.priority} />
+                <ImportancePill priority={item.priority} dueDate={item.due_date ?? null} />
                 {isImplicit && (
                     <span
                         title="Includes a signal the rep may not have noticed during the call"
@@ -105,14 +105,20 @@ function CompactRow({
                         hidden signal
                     </span>
                 )}
-                <span
+                <svg
                     aria-hidden
-                    className={`text-text-subtle transition-transform ${
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className={`h-3.5 w-3.5 text-text-subtle transition-transform ${
                         expanded ? "rotate-90" : ""
                     }`}
                 >
-                    ›
-                </span>
+                    <polyline points="9 6 15 12 9 18" />
+                </svg>
             </button>
         </div>
     );
@@ -151,8 +157,8 @@ function ChannelBlock({ item }: { item: ActionItem }) {
             <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
                 Recommended channel
             </h4>
-            <p className="text-sm text-text">
-                <span className="mr-1" aria-hidden>
+            <p className="text-sm text-text flex items-center gap-2">
+                <span className="inline-flex items-center text-text-muted" aria-hidden>
                     {channelIconFor(item.recommended_channel)}
                 </span>
                 <span className="font-medium capitalize">
@@ -284,6 +290,17 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
     const [showReturn, setShowReturn] = useState(false);
     const [showReassign, setShowReassign] = useState(false);
     const [scheduleNote, setScheduleNote] = useState<string | null>(null);
+    const [scheduleIcs, setScheduleIcs] = useState<string | null>(null);
+    const [statusMsg, setStatusMsg] = useState<string | null>(null);
+    // Helper: show a transient success/error line under the action
+    // buttons. Auto-clears after 3.5s so the rep doesn't accumulate a
+    // stack of stale "Snoozed" / "Dismissed" notices.
+    function flashStatus(msg: string) {
+        setStatusMsg(msg);
+        window.setTimeout(() => {
+            setStatusMsg((current) => (current === msg ? null : current));
+        }, 3500);
+    }
 
     const isMeetingChannel =
         item.recommended_channel === "meeting" ||
@@ -300,17 +317,26 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                         type="button"
                         onClick={async () => {
                             setScheduleNote(null);
+                            setScheduleIcs(null);
                             const result = await schedule.mutateAsync({
                                 id: item.id,
                                 payload: {},
                             });
                             if (result.success) {
-                                setScheduleNote(
-                                    result.join_url
-                                        ? `Created. Join: ${result.join_url}`
-                                        : (result.note ??
-                                          "Created (calendar invite ready)."),
-                                );
+                                if (result.join_url) {
+                                    setScheduleNote(`Created. Join: ${result.join_url}`);
+                                } else {
+                                    setScheduleNote(
+                                        result.note ??
+                                            "Created (calendar invite ready).",
+                                    );
+                                }
+                                // Stub fallback: surface the ICS payload
+                                // so the rep can copy/paste it into their
+                                // calendar manually.
+                                if (result.ics_payload) {
+                                    setScheduleIcs(result.ics_payload);
+                                }
                             } else {
                                 setScheduleNote(
                                     `Failed: ${result.error ?? "unknown error"}`,
@@ -395,15 +421,57 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                     {scheduleNote}
                 </div>
             )}
+            {scheduleIcs && (
+                <div className="rounded border border-border-light bg-bg-secondary p-2 text-xs">
+                    <div className="mb-1 flex items-baseline justify-between gap-2">
+                        <span className="text-text-muted">
+                            ICS calendar invite (no live provider connected)
+                        </span>
+                        <button
+                            type="button"
+                            onClick={async () => {
+                                try {
+                                    await navigator.clipboard.writeText(scheduleIcs);
+                                    flashStatus("ICS copied to clipboard.");
+                                } catch {
+                                    flashStatus(
+                                        "Clipboard blocked. Select + copy manually below.",
+                                    );
+                                }
+                            }}
+                            className="rounded border border-border bg-card px-2 py-0.5 text-xs hover:bg-card-hover"
+                        >
+                            Copy ICS
+                        </button>
+                    </div>
+                    <textarea
+                        readOnly
+                        value={scheduleIcs}
+                        rows={6}
+                        className="w-full rounded border border-border bg-bg-card px-2 py-1 font-mono text-[11px] text-text"
+                    />
+                </div>
+            )}
+            {statusMsg && (
+                <div className="rounded border border-accent-emerald/40 bg-accent-emerald/10 px-2 py-1 text-xs text-text">
+                    {statusMsg}
+                </div>
+            )}
 
             {showSnooze && (
                 <SnoozeForm
                     onCancel={() => setShowSnooze(false)}
                     onSubmit={(iso) => {
-                        update.mutate({
-                            id: item.id,
-                            patch: { snoozed_until: iso },
-                        });
+                        update.mutate(
+                            { id: item.id, patch: { snoozed_until: iso } },
+                            {
+                                onSuccess: () => {
+                                    const when = new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+                                    flashStatus(`Snoozed until ${when}.`);
+                                },
+                                onError: (err) => flashStatus(`Snooze failed: ${(err as Error).message}`),
+                            },
+                        );
                         setShowSnooze(false);
                     }}
                 />
@@ -412,10 +480,13 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                 <DismissForm
                     onCancel={() => setShowDismiss(false)}
                     onSubmit={(reason) => {
-                        update.mutate({
-                            id: item.id,
-                            patch: { status: "dismissed", dismiss_reason: reason },
-                        });
+                        update.mutate(
+                            { id: item.id, patch: { status: "dismissed", dismiss_reason: reason } },
+                            {
+                                onSuccess: () => flashStatus("Dismissed."),
+                                onError: (err) => flashStatus(`Dismiss failed: ${(err as Error).message}`),
+                            },
+                        );
                         setShowDismiss(false);
                     }}
                 />
@@ -426,10 +497,16 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                     currentAssignee={item.assigned_to}
                     onCancel={() => setShowReassign(false)}
                     onSubmit={(userId) => {
-                        update.mutate({
-                            id: item.id,
-                            patch: { assigned_to: userId },
-                        });
+                        update.mutate(
+                            { id: item.id, patch: { assigned_to: userId } },
+                            {
+                                onSuccess: () => {
+                                    const u = users.find((x) => x.id === userId);
+                                    flashStatus(userId ? `Reassigned to ${u?.name || "teammate"}.` : "Unassigned.");
+                                },
+                                onError: (err) => flashStatus(`Reassign failed: ${(err as Error).message}`),
+                            },
+                        );
                         setShowReassign(false);
                     }}
                 />
@@ -438,7 +515,13 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                 <ReturnForm
                     onCancel={() => setShowReturn(false)}
                     onSubmit={(reason) => {
-                        returnItem.mutate({ id: item.id, reason });
+                        returnItem.mutate(
+                            { id: item.id, reason },
+                            {
+                                onSuccess: () => flashStatus("Returned to the source-call rep."),
+                                onError: (err) => flashStatus(`Return failed: ${(err as Error).message}`),
+                            },
+                        );
                         setShowReturn(false);
                     }}
                 />
@@ -672,18 +755,43 @@ function ReturnForm({
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function channelIconFor(channel: string | null): string {
+function channelIconFor(channel: string | null): ReactNode {
+    const cls = "h-3.5 w-3.5";
     switch (channel) {
         case "meeting":
-            return "🗓";
+            // calendar
+            return (
+                <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <rect x="3" y="4" width="18" height="18" rx="2" />
+                    <line x1="16" y1="2" x2="16" y2="6" />
+                    <line x1="8" y1="2" x2="8" y2="6" />
+                    <line x1="3" y1="10" x2="21" y2="10" />
+                </svg>
+            );
         case "phone_call":
-            return "📞";
+            return (
+                <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
+                </svg>
+            );
         case "email":
-            return "✉";
+            return (
+                <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <rect x="3" y="5" width="18" height="14" rx="2" />
+                    <polyline points="3 7 12 13 21 7" />
+                </svg>
+            );
         case "document_send":
-            return "📎";
+            return (
+                <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                </svg>
+            );
         default:
-            return "•";
+            return (
+                <span aria-hidden className="text-text-subtle">·</span>
+            );
     }
 }
 
@@ -707,19 +815,85 @@ function DueDatePill({ due }: { due: string }) {
     );
 }
 
-function PriorityDot({ priority }: { priority: string }) {
-    const color =
-        priority === "high"
-            ? "bg-accent-rose"
-            : priority === "low"
-                ? "bg-text-subtle"
-                : "bg-accent-amber";
+/**
+ * Importance pill — combines the model-emitted ``priority`` with the
+ * proximity of ``due_date`` to derive a four-level urgency the rep
+ * can actually prioritize on.
+ *
+ *   critical  = high + due within 48h, or any priority + overdue
+ *   high      = high + due within 1 week, or no due date with high priority
+ *   medium    = medium priority OR high priority with due_date > 1 week
+ *   low       = low priority
+ *
+ * Today the model marks ~everything ``high`` which leaves the rep no
+ * way to prioritize. Mixing in the deadline shape produces a much
+ * more useful ranking.
+ */
+function ImportancePill({
+    priority,
+    dueDate,
+}: {
+    priority: string;
+    dueDate: string | null;
+}) {
+    const now = Date.now();
+    let level: "critical" | "high" | "medium" | "low";
+    if (priority === "low") {
+        level = "low";
+    } else if (dueDate) {
+        const due = new Date(dueDate).getTime();
+        const hoursUntil = (due - now) / (1000 * 60 * 60);
+        if (hoursUntil < 0) {
+            level = "critical"; // overdue
+        } else if (priority === "high" && hoursUntil <= 48) {
+            level = "critical";
+        } else if (priority === "high" && hoursUntil <= 24 * 7) {
+            level = "high";
+        } else if (priority === "high") {
+            level = "medium"; // high priority but no urgency
+        } else {
+            // medium priority — escalate to high only if very near-term
+            level = hoursUntil <= 48 ? "high" : "medium";
+        }
+    } else {
+        level = priority === "high" ? "high" : "medium";
+    }
+
+    const { dot, label, hint } = {
+        critical: {
+            dot: "bg-accent-rose",
+            label: "Critical",
+            hint:
+                dueDate && new Date(dueDate).getTime() < now
+                    ? "Overdue."
+                    : "High priority and due within 48 hours.",
+        },
+        high: {
+            dot: "bg-accent-amber",
+            label: "High",
+            hint: "High priority. Due this week or near-term.",
+        },
+        medium: {
+            dot: "bg-accent-cyan",
+            label: "Medium",
+            hint: "Default priority. No tight deadline.",
+        },
+        low: {
+            dot: "bg-text-subtle",
+            label: "Low",
+            hint: "Nice-to-have. Reminder or non-urgent.",
+        },
+    }[level];
+
     return (
         <span
-            aria-label={`${priority} priority`}
-            title={`${priority} priority`}
-            className={`inline-block h-2 w-2 rounded-full ${color}`}
-        />
+            title={hint}
+            aria-label={`Importance: ${label.toLowerCase()}`}
+            className="inline-flex items-center gap-1 rounded bg-bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-text-muted"
+        >
+            <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
+            {label}
+        </span>
     );
 }
 
@@ -739,7 +913,10 @@ function FeedbackButtons({
                 onClick={() => onClick(true)}
                 className="rounded p-1 hover:bg-card-hover"
             >
-                ▲
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                    <path d="M7 10v12" />
+                    <path d="M15 5.88L14 12h5.5a2 2 0 0 1 1.95 2.43l-1.3 6A2 2 0 0 1 18.2 22H8a4 4 0 0 1-4-4v-7a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 3h0a3 3 0 0 1 3 3z" />
+                </svg>
             </button>
             <button
                 type="button"
@@ -747,7 +924,10 @@ function FeedbackButtons({
                 onClick={() => onClick(false)}
                 className="rounded p-1 hover:bg-card-hover"
             >
-                ▼
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                    <path d="M17 14V2" />
+                    <path d="M9 18.12L10 14H4.5a2 2 0 0 1-1.95-2.43l1.3-6A2 2 0 0 1 5.85 4H16a4 4 0 0 1 4 4v7a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 21h0a3 3 0 0 1-3-3z" />
+                </svg>
             </button>
         </div>
     );
