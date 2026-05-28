@@ -300,7 +300,7 @@ CALL_B_SYSTEM_PROMPT = (
     "step ('Confirm legal contact email') and let the slot wiring "
     "handle the data handoff. The text the rep sees must read "
     "naturally even if their plan is sorted by due date or the "
-    "preceding step was deleted.\n"\n"
+    "preceding step was deleted.\n"
     "  customer_endpoint_index: int | null,  // index in steps[] "
     "of the customer-facing endpoint. Null only when no candidate is "
     "customer-facing.\n"
