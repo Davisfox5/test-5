@@ -715,6 +715,76 @@ async def diag_deps(
     return out
 
 
+@router.post("/admin/diag/synthesize-plan/{interaction_id}")
+async def diag_synthesize_plan(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> Dict[str, Any]:
+    """Run ActionPlanSynthesizer on an existing interaction and return
+    either the resulting plan id + step count, OR the raw exception
+    type and traceback. Lets us debug why the post-analysis synthesis
+    quietly skipped a plan without trawling Fly logs.
+    """
+    import traceback
+    from sqlalchemy import select as _select
+    from backend.app.models import Interaction as _Ix
+    from backend.app.services.action_plan.synthesizer import (
+        ActionPlanSynthesizer,
+        SynthesisFailedError,
+        SynthesisInputs,
+    )
+
+    row = (
+        await db.execute(
+            _select(_Ix).where(
+                _Ix.id == interaction_id,
+                _Ix.tenant_id == principal.tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    triage = (row.insights or {}).get("triage_summary") or {}
+
+    try:
+        synth = ActionPlanSynthesizer()
+        result = await synth.synthesize(
+            db,
+            SynthesisInputs(
+                tenant=principal.tenant,
+                interaction=row,
+                transcript_text=(row.raw_text or "")[:60_000],
+                triage=triage if isinstance(triage, dict) else {},
+                customer_id=row.customer_id,
+                acting_user_id=row.agent_id,
+            ),
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "plan_id": str(result.plan_id),
+            "step_count": len(result.steps or []),
+            "chosen_domain": result.chosen_domain,
+            "domain_source": result.domain_source,
+        }
+    except SynthesisFailedError as exc:
+        return {
+            "ok": False,
+            "kind": "synthesis_failed",
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "kind": exc.__class__.__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+
 @router.get("/admin/diag/interaction/{interaction_id}")
 async def diag_interaction(
     interaction_id: uuid.UUID,
