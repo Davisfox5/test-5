@@ -308,6 +308,28 @@ class ActionPlanSynthesizer:
         db: AsyncSession,
         inputs: SynthesisInputs,
     ) -> SynthesisResult:
+        # action_plans.interaction_id has a UNIQUE constraint (one plan
+        # per interaction). On redrive we want the latest analysis to
+        # drive the plan, so delete any existing plan for this
+        # interaction before composing a fresh one. ``cascade="all,
+        # delete-orphan"`` on the ActionPlan→ActionStep relationship
+        # handles step rows. Manually-created plans (manually_created=
+        # True) are NOT auto-replaced — those represent rep-authored
+        # follow-ups that shouldn't get blown away by a re-run of AI
+        # analysis. Without this guard every redrive after the first
+        # one silently fails with a UniqueViolationError, the outer
+        # try/except in tasks.py swallows it, and the user sees no
+        # plan refresh despite a successful redrive.
+        from sqlalchemy import delete as _sql_delete
+        await db.execute(
+            _sql_delete(ActionPlan).where(
+                ActionPlan.interaction_id == inputs.interaction.id,
+                ActionPlan.tenant_id == inputs.tenant.id,
+                ActionPlan.manually_created == False,  # noqa: E712
+            )
+        )
+        await db.flush()
+
         domain, domain_source = await resolve_domain(
             db,
             tenant=inputs.tenant,
