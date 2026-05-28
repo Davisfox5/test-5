@@ -597,6 +597,13 @@ const PROVIDER_LABELS: Record<ProviderChoice, string> = {
 function FollowUpPanel({ interactionId }: { interactionId: string }) {
     const draft = useFollowUpDraft(interactionId);
     const send = useSendFollowUp(interactionId);
+    // CRITICAL: keep regen + discard hooks ABOVE every early return so
+    // the hook count stays constant. Calling them after the conditional
+    // returns below throws React error #310 (rendered more hooks than
+    // during previous render) when the panel transitions between its
+    // collapsed / lastSent / isLoading / error / normal states.
+    const regen = useRegenerateFollowUpDraft(interactionId);
+    const discard = useDiscardFollowUpDraft(interactionId);
     const oauth = useOAuthStatus();
     const sectionRef = useRef<HTMLElement | null>(null);
 
@@ -800,9 +807,6 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
             // surfaced inline below
         }
     }
-
-    const regen = useRegenerateFollowUpDraft(interactionId);
-    const discard = useDiscardFollowUpDraft(interactionId);
 
     async function handleRegenerate() {
         try {
