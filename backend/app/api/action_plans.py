@@ -126,6 +126,10 @@ class ActionStepOut(BaseModel):
     artifact_stale: bool
     regen_debounce_until: Optional[datetime]
     skip_reason: Optional[str]
+    # True when the synthesizer judged the step's outbound action
+    # (typically an email) requires a customer reply. Drives the
+    # post-Send transition: True → awaiting_response, False → done.
+    awaits_response: bool = False
     created_at: datetime
     # Computed surfaces
     latest_artifact: Optional[StepArtifactOut] = None
@@ -464,6 +468,130 @@ async def skip_step(
     return await _build_plan_out(db, plan)
 
 
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/restore",
+    response_model=ActionPlanOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def restore_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Undo a skip. Step returns to ready/blocked based on dep state."""
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+    engine = ActionPlanEngine()
+    affected = await engine.restore_step(db, step=step)
+    await db.commit()
+    await db.refresh(plan)
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.state_changed",
+        plan_id=plan_id, step_id=step_id,
+        extra={"new_state": "restored", "affected_step_ids": [str(s) for s in affected]},
+    )
+    return await _build_plan_out(db, plan)
+
+
+class StepEditIn(BaseModel):
+    """Inline edits the rep can make to a step. All fields optional; only
+    those provided are updated. Editing a step also writes a row to
+    ``StepFeedbackLog`` so the synthesizer can adapt this user's future
+    plans toward their preferred phrasing/channel/priority.
+    """
+    title: Optional[str] = None
+    description: Optional[str] = None
+    intent: Optional[str] = None
+    priority: Optional[str] = None  # 'high' | 'medium' | 'low'
+    due_date: Optional[str] = None  # YYYY-MM-DD; pass '' to clear
+    recommended_channel: Optional[str] = None
+    channel_reasoning: Optional[str] = None
+    awaits_response: Optional[bool] = None
+
+
+@router.patch(
+    "/action-plans/{plan_id}/steps/{step_id}",
+    response_model=ActionPlanOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def edit_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: StepEditIn,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Inline-edit a step. Writes a feedback log entry so the user's
+    future plans get adapted toward this edit's shape."""
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    before = {
+        "title": step.title,
+        "description": step.description,
+        "intent": step.intent,
+        "priority": step.priority,
+        "due_date": step.due_date.isoformat() if step.due_date else None,
+        "recommended_channel": step.recommended_channel,
+        "channel_reasoning": step.channel_reasoning,
+        "awaits_response": getattr(step, "awaits_response", None),
+    }
+    updates = body.model_dump(exclude_unset=True)
+    changed_keys = []
+    for k, v in updates.items():
+        if k == "due_date":
+            from datetime import date as _date
+            if v == "" or v is None:
+                step.due_date = None
+            else:
+                try:
+                    step.due_date = _date.fromisoformat(str(v))
+                except ValueError:
+                    raise HTTPException(400, "due_date must be YYYY-MM-DD or empty")
+            changed_keys.append(k)
+            continue
+        if hasattr(step, k):
+            setattr(step, k, v)
+            changed_keys.append(k)
+
+    after = {k: (step.due_date.isoformat() if k == "due_date" and step.due_date else getattr(step, k, None)) for k in before}
+
+    # Feedback log: persist what changed, scoped to the editing user.
+    if changed_keys and principal.user is not None:
+        try:
+            from backend.app.models import StepFeedbackLog
+            log = StepFeedbackLog(
+                tenant_id=tenant.id,
+                user_id=principal.user.id,
+                plan_id=plan_id,
+                step_id=step_id,
+                before=before,
+                after=after,
+                changed_keys=changed_keys,
+            )
+            db.add(log)
+        except Exception:  # noqa: BLE001
+            # Feedback logging is opportunistic. Never block an edit on
+            # the log row failing — the synthesizer can fall back to the
+            # canonical prompt if no feedback is available.
+            import logging as _logging
+            _logging.getLogger(__name__).exception("StepFeedbackLog insert failed")
+
+    await db.commit()
+    await db.refresh(plan)
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.edited",
+        plan_id=plan_id, step_id=step_id,
+        extra={"changed_keys": changed_keys},
+    )
+    return await _build_plan_out(db, plan)
+
+
 @router.delete(
     "/action-plans/{plan_id}/steps/{step_id}",
     response_model=ActionPlanOut,
@@ -619,7 +747,16 @@ async def record_sent(
     The frontend calls this after a successful send through the
     existing /emails endpoint. Records the provider_message_id so the
     inbound matcher can tie a future reply back via RFC 822 headers.
-    State moves from ready -> awaiting_response.
+
+    Next state depends on whether the synthesizer flagged this step
+    as awaiting a reply:
+      * ``step.awaits_response == True``  -> awaiting_response
+      * ``step.awaits_response == False`` -> done (fire-and-forget)
+
+    The synthesizer sets ``awaits_response`` per step based on whether
+    the drafted body actually asks the customer for something back.
+    Informational emails go straight to done so downstream steps
+    that depend on this one unblock immediately.
     """
     plan = await _load_plan_or_404(db, tenant, plan_id)
     step = await _load_step_or_404(db, tenant, plan_id, step_id)
@@ -630,15 +767,28 @@ async def record_sent(
         outbound_message_id=body.outbound_message_id,
     )
     db.add(response)
-    if step.state in {"ready", "blocked"}:
-        step.state = "awaiting_response"
-        step.started_at = datetime.utcnow()
+
+    new_state: str
+    if getattr(step, "awaits_response", False):
+        new_state = "awaiting_response"
+    else:
+        new_state = "done"
+
+    if step.state in {"ready", "blocked", "in_progress"}:
+        step.state = new_state
+        step.started_at = step.started_at or datetime.utcnow()
+        if new_state == "done":
+            step.completed_at = datetime.utcnow()
+            # Unblock downstream steps that depend on this one.
+            engine = ActionPlanEngine()
+            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+
     await db.commit()
     await db.refresh(plan)
     _emit_event(
         tenant=tenant, principal=principal,
         event="action_step.state_changed",
         plan_id=plan_id, step_id=step_id,
-        extra={"new_state": "awaiting_response"},
+        extra={"new_state": new_state},
     )
     return await _build_plan_out(db, plan)

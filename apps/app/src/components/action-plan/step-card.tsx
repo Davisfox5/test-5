@@ -6,8 +6,11 @@ import {
     ActionPlan,
     ActionStep,
     ActionStepState,
+    type StepEditPayload,
     useCompleteStep,
     useDeleteStep,
+    useEditStep,
+    useRestoreStep,
     useSkipStep,
 } from "@/lib/action-plans";
 import { NoteInput } from "./note-input";
@@ -72,6 +75,9 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     const complete = useCompleteStep(plan.id);
     const skip = useSkipStep(plan.id);
     const del = useDeleteStep(plan.id);
+    const restore = useRestoreStep(plan.id);
+    const edit = useEditStep(plan.id);
+    const [editing, setEditing] = useState(false);
     const isTerminal = ["done", "skipped", "deleted"].includes(step.state);
 
     return (
@@ -152,31 +158,61 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                             )}
                             <ParticipantsBlock step={step} />
                             <PrepArtifactsBlock step={step} />
-                            <InputSlotsBlock step={step} />
                             <ArtifactBlock step={step} />
                             <ResponseThread step={step} />
                             <NoteInput plan={plan} step={step} />
-                            {!isTerminal && (
-                                <div className="flex flex-wrap gap-2 pt-2">
+                            <div className="flex flex-wrap gap-2 pt-2">
+                                {!isTerminal && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                                            onClick={() => setEditing((v) => !v)}
+                                        >
+                                            {editing ? "Cancel edit" : "Edit"}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                                            onClick={() => skip.mutate({ stepId: step.id })}
+                                        >
+                                            Skip
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 dark:border-rose-700 dark:text-rose-200"
+                                            onClick={() => {
+                                                if (window.confirm("Delete this step? Downstream steps will be re-evaluated.")) {
+                                                    del.mutate({ stepId: step.id });
+                                                }
+                                            }}
+                                        >
+                                            Delete
+                                        </button>
+                                    </>
+                                )}
+                                {step.state === "skipped" && (
                                     <button
                                         type="button"
-                                        className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
-                                        onClick={() => skip.mutate({ stepId: step.id })}
+                                        className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                                        onClick={() => restore.mutate({ stepId: step.id })}
                                     >
-                                        Skip
+                                        Unskip
                                     </button>
-                                    <button
-                                        type="button"
-                                        className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 dark:border-rose-700 dark:text-rose-200"
-                                        onClick={() => {
-                                            if (window.confirm("Delete this step? Downstream steps will be re-evaluated.")) {
-                                                del.mutate({ stepId: step.id });
-                                            }
-                                        }}
-                                    >
-                                        Delete
-                                    </button>
-                                </div>
+                                )}
+                            </div>
+                            {editing && !isTerminal && (
+                                <EditStepForm
+                                    step={step}
+                                    onCancel={() => setEditing(false)}
+                                    onSave={(patch) => {
+                                        edit.mutate(
+                                            { stepId: step.id, patch },
+                                            { onSuccess: () => setEditing(false) },
+                                        );
+                                    }}
+                                    pending={edit.isPending}
+                                />
                             )}
                         </div>
                     )}
@@ -233,42 +269,23 @@ function PrepArtifactsBlock({ step }: { step: ActionStep }) {
     );
 }
 
-function InputSlotsBlock({ step }: { step: ActionStep }) {
-    if (!step.input_slots || step.input_slots.length === 0) return null;
-    return (
-        <div>
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Input slots
-            </h4>
-            <ul className="mt-1 space-y-1 text-xs">
-                {step.input_slots.map((slot, i) => (
-                    <li key={i}>
-                        <span className="font-mono">{slot.slot_key}</span>
-                        {": "}
-                        {slot.filled_value !== null && slot.filled_value !== undefined ? (
-                            <span className="text-emerald-700 dark:text-emerald-300">
-                                {typeof slot.filled_value === "string"
-                                    ? slot.filled_value
-                                    : JSON.stringify(slot.filled_value)}
-                            </span>
-                        ) : (
-                            <span className="text-slate-400 italic">unfilled</span>
-                        )}
-                    </li>
-                ))}
-            </ul>
-        </div>
-    );
-}
-
 function ArtifactBlock({ step }: { step: ActionStep }) {
     const a = step.latest_artifact;
     if (!a) return null;
     const payload = a.payload as Record<string, unknown>;
+    // Human heading per artifact kind. Internal metadata (kind code,
+    // version number, model tier) is no longer surfaced to the rep.
+    const heading = a.kind === "email"
+        ? "Email draft"
+        : a.kind === "script"
+          ? "Call script"
+          : a.kind === "system_write_payload"
+            ? "System update"
+            : "Draft";
     return (
         <div>
             <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Draft ({a.kind}, v{a.version}, {a.model_tier ?? "?"})
+                {heading}
             </h4>
             {a.kind === "email" || a.kind === "system_write_payload" ? (
                 <div className="mt-1 space-y-1 rounded border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700">
@@ -284,7 +301,7 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
                 </div>
             ) : a.kind === "script" ? (
                 <div className="mt-1 space-y-1 rounded border border-slate-200 p-2 text-xs dark:border-slate-700">
-                    {payload.opening_line ? <p>↦ {String(payload.opening_line)}</p> : null}
+                    {payload.opening_line ? <p>{String(payload.opening_line)}</p> : null}
                     {Array.isArray(payload.bullets) && (
                         <ul className="list-inside list-disc">
                             {(payload.bullets as unknown[]).map((b, i) => (
@@ -292,7 +309,7 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
                             ))}
                         </ul>
                     )}
-                    {payload.closing_line ? <p>↤ {String(payload.closing_line)}</p> : null}
+                    {payload.closing_line ? <p>{String(payload.closing_line)}</p> : null}
                 </div>
             ) : (
                 <pre className="mt-1 whitespace-pre-wrap rounded border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700">
@@ -300,5 +317,149 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
                 </pre>
             )}
         </div>
+    );
+}
+
+/**
+ * Inline editor for a step's user-facing fields.
+ *
+ * Pre-filled from the current step. Each save writes a row to
+ * step_feedback_logs on the backend so the synthesizer can adapt
+ * THIS user's future plans toward their preferred phrasing /
+ * channel / priority.
+ */
+function EditStepForm({
+    step,
+    onCancel,
+    onSave,
+    pending,
+}: {
+    step: ActionStep;
+    onCancel: () => void;
+    onSave: (patch: StepEditPayload) => void;
+    pending: boolean;
+}) {
+    const [title, setTitle] = useState(step.title);
+    const [description, setDescription] = useState(step.description ?? "");
+    const [priority, setPriority] = useState<"high" | "medium" | "low">(
+        (step.priority as "high" | "medium" | "low") || "medium",
+    );
+    const [dueDate, setDueDate] = useState<string>(
+        step.due_date ? String(step.due_date).slice(0, 10) : "",
+    );
+    const [channel, setChannel] = useState<string>(step.recommended_channel ?? "");
+
+    const channelOptions = [
+        { value: "", label: "(none)" },
+        { value: "email", label: "Email" },
+        { value: "phone_call", label: "Phone call" },
+        { value: "meeting", label: "Meeting" },
+        { value: "document_send", label: "Document send" },
+        { value: "research", label: "Research" },
+        { value: "system_write", label: "System update" },
+        { value: "note", label: "Note" },
+    ];
+
+    function handleSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        const patch: StepEditPayload = {};
+        if (title !== step.title) patch.title = title;
+        if (description !== (step.description ?? "")) patch.description = description;
+        if (priority !== step.priority) patch.priority = priority;
+        if (channel !== (step.recommended_channel ?? "")) {
+            patch.recommended_channel = channel || undefined;
+        }
+        const currentDue = step.due_date ? String(step.due_date).slice(0, 10) : "";
+        if (dueDate !== currentDue) {
+            patch.due_date = dueDate;
+        }
+        if (Object.keys(patch).length === 0) {
+            onCancel();
+            return;
+        }
+        onSave(patch);
+    }
+
+    return (
+        <form
+            onSubmit={handleSubmit}
+            className="space-y-2 rounded border border-slate-300 bg-slate-50 p-3 text-xs dark:border-slate-600 dark:bg-slate-900"
+        >
+            <label className="block">
+                <span className="text-text-subtle">Title</span>
+                <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800"
+                />
+            </label>
+            <label className="block">
+                <span className="text-text-subtle">Description</span>
+                <textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    rows={2}
+                    className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800"
+                />
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+                <label className="block">
+                    <span className="text-text-subtle">Priority</span>
+                    <select
+                        value={priority}
+                        onChange={(e) => setPriority(e.target.value as typeof priority)}
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800"
+                    >
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                    </select>
+                </label>
+                <label className="block">
+                    <span className="text-text-subtle">Channel</span>
+                    <select
+                        value={channel}
+                        onChange={(e) => setChannel(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800"
+                    >
+                        {channelOptions.map((o) => (
+                            <option key={o.value} value={o.value}>
+                                {o.label}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <label className="block">
+                    <span className="text-text-subtle">Due date</span>
+                    <input
+                        type="date"
+                        value={dueDate}
+                        onChange={(e) => setDueDate(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800"
+                    />
+                </label>
+            </div>
+            <p className="text-[10px] text-text-subtle">
+                Edits save to your personal feedback log. Linda will lean toward
+                this shape on your future plans.
+            </p>
+            <div className="flex justify-end gap-2">
+                <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="submit"
+                    disabled={pending}
+                    className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                    {pending ? "Saving…" : "Save"}
+                </button>
+            </div>
+        </form>
     );
 }

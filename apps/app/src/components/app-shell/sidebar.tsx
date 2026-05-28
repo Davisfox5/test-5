@@ -50,7 +50,7 @@ export const NAV: NavItem[] = [
     { href: "/dashboard", label: "Dashboard", minRole: "agent" },
     { href: "/customers", label: "Customers", minRole: "agent" },
     { href: "/interactions", label: "Interactions", minRole: "agent" },
-    { href: "/action-items", label: "Action Items", minRole: "agent" },
+    { href: "/action-plans", label: "Action Plans", minRole: "agent" },
     // Live coaching sits between items and communications: it's the
     // synchronous companion to the async follow-up workflow, and the
     // ordering reads as items → coaching → communications.

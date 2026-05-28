@@ -261,19 +261,12 @@ function TopicDrawerContent({
 
             {/* Fallback: open the full action-items page if the rep wants
                 richer fields than the inline form exposes. */}
-            <details className="mt-2 text-xs text-text-subtle">
-                <summary className="cursor-pointer hover:text-text-muted">
-                    Need more fields? Open the full editor.
-                </summary>
-                <Link
-                    href={`/action-items?new=1&topic=${encodeURIComponent(
-                        topic.name,
-                    )}`}
-                    className="mt-2 inline-block rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-hover"
-                >
-                    Open full editor
-                </Link>
-            </details>
+            <Link
+                href="/action-plans"
+                className="mt-1 block text-xs text-text-subtle hover:text-text-muted"
+            >
+                Browse all action plans →
+            </Link>
         </div>
     );
 }

@@ -192,7 +192,7 @@ function ChurnUpsellPairedBlock({
                     customerId={customerId}
                     cta={{
                         label: "Draft a save play",
-                        href: `/action-items?new=1&customer_id=${customerId}&category=churn_save`,
+                        href: `/action-plans?customer_id=${customerId}`,
                     }}
                 />
                 <SignalLight
@@ -201,7 +201,7 @@ function ChurnUpsellPairedBlock({
                     customerId={customerId}
                     cta={{
                         label: "Draft an upsell pitch",
-                        href: `/action-items?new=1&customer_id=${customerId}&category=upsell_pitch`,
+                        href: `/action-plans?customer_id=${customerId}`,
                     }}
                 />
             </div>

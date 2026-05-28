@@ -124,6 +124,40 @@ class ActionPlanEngine:
         await _check_plan_completion(db, plan_id=step.plan_id)
         return affected
 
+    async def restore_step(
+        self,
+        db: AsyncSession,
+        *,
+        step: ActionStep,
+    ) -> List[uuid.UUID]:
+        """Undo a skip. Returns the step to ready/blocked based on deps.
+
+        Downstream steps that were already propagated through (now ready
+        or done assuming this one was skipped) get re-evaluated so they
+        block again when appropriate. Only meaningful when the step is
+        currently ``skipped``; a noop otherwise.
+        """
+        if step.state != "skipped":
+            return []
+        step.state = "ready"
+        step.skipped_at = None
+        step.skip_reason = None
+        plan_steps = await _load_plan_steps(db, step.plan_id)
+        # Re-evaluate THIS step's readiness in case its deps aren't done.
+        await _evaluate_readiness(step, plan_steps)
+        # Re-evaluate downstream steps too — they may have unlocked when
+        # this step was skipped; restoring it might re-block them.
+        affected: List[uuid.UUID] = []
+        for s in plan_steps:
+            if s.id == step.id:
+                continue
+            if str(step.id) in (s.depends_on or []):
+                prev_state = s.state
+                await _evaluate_readiness(s, plan_steps)
+                if s.state != prev_state:
+                    affected.append(s.id)
+        return affected
+
     async def delete_step(
         self,
         db: AsyncSession,

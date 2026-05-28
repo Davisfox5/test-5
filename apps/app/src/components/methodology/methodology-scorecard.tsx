@@ -113,12 +113,10 @@ function NextQuestionCallout({ question }: { question: string }) {
                         {copied ? "Copied ✓" : "Copy"}
                     </button>
                     <Link
-                        href={`/action-items?new=1&category=discovery_followup&title=${encodeURIComponent(
-                            "Ask: " + question,
-                        )}`}
+                        href="/action-plans"
                         className="rounded border border-border bg-bg-card px-2 py-0.5 text-[11px] text-primary hover:bg-card-hover"
                     >
-                        Add to action items
+                        Open action plans
                     </Link>
                 </div>
             </div>

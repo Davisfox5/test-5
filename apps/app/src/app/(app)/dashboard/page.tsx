@@ -222,7 +222,7 @@ export default function DashboardPage() {
                             : "subtle"
                     }
                     help="Open follow-ups Linda extracted from your calls. things a rep committed to do or you owe a customer."
-                    href="/action-items"
+                    href="/action-plans"
                 />
                 <StatCard
                     label="Avg sentiment"
@@ -329,7 +329,7 @@ export default function DashboardPage() {
                     {summary.data.overdue_action_items > 0 && (
                         <AlertChip
                             tone="rose"
-                            href="/action-items?tab=overdue"
+                            href="/action-plans?status=active"
                             label={`${summary.data.overdue_action_items} overdue action item${summary.data.overdue_action_items === 1 ? "" : "s"}`}
                             help="Open follow-ups whose due date has already passed."
                         />
@@ -430,7 +430,7 @@ export default function DashboardPage() {
                     help="The five most recent open follow-ups Linda pulled out of your calls. assignee, due date, and priority included."
                     action={
                         <Link
-                            href="/action-items"
+                            href="/action-plans"
                             className="text-sm text-primary hover:underline"
                         >
                             View all →

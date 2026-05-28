@@ -109,6 +109,10 @@ export interface ActionStep {
     artifact_stale: boolean;
     regen_debounce_until: string | null;
     skip_reason: string | null;
+    /** True when the step's outbound action expects a customer reply.
+     * Send button uses this to decide whether to transition to
+     * awaiting_response (needs reply) or done (fire-and-forget). */
+    awaits_response: boolean;
     created_at: string;
     latest_artifact: StepArtifact | null;
     responses: StepResponse[];
@@ -200,6 +204,46 @@ export function useSkipStep(planId: string) {
                 {
                     method: "POST",
                     body: JSON.stringify({ reason: vars.reason ?? null }),
+                },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
+export function useRestoreStep(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async (vars: { stepId: string }) =>
+            api.request<ActionPlan>(
+                `/action-plans/${planId}/steps/${vars.stepId}/restore`,
+                { method: "POST" },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
+export interface StepEditPayload {
+    title?: string;
+    description?: string;
+    intent?: string;
+    priority?: "high" | "medium" | "low";
+    due_date?: string;  // YYYY-MM-DD or "" to clear
+    recommended_channel?: string;
+    channel_reasoning?: string;
+    awaits_response?: boolean;
+}
+
+export function useEditStep(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async (vars: { stepId: string; patch: StepEditPayload }) =>
+            api.request<ActionPlan>(
+                `/action-plans/${planId}/steps/${vars.stepId}`,
+                {
+                    method: "PATCH",
+                    body: JSON.stringify(vars.patch),
                 },
             ),
         onSuccess: () => invalidatePlan(qc, planId),

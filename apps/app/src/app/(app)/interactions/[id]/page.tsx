@@ -24,9 +24,9 @@ import {
     type EmailSendOut,
 } from "@/lib/communications";
 import { useOAuthStatus } from "@/lib/oauth";
-import { type ActionItem } from "@/lib/action-items";
 import { useActionPlans } from "@/lib/action-plans";
-import { ActionItemCard } from "@/components/action-item/action-item-card";
+import { StepCard } from "@/components/action-plan/step-card";
+import { PlanHeader } from "@/components/action-plan/plan-header";
 import { MethodologyScorecard } from "@/components/methodology/methodology-scorecard";
 import { CallDynamicsChart } from "@/components/call-dynamics/call-dynamics-chart";
 import { TopicChips } from "@/components/topics/topic-chips";
@@ -368,9 +368,7 @@ export default function InteractionDetailPage() {
 
                     <TopicChips topics={i.insights?.topics} interactionId={i.id} />
 
-                    <ActionItemsForInteraction interactionId={i.id} />
-
-                    <FollowUpPanel interactionId={i.id} />
+                    <ActionPlanSection interactionId={i.id} />
                 </div>
             )}
 
@@ -1124,132 +1122,74 @@ function FollowUpPanel({ interactionId }: { interactionId: string }) {
     );
 }
 
-function ActionItemsForInteraction({ interactionId }: { interactionId: string }) {
-    const api = useApi();
+/**
+ * Action plan section on the interaction detail page.
+ *
+ * Renders the synthesized plan(s) for this interaction in-place using
+ * the same rich StepCard the dedicated /action-plans/{id} page uses.
+ * The old standalone "Action items" + "Follow-up email" sections are
+ * gone; both functions now live inside the plan's steps (each
+ * email-channel step carries its own draft + send affordance).
+ *
+ * When no plan exists yet, shows a small "synthesizing..." hint.
+ */
+function ActionPlanSection({ interactionId }: { interactionId: string }) {
     const plans = useActionPlans({ interactionId });
-    const items = useQuery({
-        queryKey: ["action-items", "by-interaction", interactionId],
-        queryFn: async () => {
-            // No /interactions/{id}/action-items endpoint. Pull a wide
-            // window from /action-items and filter client-side. Fine for
-            // a single-call detail page; switch to a server filter if
-            // tenants ever generate >200 items per call.
-            const all = await api.get<ActionItem[]>(
-                "/action-items?limit=200",
-            );
-            return all.filter((it) => it.interaction_id === interactionId);
-        },
-    });
-
     const planList = plans.data?.items ?? [];
-    const hasPlans = planList.length > 0;
+
+    if (plans.isLoading) {
+        return (
+            <section className="rounded-lg border border-border bg-bg-card p-5">
+                <h3 className="text-sm font-semibold">Action plan</h3>
+                <p className="mt-2 text-xs text-text-subtle">
+                    Loading the action plan…
+                </p>
+            </section>
+        );
+    }
+    if (planList.length === 0) {
+        return (
+            <section className="rounded-lg border border-border bg-bg-card p-5">
+                <h3 className="text-sm font-semibold">Action plan</h3>
+                <p className="mt-2 text-xs text-text-subtle">
+                    No plan yet for this interaction. Either Linda judged the
+                    call required no follow-up, or the synthesizer is still
+                    catching up.
+                </p>
+            </section>
+        );
+    }
 
     return (
         <div className="space-y-4">
-            {hasPlans && (
-                <section className="rounded-lg border border-border bg-bg-card p-5">
-                    <div className="flex items-baseline justify-between">
-                        <h3 className="text-sm font-semibold">Action plan</h3>
-                        <span className="text-xs text-text-subtle">
-                            {planList.length === 1
-                                ? "1 plan"
-                                : `${planList.length} plans`}
-                            {" · "}grouped into ordered steps
-                        </span>
-                    </div>
-                    <div className="mt-3 space-y-4">
-                        {planList.map((plan) => (
-                            <PlanSummary key={plan.id} plan={plan} />
-                        ))}
-                    </div>
-                </section>
-            )}
-            <section className="rounded-lg border border-border bg-bg-card p-5">
-                <h3 className="text-sm font-semibold">
-                    {hasPlans ? "Individual action items" : "Action items"}
-                </h3>
-                {hasPlans && (
-                    <p className="mt-1 text-xs text-text-subtle">
-                        Standalone items not assigned to a plan above.
-                    </p>
-                )}
-                {items.isLoading ? (
-                    <p className="mt-3 text-sm text-text-subtle">Loading…</p>
-                ) : items.error ? (
-                    <p className="mt-3 text-sm text-accent-rose">
-                        Couldn&apos;t load action items.
-                    </p>
-                ) : items.data && items.data.length > 0 ? (
-                    <div className="mt-3 space-y-2">
-                        {items.data.map((it) => (
-                            <ActionItemCard key={it.id} item={it} />
-                        ))}
-                    </div>
-                ) : (
-                    <p className="mt-3 text-sm text-text-subtle">
-                        No standalone action items for this interaction.
-                    </p>
-                )}
-            </section>
-        </div>
-    );
-}
-
-function PlanSummary({ plan }: { plan: import("@/lib/action-plans").ActionPlan }) {
-    const steps = plan.steps ?? [];
-    const total = steps.length;
-    const done = steps.filter((s) => s.state === "done").length;
-    const ready = steps.filter((s) => s.state === "ready" || s.state === "in_progress").length;
-    return (
-        <article className="rounded-md border border-border-light bg-bg-secondary p-3">
-            <header className="flex items-baseline justify-between gap-3">
-                <Link
-                    href={`/action-plans/${plan.id}`}
-                    className="font-medium text-text hover:underline"
+            {planList.map((plan) => (
+                <section
+                    key={plan.id}
+                    className="rounded-lg border border-border bg-bg-card p-5"
                 >
-                    {plan.goal || "Untitled plan"}
-                </Link>
-                <span className="text-xs text-text-muted">
-                    {done}/{total} done{ready ? `, ${ready} ready` : ""}
-                </span>
-            </header>
-            <ol className="mt-2 space-y-1 text-xs">
-                {steps.slice(0, 8).map((step, i) => (
-                    <li key={step.id} className="flex items-start gap-2">
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-border bg-bg-card text-[10px] text-text-muted">
-                            {i + 1}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                            <span
-                                className={`truncate ${
-                                    step.state === "done"
-                                        ? "text-text-subtle line-through"
-                                        : "text-text"
-                                }`}
-                            >
-                                {step.title}
-                            </span>
-                            {step.recommended_channel && (
-                                <span className="ml-2 text-text-subtle">
-                                    {step.recommended_channel.replace(/_/g, " ")}
-                                </span>
-                            )}
-                        </div>
-                    </li>
-                ))}
-                {steps.length > 8 && (
-                    <li className="text-text-subtle">
-                        +{steps.length - 8} more.{" "}
-                        <Link
-                            href={`/action-plans/${plan.id}`}
-                            className="text-primary hover:underline"
-                        >
-                            Open plan
-                        </Link>
-                    </li>
-                )}
-            </ol>
-        </article>
+                    <PlanHeader plan={plan} />
+                    <div className="mt-4 space-y-3">
+                        {(plan.steps ?? [])
+                            .filter((s) => s.state !== "deleted")
+                            .map((step) => (
+                                <StepCard
+                                    key={step.id}
+                                    plan={plan}
+                                    step={step}
+                                    highlightAsEndpoint={
+                                        step.id === plan.customer_endpoint_step_id
+                                    }
+                                />
+                            ))}
+                    </div>
+                    <p className="mt-3 text-[11px] text-text-subtle">
+                        Steps unlock in order. A step marked Done releases the
+                        steps that depend on it. Edits save to your personal
+                        feedback log so Linda adapts your future plans.
+                    </p>
+                </section>
+            ))}
+        </div>
     );
 }
 

@@ -46,7 +46,7 @@ export function NoteInput({ plan, step }: NoteInputProps) {
                 className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
                 onClick={() => setOpen(true)}
             >
-                + Add a note (response received out-of-band)
+                + Add a note
             </button>
         );
     }

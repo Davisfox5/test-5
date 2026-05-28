@@ -840,6 +840,16 @@ class ActionStep(Base):
     calendar_event_id: Mapped[Optional[str]] = mapped_column(String)
     # Free-form reason logged when the agent skips a step.
     skip_reason: Mapped[Optional[str]] = mapped_column(Text)
+    # Set by the synthesizer per step. True when the step's outbound
+    # action (typically an email) is expected to produce a customer
+    # reply, so the engine should hold the step in ``awaiting_response``
+    # after "Sent" instead of jumping straight to done. False when the
+    # step is fire-and-forget (informational email, system write, etc.)
+    # and Sent → done is appropriate. Default False; the synthesizer
+    # sets True explicitly when the email body asks for something back.
+    awaits_response: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -974,6 +984,58 @@ class StepResponse(Base):
         Index(
             "ix_step_responses_outbound_msg",
             "outbound_message_id",
+        ),
+    )
+
+
+class StepFeedbackLog(Base):
+    """Per-user record of a step edit, used to adapt future plans.
+
+    When a rep edits a step (title rephrased, due_date adjusted,
+    channel switched), we record the (before, after) snapshot scoped
+    to the user who made the change. The synthesizer reads recent
+    feedback for the acting user when composing a new plan and
+    biases its outputs toward this user's preferred shape.
+
+    Edits are LOCAL to the user: another rep on the same tenant
+    won't see this user's preferences applied to their plans. This
+    matches the principle that one rep's stylistic choices shouldn't
+    silently override a teammate's.
+
+    ``changed_keys`` is the list of fields actually modified, so the
+    synthesizer can apply targeted bias (e.g. "this user always
+    rewrites titles to be shorter") without re-reading the whole
+    diff.
+    """
+
+    __tablename__ = "step_feedback_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="CASCADE")
+    )
+    step_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_steps.id", ondelete="CASCADE")
+    )
+    before: Mapped[dict] = mapped_column(JSONB, default=dict)
+    after: Mapped[dict] = mapped_column(JSONB, default=dict)
+    changed_keys: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_step_feedback_logs_user_created",
+            "user_id", "created_at",
         ),
     )
 
