@@ -27,7 +27,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-28.call-date-anchor"
+ANALYSIS_PROMPT_VERSION = "2026-05-28.action-items-overhaul"
 
 ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "You are a sales coach reviewing a call. Your voice is clipboard "
@@ -223,6 +223,35 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "call_script (list of str or null), implicit_signal "
         "(≤25 words or null), suggested_attachments (list of "
         "{title, reason})}\n"
+        "\n"
+        "ACTION ITEM DISCIPLINE (read this carefully)\n"
+        "1. ONE TASK = ONE ITEM. If 'send David the ROI model' can be "
+        "accomplished by either email OR by walking him through it in "
+        "the Thursday meeting, that is ONE action_item with "
+        "recommended_channel='email' AND a call_script populated for "
+        "the in-meeting variant, NOT two items. Never emit two items "
+        "whose only material difference is the channel.\n"
+        "2. PRIORITY DISCIPLINE. ``high`` is reserved for items with a "
+        "concrete deadline within 48 hours of the call_date OR a "
+        "compliance or legal exposure. ``medium`` is the default. "
+        "``low`` is for nice-to-haves and reminders. If you find "
+        "yourself marking every item ``high``, you are wrong about at "
+        "least half of them; demote anything without a specific "
+        "near-term deadline or risk to ``medium``.\n"
+        "3. PREP ARTIFACTS must be actionable, not abstract. Each "
+        "entry must be something the rep can produce in under 10 "
+        "minutes with a concrete name. GOOD: 'one-page ROI summary "
+        "using the customer's $1.4M baseline', 'red-lined MSA section "
+        "4.2 highlighting termination clause', 'list of 3 carrier "
+        "references from similar logistics customers'. BAD (too "
+        "vague): 'context', 'background info', 'call notes', 'CFO "
+        "data'. If the only prep you can think of is generic, leave "
+        "the list shorter rather than padding it.\n"
+        "4. IMPLICIT_SIGNAL is for the rep, not for the analyst. "
+        "Frame it forward-looking ('When the customer hesitated on "
+        "pricing, they may be comparing to a competitor. Ask which '"
+        "ones they're looking at on the next call.'), not as a "
+        "critique of what just happened.\n"
         "- coaching: {what_went_well: list[str], improvements: list[str], "
         "script_adherence_band: 'high'|'medium'|'low'|'failing', "
         "compliance_gaps: list[str]}. Direct 2nd person but terse and "
@@ -238,7 +267,13 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "churn_risk_reason.\n"
         "- notable_snippets: list of {start_time, end_time, type, "
         "quality ('positive'|'negative'|'neutral'), title, "
-        "description (≤20 words), tags: list[str]}\n"
+        "description (≤20 words), tags: list[str], "
+        "why (string ≤20 words explaining WHY this moment is worth "
+        "bookmarking, e.g. 'Clean reusable objection rebuttal' or "
+        "'Compliance gap to address')}. Only flag a moment if it "
+        "either (a) is a clean reusable example for coaching or (b) "
+        "is a specific gap that needs addressing. If neither, leave "
+        "it out.\n"
         "- inline_tags: list of {start_time, end_time, speaker, type "
         "('went_well'|'improvement'|'competitor'|'commitment'|"
         "'objection_resolved'|'objection_unresolved'|'tense'), "
@@ -445,6 +480,120 @@ def _scrub_str(s: str) -> str:
     while "  " in out:
         out = out.replace("  ", " ")
     return out.strip()
+
+
+def _dedup_action_items(result: Dict[str, Any]) -> None:
+    """Merge action items that represent the same task split across
+    multiple channels.
+
+    The model sometimes emits two items for one underlying intent:
+    one with ``recommended_channel='meeting'`` and one with
+    ``recommended_channel='email'`` for the same downstream goal.
+    The rep doesn't have two tasks; they have one task with two
+    execution options. Walk the action_items list, group by a
+    normalized title signature, and merge each group into a single
+    item that carries both channels' artifacts (email_draft + call_script).
+
+    The prompt now tells the model not to do this, but reps see the
+    leftover dupes immediately when it slips; this is the safety net.
+    """
+    items = result.get("action_items")
+    if not isinstance(items, list) or len(items) < 2:
+        return
+
+    # Keyword extraction: lowercase, drop punctuation, drop common verbs
+    # and stopwords, return the remaining content tokens as a set. Two
+    # items are considered the same intent when they share ≥3 content
+    # tokens. This catches the common "Send the ROI model" vs "Build
+    # ROI model" split that the model emits when it sees two channels
+    # for the same task.
+    import re as _re
+
+    _STOP = {
+        # verbs the model uses interchangeably
+        "send", "schedule", "set", "book", "share", "follow", "up", "deliver",
+        "draft", "prepare", "loop", "in", "with", "build", "create", "make",
+        "get", "give", "show", "discuss", "review", "walk", "through",
+        "confirm", "do", "do", "have",
+        # articles + prepositions
+        "the", "a", "an", "to", "for", "of", "on", "at", "by", "via", "from",
+        "and", "or", "as", "with", "this", "that", "these", "those", "it",
+        "is", "are", "be", "before", "after", "during",
+        # generic targets
+        "next", "step", "follow-up", "followup",
+    }
+
+    def _tokens(item: Any) -> set:
+        if not isinstance(item, dict):
+            return set()
+        title = str(item.get("title") or "")
+        norm = _re.sub(r"[^a-z0-9 ]", " ", title.lower())
+        return {w for w in norm.split() if w and w not in _STOP and len(w) > 2}
+
+    item_tokens: List[set] = [_tokens(it) for it in items]
+    primary_map: Dict[int, int] = {}  # secondary_idx → primary_idx
+    drop_indices: set[int] = set()
+    for i in range(len(items)):
+        if i in drop_indices or i in primary_map:
+            continue
+        for j in range(i + 1, len(items)):
+            if j in drop_indices:
+                continue
+            shared = item_tokens[i] & item_tokens[j]
+            # Same-intent if they share 3+ content tokens, OR if the
+            # smaller token set is fully contained in the larger and
+            # the smaller has ≥2 tokens.
+            smaller = min(len(item_tokens[i]), len(item_tokens[j]))
+            if len(shared) >= 3 or (smaller >= 2 and shared == item_tokens[i] or shared == item_tokens[j]):
+                primary_map[j] = i
+                drop_indices.add(j)
+
+    # Group secondaries by primary so we can fold them in.
+    by_primary: Dict[int, List[int]] = {}
+    for secondary, primary in primary_map.items():
+        by_primary.setdefault(primary, []).append(secondary)
+
+    for primary_idx, secondary_idxs in by_primary.items():
+        primary = items[primary_idx]
+        if not isinstance(primary, dict):
+            continue
+        for secondary_idx in secondary_idxs:
+            secondary = items[secondary_idx]
+            if not isinstance(secondary, dict):
+                continue
+            # Inherit email_draft / call_script from whichever side
+            # had it. Don't clobber the primary's existing data.
+            for k in ("email_draft", "call_script", "implicit_signal",
+                      "suggested_attachments"):
+                if not primary.get(k) and secondary.get(k):
+                    primary[k] = secondary[k]
+            # Concatenate prep_artifacts uniquely so the merged item
+            # carries everything either variant suggested.
+            merged_prep = list(primary.get("prep_artifacts") or [])
+            for p in (secondary.get("prep_artifacts") or []):
+                if p not in merged_prep:
+                    merged_prep.append(p)
+            if merged_prep:
+                primary["prep_artifacts"] = merged_prep
+            # Take the EARLIER due_date when both are populated.
+            if secondary.get("due_date") and (
+                not primary.get("due_date")
+                or secondary["due_date"] < primary["due_date"]
+            ):
+                primary["due_date"] = secondary["due_date"]
+            # Bump priority to the higher of the two (high > medium > low).
+            _rank = {"high": 3, "medium": 2, "low": 1}
+            if (
+                _rank.get(secondary.get("priority", "medium"), 2)
+                > _rank.get(primary.get("priority", "medium"), 2)
+            ):
+                primary["priority"] = secondary["priority"]
+            drop_indices.add(secondary_idx)
+
+    if drop_indices:
+        result["action_items"] = [
+            it for i, it in enumerate(items) if i not in drop_indices
+        ]
 
 
 def _recompute_evidence(result: Dict[str, Any]) -> None:
@@ -841,6 +990,7 @@ class AIAnalysisService:
             try:
                 result: Dict[str, Any] = json.loads(cleaned)
                 _strip_dashes(result)
+                _dedup_action_items(result)
                 _recompute_evidence(result)
                 _scrub_zero_timestamps(result)
                 _log_jargon_hits(result)
@@ -862,6 +1012,7 @@ class AIAnalysisService:
                     if isinstance(repaired, dict) and repaired:
                         repaired.setdefault("_recovered", True)
                         _strip_dashes(repaired)
+                        _dedup_action_items(repaired)
                         _recompute_evidence(repaired)
                         _scrub_zero_timestamps(repaired)
                         _log_jargon_hits(repaired)

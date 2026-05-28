@@ -205,6 +205,181 @@ async def get_follow_up_draft(
 
 
 @router.post(
+    "/interactions/{interaction_id}/follow-up-draft/regenerate",
+    response_model=FollowUpDraftOut,
+)
+async def regenerate_follow_up_draft(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Regenerate just the follow-up email draft.
+
+    The SPA's Regenerate button hits this. We make one focused Sonnet
+    call (the call summary + action items go in; just a fresh
+    ``follow_up_email_draft`` comes out) so the rep doesn't pay for a
+    full re-analysis. The new draft replaces the existing
+    ``insights.follow_up_email_draft`` in place.
+    """
+    interaction = await db.get(Interaction, interaction_id)
+    if interaction is None or interaction.tenant_id != principal.tenant.id:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    insights = dict(interaction.insights or {})
+    summary = str(insights.get("summary") or "")
+    if not summary:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No analysis available for this interaction yet. Wait for the "
+                "pipeline to finish or trigger /redrive."
+            ),
+        )
+
+    # Build a focused user message: summary + action items + any
+    # methodology context. The narrow scope lets the model spend
+    # generation budget on prose quality rather than re-deriving the
+    # whole analysis.
+    action_items = insights.get("action_items") or []
+    ai_lines: List[str] = []
+    for item in action_items[:8]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "")
+        due = item.get("due_date") or "no due date"
+        ai_lines.append(f"- {title} (due: {due})")
+
+    contact_name: Optional[str] = None
+    if interaction.contact_id:
+        contact = await db.get(Contact, interaction.contact_id)
+        if contact:
+            contact_name = contact.first_name or contact.name or contact.email
+
+    from datetime import date as _date
+    call_dt = getattr(interaction, "started_at", None) or interaction.created_at
+    call_date_str = call_dt.date().isoformat() if call_dt else _date.today().isoformat()
+
+    from backend.app.services.ai_analysis import (
+        ANALYSIS_SYSTEM_PROMPT_TERSE,
+    )
+    from backend.app.services.llm_client import (
+        compute_max_tokens,
+        get_async_anthropic,
+    )
+
+    # Tiny focused prompt. The full ANALYSIS_SYSTEM_PROMPT_TERSE carries
+    # the EMAIL DRAFT VOICE block we want enforced; we ask only for the
+    # draft field, not the full schema.
+    system_prompt = (
+        "You are rewriting just one section of a sales-call analysis: the "
+        "``follow_up_email_draft``. Apply the EMAIL DRAFT VOICE rules from "
+        "the analyst-instructions block exactly. The call already happened "
+        "and was analyzed; you have the summary + action items below. "
+        "Return ONLY a JSON object {\"subject\": str, \"body\": str}. No "
+        "markdown fences.\n\n"
+        + ANALYSIS_SYSTEM_PROMPT_TERSE
+    )
+
+    user_content = (
+        f"## Call Date\n{call_date_str}\n\n"
+        f"## Recipient\n{contact_name or 'the customer'}\n\n"
+        f"## Call Summary\n{summary}\n\n"
+        f"## Action Items\n" + ("\n".join(ai_lines) if ai_lines else "(none)") + "\n\n"
+        "Write the follow-up email now. Subject + body only, as JSON."
+    )
+
+    client = get_async_anthropic()
+    budget = compute_max_tokens("sonnet", input_tokens=len(user_content) // 4)
+    response = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=budget,
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    raw_text = response.content[0].text
+
+    import json as _json
+    from backend.app.services.ai_analysis import (
+        _strip_dashes,
+        _scrub_str,
+    )
+    from backend.app.services.triage_service import _strip_json_fences
+
+    try:
+        new_draft = _json.loads(_strip_json_fences(raw_text))
+    except _json.JSONDecodeError:
+        raise HTTPException(
+            status_code=502,
+            detail="LLM returned malformed JSON; try again or edit the existing draft.",
+        )
+    if not isinstance(new_draft, dict):
+        raise HTTPException(status_code=502, detail="LLM returned unexpected payload.")
+
+    # Scrub dashes the same way as the main pipeline.
+    _strip_dashes(new_draft)
+
+    insights["follow_up_email_draft"] = {
+        "subject": str(new_draft.get("subject") or "").strip()[:400],
+        "body": _scrub_str(str(new_draft.get("body") or "")),
+    }
+    interaction.insights = insights
+
+    # Explicit UPDATE for the JSONB column. SQLAlchemy's dirty-attribute
+    # tracking is unreliable for in-place JSONB mutations; this matches
+    # the pattern used elsewhere in the worker.
+    from sqlalchemy import update as _sql_update
+    await db.execute(
+        _sql_update(Interaction)
+        .where(Interaction.id == interaction.id)
+        .values(insights=insights)
+    )
+    await db.commit()
+
+    # Re-emit the full draft payload so the SPA can hydrate without a
+    # second fetch.
+    return await get_follow_up_draft(
+        interaction_id=interaction_id, db=db, principal=principal,
+    )
+
+
+@router.delete(
+    "/interactions/{interaction_id}/follow-up-draft",
+    status_code=204,
+)
+async def discard_follow_up_draft(
+    interaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Discard the saved follow-up draft on this interaction.
+
+    Removes ``insights.follow_up_email_draft`` so the SPA stops
+    rendering it. The action_item-level drafts are untouched.
+    """
+    interaction = await db.get(Interaction, interaction_id)
+    if interaction is None or interaction.tenant_id != principal.tenant.id:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    insights = dict(interaction.insights or {})
+    if "follow_up_email_draft" in insights:
+        del insights["follow_up_email_draft"]
+        interaction.insights = insights
+        from sqlalchemy import update as _sql_update
+        await db.execute(
+            _sql_update(Interaction)
+            .where(Interaction.id == interaction.id)
+            .values(insights=insights)
+        )
+        await db.commit()
+
+
+@router.post(
     "/interactions/{interaction_id}/send-follow-up",
     response_model=EmailSendOut,
     status_code=201,
