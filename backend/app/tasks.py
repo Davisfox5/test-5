@@ -1467,6 +1467,7 @@ def _run_pipeline_impl(
     # where synthesis dropped (or whether it never started).
     _plan_diag: Dict[str, Any] = {"entered_block": True}
 
+    # synth-redeploy-marker-2026-05-28b
     try:
         from backend.app.db import async_session as _async_session_factory
         from backend.app.services.action_plan.synthesizer import (
