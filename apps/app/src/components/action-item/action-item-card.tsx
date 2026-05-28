@@ -9,6 +9,7 @@ import {
     useActionItemFeedback,
     useTenantUsers,
 } from "@/lib/action-items";
+import { useCalendarProviders } from "@/lib/oauth";
 import { ActionItemComments } from "./action-item-comments";
 
 /**
@@ -97,11 +98,11 @@ function CompactRow({
                 <PriorityDot priority={item.priority} />
                 {isImplicit && (
                     <span
-                        title="Includes a signal the rep may not have noticed"
-                        className="rounded bg-accent-amber/30 px-1 text-xs font-medium text-text"
-                        aria-label="Implicit signal"
+                        title="Includes a signal the rep may not have noticed during the call"
+                        className="rounded bg-accent-amber/30 px-1.5 py-0.5 text-[10px] font-medium text-text"
+                        aria-label="Hidden signal"
                     >
-                        signal
+                        hidden signal
                     </span>
                 )}
                 <span
@@ -127,7 +128,7 @@ function ExpandedPanel({ item }: { item: ActionItem }) {
             )}
             {item.implicit_signal && (
                 <div className="rounded border border-accent-amber/40 bg-accent-amber/10 p-2 text-xs text-text">
-                    <span className="font-medium">What the rep may have missed:</span>{" "}
+                    <span className="font-medium">Something to notice next time:</span>{" "}
                     {item.implicit_signal}
                 </div>
             )}
@@ -269,6 +270,14 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
     const schedule = useScheduleMeeting();
     const feedback = useActionItemFeedback();
     const { data: users = [] } = useTenantUsers();
+    // Pre-flight which calendar provider would serve this Schedule click.
+    // When ``active_provider`` is null, the stub would fire; render a
+    // Connect-calendar CTA instead so the rep doesn't discover the
+    // stub fallback only after clicking.
+    const calendarProviders = useCalendarProviders();
+    const hasRealCalendarProvider = Boolean(
+        calendarProviders.data?.active_provider,
+    );
 
     const [showSnooze, setShowSnooze] = useState(false);
     const [showDismiss, setShowDismiss] = useState(false);
@@ -286,7 +295,7 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
     return (
         <section className="space-y-2">
             <div className="flex flex-wrap gap-2">
-                {isMeetingChannel && (
+                {isMeetingChannel && hasRealCalendarProvider && (
                     <button
                         type="button"
                         onClick={async () => {
@@ -315,6 +324,15 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                             ? "Schedule call"
                             : "Schedule meeting"}
                     </button>
+                )}
+                {isMeetingChannel && !hasRealCalendarProvider && !calendarProviders.isLoading && (
+                    <a
+                        href="/settings#integrations"
+                        title="No calendar connected. Connect Google Calendar or Microsoft to schedule directly from action items."
+                        className="rounded border border-accent-amber bg-accent-amber/10 px-3 py-1.5 text-sm font-medium text-accent-amber hover:bg-accent-amber/20"
+                    >
+                        Connect a calendar
+                    </a>
                 )}
                 {isEmailChannel && (
                     <a

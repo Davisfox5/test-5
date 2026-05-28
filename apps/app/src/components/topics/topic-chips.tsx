@@ -27,62 +27,79 @@ interface RelatedInteraction {
 }
 
 /**
- * Topic chips — sized circles per topic, sized by mention count.
+ * Topics. Horizontal bar chart sorted by mention count.
  *
- * Click a chip to open the ContextDrawer with topic-scoped detail
- * (KB articles, related calls, "create custom action item linked
- * to this topic"). When the topic data is sparse the chip falls back
- * to a min-size pill so it stays readable.
+ * Each row shows the topic name, a proportional bar, and the mention
+ * count. Clicking a row opens the ContextDrawer with topic-scoped
+ * detail (KB articles, related calls, action-item creation).
  */
 export function TopicChips({ topics }: { topics: Topic[] | undefined }) {
     const drawer = useContextDrawer();
     if (!topics || topics.length === 0) return null;
 
-    const max = Math.max(...topics.map((t) => t.mentions ?? 1));
+    // Sort descending by mention count; ties broken by relevance.
+    const sorted = [...topics].sort((a, b) => {
+        const ma = a.mentions ?? 0;
+        const mb = b.mentions ?? 0;
+        if (mb !== ma) return mb - ma;
+        return (b.relevance ?? 0) - (a.relevance ?? 0);
+    });
+    const max = Math.max(...sorted.map((t) => t.mentions ?? 1), 1);
 
     return (
         <section className="rounded-lg border border-border bg-bg-card p-4">
-            <header className="mb-2 flex items-baseline justify-between">
+            <header className="mb-3 flex items-baseline justify-between">
                 <h3 className="text-sm font-semibold">Topics</h3>
                 <span className="text-xs text-text-subtle">
-                    Sized by mentions · click for KB + related calls
+                    Sorted by mentions. Click for related calls and KB hits.
                 </span>
             </header>
-            <div className="flex flex-wrap items-center gap-2">
-                {topics.map((t) => {
-                    const ratio = (t.mentions ?? 1) / Math.max(1, max);
-                    const size = 28 + ratio * 36; // px
+            <ul className="space-y-1.5">
+                {sorted.map((t) => {
+                    const mentions = t.mentions ?? 1;
+                    const widthPct = Math.max(
+                        4,
+                        Math.round((mentions / max) * 100),
+                    );
                     return (
-                        <button
-                            key={t.name}
-                            type="button"
-                            onClick={() =>
-                                drawer.open({
-                                    title: `Topic: ${t.name}`,
-                                    body: <TopicDrawerContent topic={t} />,
-                                })
-                            }
-                            className="inline-flex flex-col items-center gap-1 rounded-md p-1 hover:bg-card-hover focus:outline-none focus:ring-2 focus:ring-primary"
-                            title={`${t.mentions ?? 1} mentions`}
-                        >
-                            <span
-                                aria-hidden
-                                className="flex items-center justify-center rounded-full bg-primary-soft text-primary"
-                                style={{
-                                    width: `${size}px`,
-                                    height: `${size}px`,
-                                    fontSize: `${10 + ratio * 4}px`,
-                                }}
+                        <li key={t.name}>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    drawer.open({
+                                        title: `Topic: ${t.name}`,
+                                        body: <TopicDrawerContent topic={t} />,
+                                    })
+                                }
+                                className="group grid w-full grid-cols-[minmax(0,1fr)_3rem] items-center gap-3 rounded px-2 py-1 text-left hover:bg-card-hover focus:outline-none focus:ring-2 focus:ring-primary"
+                                title={`${mentions} mentions${
+                                    t.relevance != null
+                                        ? ` (relevance ${(t.relevance * 100).toFixed(0)}%)`
+                                        : ""
+                                }`}
                             >
-                                {t.mentions ?? 1}
-                            </span>
-                            <span className="max-w-[100px] truncate text-xs text-text-muted">
-                                {t.name}
-                            </span>
-                        </button>
+                                <div className="min-w-0">
+                                    <div className="truncate text-sm text-text">
+                                        {t.name}
+                                    </div>
+                                    <div
+                                        aria-hidden
+                                        className="mt-1 h-1.5 rounded-full bg-primary/15"
+                                    >
+                                        <div
+                                            className="h-full rounded-full bg-primary group-hover:bg-primary-hover"
+                                            style={{ width: `${widthPct}%` }}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="text-right text-xs text-text-muted">
+                                    {mentions}
+                                </div>
+                            </button>
+                        </li>
                     );
                 })}
-            </div>
+            </ul>
         </section>
     );
 }
@@ -121,11 +138,17 @@ function TopicDrawerContent({ topic }: { topic: Topic }) {
                 </div>
                 {topic.relevance != null && (
                     <div>
-                        <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                        <div
+                            className="text-xs font-semibold uppercase tracking-wide text-text-muted"
+                            title="How central this topic was to the call's main thread. 100% means the call was about this; 30% means it was mentioned but not central."
+                        >
                             Relevance
                         </div>
                         <div className="text-text">
                             {(topic.relevance * 100).toFixed(0)}%
+                        </div>
+                        <div className="mt-0.5 text-[10px] text-text-subtle">
+                            of the call&apos;s main thread
                         </div>
                     </div>
                 )}

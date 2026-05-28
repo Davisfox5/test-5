@@ -42,6 +42,17 @@ const PIN_COLORS: Record<(typeof PIN_TYPES)[number], string> = {
     other: "var(--text-subtle)",
 };
 
+// One-line definition per pin category so the legend doesn't leave the
+// rep guessing what each color means.
+const PIN_DEFINITIONS: Record<(typeof PIN_TYPES)[number], string> = {
+    win: "Deal advanced or closed; clear forward momentum.",
+    commitment: "Customer or rep committed to a specific next action.",
+    objection: "Customer pushed back on price, timing, fit, or risk.",
+    risk: "Churn or compliance warning; needs follow-up.",
+    question: "Open question raised on the call that still needs an answer.",
+    other: "Notable moment that doesn't fit the categories above.",
+};
+
 // Severity weights drive cluster ranking: a single objection is worth
 // more visual airtime than three "other" mentions because reps need to
 // know about it. Tuned so a cluster with 1 objection beats a cluster
@@ -101,7 +112,7 @@ export function CallDynamicsChart({
 
     const width = 720;
     const height = 140;
-    const padX = 24;
+    const padX = 60; // wide enough to fit the y-axis band labels (Positive / Neutral / Frustrated)
     const padY = 16;
     const innerW = width - padX * 2;
     const innerH = height - padY * 2;
@@ -157,6 +168,25 @@ export function CallDynamicsChart({
                         strokeWidth={1}
                         strokeDasharray="2 4"
                     />
+                ))}
+                {/* y-axis labels — three bands of customer mood. Renders to
+                    the LEFT of the chart so the rep can decode the line at
+                    a glance. */}
+                {[
+                    { score: 8, label: "Positive" },
+                    { score: 5, label: "Neutral" },
+                    { score: 2, label: "Frustrated" },
+                ].map(({ score, label }) => (
+                    <text
+                        key={label}
+                        x={padX - 4}
+                        y={yFor(score) + 3}
+                        fontSize={9}
+                        fill="var(--text-subtle)"
+                        textAnchor="end"
+                    >
+                        {label}
+                    </text>
                 ))}
                 {/* mood fill + line */}
                 <path d={fillPath} fill="var(--primary-soft)" fillOpacity={0.5} />
@@ -300,6 +330,7 @@ export function CallDynamicsChart({
                             <button
                                 key={type}
                                 type="button"
+                                title={PIN_DEFINITIONS[type]}
                                 onClick={() =>
                                     setPinFilter((prev) => {
                                         const next = new Set(prev);

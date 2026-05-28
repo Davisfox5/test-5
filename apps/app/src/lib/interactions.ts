@@ -107,11 +107,17 @@ export interface NotableSnippet {
 export interface InteractionInsights {
     sentiment_score?: number;
     sentiment_overall?: string;
+    /** One-sentence justification for ``sentiment_overall``. Emitted
+     * by the analysis prompt so the score pill can carry a tooltip
+     * the rep reads to understand WHY the bucket is what it is. */
+    sentiment_overall_reason?: string;
     sentiment_trajectory?: SentimentTrajectoryPoint[];
     churn_risk?: number;
     churn_risk_signal?: string;
+    churn_risk_reason?: string;
     upsell_score?: number;
     upsell_signal?: string;
+    upsell_reason?: string;
     topics?: Array<{ name: string; relevance?: number; mentions?: number }>;
     summary?: string;
     inline_tags?: InlineTag[];

@@ -307,6 +307,7 @@ export default function InteractionDetailPage() {
                                         }
                                         accent={sent.tone}
                                         accentText={sent.text}
+                                        reason={i.insights?.sentiment_overall_reason ?? null}
                                     />
                                     <ScoreRow
                                         label="Churn risk"
@@ -315,6 +316,7 @@ export default function InteractionDetailPage() {
                                                 | string
                                                 | undefined) ?? "-"
                                         }
+                                        reason={i.insights?.churn_risk_reason ?? null}
                                     />
                                     <ScoreRow
                                         label="Upsell"
@@ -323,6 +325,7 @@ export default function InteractionDetailPage() {
                                                 | string
                                                 | undefined) ?? "-"
                                         }
+                                        reason={i.insights?.upsell_reason ?? null}
                                     />
                                     <ScoreRow
                                         label="Complexity"
@@ -335,6 +338,11 @@ export default function InteractionDetailPage() {
                                     <ScoreRow
                                         label="PII redacted"
                                         value={i.pii_redacted ? "Yes" : "No"}
+                                        reason={
+                                            i.pii_redacted
+                                                ? "Sensitive entities (names, phones, IDs) were detected and masked before analysis. Open the transcript to see the masked tokens."
+                                                : "PII detection ran but found nothing to mask, or PII redaction is disabled for this tenant."
+                                        }
                                     />
                                 </dl>
                             </section>
@@ -484,33 +492,58 @@ function ScoreRow({
     value,
     accent,
     accentText,
+    reason,
 }: {
     label: string;
     value: string;
     accent?: "emerald" | "amber" | "rose" | "subtle";
     accentText?: string;
+    /** One-sentence justification the model emitted (e.g.
+     * ``sentiment_overall_reason``). Rendered as a help-tip
+     * tooltip + a chevron the user can click to expand. */
+    reason?: string | null;
 }) {
+    const [expanded, setExpanded] = useState(false);
+    const hasReason = Boolean(reason && reason.trim().length > 0);
     return (
-        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
-            <dt className="text-text-muted">{label}</dt>
-            <dd className="text-right">
-                <div className="font-medium">{value}</div>
-                {accentText ? (
-                    <div
-                        className={`text-xs ${
-                            accent === "emerald"
-                                ? "text-accent-emerald"
-                                : accent === "amber"
-                                  ? "text-accent-amber"
-                                  : accent === "rose"
-                                    ? "text-accent-rose"
-                                    : "text-text-subtle"
-                        }`}
-                    >
-                        {accentText}
-                    </div>
-                ) : null}
-            </dd>
+        <div className="border-b border-border py-2 last:border-b-0">
+            <div className="flex items-center justify-between">
+                <dt className="flex items-center gap-1.5 text-text-muted">
+                    {label}
+                    {hasReason ? (
+                        <button
+                            type="button"
+                            aria-label={`Why this ${label.toLowerCase()}?`}
+                            title={reason ?? ""}
+                            onClick={() => setExpanded((v) => !v)}
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-light text-[10px] text-text-subtle hover:bg-bg-secondary"
+                        >
+                            ?
+                        </button>
+                    ) : null}
+                </dt>
+                <dd className="text-right">
+                    <div className="font-medium">{value}</div>
+                    {accentText ? (
+                        <div
+                            className={`text-xs ${
+                                accent === "emerald"
+                                    ? "text-accent-emerald"
+                                    : accent === "amber"
+                                      ? "text-accent-amber"
+                                      : accent === "rose"
+                                        ? "text-accent-rose"
+                                        : "text-text-subtle"
+                            }`}
+                        >
+                            {accentText}
+                        </div>
+                    ) : null}
+                </dd>
+            </div>
+            {hasReason && expanded ? (
+                <p className="mt-1 text-xs text-text-muted">{reason}</p>
+            ) : null}
         </div>
     );
 }
@@ -1150,6 +1183,7 @@ function CoachingTab({
                                     ? `${evidence.discovery_questions} questions`
                                     : undefined
                             }
+                            explainer="What share of an ideal discovery this call covered. Counted as (open questions the rep asked) divided by 8. 0% means the rep didn't ask any open-ended discovery questions, which is usually a sign the call moved into pitch mode before the customer's situation was understood."
                         />
                         <RubricCell
                             label="Commitments"
@@ -1159,6 +1193,7 @@ function CoachingTab({
                                     ? `${evidence.commitment_count} secured`
                                     : undefined
                             }
+                            explainer="Strength of next-step commitments the customer made. Counted from concrete commitment language like 'I'll review it Thursday' or 'send me the deck.' Higher means the customer agreed to something specific."
                         />
                         <RubricCell
                             label="Objection handling"
@@ -1172,6 +1207,7 @@ function CoachingTab({
                                       } / ${evidence.objection_count} resolved`
                                     : undefined
                             }
+                            explainer="Of the objections the customer raised on this call, how many got resolved before the call ended. An unresolved objection at the close is the most common reason deals stall."
                         />
                         <RubricCell
                             label="Win likelihood"
@@ -1181,6 +1217,7 @@ function CoachingTab({
                                     ? `${evidence.competitor_mention_count} competitor mentions`
                                     : undefined
                             }
+                            explainer="Composite signal blending objection-handling, commitment strength, and how the call ended. Treat as directional, not a probability."
                         />
                     </div>
                 </section>
@@ -1364,23 +1401,45 @@ function RubricCell({
     label,
     value,
     sub,
+    explainer,
 }: {
     label: string;
     value: number | undefined;
     sub?: string;
+    /** Plain-English description of what this cell measures and how
+     * the percentage is computed. Surfaced as a help-tip the rep can
+     * click for the math. */
+    explainer?: string;
 }) {
+    const [expanded, setExpanded] = useState(false);
     const pct =
         typeof value === "number" ? Math.round(value * 100) : undefined;
     return (
         <div className="rounded-md border border-border bg-bg-secondary px-3 py-2">
-            <div className="text-xs uppercase tracking-wide text-text-subtle">
-                {label}
+            <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-text-subtle">
+                    {label}
+                </div>
+                {explainer ? (
+                    <button
+                        type="button"
+                        aria-label={`How ${label} is computed`}
+                        title={explainer}
+                        onClick={() => setExpanded((v) => !v)}
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-light text-[10px] text-text-subtle hover:bg-bg-card"
+                    >
+                        ?
+                    </button>
+                ) : null}
             </div>
             <div className="mt-1 text-lg font-semibold text-text">
                 {pct != null ? `${pct}%` : "-"}
             </div>
             {sub ? (
                 <div className="text-[11px] text-text-muted">{sub}</div>
+            ) : null}
+            {explainer && expanded ? (
+                <p className="mt-2 text-[11px] text-text-muted">{explainer}</p>
             ) : null}
         </div>
     );
