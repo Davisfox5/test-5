@@ -860,10 +860,19 @@ class SynthesisFailedError(RuntimeError):
 def _retrieval_query(inputs: SynthesisInputs) -> str:
     """Build the retrieval query from triage + a transcript head sample.
 
-    We deliberately favour the triage quick_summary + topics — these are
-    a dense, well-structured signal that lands better in vector search
-    than raw transcript text.
+    We deliberately favour the triage quick_summary + topics. These
+    are a dense, well-structured signal that lands better in vector
+    search than raw transcript text.
+
+    Every part is force-stringified before the join so a caller that
+    accidentally hands us a list-of-dicts (which the pipeline did:
+    ``compressed_for_llm`` is a list of segment dicts, not text)
+    can't crash synthesis with a cryptic TypeError. The fallback for
+    a non-string transcript_text is to JSON-stringify it and trim;
+    cheap to compute and adequate for vector retrieval seeding.
     """
+    import json as _json
+
     parts: List[str] = []
     summary = inputs.triage.get("quick_summary")
     if summary:
@@ -871,9 +880,25 @@ def _retrieval_query(inputs: SynthesisInputs) -> str:
     topics = inputs.triage.get("topics") or []
     if topics:
         parts.append("Topics: " + ", ".join(str(t) for t in topics))
-    if inputs.transcript_text:
-        parts.append(inputs.transcript_text[:800])
-    return "\n".join(parts).strip()
+    txt = inputs.transcript_text
+    if txt:
+        if isinstance(txt, str):
+            parts.append(txt[:800])
+        elif isinstance(txt, list):
+            # Segment-dict list from the worker pipeline. Flatten each
+            # segment's ``text`` field; fall back to a JSON serialization
+            # for anything that doesn't look like a segment.
+            flattened: List[str] = []
+            for seg in txt[:50]:
+                if isinstance(seg, dict) and isinstance(seg.get("text"), str):
+                    flattened.append(seg["text"])
+                else:
+                    flattened.append(_json.dumps(seg, default=str))
+            parts.append(" ".join(flattened)[:800])
+        else:
+            parts.append(str(txt)[:800])
+    # Belt-and-suspenders: every part must be a str before join.
+    return "\n".join(str(p) for p in parts).strip()
 
 
 def _format_transcript_for_call(

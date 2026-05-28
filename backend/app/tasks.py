@@ -1515,9 +1515,30 @@ def _run_pipeline_impl(
                     )
                     _plan_diag["early_return_reason"] = "rows_not_visible"
                     return
+                # compressed_for_llm is a LIST of segment dicts produced
+                # by _segments_for_llm(), not a string. Flatten to plain
+                # text so the synthesizer's retrieval query (and Call A's
+                # transcript_text input) gets the right shape. Fall back
+                # to interaction.raw_text when compressed_for_llm isn't
+                # bound (paths that bypass segmentation).
                 try:
-                    txt = compressed_for_llm or ""
+                    _segs = compressed_for_llm
                 except NameError:
+                    _segs = None
+                if isinstance(_segs, list):
+                    _lines = []
+                    for _s in _segs:
+                        if isinstance(_s, dict):
+                            t = _s.get("text") or ""
+                            spk = _s.get("speaker") or _s.get("speaker_id")
+                            if spk:
+                                _lines.append(f"{spk}: {t}")
+                            else:
+                                _lines.append(str(t))
+                    txt = "\n".join(_lines)
+                elif isinstance(_segs, str):
+                    txt = _segs
+                else:
                     txt = (async_ix.raw_text or "")
                 logger.info(
                     "Action plan synthesis entering synthesize() for interaction %s",
