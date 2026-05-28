@@ -646,6 +646,12 @@ class ActionPlanSynthesizer:
                 compliance = None
             kb_source = s.get("kb_source") if isinstance(s.get("kb_source"), dict) else None
             channel = str(s.get("channel") or s.get("recommended_channel") or "note")
+            # awaits_response: emitted by Call B. Coerce + default to
+            # False so legacy plans (and any malformed payload) don't
+            # accidentally hold dependent steps in awaiting_response.
+            _awaits = s.get("awaits_response")
+            if not isinstance(_awaits, bool):
+                _awaits = False
             step = ActionStep(
                 plan_id=plan.id,
                 tenant_id=inputs.tenant.id,
@@ -666,6 +672,7 @@ class ActionPlanSynthesizer:
                 role_in_plan=role,
                 target_integration=s.get("target_integration"),
                 integration_operation=s.get("integration_operation"),
+                awaits_response=_awaits,
             )
             db.add(step)
             await db.flush()
