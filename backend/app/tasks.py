@@ -1468,11 +1468,16 @@ def _run_pipeline_impl(
             SynthesisInputs,
         )
 
-        # Flush sync-session writes so the async session sees a
-        # consistent Tenant / Interaction row (they're tracked by id
-        # via FK, so as long as the rows exist in the DB the async
-        # session can refer to them).
-        session.flush()
+        # COMMIT (not flush) sync-session writes before opening a
+        # separate async connection. The async session checks out a
+        # different asyncpg connection from the pool, and under
+        # PostgreSQL's default READ COMMITTED isolation it cannot see
+        # uncommitted writes from the sync connection's transaction.
+        # If we only flush, ``async_db.get(Interaction, id)`` below
+        # returns None (the row was created/updated in the still-open
+        # sync transaction) and synthesis silently exits via the
+        # early-return guard, leaving no ActionPlan and no log line.
+        session.commit()
 
         async def _run_plan_synthesis() -> None:
             async with _async_session_factory() as async_db:
@@ -1485,6 +1490,18 @@ def _run_pipeline_impl(
                 async_tenant = await async_db.get(_TenantModel, tenant.id)
                 async_ix = await async_db.get(_IxModel, interaction.id)
                 if async_tenant is None or async_ix is None:
+                    # Loud log so this can't go unnoticed again. If we
+                    # ever see "tenant_missing=True" or "ix_missing=True"
+                    # in Fly logs, the commit-vs-flush guard above
+                    # regressed.
+                    logger.warning(
+                        "Action plan synthesis early-return for interaction %s: "
+                        "tenant_missing=%s ix_missing=%s (sync session must commit "
+                        "before opening async session)",
+                        interaction.id,
+                        async_tenant is None,
+                        async_ix is None,
+                    )
                     return
                 try:
                     txt = compressed_for_llm or ""
