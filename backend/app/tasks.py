@@ -964,6 +964,13 @@ def _run_pipeline_impl(
     # this, the connection sits idle during analyze() and Neon kills
     # it before the post-analysis save can run.
     session.commit()
+    # Resolve the call date so the prompt can anchor 'Thursday' /
+    # 'tomorrow' references to real YYYY-MM-DD due_dates. We prefer
+    # ``interaction.started_at`` (set by telephony / upload paths) and
+    # fall back to ``created_at`` which always exists.
+    _call_dt = getattr(interaction, "started_at", None) or interaction.created_at
+    _call_date_str = _call_dt.date().isoformat() if _call_dt else None
+
     insights: Dict[str, Any] = _loop.run(
         _get_analysis_service().analyze(
             compressed_for_llm,
@@ -977,6 +984,7 @@ def _run_pipeline_impl(
             customer_brief=customer_brief,
             paralinguistic_block=paralinguistic_block,
             complexity_score=complexity_score,
+            call_date=_call_date_str,
         )
     )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)

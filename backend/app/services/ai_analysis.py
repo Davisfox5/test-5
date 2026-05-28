@@ -27,7 +27,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-27.plain-english-and-reasons"
+ANALYSIS_PROMPT_VERSION = "2026-05-28.call-date-anchor"
 
 ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "You are a sales coach reviewing a call. Your voice is clipboard "
@@ -628,6 +628,7 @@ class AIAnalysisService:
         customer_brief: Optional[Dict[str, Any]] = None,
         paralinguistic_block: Optional[Any] = None,
         complexity_score: Optional[float] = None,
+        call_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -676,6 +677,20 @@ class AIAnalysisService:
 
         # Build user message, optionally prepending triage + tenant + RAG context.
         parts: List[str] = []
+        # Call-date anchor. The prompt asks the model to resolve weekday
+        # references ('Thursday', 'tomorrow') to YYYY-MM-DD due_dates; that
+        # only works if it knows when the call happened. Without this
+        # anchor, due_date stays null even when the customer literally
+        # said 'Thursday' on the call.
+        if call_date:
+            parts.append(
+                f"## Call Date\n"
+                f"This call took place on {call_date}. Resolve any "
+                f"weekday or relative-date references in the transcript "
+                f"('Thursday', 'tomorrow', 'next week') to specific "
+                f"YYYY-MM-DD dates relative to this anchor when populating "
+                f"action_items[].due_date.\n"
+            )
         if triage_result:
             summary = triage_result.get("quick_summary", "")
             topics = ", ".join(triage_result.get("topics", []))
