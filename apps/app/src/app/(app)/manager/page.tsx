@@ -92,7 +92,7 @@ function NarrativeCard() {
                         State of the business
                     </div>
                     <p className="text-lg text-text">
-                        {data.summary || "Not enough signal yet — the orchestrator hasn't produced a narrative for this tenant."}
+                        {data.summary || "Not enough signal yet. The orchestrator hasn't produced a narrative for this tenant."}
                     </p>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-text-subtle">
                         {data.as_of && <span>As of {new Date(data.as_of).toLocaleString()}</span>}
