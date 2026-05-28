@@ -1,4 +1,4 @@
-"""Stub meeting provider — always works, produces an ICS payload.
+"""Stub meeting provider. Always works, produces an ICS payload.
 
 Used as the universal fallback when a tenant has no calendar provider
 connected, or when the chosen provider fails. The rep gets a

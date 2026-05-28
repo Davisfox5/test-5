@@ -240,3 +240,73 @@ async def set_preview_role(
         "role": new_value,
         "real_role": db_user.role or "agent",
     }
+
+
+class CalendarProviderStatus(BaseModel):
+    """One provider's serve-readiness for the current user.
+
+    The SPA uses this to render a "Connect calendar" CTA on the Action
+    Item card when no real provider is available, instead of letting
+    the user click "Schedule" and discover the stub fallback after the
+    fact. ``ok=True`` means ``can_serve()`` returned True for this
+    user/tenant pair.
+    """
+
+    name: str
+    ok: bool
+    reason: Optional[str] = None
+
+
+class CalendarProvidersOut(BaseModel):
+    providers: list[CalendarProviderStatus]
+    active_provider: Optional[str]
+    """``active_provider`` is whichever provider would serve a Schedule
+    Meeting click right now, in scheduler preference order. ``None``
+    means the stub would fire (no real provider can serve)."""
+
+
+@router.get("/me/calendar-providers", response_model=CalendarProvidersOut)
+async def get_calendar_providers(
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> CalendarProvidersOut:
+    """Return which calendar providers can serve a Schedule Meeting
+    click for the current user.
+
+    The frontend uses this to gate the Schedule button: when no real
+    provider can serve, the button changes to a "Connect calendar"
+    CTA pointing at Settings -> Integrations. Without this pre-flight
+    the user discovers the stub fallback only after clicking, which
+    surfaces a confusing "no calendar provider connected" error.
+    """
+    # Import inside the handler so the meeting_scheduler module's
+    # provider registry isn't a startup-time hard dependency.
+    from backend.app.services.meeting_scheduler.google_calendar import (
+        GoogleCalendarProvider,
+    )
+    from backend.app.services.meeting_scheduler.microsoft_graph import (
+        MicrosoftGraphProvider,
+    )
+    from backend.app.services.meeting_scheduler.zoom import ZoomMeetingProvider
+    from backend.app.services.meeting_scheduler.cal_com import CalcomProvider
+
+    tenant_id = principal.tenant.id
+    user_id = principal.user.id if principal.user else None
+
+    candidates = [
+        GoogleCalendarProvider,
+        MicrosoftGraphProvider,
+        ZoomMeetingProvider,
+        CalcomProvider,
+    ]
+    statuses: list[CalendarProviderStatus] = []
+    active: Optional[str] = None
+    for cls in candidates:
+        try:
+            ok = await cls.can_serve(db, tenant_id=tenant_id, user_id=user_id)
+        except Exception:
+            ok = False
+        statuses.append(CalendarProviderStatus(name=cls.name, ok=ok))
+        if ok and active is None:
+            active = cls.name
+    return CalendarProvidersOut(providers=statuses, active_provider=active)

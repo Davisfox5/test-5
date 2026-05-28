@@ -31,6 +31,25 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
+# Any one of these scopes is sufficient to create calendar events.
+# Google's OAuth returns the canonical URL in ``creds.scopes``, but
+# some flows store the short form ('calendar.events') or the broader
+# 'calendar' scope which subsumes events. Accept all of them so a
+# slightly-degraded OAuth flow still picks up the provider.
+_ACCEPTED_CALENDAR_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
+    "calendar.events",
+    "calendar",
+)
+
+
+def _has_calendar_scope(scopes: List[str]) -> bool:
+    if not scopes:
+        return False
+    normalized = {str(s).strip() for s in scopes}
+    return any(s in normalized for s in _ACCEPTED_CALENDAR_SCOPES)
+
 
 class GoogleCalendarProvider(MeetingProvider):
     """Real Google Calendar API integration. Auto-generates Meet links."""
@@ -54,12 +73,26 @@ class GoogleCalendarProvider(MeetingProvider):
         try:
             integration = await _async_load_integration(db, tenant_id, user_id)
             if integration is None:
+                logger.info(
+                    "GoogleCalendarProvider.can_serve: no Google integration row "
+                    "(tenant=%s user=%s)",
+                    tenant_id, user_id,
+                )
                 return False
             scopes = integration.scopes or []
-            # Some Google OAuth flows return granted_scopes shorter than
-            # the requested set if the user de-selected a box. Without
-            # the calendar scope, we can't create events.
-            return REQUIRED_SCOPE in scopes
+            if _has_calendar_scope(scopes):
+                return True
+            # Integration exists but is missing calendar scope. Surface this
+            # at WARN so the rep's UX failure (stub fallback) is debuggable
+            # from logs without admin-DB access.
+            logger.warning(
+                "GoogleCalendarProvider.can_serve: Google integration present "
+                "but calendar scope missing (tenant=%s user=%s scopes=%s). "
+                "Reconnect the Google integration with the calendar.events "
+                "scope to enable real meeting creation.",
+                tenant_id, user_id, scopes,
+            )
+            return False
         except Exception:
             logger.exception("GoogleCalendarProvider.can_serve check failed")
             return False

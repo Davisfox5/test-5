@@ -30,6 +30,33 @@ export function useOAuthStatus() {
     });
 }
 
+export interface CalendarProviderStatus {
+    name: string;
+    ok: boolean;
+    reason: string | null;
+}
+
+export interface CalendarProvidersOut {
+    providers: CalendarProviderStatus[];
+    active_provider: string | null;
+}
+
+/**
+ * Pre-flight which calendar provider would serve a Schedule Meeting
+ * click for the current user. ``active_provider === null`` means the
+ * stub would fire. The Action Item card uses this to gate the button:
+ * connected providers get "Schedule meeting", no-provider users get a
+ * "Connect a calendar" CTA pointing at /settings#integrations.
+ */
+export function useCalendarProviders() {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["calendar-providers"],
+        queryFn: () => api.get<CalendarProvidersOut>("/me/calendar-providers"),
+        staleTime: 60_000,
+    });
+}
+
 export function useRevokeIntegration() {
     const api = useApi();
     const qc = useQueryClient();
