@@ -183,10 +183,10 @@ export interface ManagerDashboardOverview {
 export function useManagerOverview(windowDays = 30, enabled = true) {
     const api = useApi();
     return useQuery({
-        queryKey: ["manager-dashboard-overview", windowDays],
+        queryKey: ["manager-overview", windowDays],
         queryFn: () =>
             api.get<ManagerDashboardOverview>(
-                `/manager/dashboard/overview?window_days=${windowDays}`,
+                `/manager/overview?window_days=${windowDays}`,
             ),
         retry: false,
         // Skip the call entirely for agents — the endpoint is manager-

@@ -1,10 +1,12 @@
-"""Notification service — Slack and Microsoft Teams webhook delivery."""
+"""Notification service — Slack and Microsoft Teams webhook delivery,
+plus per-tenant Slack OAuth ``chat.postMessage`` for manager alerts.
+"""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -13,6 +15,51 @@ logger = logging.getLogger(__name__)
 
 class NotificationService:
     """Send notifications to Slack and Microsoft Teams via incoming webhooks."""
+
+    async def post_to_slack_channel(
+        self,
+        *,
+        bot_token: str,
+        channel_id: str,
+        text: str,
+        blocks: Optional[List[Dict]] = None,
+    ) -> Dict[str, Any]:
+        """Post a message via ``chat.postMessage`` on behalf of a tenant.
+
+        Used by the manager-alert fanout when the tenant has installed
+        the Slack OAuth app. The bot token is decrypted by the caller
+        and passed in; this method does not touch the database.
+
+        Returns Slack's parsed response dict on success. On failure,
+        logs and returns ``{"ok": False, "error": "..."}`` — never
+        raises, so a failing Slack post can't take down the alert
+        write that already happened.
+        """
+        url = "https://slack.com/api/chat.postMessage"
+        payload: Dict[str, Any] = {"channel": channel_id, "text": text}
+        if blocks is not None:
+            payload["blocks"] = blocks
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {bot_token}",
+                        "Content-Type": "application/json; charset=utf-8",
+                    },
+                )
+            body = resp.json()
+            if not body.get("ok"):
+                logger.warning(
+                    "Slack chat.postMessage non-ok: error=%s channel=%s",
+                    body.get("error"),
+                    channel_id,
+                )
+            return body
+        except Exception as exc:
+            logger.exception("Slack chat.postMessage failed: channel=%s", channel_id)
+            return {"ok": False, "error": str(exc)}
 
     async def notify_slack(
         self,

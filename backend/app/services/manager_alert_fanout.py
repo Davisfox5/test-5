@@ -1,0 +1,226 @@
+"""Fanout layer for manager alerts: in-app + Slack.
+
+Called inline after the anomaly detector inserts a ``ManagerAlert``
+row. Two channels in v1:
+
+* **In-app** — one ``Notification`` row per recipient (managers +
+  admins in the tenant), plus a Redis pub/sub publish so the SSE bell
+  updates in real time.
+* **Slack** — ``chat.postMessage`` against the tenant's installed
+  Slack OAuth integration, subject to ``AlertChannelConfig`` severity
+  gates.
+
+Email + push are deferred to a follow-up; the dispatch table here is
+shaped to grow.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Iterable, List, Sequence
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from backend.app.models import (
+    AlertChannelConfig,
+    ManagerAlert,
+    Notification,
+    SlackIntegration,
+    User,
+)
+from backend.app.services.notification_service import NotificationService
+from backend.app.services.notifications import (
+    NotificationKind,
+    notification_channel,
+    publish_notification,
+)
+from backend.app.services.token_crypto import decrypt_token
+
+logger = logging.getLogger(__name__)
+
+
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+def fanout(session: Session, alerts: Iterable[ManagerAlert]) -> None:
+    """Deliver each alert to the configured channels. Best-effort.
+
+    A failing channel logs but never raises — the alert row is already
+    durable, so missed delivery is recoverable (the manager can still
+    see it in-app and the next anomaly scan won't re-fire it).
+    """
+    alerts = [a for a in alerts if a is not None]
+    if not alerts:
+        return
+    # Group by tenant so we only fetch each tenant's config + recipients once.
+    by_tenant: dict = {}
+    for alert in alerts:
+        by_tenant.setdefault(alert.tenant_id, []).append(alert)
+
+    for tenant_id, tenant_alerts in by_tenant.items():
+        try:
+            _fanout_tenant(session, tenant_id, tenant_alerts)
+        except Exception:
+            logger.exception(
+                "Manager alert fanout failed for tenant %s (non-fatal)", tenant_id
+            )
+
+
+def _fanout_tenant(
+    session: Session,
+    tenant_id,
+    alerts: Sequence[ManagerAlert],
+) -> None:
+    config = session.get(AlertChannelConfig, tenant_id)
+    recipients = _manager_recipients(session, tenant_id)
+    slack = session.execute(
+        select(SlackIntegration).where(
+            SlackIntegration.tenant_id == tenant_id,
+            SlackIntegration.revoked_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+    for alert in alerts:
+        if not config or config.inapp_enabled:
+            _deliver_inapp(session, alert, recipients)
+        if _slack_enabled_for(alert, config, slack):
+            _deliver_slack(slack, alert)
+
+
+def _manager_recipients(session: Session, tenant_id) -> List[User]:
+    """Managers + admins in the tenant get the in-app notification."""
+    return (
+        session.execute(
+            select(User).where(
+                User.tenant_id == tenant_id,
+                User.role.in_(("manager", "admin")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _deliver_inapp(
+    session: Session, alert: ManagerAlert, recipients: Sequence[User]
+) -> None:
+    for user in recipients:
+        try:
+            row = Notification(
+                tenant_id=alert.tenant_id,
+                user_id=user.id,
+                kind=NotificationKind.MANAGER_ALERT,
+                title=alert.title[:200],
+                body=alert.body,
+                link_url=f"/manager?alert={alert.id}",
+            )
+            session.add(row)
+            publish_notification(
+                tenant_id=alert.tenant_id,
+                user_id=user.id,
+                payload={
+                    "type": "notification",
+                    "kind": NotificationKind.MANAGER_ALERT,
+                    "title": alert.title[:200],
+                    "alert_id": str(alert.id),
+                    "severity": alert.severity,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "in-app notify failed for user %s alert %s (non-fatal)",
+                user.id,
+                alert.id,
+            )
+
+
+def _slack_enabled_for(
+    alert: ManagerAlert,
+    config: AlertChannelConfig | None,
+    slack: SlackIntegration | None,
+) -> bool:
+    if slack is None or not slack.default_channel_id:
+        return False
+    if config is None:
+        return False
+    if not config.slack_enabled:
+        return False
+    min_rank = _SEVERITY_RANK.get(config.slack_min_severity or "medium", 2)
+    return _SEVERITY_RANK.get(alert.severity, 0) >= min_rank
+
+
+def _deliver_slack(slack: SlackIntegration, alert: ManagerAlert) -> None:
+    try:
+        bot_token = decrypt_token(slack.bot_token_encrypted) or ""
+    except Exception:
+        logger.exception(
+            "Slack bot token decrypt failed for tenant %s", slack.tenant_id
+        )
+        return
+    if not bot_token or not slack.default_channel_id:
+        return
+    blocks = _slack_blocks(alert)
+    service = NotificationService()
+    try:
+        asyncio.run(
+            service.post_to_slack_channel(
+                bot_token=bot_token,
+                channel_id=slack.default_channel_id,
+                text=alert.title,
+                blocks=blocks,
+            )
+        )
+    except RuntimeError:
+        # Already inside an event loop (rare from sync Celery, common
+        # if called from an async test). Schedule it on the running
+        # loop instead.
+        loop = asyncio.get_event_loop()
+        loop.create_task(
+            service.post_to_slack_channel(
+                bot_token=bot_token,
+                channel_id=slack.default_channel_id,
+                text=alert.title,
+                blocks=blocks,
+            )
+        )
+
+
+def _slack_blocks(alert: ManagerAlert) -> list:
+    severity_emoji = {"high": ":rotating_light:", "medium": ":warning:", "low": ":information_source:"}.get(
+        alert.severity, ":bell:"
+    )
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{severity_emoji} *Manager alert:* {alert.title}",
+            },
+        },
+        *(
+            [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": alert.body},
+                }
+            ]
+            if alert.body
+            else []
+        ),
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"Severity: *{alert.severity}* · "
+                        f"Kind: `{alert.kind}` · "
+                        f"Evidence: `{json.dumps(alert.evidence, default=str)[:200]}`"
+                    ),
+                }
+            ],
+        },
+    ]

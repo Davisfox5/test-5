@@ -250,6 +250,34 @@ celery_app.conf.update(
             "task": "trial_expiry_daily",
             "schedule": crontab(minute=0, hour=9),
         },
+        # ── Manager-view (Phase: manager-view-overhaul) ───────────────
+        # Anomaly scan every 15 minutes. Three SQL detectors per tenant
+        # against ``interactions.insights``; each detector is a single
+        # window query. Cheap. Dial to longer if the false-positive
+        # rate climbs after two weeks of real traffic.
+        "manager-anomaly-scan": {
+            "task": "manager_anomaly_scan_all_tenants",
+            "schedule": 900.0,
+        },
+        # Recommendation builder runs daily right after the orchestrator
+        # finishes refreshing the BusinessProfile. One Haiku call per
+        # tenant, capped at 5 recommendations.
+        "manager-recommendations-build": {
+            "task": "manager_recommendations_build",
+            "schedule": crontab(minute=30, hour=4),
+        },
+        # Sweep old recommendations whose 14-day expires_at has passed.
+        "manager-recommendations-expire": {
+            "task": "manager_recommendations_expire",
+            "schedule": crontab(minute=0, hour=3),
+        },
+        # Auto-resolve manager alerts whose underlying spike has subsided.
+        # Frees the partial-unique fingerprint slot so a recurring spike
+        # can re-fire.
+        "manager-anomaly-resolve": {
+            "task": "manager_anomaly_resolve",
+            "schedule": crontab(minute=0, hour="*/6"),
+        },
     },
 )
 
@@ -3697,3 +3725,94 @@ def action_plan_run_due_regenerations(self) -> int:
     except Exception:
         logger.exception("action_plan_run_due_regenerations failed (non-fatal)")
         return 0
+
+
+# ── Manager-view tasks (anomaly scan, recommendations, resolution) ────
+
+
+@celery_app.task(name="manager_anomaly_scan_all_tenants")
+def manager_anomaly_scan_all_tenants() -> Dict[str, Any]:
+    """Run the three anomaly detectors for every tenant. Fans out alert
+    delivery (in-app + Slack) inline. See
+    ``backend.app.services.anomaly_detector``.
+    """
+    from backend.app.services.anomaly_detector import scan_all_tenants
+    from backend.app.services.manager_alert_fanout import fanout
+
+    session = _get_sync_session()
+    try:
+        result = scan_all_tenants(session)
+        # Fanout: pull the freshly inserted alerts and deliver. The
+        # detector already commits; here we re-load only those that
+        # were created in the last 60 seconds to avoid double-delivery.
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        from sqlalchemy import select as _select
+
+        from backend.app.models import ManagerAlert
+
+        cutoff = _dt.now(_tz.utc) - _td(seconds=60)
+        fresh = (
+            session.execute(
+                _select(ManagerAlert).where(ManagerAlert.created_at >= cutoff)
+            )
+            .scalars()
+            .all()
+        )
+        fanout(session, fresh)
+        session.commit()
+        return result
+    finally:
+        session.close()
+
+
+@celery_app.task(name="manager_recommendations_build")
+def manager_recommendations_build() -> Dict[str, Any]:
+    """Daily Haiku-driven recommendation refresh per tenant."""
+    from backend.app.services.manager_recommendation_builder import (
+        build_for_all_tenants,
+    )
+
+    session = _get_sync_session()
+    try:
+        return build_for_all_tenants(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="manager_recommendations_expire")
+def manager_recommendations_expire() -> Dict[str, Any]:
+    """Sweep recommendations whose ``expires_at`` has passed."""
+    from backend.app.services.manager_recommendation_builder import expire_old
+
+    session = _get_sync_session()
+    try:
+        expired = expire_old(session)
+        return {"expired": expired}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="manager_anomaly_resolve")
+def manager_anomaly_resolve() -> Dict[str, Any]:
+    """Mark stale manager_alerts whose underlying spike has subsided."""
+    from backend.app.services.anomaly_detector import resolve_stale
+
+    session = _get_sync_session()
+    try:
+        resolved = resolve_stale(session)
+        return {"resolved": resolved}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="orchestrator_daily_one_tenant")
+def orchestrator_daily_one_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Force-refresh one tenant's BusinessProfile + sibling profiles.
+
+    Called from the manager-page "Refresh now" CTA. Rate-limited at the
+    API layer (1/hr/tenant via Redis) to bound Opus cost. Internally
+    just delegates to ``_orchestrate_one_tenant`` — the same per-tenant
+    body the daily chord uses.
+    """
+    return _orchestrate_one_tenant(tenant_id)

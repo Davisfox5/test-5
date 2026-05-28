@@ -2644,6 +2644,177 @@ class AudiohookSession(Base):
 # === END MULTI-STREAM MODELS REGION ===
 
 
+# ──────────────────────────────────────────────────────────
+# MANAGER VIEW — alerts, recommendations, channel config,
+# coaching notes, Slack integration.
+# ──────────────────────────────────────────────────────────
+
+
+class ManagerAlert(Base):
+    """Append-only feed of detected anomalies for the manager dashboard.
+
+    One row per detected spike. ``fingerprint`` + a partial unique index
+    (``WHERE resolved_at IS NULL``) means a recurring spike won't re-fire
+    until the previous one is marked resolved by the auto-resolver.
+    """
+
+    __tablename__ = "manager_alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # topic_spike | sentiment_drop | churn_surge | methodology_drop
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # high | medium | low
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    acknowledged_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ManagerRecommendation(Base):
+    """Proactive next-move queue for managers. One-click apply maps each
+    category to a concrete artifact (coaching note, draft campaign,
+    outreach action item, or playbook entry).
+    """
+
+    __tablename__ = "manager_recommendations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # coach_rep | run_campaign | outreach_at_risk_customer | promote_winning_script
+    category: Mapped[str] = mapped_column(String(48), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    rationale: Mapped[Optional[str]] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
+    target: Mapped[dict] = mapped_column(JSONB, default=dict)
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    # open | applied | dismissed | expired
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    applied_artifact_type: Mapped[Optional[str]] = mapped_column(String(48))
+    applied_artifact_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    applied_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AlertChannelConfig(Base):
+    """Per-tenant manager-alert configuration: which channels fire at
+    which severity, plus optional threshold overrides for the three
+    anomaly detectors. NULL on a threshold column means "use the code
+    default" — see ``anomaly_detector.DEFAULT_THRESHOLDS``.
+    """
+
+    __tablename__ = "alert_channel_config"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    inapp_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    slack_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # high | medium | low — minimum severity that goes to Slack
+    slack_min_severity: Mapped[str] = mapped_column(String(16), default="medium")
+    topic_spike_pct_change_threshold: Mapped[Optional[int]] = mapped_column(Integer)
+    topic_spike_min_volume: Mapped[Optional[int]] = mapped_column(Integer)
+    sentiment_drop_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    churn_surge_multiplier: Mapped[Optional[float]] = mapped_column(Float)
+    methodology_drop_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CoachingNote(Base):
+    """Manager-to-rep coaching memo. Created either manually or via the
+    one-click-apply path on a ``ManagerRecommendation`` with
+    ``category='coach_rep'``. Kept separate from ``ActionItem`` because
+    that table requires an ``interaction_id`` and a manager-level memo
+    isn't anchored to one call.
+    """
+
+    __tablename__ = "coaching_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    assigned_to: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    author_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    source_recommendation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("manager_recommendations.id", ondelete="SET NULL")
+    )
+    # open | done | dismissed
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SlackIntegration(Base):
+    """Per-tenant Slack OAuth install. Stores the encrypted bot token
+    and the channel chosen for manager-alert delivery.
+
+    Token at-rest encryption uses ``backend.app.services.token_crypto``
+    (same Fernet wrapper as the OAuth integrations table).
+    """
+
+    __tablename__ = "slack_integration"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    slack_team_name: Mapped[Optional[str]] = mapped_column(String(255))
+    bot_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    bot_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    default_channel_id: Mapped[Optional[str]] = mapped_column(String(64))
+    default_channel_name: Mapped[Optional[str]] = mapped_column(String(255))
+    installed_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 # Wire the tenant-config cache invalidation listener once models are loaded.
 # Importing at module bottom avoids a circular import (tenant_cache itself
 # imports ``Tenant`` from this module).

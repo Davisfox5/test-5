@@ -437,6 +437,24 @@ class Orchestrator:
             )
             return
 
+        # Apply manager-facing voice rules to the consolidated payload
+        # (em-dash strip, banned-phrase scrub, word caps). Mirrors the
+        # agent-side sanitizer wired into ai_analysis; centralizing
+        # keeps the two surfaces' voice from drifting.
+        from backend.app.services.plain_english import sanitize_manager_payload
+        try:
+            sanitize_manager_payload(
+                payload,
+                max_words_per_field={
+                    "summary": 60,
+                    "history_headline": 30,
+                    "label": 12,
+                },
+                default_max_words=None,
+            )
+        except Exception:  # pragma: no cover — never let scrubbing break the write
+            logger.debug("plain_english scrub failed (non-fatal)", exc_info=True)
+
         store.append(
             ref=ref,
             tenant_id=tenant.id,

@@ -72,6 +72,7 @@ class NotificationKind:
     ACTION_ITEM_OVERDUE = "action_item_overdue"
     MANAGER_REVIEW_COMPLETED = "manager_review_completed"
     SCORECARD_REVIEW_ASSIGNED = "scorecard_review_assigned"
+    MANAGER_ALERT = "manager_alert"
     SYSTEM = "system"
     OTHER = "other"
 

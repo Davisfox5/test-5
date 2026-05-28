@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
 
+    # ── OAuth — Slack (manager-alert delivery) ───────────
+    SLACK_CLIENT_ID: str = ""
+    SLACK_CLIENT_SECRET: str = ""
+    SLACK_SIGNING_SECRET: str = ""
+
     # ── CRM ──────────────────────────────────────────────
     HUBSPOT_CLIENT_ID: str = ""
     HUBSPOT_CLIENT_SECRET: str = ""

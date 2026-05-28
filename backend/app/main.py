@@ -102,7 +102,8 @@ from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.action_plans import router as action_plans_router  # noqa: E402
 from backend.app.api.notifications import router as notifications_router  # noqa: E402
-from backend.app.api.manager_dashboard import router as manager_dashboard_router  # noqa: E402
+from backend.app.api.manager import router as manager_router  # noqa: E402
+from backend.app.api.integrations_slack import router as integrations_slack_router  # noqa: E402
 from backend.app.api.profiles import router as profiles_router  # noqa: E402
 from backend.app.api.outcomes import router as outcomes_router  # noqa: E402
 from backend.app.api.corrections import router as corrections_router  # noqa: E402
@@ -144,7 +145,8 @@ from backend.app.auth import require_role as _require_role  # noqa: E402
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(action_plans_router, prefix=settings.API_V1_PREFIX, tags=["action-plans"])
 app.include_router(notifications_router, prefix=settings.API_V1_PREFIX, tags=["notifications"])
-app.include_router(manager_dashboard_router, prefix=settings.API_V1_PREFIX, tags=["manager-dashboard"])
+app.include_router(manager_router, prefix=settings.API_V1_PREFIX, tags=["manager"])
+app.include_router(integrations_slack_router, prefix=settings.API_V1_PREFIX, tags=["integrations-slack"])
 app.include_router(profiles_router, prefix=settings.API_V1_PREFIX, tags=["profiles"])
 app.include_router(outcomes_router, prefix=settings.API_V1_PREFIX, tags=["outcomes"])
 app.include_router(corrections_router, prefix=settings.API_V1_PREFIX, tags=["corrections"])
