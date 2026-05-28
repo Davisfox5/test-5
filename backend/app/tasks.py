@@ -1507,7 +1507,11 @@ def _run_pipeline_impl(
                     txt = compressed_for_llm or ""
                 except NameError:
                     txt = (async_ix.raw_text or "")
-                await synthesizer.synthesize(
+                logger.info(
+                    "Action plan synthesis entering synthesize() for interaction %s",
+                    interaction.id,
+                )
+                _result = await synthesizer.synthesize(
                     async_db,
                     SynthesisInputs(
                         tenant=async_tenant,
@@ -1519,6 +1523,13 @@ def _run_pipeline_impl(
                     ),
                 )
                 await async_db.commit()
+                logger.info(
+                    "Action plan synthesis SUCCESS for interaction %s: plan_id=%s steps=%d domain=%s",
+                    interaction.id,
+                    _result.plan_id,
+                    len(_result.steps or []),
+                    _result.chosen_domain,
+                )
 
         _loop.run(_run_plan_synthesis())
     except SynthesisFailedError as _plan_exc:  # type: ignore[name-defined]
