@@ -1460,6 +1460,13 @@ def _run_pipeline_impl(
     # one. We open a short-lived async session over the same database
     # and commit its changes independently — they're orthogonal to the
     # sync session's writes (different rows).
+    # Diagnostic stamp on interaction.insights so we can read the
+    # synthesis trace via the standard /interactions/{id} endpoint
+    # without needing Fly log access. Each phase writes a key; the
+    # final state of these keys after a redrive tells us exactly
+    # where synthesis dropped (or whether it never started).
+    _plan_diag: Dict[str, Any] = {"entered_block": True}
+
     try:
         from backend.app.db import async_session as _async_session_factory
         from backend.app.services.action_plan.synthesizer import (
@@ -1478,6 +1485,7 @@ def _run_pipeline_impl(
         # sync transaction) and synthesis silently exits via the
         # early-return guard, leaving no ActionPlan and no log line.
         session.commit()
+        _plan_diag["sync_commit_ok"] = True
 
         async def _run_plan_synthesis() -> None:
             async with _async_session_factory() as async_db:
@@ -1489,6 +1497,9 @@ def _run_pipeline_impl(
 
                 async_tenant = await async_db.get(_TenantModel, tenant.id)
                 async_ix = await async_db.get(_IxModel, interaction.id)
+                _plan_diag["async_session_opened"] = True
+                _plan_diag["async_tenant_loaded"] = async_tenant is not None
+                _plan_diag["async_ix_loaded"] = async_ix is not None
                 if async_tenant is None or async_ix is None:
                     # Loud log so this can't go unnoticed again. If we
                     # ever see "tenant_missing=True" or "ix_missing=True"
@@ -1502,6 +1513,7 @@ def _run_pipeline_impl(
                         async_tenant is None,
                         async_ix is None,
                     )
+                    _plan_diag["early_return_reason"] = "rows_not_visible"
                     return
                 try:
                     txt = compressed_for_llm or ""
@@ -1511,6 +1523,7 @@ def _run_pipeline_impl(
                     "Action plan synthesis entering synthesize() for interaction %s",
                     interaction.id,
                 )
+                _plan_diag["synthesize_started"] = True
                 _result = await synthesizer.synthesize(
                     async_db,
                     SynthesisInputs(
@@ -1522,7 +1535,11 @@ def _run_pipeline_impl(
                         acting_user_id=async_ix.agent_id,
                     ),
                 )
+                _plan_diag["synthesize_returned"] = True
+                _plan_diag["new_plan_id"] = str(_result.plan_id)
+                _plan_diag["new_step_count"] = len(_result.steps or [])
                 await async_db.commit()
+                _plan_diag["async_commit_ok"] = True
                 logger.info(
                     "Action plan synthesis SUCCESS for interaction %s: plan_id=%s steps=%d domain=%s",
                     interaction.id,
@@ -1537,12 +1554,35 @@ def _run_pipeline_impl(
             "Action plan synthesis failed for interaction %s (non-fatal): %s",
             interaction.id, _plan_exc,
         )
-    except Exception:
+        _plan_diag["caught_kind"] = "SynthesisFailedError"
+        _plan_diag["caught_error"] = str(_plan_exc)[:200]
+    except Exception as _plan_exc_other:  # noqa: BLE001
         logger.exception(
             "Action plan synthesis raised unexpectedly for interaction %s "
             "(non-fatal); pipeline continues",
             interaction.id,
         )
+        _plan_diag["caught_kind"] = type(_plan_exc_other).__name__
+        _plan_diag["caught_error"] = str(_plan_exc_other)[:200]
+        import traceback as _tb
+        _plan_diag["caught_traceback"] = _tb.format_exc()[:2000]
+    finally:
+        # Persist the diagnostic so we can read it via the standard
+        # interaction-detail endpoint. This is the only signal we
+        # currently have visibility into without Fly log access.
+        try:
+            current = dict(interaction.insights or {})
+            current["_plan_synthesis_diag"] = _plan_diag
+            interaction.insights = current
+            from sqlalchemy import update as _sql_update_diag
+            session.execute(
+                _sql_update_diag(Interaction)
+                .where(Interaction.id == interaction.id)
+                .values(insights=current)
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to stamp _plan_synthesis_diag on interaction")
 
     # ── Step 15: Insert interaction scores ───────────────────────────
     for sc in scorecard_results:
