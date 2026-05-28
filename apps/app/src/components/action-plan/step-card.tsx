@@ -204,7 +204,7 @@ function ParticipantsBlock({ step }: { step: ActionStep }) {
                 {step.participants.map((p, i) => (
                     <li key={i}>
                         <span className="font-medium">{p.name ?? "(unnamed)"}</span>
-                        {p.role ? <span className="text-slate-500"> — {p.role}</span> : null}
+                        {p.role ? <span className="text-slate-500">. {p.role}</span> : null}
                         {p.side ? (
                             <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                                 {p.side}

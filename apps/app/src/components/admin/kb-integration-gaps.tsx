@@ -48,7 +48,7 @@ export function KbIntegrationGapsReport() {
                         Procedures in your knowledge base that reference
                         integrations you haven't connected. The action plan
                         synthesizer won't suggest steps targeting unconnected
-                        providers — these need either a connection or a
+                        providers. these need either a connection or a
                         procedure revision.
                     </p>
                 </div>

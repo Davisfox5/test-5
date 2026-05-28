@@ -284,7 +284,7 @@ export default function InteractionDetailPage() {
                                 </p>
                             ) : (
                                 <p className="mt-3 text-sm text-text-subtle">
-                                    No summary yet — analysis is still in
+                                    No summary yet. analysis is still in
                                     progress or wasn&apos;t able to produce one.
                                 </p>
                             )}
@@ -303,7 +303,7 @@ export default function InteractionDetailPage() {
                                                       i.insights
                                                           .sentiment_overall,
                                                   )
-                                                : "—"
+                                                : "-"
                                         }
                                         accent={sent.tone}
                                         accentText={sent.text}
@@ -313,7 +313,7 @@ export default function InteractionDetailPage() {
                                         value={
                                             (i.insights?.churn_risk_signal as
                                                 | string
-                                                | undefined) ?? "—"
+                                                | undefined) ?? "-"
                                         }
                                     />
                                     <ScoreRow
@@ -321,7 +321,7 @@ export default function InteractionDetailPage() {
                                         value={
                                             (i.insights?.upsell_signal as
                                                 | string
-                                                | undefined) ?? "—"
+                                                | undefined) ?? "-"
                                         }
                                     />
                                     <ScoreRow
@@ -329,7 +329,7 @@ export default function InteractionDetailPage() {
                                         value={
                                             i.complexity_score != null
                                                 ? i.complexity_score.toFixed(2)
-                                                : "—"
+                                                : "-"
                                         }
                                     />
                                     <ScoreRow
@@ -1069,7 +1069,7 @@ function CoachingTab({
 
     return (
         <div className="space-y-6">
-            {/* Rapport gauge — LSM (transcript) + vocal accommodation
+            {/* Rapport gauge. LSM (transcript) + vocal accommodation
                 (audio-prosody). Either half is enough to render; the
                 composite ``rapport.overall`` blends both when both are
                 present. Hidden only when neither half computed. */}
@@ -1081,7 +1081,7 @@ function CoachingTab({
                 Reinforcement parity: "What went well" sits left of
                 "Try next time" so the rep sees the positive read first.
                 We deliberately render both columns even when one side
-                is empty — an empty "well done" column is a stronger
+                is empty. an empty "well done" column is a stronger
                 signal than no column at all.
             */}
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -1131,15 +1131,15 @@ function CoachingTab({
                 </section>
             </div>
 
-            {/* Evidence + rubric — Phase 3 surfacing. */}
+            {/* Evidence + rubric. Phase 3 surfacing. */}
             {(evidence || rubric) && (
                 <section className="rounded-lg border border-border bg-bg-card p-5">
                     <h3 className="text-sm font-semibold">
                         Evidence-derived rubric
                     </h3>
                     <p className="mt-1 text-xs text-text-subtle">
-                        Computed deterministically from counted moments in the
-                        transcript — not from a model&apos;s gut feel.
+                        Each score is derived from concrete moments in the
+                        call. Hover any cell to see how it&apos;s computed.
                     </p>
                     <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                         <RubricCell
@@ -1186,7 +1186,7 @@ function CoachingTab({
                 </section>
             )}
 
-            {/* Notable snippets — LLM has been emitting these since
+            {/* Notable snippets. LLM has been emitting these since
                 Phase 5b but no UI surface rendered them. They live here
                 because they double as coaching artifacts (manager picks
                 a great moment to share with the team). */}
@@ -1236,7 +1236,7 @@ function RapportCard({
                     <p className="mt-1 text-xs text-text-subtle">
                         Composite of Linguistic Style Matching (function-word
                         mirroring) and vocal accommodation (prosodic
-                        convergence). Both halves are deterministic —
+                        convergence). Both halves are deterministic -
                         no model gut-feel.
                     </p>
                 </div>
@@ -1307,8 +1307,8 @@ function NotableSnippetsCard({
             <header>
                 <h3 className="text-sm font-semibold">Notable moments</h3>
                 <p className="mt-1 text-xs text-text-subtle">
-                    Linda flagged these as worth bookmarking — share-able
-                    coaching artifacts.
+                    Specific moments worth re-listening to and sharing with
+                    the team.
                 </p>
             </header>
             <ul className="mt-3 space-y-2">
@@ -1331,7 +1331,7 @@ function NotableSnippetsCard({
                                 {s.start_time && (
                                     <span className="text-[11px] text-text-subtle">
                                         {s.start_time}
-                                        {s.end_time ? ` – ${s.end_time}` : ""}
+                                        {s.end_time ? ` to ${s.end_time}` : ""}
                                     </span>
                                 )}
                             </div>
@@ -1377,7 +1377,7 @@ function RubricCell({
                 {label}
             </div>
             <div className="mt-1 text-lg font-semibold text-text">
-                {pct != null ? `${pct}%` : "—"}
+                {pct != null ? `${pct}%` : "-"}
             </div>
             {sub ? (
                 <div className="text-[11px] text-text-muted">{sub}</div>

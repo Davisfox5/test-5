@@ -130,7 +130,7 @@ export function AuditLogSection() {
 
                     <div className="flex items-center justify-between text-xs text-text-subtle">
                         <span>
-                            Showing {data.offset + 1}–
+                            Showing {data.offset + 1}-
                             {data.offset + data.items.length} of {data.total}
                         </span>
                         <div className="space-x-2">
@@ -215,13 +215,13 @@ function DiffPanel({ row }: { row: AuditLogRow }) {
                     <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-border bg-bg p-2 font-mono">
                         {row.before
                             ? JSON.stringify(row.before, null, 2)
-                            : "—"}
+                            : "-"}
                     </pre>
                 </div>
                 <div>
                     <p className="font-medium text-text-subtle">After</p>
                     <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-border bg-bg p-2 font-mono">
-                        {row.after ? JSON.stringify(row.after, null, 2) : "—"}
+                        {row.after ? JSON.stringify(row.after, null, 2) : "-"}
                     </pre>
                 </div>
             </div>

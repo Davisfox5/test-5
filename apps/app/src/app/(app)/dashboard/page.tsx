@@ -137,11 +137,11 @@ export default function DashboardPage() {
                                           tenant.trial_ends_at,
                                       ).toLocaleDateString()}`
                                     : ""}{" "}
-                                — Linda is listening.
+                               . Linda is listening.
                             </>
                         ) : tenant.trial_expired ? (
                             <>
-                                Your trial has ended — upgrade to keep analyzing
+                                Your trial has ended. upgrade to keep analyzing
                                 calls.
                             </>
                         ) : (
@@ -153,7 +153,7 @@ export default function DashboardPage() {
                     (top-right). No duplicate badge here. */}
             </header>
 
-            {/* Quick actions — persistent (no longer empty-state-only) */}
+            {/* Quick actions. persistent (no longer empty-state-only) */}
             <QuickActionStrip
                 onUpload={() => setUploadOpen(true)}
                 onInvite={() => setInviteOpen(true)}
@@ -189,7 +189,7 @@ export default function DashboardPage() {
                 </div>
             </div>
 
-            {/* KPI cards — replaced AI Health with QA Score; added rapport, churn, upsell */}
+            {/* KPI cards. replaced AI Health with QA Score; added rapport, churn, upsell */}
             <section className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
                 <StatCard
                     label="Calls"
@@ -197,7 +197,7 @@ export default function DashboardPage() {
                     value={
                         summary.data
                             ? String(summary.data.total_interactions)
-                            : "—"
+                            : "-"
                     }
                     delta={summary.data?.prev_period_deltas?.total_interactions_pct}
                     help="Total number of calls Linda analyzed in the selected period."
@@ -209,7 +209,7 @@ export default function DashboardPage() {
                     value={
                         summary.data
                             ? String(summary.data.action_items_open)
-                            : "—"
+                            : "-"
                     }
                     hint={
                         summary.data && summary.data.overdue_action_items > 0
@@ -221,7 +221,7 @@ export default function DashboardPage() {
                             ? "rose"
                             : "subtle"
                     }
-                    help="Open follow-ups Linda extracted from your calls — things a rep committed to do or you owe a customer."
+                    help="Open follow-ups Linda extracted from your calls. things a rep committed to do or you owe a customer."
                     href="/action-items"
                 />
                 <StatCard
@@ -230,7 +230,7 @@ export default function DashboardPage() {
                     value={
                         summary.data?.avg_sentiment_score != null
                             ? summary.data.avg_sentiment_score.toFixed(1)
-                            : "—"
+                            : "-"
                     }
                     suffix={
                         summary.data?.avg_sentiment_score != null
@@ -238,7 +238,7 @@ export default function DashboardPage() {
                             : undefined
                     }
                     delta={summary.data?.prev_period_deltas?.avg_sentiment_pct}
-                    help="Average customer mood across every call in this period, scored 0–10 by Linda after reading the transcript."
+                    help="Average customer mood across every call in this period, scored 0-10 by Linda after reading the transcript."
                     href="/coaching#metric-sentiment"
                 />
                 <StatCard
@@ -247,7 +247,7 @@ export default function DashboardPage() {
                     value={
                         summary.data?.avg_qa_score != null
                             ? summary.data.avg_qa_score.toFixed(0)
-                            : "—"
+                            : "-"
                     }
                     suffix={
                         summary.data?.avg_qa_score != null
@@ -264,12 +264,12 @@ export default function DashboardPage() {
                     value={
                         summary.data?.avg_rapport != null
                             ? Math.round(summary.data.avg_rapport * 100).toString()
-                            : "—"
+                            : "-"
                     }
                     suffix={
                         summary.data?.avg_rapport != null ? "/ 100" : undefined
                     }
-                    help="How much the rep mirrored the customer's word choice and rhythm — a 0–100 indicator of conversational connection."
+                    help="How much the rep mirrored the customer's word choice and rhythm. a 0-100 indicator of conversational connection."
                     href="/coaching#metric-rapport"
                 />
                 <StatCard
@@ -281,7 +281,7 @@ export default function DashboardPage() {
                                   manager.data.talk_listen.tenant_avg_talk_pct *
                                       100,
                               ).toString()
-                            : "—"
+                            : "-"
                     }
                     suffix={
                         manager.data?.talk_listen.tenant_avg_talk_pct != null
@@ -303,7 +303,7 @@ export default function DashboardPage() {
                     avg={signals.data?.avg_churn_risk ?? null}
                     loading={summary.isLoading}
                     href="/customers?tab=at-risk"
-                    help="Calls in this period where Linda heard cancellation signals, dissatisfaction, or warning language — sized 0 to 1."
+                    help="Calls in this period where Linda heard cancellation signals, dissatisfaction, or warning language. sized 0 to 1."
                 />
                 <SignalCard
                     title="Upsell opportunity"
@@ -312,11 +312,11 @@ export default function DashboardPage() {
                     avg={signals.data?.avg_upsell_score ?? null}
                     loading={summary.isLoading}
                     href="/customers?tab=upsells"
-                    help="Calls in this period where Linda heard buying signals — interest in upgrades, more seats, or expanded use — sized 0 to 1."
+                    help="Calls in this period where Linda heard buying signals. interest in upgrades, more seats, or expanded use. sized 0 to 1."
                 />
             </section>
 
-            {/* Pipeline alerts — show only if there's something to alert on */}
+            {/* Pipeline alerts. show only if there's something to alert on */}
             {summary.data &&
             (summary.data.flagged_for_review_count > 0 ||
                 summary.data.failed_count > 0 ||
@@ -339,7 +339,7 @@ export default function DashboardPage() {
                             tone="amber"
                             href="/interactions?tab=needs-review&status=flagged_for_review"
                             label={`${summary.data.flagged_for_review_count} awaiting review`}
-                            help="Calls where Linda's confidence was low — a manager should glance before trusting the analysis."
+                            help="Calls where Linda's confidence was low. a manager should glance before trusting the analysis."
                         />
                     )}
                     {summary.data.failed_count > 0 && (
@@ -347,7 +347,7 @@ export default function DashboardPage() {
                             tone="rose"
                             href="/interactions?tab=needs-review&status=failed"
                             label={`${summary.data.failed_count} failed`}
-                            help="Calls that errored during analysis — open one to see the reason and retry."
+                            help="Calls that errored during analysis. open one to see the reason and retry."
                         />
                     )}
                     {summary.data.processing_count > 0 && (
@@ -355,16 +355,16 @@ export default function DashboardPage() {
                             tone="amber"
                             href="/interactions?tab=needs-review&status=processing"
                             label={`${summary.data.processing_count} processing`}
-                            help="Calls Linda is currently transcribing or analyzing — they'll appear in Recent calls once done."
+                            help="Calls Linda is currently transcribing or analyzing. they'll appear in Recent calls once done."
                         />
                     )}
                 </section>
             ) : null}
 
-            {/* Trends chart — calls + sentiment + QA + rapport */}
+            {/* Trends chart. calls + sentiment + QA + rapport */}
             <Panel
                 title={`Trends · last ${period}`}
-                help="Bars are daily call volume; the three lines are average sentiment, QA score, and rapport — all rescaled to a shared 0–100 axis so you can spot drift at a glance."
+                help="Bars are daily call volume; the three lines are average sentiment, QA score, and rapport. all rescaled to a shared 0-100 axis so you can spot drift at a glance."
             >
                 {trends.isLoading ? (
                     <div className="px-3 py-6 text-sm text-text-subtle">
@@ -416,7 +416,7 @@ export default function DashboardPage() {
                     ) : (
                         <EmptyPanel
                             title="No calls yet"
-                            body="Upload your first recording — Linda will transcribe and surface the moments that matter."
+                            body="Upload your first recording. Linda will transcribe and surface the moments that matter."
                             cta={{
                                 href: "/interactions",
                                 label: "Upload your first call",
@@ -427,7 +427,7 @@ export default function DashboardPage() {
 
                 <Panel
                     title="Open action items"
-                    help="The five most recent open follow-ups Linda pulled out of your calls — assignee, due date, and priority included."
+                    help="The five most recent open follow-ups Linda pulled out of your calls. assignee, due date, and priority included."
                     action={
                         <Link
                             href="/action-items"
@@ -449,7 +449,7 @@ export default function DashboardPage() {
                         </ul>
                     ) : (
                         <EmptyPanel
-                            title="Nothing to do — yet"
+                            title="Nothing to do. yet"
                             body="Linda flags follow-ups from each call here once one's processed."
                         />
                     )}
@@ -460,7 +460,7 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <Panel
                     title="By channel"
-                    help="How your call volume splits across voice, email, and chat in the selected period — and the average sentiment for each."
+                    help="How your call volume splits across voice, email, and chat in the selected period. and the average sentiment for each."
                 >
                     {business.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -518,7 +518,7 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <Panel
                     title="Coaching focus"
-                    help="The single coaching theme to work on this week, plus a 'keep doing' reinforcing strength — picked from across all recent calls."
+                    help="The single coaching theme to work on this week, plus a 'keep doing' reinforcing strength. picked from across all recent calls."
                 >
                     {coaching.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -543,7 +543,7 @@ export default function DashboardPage() {
 
                 <Panel
                     title="Top blockers"
-                    help="The objections and compliance gaps Linda has heard most often across recent calls — fix these and your win rate climbs."
+                    help="The objections and compliance gaps Linda has heard most often across recent calls. fix these and your win rate climbs."
                 >
                     {coaching.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -581,7 +581,7 @@ export default function DashboardPage() {
             <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <Panel
                     title="At-risk accounts"
-                    help="Customers whose most recent call showed the strongest cancellation signals — call them before they cancel."
+                    help="Customers whose most recent call showed the strongest cancellation signals. call them before they cancel."
                 >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -602,7 +602,7 @@ export default function DashboardPage() {
                 </Panel>
                 <Panel
                     title="Expansion opportunities"
-                    help="Customers whose most recent call showed the strongest buying signals — these are your warmest upsell targets right now."
+                    help="Customers whose most recent call showed the strongest buying signals. these are your warmest upsell targets right now."
                 >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -623,7 +623,7 @@ export default function DashboardPage() {
                 </Panel>
                 <Panel
                     title="Stale accounts"
-                    help="Customers you haven't spoken to in 30+ days — a nudge here often prevents a quiet churn later."
+                    help="Customers you haven't spoken to in 30+ days. a nudge here often prevents a quiet churn later."
                 >
                     {accounts.isLoading ? (
                         <RowSkeleton rows={3} />
@@ -663,7 +663,7 @@ export default function DashboardPage() {
                 />
             </Panel>
 
-            {/* Quick start — only when truly empty */}
+            {/* Quick start. only when truly empty */}
             {isEmpty ? (
                 <section className="rounded-lg border border-border bg-bg-card p-6">
                     <h3 className="text-sm font-semibold text-text-muted">
@@ -695,7 +695,7 @@ export default function DashboardPage() {
                 </section>
             ) : null}
 
-            {/* Quick-action dialogs — mounted at the page root so the
+            {/* Quick-action dialogs. mounted at the page root so the
                 modal overlay sits above the dashboard grid. */}
             <UploadModal
                 open={uploadOpen}
@@ -925,7 +925,7 @@ function QuickActionStrip({
             <span className="mr-1 text-xs uppercase tracking-wide text-text-subtle">
                 Quick actions
             </span>
-            <HelpTip text="One-click entry points to the things you do most often on Linda — start here." />
+            <HelpTip text="One-click entry points to the things you do most often on Linda. start here." />
             <button
                 type="button"
                 onClick={onUpload}
@@ -933,7 +933,7 @@ function QuickActionStrip({
             >
                 + Upload a call
             </button>
-            {/* Connect CRM stays as a direct link to Settings for now —
+            {/* Connect CRM stays as a direct link to Settings for now -
                 Settings is slated for a redesign, so revisit this when the
                 CRM-connections deep link gets a stable hash. */}
             <Link
@@ -949,7 +949,7 @@ function QuickActionStrip({
             >
                 Invite teammates
             </button>
-            {/* Notifications button removed — the bell in the global
+            {/* Notifications button removed. the bell in the global
                 app-shell header is the single entry point now. */}
         </section>
     );
@@ -1016,7 +1016,7 @@ function CoachingFocus({
         <div className="space-y-3 px-3 py-3">
             <div className="grid grid-cols-2 gap-3">
                 <Mini label="Script adherence">
-                    {adherencePct != null ? `${adherencePct}%` : "—"}
+                    {adherencePct != null ? `${adherencePct}%` : "-"}
                 </Mini>
                 <Mini label="Methodology">
                     {methodology && methodology.length > 0
@@ -1026,7 +1026,7 @@ function CoachingFocus({
                                       `${m.framework}: ${
                                           m.avg_coverage_ratio != null
                                               ? `${Math.round(m.avg_coverage_ratio * 100)}%`
-                                              : "—"
+                                              : "-"
                                       }`,
                               )
                               .join(" · ")
@@ -1111,7 +1111,7 @@ function AccountList({
                                     : "no contact"
                                 : r.score != null
                                   ? r.score.toFixed(2)
-                                  : "—"}
+                                  : "-"}
                         </span>
                     </Link>
                 </li>
@@ -1240,7 +1240,7 @@ function ActionItemRow({ item }: { item: ActionItemOut }) {
                         {item.priority} · due{" "}
                         {item.due_date
                             ? new Date(item.due_date).toLocaleDateString()
-                            : "—"}
+                            : "-"}
                     </div>
                 </div>
                 <span className="text-xs uppercase tracking-wide text-text-subtle">

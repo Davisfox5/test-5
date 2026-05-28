@@ -177,7 +177,7 @@ export function CallDynamicsChart({
                         fill="var(--primary)"
                     >
                         <title>
-                            {formatSeconds(p.t)} — sentiment {p.score.toFixed(1)}/10
+                            {formatSeconds(p.t)}. sentiment {p.score.toFixed(1)}/10
                         </title>
                     </circle>
                 ))}
@@ -242,7 +242,7 @@ export function CallDynamicsChart({
                                     }}
                                 >
                                     <title>
-                                        {formatSeconds(t)} —{" "}
+                                        {formatSeconds(t)} -{" "}
                                         {cluster.items
                                             .slice(0, 3)
                                             .map(
@@ -326,9 +326,8 @@ export function CallDynamicsChart({
                 </div>
             )}
             <p className="mt-1 text-xs text-text-subtle">
-                Hover a point for the score. Vocal energy + rep talk-density
-                layers slot in here once the upstream signals are wired
-                through to the analysis output.
+                Hover any point for the timestamp and score. Click anywhere
+                on the chart to jump the transcript to that moment.
             </p>
         </section>
     );

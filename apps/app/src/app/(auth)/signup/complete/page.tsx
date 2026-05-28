@@ -103,7 +103,7 @@ export default function TrialSignupCompletePage() {
                 <>
                     <h1 className="text-xl font-bold">Setting up your sandbox…</h1>
                     <p className="text-text-muted">
-                        Provisioning your workspace — this takes a few seconds.
+                        Provisioning your workspace. this takes a few seconds.
                     </p>
                 </>
             )}

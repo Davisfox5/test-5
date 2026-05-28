@@ -37,9 +37,9 @@ function readTab(value: string | null): Tab {
 }
 
 function fmtDate(value: string | null | undefined): string {
-    if (!value) return "—";
+    if (!value) return "-";
     const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return "—";
+    if (Number.isNaN(d.getTime())) return "-";
     return d.toLocaleDateString();
 }
 
@@ -108,7 +108,7 @@ export default function ActionItemsPage() {
                 <div>
                     <h2 className="text-2xl font-bold">Action items</h2>
                     <p className="text-text-muted mt-1">
-                        Everything Linda pulled out of your calls — assign, snooze, or close.
+                        Everything Linda pulled out of your calls. assign, snooze, or close.
                     </p>
                 </div>
                 <div className="inline-flex rounded-lg border border-border bg-bg-card p-1">
@@ -231,7 +231,7 @@ export default function ActionItemsPage() {
                                         item.assigned_to
                                             ? usersById.get(item.assigned_to) ??
                                               item.assigned_to
-                                            : "—"
+                                            : "-"
                                     }
                                     onMarkDone={() =>
                                         update.mutate({
@@ -300,7 +300,7 @@ function Row({
             >
                 <td className="px-4 py-3 font-medium">{item.title}</td>
                 <td className="px-4 py-3 text-text-muted">
-                    {item.category ?? "—"}
+                    {item.category ?? "-"}
                 </td>
                 <td className="px-4 py-3 text-text-muted">{assigneeLabel}</td>
                 <td className="px-4 py-3 text-text-muted">

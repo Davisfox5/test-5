@@ -10,7 +10,6 @@ import {
     useTenantUsers,
 } from "@/lib/action-items";
 import { ActionItemComments } from "./action-item-comments";
-import { useContextDrawer } from "../context-drawer/context-drawer";
 
 /**
  * Action Item Card — compact + expanded.
@@ -156,10 +155,10 @@ function ChannelBlock({ item }: { item: ActionItem }) {
                     {channelIconFor(item.recommended_channel)}
                 </span>
                 <span className="font-medium capitalize">
-                    {item.recommended_channel?.replace("_", " ") || "—"}
+                    {item.recommended_channel?.replace("_", " ") || "-"}
                 </span>
                 {item.channel_reasoning && (
-                    <span className="text-text-muted"> — {item.channel_reasoning}</span>
+                    <span className="text-text-muted">. {item.channel_reasoning}</span>
                 )}
             </p>
             {item.recommended_channel === "phone_call" &&
@@ -253,7 +252,7 @@ function SuggestedAttachmentsBlock({ item }: { item: ActionItem }) {
                     <li key={i}>
                         <span className="font-medium">{a.title}</span>
                         {a.reason && (
-                            <span className="text-text-muted"> — {a.reason}</span>
+                            <span className="text-text-muted">. {a.reason}</span>
                         )}
                     </li>
                 ))}
@@ -269,7 +268,6 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
     const returnItem = useReturnActionItem();
     const schedule = useScheduleMeeting();
     const feedback = useActionItemFeedback();
-    const drawer = useContextDrawer();
     const { data: users = [] } = useTenantUsers();
 
     const [showSnooze, setShowSnooze] = useState(false);
@@ -358,24 +356,14 @@ function ActionButtonRow({ item }: { item: ActionItem }) {
                         Return
                     </button>
                 )}
-                <button
-                    type="button"
-                    onClick={() =>
-                        drawer.open({
-                            title: "Source moment",
-                            body: (
-                                <p className="text-sm text-text-muted">
-                                    Source linkage from action item to transcript.
-                                    Wire-up of timestamp jumping ships with the
-                                    transcript-tab redesign.
-                                </p>
-                            ),
-                        })
-                    }
-                    className="rounded border border-border bg-card px-3 py-1.5 text-sm hover:bg-card-hover"
-                >
-                    Jump to source
-                </button>
+                {item.interaction_id && (
+                    <a
+                        href={`/interactions/${item.interaction_id}#transcript`}
+                        className="rounded border border-border bg-card px-3 py-1.5 text-sm hover:bg-card-hover"
+                    >
+                        Open source call
+                    </a>
+                )}
                 <FeedbackButtons
                     score={item.feedback_score ?? 0}
                     onClick={(helpful) =>
@@ -595,7 +583,7 @@ function ReassignForm({
                 onChange={(e) => setSelected(e.target.value)}
                 className="w-full rounded border border-border bg-card px-2 py-1 text-sm text-text"
             >
-                <option value="">— Unassigned —</option>
+                <option value="">- Unassigned -</option>
                 {users.map((u) => (
                     <option key={u.id} value={u.id}>
                         {u.name || u.id}

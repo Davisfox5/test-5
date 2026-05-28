@@ -138,7 +138,7 @@ export default function CoachingPage() {
                 />
             )}
 
-            {/* Metric drilldowns — dashboard KPI cards deep-link here via
+            {/* Metric drilldowns. dashboard KPI cards deep-link here via
                 hash anchors (#metric-sentiment / -qa / -rapport /
                 -talk-listen). Plain-language explanation of each metric
                 + how it's calculated; the live-coaching widgets above
@@ -164,59 +164,59 @@ function MetricsDrilldown() {
             <MetricBlock
                 id="metric-sentiment"
                 title="Average sentiment"
-                scale="0–10 scale"
+                scale="0-10 scale"
                 description="How positive the customer's tone is on a call, scored 0 (frustrated, hostile) to 10 (delighted, advocating). The number on the dashboard is the simple mean across every analyzed call in the selected period."
                 calculation={[
                     "Linda passes the full transcript to Claude with an instruction to score the customer's overall emotional valence on a 0-to-10 scale, calibrated against a small reference set of labeled calls.",
-                    "Calls where the customer barely speaks (one-sided rep monologue) are still scored but with lower confidence — those get filtered out of the trend line if the customer-speech duration is under 10% of the call.",
+                    "Calls where the customer barely speaks (one-sided rep monologue) are still scored but with lower confidence. those get filtered out of the trend line if the customer-speech duration is under 10% of the call.",
                 ]}
                 howToUse={[
                     "Spotting drift: a 3-week downward slope is a stronger signal than any single call. Use the Trends chart for this.",
-                    "Don't optimize for the number itself — chasing high sentiment can lead reps to avoid hard conversations. Customers giving you bad news is a HEALTHY signal, not a bad one.",
+                    "Don't optimize for the number itself. chasing high sentiment can lead reps to avoid hard conversations. Customers giving you bad news is a HEALTHY signal, not a bad one.",
                 ]}
             />
 
             <MetricBlock
                 id="metric-qa"
                 title="QA score"
-                scale="0–100 scale"
+                scale="0-100 scale"
                 description="How well each call performs against your team's custom scorecards. Each scorecard is a weighted rubric (e.g. 'opened with permission' / 'recapped at the end') and every call gets one composite score."
                 calculation={[
-                    "Each scorecard rubric criterion is scored individually (0–5 typically) by Linda based on the transcript. Criteria are weight-multiplied and summed, then normalized to a 0–100 scale.",
-                    "Calls without an applicable scorecard show as null — the metric average on the dashboard skips them. If your dashboard shows '—' for QA score, you likely haven't configured a scorecard yet.",
+                    "Each scorecard rubric criterion is scored individually (0-5 typically) by Linda based on the transcript. Criteria are weight-multiplied and summed, then normalized to a 0-100 scale.",
+                    "Calls without an applicable scorecard show as null. the metric average on the dashboard skips them. If your dashboard shows '-' for QA score, you likely haven't configured a scorecard yet.",
                 ]}
                 howToUse={[
                     "Coach to the criterion, not the total: 'your discovery score is low' is actionable; 'your QA score is low' is not.",
-                    "Calibrate scorecards monthly. If 90% of calls score above 80, the scorecard isn't discriminating — make the criteria harder.",
+                    "Calibrate scorecards monthly. If 90% of calls score above 80, the scorecard isn't discriminating. make the criteria harder.",
                 ]}
             />
 
             <MetricBlock
                 id="metric-rapport"
                 title="Rapport (LSM)"
-                scale="0–100 scale (rescaled from 0–1)"
-                description="Linguistic Style Matching — a measure of how much the rep mirrored the customer's word choice and rhythm. High LSM correlates with conversational connection and is one of the strongest predictors of repeat business."
+                scale="0-100 scale (rescaled from 0-1)"
+                description="Linguistic Style Matching. a measure of how much the rep mirrored the customer's word choice and rhythm. High LSM correlates with conversational connection and is one of the strongest predictors of repeat business."
                 calculation={[
                     "We tokenize both speakers' turns and compute, for each function-word category (pronouns, articles, conjunctions, etc.), how often each speaker uses words in that category. LSM = 1 - normalized absolute difference, averaged across categories.",
-                    "Result is 0 to 1; we display 0 to 100 for legibility. Single-speaker calls (earnings-call monologues) don't generate a score — they need two-sided dialogue.",
+                    "Result is 0 to 1; we display 0 to 100 for legibility. Single-speaker calls (earnings-call monologues) don't generate a score. they need two-sided dialogue.",
                 ]}
                 howToUse={[
                     "Below 60: rep is talking past the customer (using different vocabulary, formality). Coach toward active mirroring.",
-                    "Above 85: very strong rapport. Cross-reference with sentiment — if rapport is high and sentiment is low, the customer is COMFORTABLE telling the rep bad news, which is its own kind of trust signal.",
+                    "Above 85: very strong rapport. Cross-reference with sentiment. if rapport is high and sentiment is low, the customer is COMFORTABLE telling the rep bad news, which is its own kind of trust signal.",
                 ]}
             />
 
             <MetricBlock
                 id="metric-talk-listen"
                 title="Talk %"
-                scale="0–100% (rep share of speaking time)"
-                description="What fraction of the call the rep was speaking, averaged across all reps in the selected period. Industry benchmarks for sales discovery: 40–55% rep is healthy; over 65% usually correlates with worse outcomes."
+                scale="0-100% (rep share of speaking time)"
+                description="What fraction of the call the rep was speaking, averaged across all reps in the selected period. Industry benchmarks for sales discovery: 40-55% rep is healthy; over 65% usually correlates with worse outcomes."
                 calculation={[
                     "We diarize the call (separate speaker tracks) and compute the rep's total speaking seconds divided by total call seconds (excluding silence). Aggregation is a simple mean across calls.",
-                    "Inbound support calls naturally skew higher rep-talk (rep is delivering information). The benchmark of 40–55% applies to sales discovery; calibrate to your context.",
+                    "Inbound support calls naturally skew higher rep-talk (rep is delivering information). The benchmark of 40-55% applies to sales discovery; calibrate to your context.",
                 ]}
                 howToUse={[
-                    "Watch the per-rep distribution, not the tenant average. A single rep at 75% drags the team mean — coach that rep specifically.",
+                    "Watch the per-rep distribution, not the tenant average. A single rep at 75% drags the team mean. coach that rep specifically.",
                     "Pair with sentiment: high talk % + low sentiment = rep is steamrolling. High talk % + high sentiment = customer was already sold and just wanted info.",
                 ]}
             />
@@ -336,7 +336,7 @@ function IdleLayout(props: IdleProps) {
                         Start a coaching session.
                     </h3>
                     <p className="text-sm text-text-muted mt-1">
-                        Pick an agent and an interaction source — Linda
+                        Pick an agent and an interaction source. Linda
                         will start streaming once the WebSocket opens.
                     </p>
                 </div>
@@ -463,7 +463,7 @@ function IdleLayout(props: IdleProps) {
                     </div>
                 ) : (sessions.data?.items?.length ?? 0) === 0 ? (
                     <div className="px-5 py-6 text-sm text-text-muted">
-                        No coaching sessions yet — start one to the left
+                        No coaching sessions yet. start one to the left
                         and the recent list will fill in.
                     </div>
                 ) : (
@@ -485,7 +485,7 @@ function SessionRow({ session }: { session: CoachingSessionRow }) {
             ? `${Math.floor(session.duration_seconds / 60)}m ${session.duration_seconds % 60}s`
             : session.status === "active"
               ? "live"
-              : "—";
+              : "-";
     return (
         <li className="px-5 py-3 flex items-center justify-between gap-4">
             <div className="min-w-0">
@@ -629,7 +629,7 @@ function SuggestionsPanel({ suggestions }: { suggestions: SuggestionCard[] }) {
             <div className="h-[60vh] overflow-y-auto px-3 py-3 space-y-2">
                 {suggestions.length === 0 ? (
                     <div className="text-text-muted px-1 py-2 text-sm">
-                        No suggestions yet — Linda will surface them as
+                        No suggestions yet. Linda will surface them as
                         the call progresses.
                     </div>
                 ) : (

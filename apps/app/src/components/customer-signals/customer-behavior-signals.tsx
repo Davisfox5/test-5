@@ -26,7 +26,7 @@ export function CustomerBehaviorSignals({ customerId }: { customerId: string }) 
         return (
             <div className="rounded-lg border border-border bg-bg-card p-5">
                 <p className="text-sm text-text-subtle">
-                    No behavior signals yet — they accrue as calls are analyzed.
+                    No behavior signals yet. they accrue as calls are analyzed.
                 </p>
             </div>
         );
@@ -105,7 +105,7 @@ function BehaviorRadar({ values }: { values: BehaviorRadarValues }) {
                 role="img"
                 aria-label="Customer behavior radar"
             >
-                {/* Background grid — concentric polygons. */}
+                {/* Background grid. concentric polygons. */}
                 {levels.map((level) => (
                     <polygon
                         key={level}
@@ -143,7 +143,7 @@ function BehaviorRadar({ values }: { values: BehaviorRadarValues }) {
                     strokeWidth={1.5}
                     fillOpacity={0.5}
                 />
-                {/* Labels — placed slightly outside each axis tip. */}
+                {/* Labels. placed slightly outside each axis tip. */}
                 {AXES.map((axis, i) => {
                     const angle = (Math.PI * 2 * i) / AXES.length - Math.PI / 2;
                     const lx = cx + Math.cos(angle) * (r + 18);

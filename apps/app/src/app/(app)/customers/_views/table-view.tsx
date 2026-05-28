@@ -73,7 +73,7 @@ function Row({ c }: { c: CustomerListItem }) {
                         </div>
                     </Link>
                 ) : (
-                    <span className="text-text-subtle">—</span>
+                    <span className="text-text-subtle">-</span>
                 )}
             </td>
             <td className="px-4 py-3">
@@ -97,7 +97,7 @@ function Row({ c }: { c: CustomerListItem }) {
                         </div>
                     </div>
                 ) : (
-                    <span className="text-text-subtle">—</span>
+                    <span className="text-text-subtle">-</span>
                 )}
             </td>
             <td className={`px-4 py-3 ${churn.cls}`}>{churn.label}</td>

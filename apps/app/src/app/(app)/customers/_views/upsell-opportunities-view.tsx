@@ -41,8 +41,8 @@ export function UpsellOpportunitiesView() {
                 ) : rows.length === 0 ? (
                     <p className="px-5 py-10 text-center text-sm text-text-muted">
                         No upsell signals detected yet. Once Linda hears
-                        expansion language — extra seats, new use cases,
-                        budget commentary — those accounts will surface
+                        expansion language. extra seats, new use cases,
+                        budget commentary. those accounts will surface
                         here.
                     </p>
                 ) : (
@@ -59,31 +59,31 @@ export function UpsellOpportunitiesView() {
                     title="What we mean by 'upsell signal'"
                     body={[
                         "Linda scores every analyzed call on a 0-to-1 upsell scale. A 0.5+ shows up here. Strong signals: asking about pricing for more seats, mentioning new teams or use cases internally, requesting features adjacent to a paid tier, or a champion saying 'I'd love to roll this out to my whole org.'",
-                        "Score reflects the MOST RECENT call. A live signal beats a 90-day-old conversation — interest decays fast.",
+                        "Score reflects the MOST RECENT call. A live signal beats a 90-day-old conversation. interest decays fast.",
                     ]}
                 />
                 <SignalCard
                     title="How the score is calculated"
                     body={[
                         "Six signals weighted into one: explicit expansion asks, mention of additional teams or stakeholders, budget/timing language, feature requests aligning with paid tiers, positive sentiment paired with operational urgency, and competitor displacement narratives.",
-                        "We weight EXPLICIT asks more than implicit cues — 'send me a quote for 50 seats' is worth more than 'this is great.' But we do reward consistency: three positive calls in a row outscore one enthusiastic mention.",
+                        "We weight EXPLICIT asks more than implicit cues. 'send me a quote for 50 seats' is worth more than 'this is great.' But we do reward consistency: three positive calls in a row outscore one enthusiastic mention.",
                     ]}
                 />
                 <SignalCard
-                    title="Upsell plays — what to actually do"
+                    title="Upsell plays. what to actually do"
                     body={[
                         "Strike while warm: send the quote or proposal within 48 hours of the flagged call. Anything later and you're re-creating the moment from scratch.",
                         "Anchor to their words: pull the exact line from the call ('you said you wanted X for Y team') and lead the follow-up email with it. Generic upsell emails fail.",
                         "Multi-thread before pitching: identify the economic buyer (often not the champion who spoke) and get them on a 20-minute scope call before sending pricing.",
-                        "Offer a no-risk expansion pilot for scores > 0.8 — 30 days of 5 extra seats at no charge, then convert. The reduced friction converts far better than a hard close.",
+                        "Offer a no-risk expansion pilot for scores > 0.8. 30 days of 5 extra seats at no charge, then convert. The reduced friction converts far better than a hard close.",
                     ]}
                 />
                 <SignalCard
                     title="What this list doesn't catch yet"
                     body={[
-                        "Silent expansion — customers who'd buy if asked, but never bring it up themselves. The 'Stale accounts' panel on the dashboard is a different signal for those.",
-                        "Cross-sell across product lines — we only score expansion of the existing relationship, not lateral product fit. That requires product taxonomy we don't have yet.",
-                        "Contract-renewal timing — a strong signal 60 days before renewal is more valuable than the same signal a week after a fresh contract. Surface that context yourself for now.",
+                        "Silent expansion. customers who'd buy if asked, but never bring it up themselves. The 'Stale accounts' panel on the dashboard is a different signal for those.",
+                        "Cross-sell across product lines. we only score expansion of the existing relationship, not lateral product fit. That requires product taxonomy we don't have yet.",
+                        "Contract-renewal timing. a strong signal 60 days before renewal is more valuable than the same signal a week after a fresh contract. Surface that context yourself for now.",
                     ]}
                 />
             </section>
@@ -116,7 +116,7 @@ function UpsellRow({ row }: { row: AccountHealthRow }) {
                         Last contact:{" "}
                         {row.last_touch_at
                             ? formatRelative(row.last_touch_at)
-                            : "—"}
+                            : "-"}
                     </div>
                 </div>
                 <div className={`text-right ${tone}`}>

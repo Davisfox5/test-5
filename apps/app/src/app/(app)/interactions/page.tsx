@@ -376,7 +376,7 @@ function EmptyState() {
         <div className="px-6 py-16 text-center">
             <p className="text-base font-semibold">No calls yet</p>
             <p className="mx-auto mt-2 max-w-md text-sm text-text-muted">
-                Upload a recording or paste a URL — Linda transcribes and
+                Upload a recording or paste a URL. Linda transcribes and
                 analyzes it, then you&apos;ll see it here.
             </p>
         </div>

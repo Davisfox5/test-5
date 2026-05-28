@@ -84,7 +84,7 @@ export function KnowledgeBaseEditor({ initial, mode }: KBEditorProps) {
             setUploadError(
                 err instanceof Error
                     ? err.message
-                    : "Upload failed — try a smaller file.",
+                    : "Upload failed. try a smaller file.",
             );
         }
     }
@@ -215,7 +215,7 @@ export function KnowledgeBaseEditor({ initial, mode }: KBEditorProps) {
                     <div>
                         <h3 className="text-lg font-semibold">Content</h3>
                         <p className="text-sm text-text-muted mt-1">
-                            Plain text or markdown — Linda chunks and embeds
+                            Plain text or markdown. Linda chunks and embeds
                             this on save.
                         </p>
                     </div>
@@ -266,7 +266,7 @@ export function KnowledgeBaseEditor({ initial, mode }: KBEditorProps) {
                 <div className="rounded-lg border border-accent-amber bg-bg-card p-3 text-sm text-accent-amber space-y-1">
                     {!titleOk ? <div>Title is required.</div> : null}
                     {!bodyOk ? (
-                        <div>Body cannot be empty — paste text or upload a file.</div>
+                        <div>Body cannot be empty. paste text or upload a file.</div>
                     ) : null}
                 </div>
             ) : null}

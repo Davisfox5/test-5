@@ -158,7 +158,7 @@ function DocRow({ doc }: { doc: KBDoc }) {
                 </Link>
             </td>
             <td className="px-4 py-3 text-text-muted capitalize">
-                {doc.source_type ?? "—"}
+                {doc.source_type ?? "-"}
             </td>
             <td className="px-4 py-3 text-text-muted">
                 {doc.tags?.length ? (
@@ -178,13 +178,13 @@ function DocRow({ doc }: { doc: KBDoc }) {
                         ) : null}
                     </span>
                 ) : (
-                    "—"
+                    "-"
                 )}
             </td>
             <td className="px-4 py-3 text-text-muted text-xs">
                 {doc.last_synced_at
                     ? new Date(doc.last_synced_at).toLocaleString()
-                    : "—"}
+                    : "-"}
             </td>
             <td className="px-4 py-3 text-text-muted text-xs">
                 {new Date(doc.created_at).toLocaleDateString()}

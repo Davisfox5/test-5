@@ -21,9 +21,9 @@ const STATUS_TABS: { key: StatusFilter; label: string }[] = [
 ];
 
 function fmtDateTime(value: string | null | undefined): string {
-    if (!value) return "—";
+    if (!value) return "-";
     const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return "—";
+    if (Number.isNaN(d.getTime())) return "-";
     return d.toLocaleString();
 }
 
@@ -182,7 +182,7 @@ export default function CommunicationsPage() {
             {items.length > 0 ? (
                 <div className="flex items-center justify-between text-xs text-text-subtle">
                     <span>
-                        {page * PAGE_SIZE + 1}–
+                        {page * PAGE_SIZE + 1}-
                         {Math.min((page + 1) * PAGE_SIZE, total)} of {total}
                     </span>
                     <div className="flex gap-2">
@@ -245,11 +245,11 @@ function Row({
                                 : "Open call"}
                         </Link>
                     ) : (
-                        <span className="text-text-subtle">—</span>
+                        <span className="text-text-subtle">-</span>
                     )}
                 </td>
                 <td className="px-4 py-3 text-text-muted">
-                    {item.sender_name ?? item.sender_email ?? "—"}
+                    {item.sender_name ?? item.sender_email ?? "-"}
                 </td>
                 <td className="px-4 py-3">
                     <StatusPill status={item.status} />
@@ -345,7 +345,7 @@ function EmptyState() {
                 No follow-ups sent yet.
             </p>
             <p className="text-text-subtle text-sm">
-                Send one from any interaction&apos;s detail page —{" "}
+                Send one from any interaction&apos;s detail page -{" "}
                 <Link
                     href="/interactions"
                     className="text-primary hover:underline"

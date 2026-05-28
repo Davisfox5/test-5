@@ -215,7 +215,7 @@ export function ApiKeysSection() {
                 {created ? (
                     <div className="space-y-3">
                         <p className="text-sm text-text-muted">
-                            Copy this key now — it will not be shown again.
+                            Copy this key now. it will not be shown again.
                         </p>
                         <div className="flex items-center gap-2">
                             <code className="flex-1 truncate rounded-md border border-border bg-bg-raised px-3 py-2 font-mono text-xs">
@@ -370,7 +370,7 @@ export function ApiKeysSection() {
                 <div className="space-y-3 text-sm">
                     <p>
                         The "All scopes" preset gives this key full tenant
-                        access — every read and write surface, including user
+                        access. every read and write surface, including user
                         management and GDPR delete. Use it only for trusted
                         internal integrations.
                     </p>
@@ -397,11 +397,11 @@ export function ApiKeysSection() {
             <Modal
                 open={editing !== null}
                 onClose={() => setEditing(null)}
-                title={`Edit key — ${editing?.name ?? editing?.id ?? ""}`}
+                title={`Edit key. ${editing?.name ?? editing?.id ?? ""}`}
             >
                 <div className="space-y-3">
                     <p className="text-xs text-text-subtle">
-                        Adjust scopes. The plaintext key never changes —
+                        Adjust scopes. The plaintext key never changes -
                         revoke + recreate to rotate the secret material.
                     </p>
                     {editScopes.has("*") ? (

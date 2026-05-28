@@ -82,5 +82,5 @@ export function ErrorCard({ message }: { message: string }) {
 
 export function humanizeError(error: unknown): string {
     if (error instanceof Error) return error.message;
-    return "Unexpected error — see console for details.";
+    return "Unexpected error. see console for details.";
 }

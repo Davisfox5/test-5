@@ -158,7 +158,7 @@ function DeleteCard() {
             <p className="mt-1 text-sm text-text-muted">
                 Wipes every row owned by{" "}
                 <strong>{tenantName || "this tenant"}</strong>: interactions,
-                action items, users, scorecards, audit log entries — the
+                action items, users, scorecards, audit log entries. the
                 whole workspace. This is irreversible. Run an export first
                 if you may need the data later.
             </p>
@@ -174,7 +174,7 @@ function DeleteCard() {
                     />
                 </label>
                 <label className="block text-xs font-medium">
-                    Type the tenant name <code className="font-mono">{tenantName || "—"}</code>{" "}
+                    Type the tenant name <code className="font-mono">{tenantName || "-"}</code>{" "}
                     to enable the delete button
                     <input
                         type="text"

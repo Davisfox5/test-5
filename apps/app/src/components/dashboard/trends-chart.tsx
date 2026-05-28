@@ -188,7 +188,7 @@ export function TrendsChart({
                     );
                 })}
 
-                {/* Sentiment line (0–10 → rescaled) */}
+                {/* Sentiment line (0-10 → rescaled) */}
                 {sentimentLine.length > 1 && (
                     <path
                         d={linePath(sentimentLine)}
@@ -210,7 +210,7 @@ export function TrendsChart({
                     </circle>
                 ))}
 
-                {/* QA line (0–100) */}
+                {/* QA line (0-100) */}
                 {qaLine.length > 1 && (
                     <path
                         d={linePath(qaLine)}
@@ -232,7 +232,7 @@ export function TrendsChart({
                     </circle>
                 ))}
 
-                {/* Rapport line (0–1 → rescaled) */}
+                {/* Rapport line (0-1 → rescaled) */}
                 {rapportLine.length > 1 && (
                     <path
                         d={linePath(rapportLine)}

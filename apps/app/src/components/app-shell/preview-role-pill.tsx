@@ -160,7 +160,7 @@ export function PreviewRoleBanner() {
     return (
         <div className="mx-4 my-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2 text-sm">
             <span>
-                Preview mode — viewing as{" "}
+                Preview mode. viewing as{" "}
                 <strong className="capitalize">{user.role}</strong>.
             </span>
             <button

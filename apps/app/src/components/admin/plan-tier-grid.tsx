@@ -155,7 +155,7 @@ export function PlanTierGrid({ canChange }: { canChange: boolean }) {
             ) : null}
             <div className="rounded-md border border-border bg-bg-raised p-3 text-xs text-text-muted">
                 <p>
-                    Manual feature toggles in Settings survive a tier change —
+                    Manual feature toggles in Settings survive a tier change -
                     upgrading only adds the new tier's defaults, it doesn't
                     overwrite your existing flags. Click below to drop every
                     override and snap back to the current tier's defaults.

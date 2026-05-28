@@ -73,7 +73,7 @@ export function Header() {
                 </div>
             </header>
 
-            {/* Mobile nav drawer — only rendered when open so the
+            {/* Mobile nav drawer. only rendered when open so the
                 backdrop doesn't intercept clicks on desktop. */}
             {drawerOpen ? (
                 <div

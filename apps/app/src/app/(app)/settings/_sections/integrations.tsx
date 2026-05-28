@@ -324,7 +324,7 @@ function CrmSyncCard({
 }
 
 function StatusBadge({ status }: { status: string | undefined }) {
-    if (!status) return <span className="text-text-subtle">—</span>;
+    if (!status) return <span className="text-text-subtle">-</span>;
     const tone =
         status === "success"
             ? "text-accent-emerald"

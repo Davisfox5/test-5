@@ -190,14 +190,14 @@ export default function TeamPage() {
                                         <td className="py-2">
                                             {s.avg_sentiment != null
                                                 ? s.avg_sentiment.toFixed(2)
-                                                : "—"}
+                                                : "-"}
                                         </td>
                                         <td className="py-2">
                                             {s.avg_scorecard_score != null
                                                 ? s.avg_scorecard_score.toFixed(
                                                       1,
                                                   )
-                                                : "—"}
+                                                : "-"}
                                         </td>
                                         <td className="py-2">
                                             {s.churn_flags}
@@ -329,7 +329,7 @@ function SeatReconciliationBanner({
                 {reconciliation.seat_limit === 1 ? "" : "s"}. Pick someone to
                 bring back below.
                 {needsSwap
-                    ? " You're at the seat cap — to reactivate someone, choose another active user to suspend in their place."
+                    ? " You're at the seat cap. to reactivate someone, choose another active user to suspend in their place."
                     : ""}
             </p>
             {reconciliation.suspended_users.length > 0 ? (
@@ -384,7 +384,7 @@ function SeatReconciliationBanner({
                 </div>
             ) : (
                 <p className="mt-2 text-xs text-text-muted">
-                    No suspended users — the banner will dismiss next refresh
+                    No suspended users. the banner will dismiss next refresh
                     once the tenant flag clears.
                 </p>
             )}
@@ -458,7 +458,7 @@ function InviteModal({
                 <div className="space-y-3">
                     <p className="text-sm">
                         Invited <strong>{created.email}</strong>. Hand off the
-                        sign-in credentials below — we don't email them
+                        sign-in credentials below. we don't email them
                         automatically yet.
                     </p>
                     <div className="rounded-md border border-border bg-bg-raised p-3 text-xs">

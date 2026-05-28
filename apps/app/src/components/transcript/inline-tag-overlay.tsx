@@ -23,8 +23,8 @@ const PALETTE: Record<
     improvement: { bg: "#FCEFD9", fg: "#8B5A0F", label: "Could improve" },
     competitor: { bg: "#DDEBF8", fg: "#1B4F8C", label: "Competitor" },
     commitment: { bg: "#F4EBC2", fg: "#7A5A0A", label: "Commitment" },
-    objection_resolved: { bg: "#D4EDE7", fg: "#1A6457", label: "Objection — resolved" },
-    objection_unresolved: { bg: "#FADCD8", fg: "#9A2A1F", label: "Objection — unresolved" },
+    objection_resolved: { bg: "#D4EDE7", fg: "#1A6457", label: "Objection. resolved" },
+    objection_unresolved: { bg: "#FADCD8", fg: "#9A2A1F", label: "Objection. unresolved" },
     tense: { bg: "#FFF6CC", fg: "#7A6308", label: "Tense moment" },
 };
 

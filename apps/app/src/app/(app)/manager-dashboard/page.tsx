@@ -189,7 +189,7 @@ function TalkListenCard({ d }: { d: TalkListenDistribution }) {
                                 <td className="py-1.5 pr-2 text-text-muted">
                                     {r.talk_pct_avg != null
                                         ? `${(r.talk_pct_avg * 100).toFixed(0)}%`
-                                        : "—"}
+                                        : "-"}
                                 </td>
                             </tr>
                         ))}
@@ -290,11 +290,11 @@ function MethodologyCard({ d }: { d: MethodologyAdherence[] }) {
                                 <td className="py-1.5 pr-2 text-text-muted">
                                     {m.avg_coverage_ratio != null
                                         ? `${(m.avg_coverage_ratio * 100).toFixed(0)}%`
-                                        : "—"}
+                                        : "-"}
                                 </td>
                                 <td className="py-1.5 pr-2 capitalize text-text-muted">
                                     {m.most_missed_stage?.replace(/_/g, " ") ??
-                                        "—"}
+                                        "-"}
                                 </td>
                             </tr>
                         ))}
@@ -321,7 +321,7 @@ function ProductFeedbackCard({
                     </h2>
                     <p className="text-xs text-text-subtle">
                         Customer-side feedback Linda extracted across the team.
-                        Manager-only — keeps reps from drowning in noise on
+                        Manager-only. keeps reps from drowning in noise on
                         their own pages.
                     </p>
                 </div>
@@ -457,6 +457,6 @@ function TrainingGapCard({
 }
 
 function pct(v: number | null): string {
-    if (v == null) return "—";
+    if (v == null) return "-";
     return `${(v * 100).toFixed(0)}%`;
 }

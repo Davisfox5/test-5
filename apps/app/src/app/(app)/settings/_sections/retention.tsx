@@ -108,7 +108,7 @@ export function RetentionSection() {
                 Lower retention saves storage and reduces compliance scope;
                 higher retention preserves more historical training data for
                 AI tuning. Changes apply at the next nightly retention sweep
-                — existing data older than your new threshold is purged
+               . existing data older than your new threshold is purged
                 within 24 hours.
             </p>
 

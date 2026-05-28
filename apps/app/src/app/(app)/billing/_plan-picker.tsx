@@ -65,7 +65,7 @@ const TIERS: TierSpec[] = [
         onboarding_direct: 399,
         bullets: [
             "Automatic transcription of every call (up to 5,000 minutes per seat, per month)",
-            "Speaker separation — see who said what on two-party calls",
+            "Speaker separation. see who said what on two-party calls",
             "Full-text transcript search across your last 90 days of calls",
             "AI-generated call summaries so you can skip listening to the full recording",
             "Secure cloud storage of every call recording and transcript",
@@ -88,13 +88,13 @@ const TIERS: TierSpec[] = [
         onboarding_direct: 1499,
         bullets: [
             "Everything in Starter, plus:",
-            "AI deep-dive analysis on every call — buying signals, objections, next steps, talk-to-listen ratio, commitments",
-            "Automatic PII redaction — credit cards, SSNs, and other sensitive data stripped from transcripts and summaries",
-            "Knowledge-Base Q&A — ask \"what did Acme say about pricing last quarter?\" across your entire call history",
-            "CRM integrations — two-way sync with Salesforce, HubSpot, or Zoho; auto-log calls, summaries, and action items",
-            "Slack notifications — deal-risk alerts and coaching moments pushed to the right channel",
-            "Sampled auto-QA scorecards — 10% of calls automatically scored against your rubric",
-            "Live AI coaching bundled — real-time suggestions in the rep's ear during live calls",
+            "AI deep-dive analysis on every call. buying signals, objections, next steps, talk-to-listen ratio, commitments",
+            "Automatic PII redaction. credit cards, SSNs, and other sensitive data stripped from transcripts and summaries",
+            "Knowledge-Base Q&A. ask \"what did Acme say about pricing last quarter?\" across your entire call history",
+            "CRM integrations. two-way sync with Salesforce, HubSpot, or Zoho; auto-log calls, summaries, and action items",
+            "Slack notifications. deal-risk alerts and coaching moments pushed to the right channel",
+            "Sampled auto-QA scorecards. 10% of calls automatically scored against your rubric",
+            "Live AI coaching bundled. real-time suggestions in the rep's ear during live calls",
             "Email + chat support, responses within 1 business day",
         ],
     },
@@ -114,14 +114,14 @@ const TIERS: TierSpec[] = [
         sales_led: true,
         bullets: [
             "Everything in Growth, plus:",
-            "Dedicated tenant — your own isolated infrastructure, not shared",
-            "Custom domain + fully branded UI — your logo, colors, and domain",
+            "Dedicated tenant. your own isolated infrastructure, not shared",
+            "Custom domain + fully branded UI. your logo, colors, and domain",
             "SSO / SAML / SCIM with Okta, Azure AD, Google Workspace, and any SAML IdP",
-            "Bring-your-own AI key — point the platform at your Anthropic, Azure OpenAI, or AWS Bedrock account",
-            "Custom AI prompts — our team tunes the analysis and scorecard prompts to your industry",
-            "On-prem / VPC transcription option — keep audio inside your network",
-            "SOC 2 Type II, HIPAA BAA, GDPR DPA — included",
-            "Uptime SLA — 99.9% with service credits",
+            "Bring-your-own AI key. point the platform at your Anthropic, Azure OpenAI, or AWS Bedrock account",
+            "Custom AI prompts. our team tunes the analysis and scorecard prompts to your industry",
+            "On-prem / VPC transcription option. keep audio inside your network",
+            "SOC 2 Type II, HIPAA BAA, GDPR DPA. included",
+            "Uptime SLA. 99.9% with service credits",
             "Dedicated Customer Success Manager and business reviews",
             "24/7 support, 1-hour response SLA",
         ],
@@ -393,7 +393,7 @@ function TierCard({
                                 cycle === "annual"
                                     ? LIVE_COACHING_ANNUAL
                                     : LIVE_COACHING_MONTHLY,
-                            )}${cycle === "annual" ? "/year" : "/mo"} per seat — bundled in Growth and Enterprise`}
+                            )}${cycle === "annual" ? "/year" : "/mo"} per seat. bundled in Growth and Enterprise`}
                             value={coachingSeats}
                             onChange={setCoachingSeats}
                         />
@@ -441,7 +441,7 @@ function TierCard({
                     >
                         {checkoutPending
                             ? "Redirecting to Stripe…"
-                            : `Continue to checkout — ${formatUsd(totals.first_invoice)}`}
+                            : `Continue to checkout. ${formatUsd(totals.first_invoice)}`}
                     </button>
                 </div>
             ) : null}

@@ -91,7 +91,7 @@ export default function SettingsPage() {
                                 {
                                     value: "whisper",
                                     label: "Self-hosted Whisper",
-                                    help: "Runs on your infra — slower, higher CPU, no cloud egress.",
+                                    help: "Runs on your infra. slower, higher CPU, no cloud egress.",
                                 },
                             ]}
                             onChange={(next) =>
@@ -199,7 +199,7 @@ export default function SettingsPage() {
 
                     <Section
                         title="Tenant context"
-                        subtitle="The brief LINDA uses when reasoning about your business — goals, ICPs, products."
+                        subtitle="The brief LINDA uses when reasoning about your business. goals, ICPs, products."
                     >
                         <AdminGate role={me?.user?.role}>
                             <TenantContextSection />
@@ -253,7 +253,7 @@ export default function SettingsPage() {
 
                     <Section
                         title="Data management"
-                        subtitle="GDPR-compliant exports and tenant deletion. Admin only — actions here are recorded on the audit log."
+                        subtitle="GDPR-compliant exports and tenant deletion. Admin only. actions here are recorded on the audit log."
                     >
                         <AdminGate role={me?.user?.role}>
                             <DataManagementSection />

@@ -108,7 +108,7 @@ export default function BillingPage() {
                                 {me?.tenant.plan_tier
                                     ? me.tenant.plan_tier.charAt(0).toUpperCase() +
                                       me.tenant.plan_tier.slice(1)
-                                    : "—"}
+                                    : "-"}
                             </span>
                         </li>
                         <li>

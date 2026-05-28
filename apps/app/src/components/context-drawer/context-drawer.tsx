@@ -98,7 +98,7 @@ function DrawerView({
 }) {
     return (
         <>
-            {/* Backdrop — clicking dismisses. Subtle so the rep can still
+            {/* Backdrop. clicking dismisses. Subtle so the rep can still
                 see the underlying surface (the drawer is for context, not
                 a takeover). */}
             <div

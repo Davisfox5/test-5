@@ -46,7 +46,7 @@ export default function ScorecardReviewQueuePage() {
                 <div>
                     <h2 className="text-2xl font-bold">Review queue</h2>
                     <p className="mt-1 text-sm text-text-muted">
-                        Calls Linda flagged for human review — composite
+                        Calls Linda flagged for human review. composite
                         quality below threshold or a single dimension critically
                         low. Triage banding ranks fire-drill items above
                         training-data items.
@@ -216,7 +216,7 @@ function ScoreCell({
             ? text
             : typeof value === "number"
               ? `${Math.round(value * 100)}%`
-              : "—";
+              : "-";
     return (
         <div className="rounded-md border border-border bg-bg-secondary px-3 py-2">
             <div className="text-xs uppercase tracking-wide text-text-subtle">

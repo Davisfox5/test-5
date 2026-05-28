@@ -84,7 +84,7 @@ export function InviteTeammatesDialog({
                 <div className="space-y-3 text-sm">
                     <p>
                         Invited <strong>{created.email}</strong>. We don&apos;t
-                        send email invites yet — share these credentials with
+                        send email invites yet. share these credentials with
                         them out-of-band:
                     </p>
                     <div className="rounded-md border border-border bg-bg-secondary p-3 font-mono text-xs">

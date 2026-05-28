@@ -67,7 +67,7 @@ export default function AnalyticsPage() {
                 {sandboxEmpty ? (
                     <Section title="Sandbox tenant">
                         <p className="text-sm text-text-muted">
-                            No interactions yet — analytics light up once
+                            No interactions yet. analytics light up once
                             calls and emails start flowing through your
                             workspace. Use the seed-data button on the
                             dashboard if you want demo numbers.
@@ -103,7 +103,7 @@ export default function AnalyticsPage() {
                                         ? business.data.avg_sentiment.toFixed(
                                               2,
                                           )
-                                        : "—"
+                                        : "-"
                                 }
                                 suffix={
                                     business.data.avg_sentiment != null
@@ -132,7 +132,7 @@ export default function AnalyticsPage() {
                                         {c.count} ·{" "}
                                         {c.avg_sentiment != null
                                             ? c.avg_sentiment.toFixed(1)
-                                            : "—"}
+                                            : "-"}
                                     </span>
                                 </li>
                             ))}
@@ -213,7 +213,7 @@ export default function AnalyticsPage() {
                                               coaching.data
                                                   .avg_script_adherence * 100
                                           ).toFixed(0)}%`
-                                        : "—"}
+                                        : "-"}
                                 </p>
                             </div>
                             <CoachingList
@@ -267,7 +267,7 @@ function Stat({
 
 function DeltaBadge({ value }: { value: number | null }) {
     if (value == null)
-        return <span className="text-text-subtle">—</span>;
+        return <span className="text-text-subtle">-</span>;
     const tone =
         value > 5
             ? "text-accent-emerald"
@@ -317,7 +317,7 @@ function TeamBars({
                             className="fill-text-muted"
                             fontSize="11"
                         >
-                            {(s.name ?? "—").slice(0, 18)}
+                            {(s.name ?? "-").slice(0, 18)}
                         </text>
                         <rect
                             x={labelWidth}

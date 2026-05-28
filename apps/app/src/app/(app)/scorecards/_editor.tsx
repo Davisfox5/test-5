@@ -237,7 +237,7 @@ export function ScorecardEditor({ initial, mode }: ScorecardEditorProps) {
                         + Add item
                     </button>
                     {/* aria-live so screen readers hear "Total weight 100/100"
-                        when the weight bucket flips from valid to invalid —
+                        when the weight bucket flips from valid to invalid -
                         the colour change alone isn't accessible. */}
                     <p
                         role="status"

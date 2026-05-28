@@ -90,7 +90,7 @@ export function ChurnTone(value: number | null): {
     label: string;
     cls: string;
 } {
-    if (value == null) return { label: "—", cls: "text-text-subtle" };
+    if (value == null) return { label: "-", cls: "text-text-subtle" };
     const pct = `${Math.round(value * 100)}%`;
     if (value >= 0.7) return { label: pct, cls: "text-accent-rose" };
     if (value >= 0.4) return { label: pct, cls: "text-accent-amber" };

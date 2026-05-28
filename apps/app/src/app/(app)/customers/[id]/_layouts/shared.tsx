@@ -108,7 +108,7 @@ export function deriveScoreVisuals(c: CustomerDetail) {
     const churnPct =
         c.churn_risk != null
             ? `${Math.round(c.churn_risk * 100)}%`
-            : "—";
+            : "-";
     const churnTone: "emerald" | "amber" | "rose" | "subtle" =
         c.churn_risk == null
             ? "subtle"
@@ -164,7 +164,7 @@ export function OverviewHeader({
                         value={
                             c.sentiment_score != null
                                 ? c.sentiment_score.toFixed(1)
-                                : "—"
+                                : "-"
                         }
                         accentText={sent.text}
                         tone={sent.tone}
@@ -275,7 +275,7 @@ export function RoleChip({
             title={
                 isConfirmed
                     ? `${label} (confirmed)`
-                    : `${label} (suggested — click the contact to confirm)`
+                    : `${label} (suggested. click the contact to confirm)`
             }
             className={
                 isConfirmed
@@ -448,7 +448,7 @@ export function WarningsCard({ c }: { c: CustomerDetail }) {
             </div>
             {sorted.length === 0 ? (
                 <p className="px-5 py-4 text-sm text-text-subtle">
-                    No active warnings — nothing concerning surfaced on the
+                    No active warnings. nothing concerning surfaced on the
                     last few calls.
                 </p>
             ) : (
@@ -549,7 +549,7 @@ export function CommitmentsCard({ c }: { c: CustomerDetail }) {
                     Commitments ({open.length} open)
                 </h2>
                 <span className="text-[11px] text-text-subtle">
-                    Promises made on calls — both sides
+                    Promises made on calls. both sides
                 </span>
             </div>
             {open.length === 0 && done.length === 0 ? (

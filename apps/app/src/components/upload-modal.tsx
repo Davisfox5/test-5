@@ -59,7 +59,7 @@ export function UploadModal({
                 }
                 if (file.size > MAX_UPLOAD_BYTES) {
                     setErr(
-                        `File is ${(file.size / (1024 * 1024)).toFixed(0)}MB — over the 500MB limit. Re-encode or split before uploading.`,
+                        `File is ${(file.size / (1024 * 1024)).toFixed(0)}MB. over the 500MB limit. Re-encode or split before uploading.`,
                     );
                     return;
                 }
@@ -83,7 +83,7 @@ export function UploadModal({
                     title: title || undefined,
                 });
             }
-            setToast("Upload received — Linda is processing it now.");
+            setToast("Upload received. Linda is processing it now.");
             onUploaded?.();
             // Brief pause so the toast registers before the modal closes.
             setTimeout(() => {

@@ -299,7 +299,7 @@ function WebhookForm({
                     className="mt-1 w-full rounded-md border border-border bg-bg-raised px-3 py-2 text-sm"
                 />
                 <span className="mt-1 block text-xs text-text-subtle">
-                    Must be https:// — internal / RFC1918 / loopback hosts
+                    Must be https://. internal / RFC1918 / loopback hosts
                     are rejected by the server.
                 </span>
             </label>
@@ -426,7 +426,7 @@ function DeliveriesPanel({ webhookId }: { webhookId: string }) {
                                 {d.status}
                             </td>
                             <td className="px-2 py-1">
-                                {d.last_status_code ?? "—"}
+                                {d.last_status_code ?? "-"}
                             </td>
                             <td className="px-2 py-1">{d.attempt_count}</td>
                             <td className="px-2 py-1 text-text-subtle">
@@ -434,10 +434,10 @@ function DeliveriesPanel({ webhookId }: { webhookId: string }) {
                                     ? new Date(
                                           d.next_retry_at,
                                       ).toLocaleString()
-                                    : "—"}
+                                    : "-"}
                             </td>
                             <td className="max-w-xs truncate px-2 py-1 text-text-subtle">
-                                {d.last_error || "—"}
+                                {d.last_error || "-"}
                             </td>
                         </tr>
                     ))}
@@ -458,7 +458,7 @@ function CreatedSecret({
     return (
         <div className="space-y-3">
             <p className="text-sm text-text-muted">
-                Save this HMAC secret now — it will not be shown again.
+                Save this HMAC secret now. it will not be shown again.
             </p>
             <div className="flex items-center gap-2">
                 <code className="flex-1 truncate rounded-md border border-border bg-bg-raised px-3 py-2 font-mono text-xs">

@@ -27,7 +27,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-27.objections-struct-and-server-counts"
+ANALYSIS_PROMPT_VERSION = "2026-05-27.plain-english-and-reasons"
 
 ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "You are a sales coach reviewing a call. Your voice is clipboard "
@@ -50,13 +50,25 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "5. Banned phrases in analysis prose (em-dash and en-dash banned per "
     "rule 4 above): 'You did a great job', 'It's important to', "
     "'Remember to', 'Going forward, consider', 'This is a common', "
-    "'In conclusion', 'Overall', 'It's worth noting', 'Make sure to'. "
+    "'In conclusion', 'Overall', 'It's worth noting', 'Make sure to', "
+    "'not after' (the 'X before Y, not after Y' construction), "
+    "'I want to make sure', 'I want to ensure', 'Just to be clear'. "
     "If you find yourself reaching for these, you're being too "
     "explanatory.\n"
-    "6. Neutral third person in narrative fields (summary, "
+    "6. PLAIN ENGLISH for a non-technical rep. No invented technical "
+    "phrases or internal slang. Do NOT coin shorthand like 'Pain-to-cost "
+    "bridge', 'sanity-check dispatcher', 'qualified the pain', "
+    "'surfaced the buying committee', 'swivel-chair inefficiency'. If "
+    "you would struggle to say a phrase out loud to a customer-facing "
+    "rep who has never read a sales-coaching book, rewrite it. Use the "
+    "rep's vocabulary: 'losing customers', 'pricing pushback', 'who "
+    "else needs to be involved', 'asked good questions'. Names, dollar "
+    "amounts, timestamps, and direct quotes are great. Coinages are "
+    "not.\n"
+    "7. Neutral third person in narrative fields (summary, "
     "key_moments, notable_snippets). Coaching is direct second person "
     "but still terse and specific.\n"
-    "7. Never invent quotes. If you don't have evidence, leave the "
+    "8. Never invent quotes. If you don't have evidence, leave the "
     "field empty.\n\n"
     "LENGTH BUDGETS (hard caps)\n"
     "- summary: ≤ 60 words, 1-3 sentences\n"
@@ -101,6 +113,61 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "underwriting, presented 3 options, closed mid-tier, set up "
     "auto-draft. Customer disclosed 16 daily meds; flagged for "
     "underwriting review.'\n\n"
+    "BAD (jargon, dense, technical) Summary:\n"
+    "  'David's logistics firm is losing dispatchers and carriers to "
+    "the same visibility gap; CFO has pegged the cost at $1.4M "
+    "annualized. Maria qualified the pain, surfaced all stakeholders, "
+    "and structured a 90-day pilot with a Thursday technical "
+    "follow-up.'\n"
+    "GOOD (plain English, same facts) Summary:\n"
+    "  'David's company is losing both drivers and customers because "
+    "dispatchers cannot see where trucks are. His CFO put the impact "
+    "at $1.4M a year. Maria booked a Thursday technical review with "
+    "the CFO, IT lead, and a senior dispatcher, and committed to "
+    "redline the contract beforehand.'\n\n"
+    "EMAIL DRAFT VOICE (for follow_up_email_draft.body and "
+    "action_items[].email_draft.body)\n"
+    "Write like a human rep, not an AI bot or an org-chart. Rules:\n"
+    "- Open with a short warm greeting: 'Hi {Name},' on one line, then "
+    "ONE friendly opening line ('Great talking with you today.' or "
+    "'Thanks for the time today.'). Then get into the substance.\n"
+    "- Lead each point with a sentence, not an all-caps section label. "
+    "NEVER write '1. CALENDAR:', '2. AGENDA:', etc. If you need to "
+    "enumerate, just write '1.' and start the sentence.\n"
+    "- Multiple time options on the SAME date go in one inline "
+    "sentence: 'We can do 1:00, 2:30, or 4:00 PM ET on Thursday. "
+    "Whichever works best.' Only use a bulleted list when options "
+    "span different dates.\n"
+    "- Do NOT over-CYA or stack credentials. One sentence on who "
+    "you're bringing and why is enough; do not list 'they've done your "
+    "stack twice' plus 'two references' plus 'case studies' unless the "
+    "customer asked.\n"
+    "- Banned in email bodies: 'not after', 'I want to make sure', "
+    "'I want to ensure', 'Just to be clear', 'One ask from my side', "
+    "'One quick ask', 'In an effort to', 'going forward'. Make the "
+    "request; do not preface the request.\n"
+    "- Closer is warm but professional. Avoid the cute one-word punch "
+    "('Talk Thursday.' / 'Onward.' / 'Stoked.'). Prefer 'Thanks again, "
+    "talk soon.' or 'Looking forward to Thursday. Thanks!' or a "
+    "tenant-tone match.\n"
+    "- Sign-off: rep's first name on its own line.\n"
+    "GOOD email body example (Thursday follow-up after a discovery):\n"
+    "  'Hi David,\n\n"
+    "  Great talking with you today. Three things to land before "
+    "Thursday so we can use the time well.\n\n"
+    "  1. I'll send three Thursday options today: 1:00, 2:30, and "
+    "4:00 PM ET. Let me know which works for you, the CFO, and your "
+    "IT lead.\n\n"
+    "  2. I'm bringing our solutions architect Rajiv to walk through "
+    "the TMS integration with your IT team.\n\n"
+    "  3. I'll have the standard agreement redlined to your legal "
+    "team by Wednesday so they can flag anything ahead of the "
+    "meeting.\n\n"
+    "  One quick thing from you: can you share the rubric you and "
+    "the CFO are scoring vendors against? I'd rather answer the "
+    "real questions on Thursday than guess.\n\n"
+    "  Thanks again, talk soon.\n"
+    "  Maria'\n\n"
     "OUTPUT\n"
     "Return ONLY valid JSON (no markdown fences) with the schema "
     "below. No em-dashes or en-dashes in analysis prose; verbatim "
@@ -109,8 +176,26 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     + (
         "- summary: string. See length budget above.\n"
         "- sentiment_overall: 'positive' | 'neutral' | 'negative' | 'mixed'\n"
+        "- sentiment_overall_reason: string ≤25 words. One sentence "
+        "explaining WHY you chose this bucket, citing the specific "
+        "evidence (e.g. 'Customer ended on a clear commitment and "
+        "scheduled the next step; no objections were left unresolved.'). "
+        "The rep reads this directly in a tooltip; write plain English.\n"
         "- sentiment_trajectory: list of {time: str, score: float 0-10}\n"
-        "- topics: list of {name: str, relevance: float 0 to 1, mentions: int}\n"
+        "- topics: list of {name: str, relevance: float 0 to 1, "
+        "mentions: int}. ``name`` MUST be a GENERAL category that could "
+        "match the same theme across many calls. Use 1-3 words. Good "
+        "examples: 'pricing', 'ROI', 'integration concerns', "
+        "'competitor evaluation', 'compliance', 'onboarding', "
+        "'underwriting', 'medication disclosure'. BAD examples (too "
+        "call-specific, never reusable): 'dispatcher workflow / "
+        "swivel-chair inefficiency', 'David's CFO 1.4M figure', "
+        "'IT director vetting'. ``relevance`` is 0-1, defined as: how "
+        "central this topic was to the call's main thread. 1.0 = the "
+        "call was about this. 0.5 = an important sub-thread. 0.2 = "
+        "mentioned in passing. Do not use it as a probability. "
+        "``mentions`` is the literal count of times the topic came "
+        "up.\n"
         "- key_moments: list of {time: str, type: str, description: str, "
         "start_time: str, end_time: str}\n"
         "- competitor_mentions: list of {name: str, context: str, "
@@ -144,7 +229,13 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "evidence-cited. See budgets and examples above.\n"
         "- follow_up_email_draft: {subject: str, body: str}\n"
         "- churn_risk_signal: 'high'|'medium'|'low'|'none'\n"
+        "- churn_risk_reason: string ≤25 words. One sentence explaining "
+        "the bucket choice, citing concrete evidence the rep can verify "
+        "in the transcript. The rep reads this directly in a tooltip; "
+        "plain English.\n"
         "- upsell_signal: 'high'|'medium'|'low'|'none'\n"
+        "- upsell_reason: string ≤25 words. Same shape and audience as "
+        "churn_risk_reason.\n"
         "- notable_snippets: list of {start_time, end_time, type, "
         "quality ('positive'|'negative'|'neutral'), title, "
         "description (≤20 words), tags: list[str]}\n"
@@ -389,6 +480,73 @@ def _recompute_evidence(result: Dict[str, Any]) -> None:
     ev["competitor_mention_count"] = len(result.get("competitor_mentions") or [])
     # discovery_questions: preserve the model's emission, default to 0.
     ev.setdefault("discovery_questions", 0)
+
+
+# Phrases the prompt forbids but the model still sometimes emits. These
+# are the over-justification / AI-tells that read as bot-speak in
+# customer-facing copy and as ungrounded coinages in coaching prose. We
+# don't auto-rewrite (would destroy meaning); we log so the user can see
+# which rows are still leaking and iterate the prompt.
+_BANNED_PHRASE_PATTERNS = [
+    # Over-justification / AI tells
+    "not after",  # the 'X before Y, not after Y' construction
+    "i want to make sure",
+    "i want to ensure",
+    "just to be clear",
+    "one ask from my side",
+    "one quick ask",
+    "in an effort to",
+    "going forward",
+    # Internal coinages flagged by the user
+    "pain-to-cost",
+    "sanity-check dispatcher",
+    "qualified the pain",
+    "surfaced the buying committee",
+    "swivel-chair",
+    # Stock fillers
+    "it's important to",
+    "it's worth noting",
+    "remember to",
+    "make sure to",
+    "in conclusion",
+]
+
+
+def _log_jargon_hits(result: Dict[str, Any], interaction_id: Optional[str] = None) -> None:
+    """Walk the analysis output and log when banned phrases slip through.
+
+    Field-aware: skips ``customer_signals`` and any ``quote`` value
+    (verbatim customer text is allowed to contain anything). Everywhere
+    else, if a banned phrase appears in any string value, emit a warning
+    with the field path so we can iterate the prompt without flying blind.
+    """
+    hits: List[str] = []
+
+    def _walk(obj: Any, path: str) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in _VERBATIM_SUBTREES:
+                    continue
+                if k in _VERBATIM_VALUE_KEYS and isinstance(v, str):
+                    continue
+                _walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                _walk(v, f"{path}[{i}]")
+        elif isinstance(obj, str):
+            lower = obj.lower()
+            for phrase in _BANNED_PHRASE_PATTERNS:
+                if phrase in lower:
+                    hits.append(f"{path}: '{phrase}'")
+
+    _walk(result, "")
+    if hits:
+        logger.warning(
+            "Analysis jargon leak (%s): %d hit(s) - %s",
+            interaction_id or "unknown",
+            len(hits),
+            "; ".join(hits[:10]),
+        )
 
 
 # Placeholder timestamp values the model emits when the source transcript
@@ -670,6 +828,7 @@ class AIAnalysisService:
                 _strip_dashes(result)
                 _recompute_evidence(result)
                 _scrub_zero_timestamps(result)
+                _log_jargon_hits(result)
                 result.update(stamp)
                 return result
             except json.JSONDecodeError as parse_exc:
@@ -690,6 +849,7 @@ class AIAnalysisService:
                         _strip_dashes(repaired)
                         _recompute_evidence(repaired)
                         _scrub_zero_timestamps(repaired)
+                        _log_jargon_hits(repaired)
                         repaired.update(stamp)
                         return repaired
                 except Exception as repair_exc:

@@ -265,7 +265,7 @@ function SignalLight({
                 </span>
             </div>
             <div className="mt-1 text-xs text-text-muted">
-                {(score * 100).toFixed(0)}% — based on the most recent analyzed
+                {(score * 100).toFixed(0)}%. based on the most recent analyzed
                 interaction
             </div>
             {showCta && cta ? (

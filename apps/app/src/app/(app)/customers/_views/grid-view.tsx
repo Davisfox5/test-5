@@ -41,7 +41,7 @@ function Card({ c }: { c: CustomerListItem }) {
                     value={
                         c.sentiment_score != null
                             ? c.sentiment_score.toFixed(1)
-                            : "—"
+                            : "-"
                     }
                     tone={sent.tone}
                 />

@@ -106,10 +106,10 @@ export default function TrialSignupPage() {
                         onChange={(e) => update("companySize", e.target.value)}
                     >
                         <option value="">Choose one (optional)</option>
-                        <option value="1-10">1–10</option>
-                        <option value="11-50">11–50</option>
-                        <option value="51-200">51–200</option>
-                        <option value="201-1000">201–1,000</option>
+                        <option value="1-10">1-10</option>
+                        <option value="11-50">11-50</option>
+                        <option value="51-200">51-200</option>
+                        <option value="201-1000">201-1,000</option>
                         <option value="1000+">1,000+</option>
                     </select>
                 </Field>
