@@ -57,6 +57,25 @@ export function useCalendarProviders() {
     });
 }
 
+export interface EmailProviderStatus {
+    name: string;
+    ok: boolean;
+}
+
+export interface EmailProvidersOut {
+    providers: EmailProviderStatus[];
+    active_provider: string | null;
+}
+
+export function useEmailProviders() {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["email-providers"],
+        queryFn: () => api.get<EmailProvidersOut>("/me/email-providers"),
+        staleTime: 60_000,
+    });
+}
+
 export function useRevokeIntegration() {
     const api = useApi();
     const qc = useQueryClient();

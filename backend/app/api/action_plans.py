@@ -957,3 +957,584 @@ async def schedule_meeting_for_step(
         note=result_obj.note,
         error=result_obj.error,
     )
+
+
+# ──────────────────────────────────────────────────────────
+# Per-step Send email
+# ──────────────────────────────────────────────────────────
+
+
+class SendStepEmailRequest(BaseModel):
+    """Optional overrides for the per-step email send. When omitted, the
+    artifact body and the participant-resolver output are used as-is."""
+    to: Optional[str] = None
+    cc: Optional[str] = None
+    subject_override: Optional[str] = None
+    body_override: Optional[str] = None
+    provider: Optional[str] = None  # 'google' | 'microsoft'
+
+
+class SendStepEmailResult(BaseModel):
+    success: bool
+    provider: Optional[str] = None
+    provider_message_id: Optional[str] = None
+    email_send_id: Optional[uuid.UUID] = None
+    error: Optional[str] = None
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/send-email",
+    response_model=SendStepEmailResult,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def send_email_for_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: SendStepEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Send the step's email artifact via the tenant's connected Gmail / Outlook.
+
+    Uses the synthesizer-produced subject + body unless the caller
+    overrides them. Resolves the To address from the first customer-side
+    participant via :func:`resolve_participants` when not supplied.
+
+    On success, transitions the step the same way ``POST .../sent``
+    does: ``awaiting_response`` if ``step.awaits_response``, else
+    ``done``. Records an ``email_sends`` row so the inbound matcher
+    can tie a reply back to this step via RFC 822 headers.
+    """
+    from backend.app.api.emails import (
+        _build_sender,
+        _close_sender,
+        _principal_email,
+        _resolve_integration,
+    )
+    from backend.app.models import EmailSend
+    from backend.app.services.email.base import (
+        EmailAuthError,
+        EmailSendError,
+    )
+    from backend.app.services.meeting_scheduler.participant_resolver import (
+        resolve_participants,
+    )
+
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    # Fetch the latest artifact for this step so we have the
+    # synthesizer-drafted subject + body.
+    artifact_stmt = (
+        select(StepArtifact)
+        .where(StepArtifact.step_id == step.id, StepArtifact.tenant_id == tenant.id)
+        .order_by(StepArtifact.generated_at.desc())
+        .limit(1)
+    )
+    artifact = (await db.execute(artifact_stmt)).scalar_one_or_none()
+    if artifact is None or not isinstance(artifact.payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Step has no artifact to send. Wait for synthesis to complete or use override fields.",
+        )
+
+    payload = artifact.payload
+    subject = body.subject_override or payload.get("subject") or step.title or ""
+    body_text = body.body_override or payload.get("body") or ""
+    if not subject or not body_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Subject and body required (supply override or wait for artifact).",
+        )
+
+    # Recipient resolution: explicit override > first customer participant > error.
+    to_address = body.to
+    if not to_address:
+        customer_id = None
+        interaction_stmt = select(Interaction).where(
+            Interaction.id == plan.interaction_id,
+            Interaction.tenant_id == tenant.id,
+        )
+        interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+        if interaction:
+            customer_id = interaction.customer_id
+        resolved = await resolve_participants(
+            db,
+            tenant_id=tenant.id,
+            customer_id=customer_id,
+            raw_participants=step.participants or [],
+        )
+        first_customer = next(
+            (p for p in resolved if (p.side or "").lower() == "customer" and p.email),
+            None,
+        )
+        if first_customer is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No customer recipient resolved. Either pass `to` "
+                    "explicitly or add the contact to the customer's "
+                    "Contact list with an email."
+                ),
+            )
+        to_address = first_customer.email
+
+    integ = await _resolve_integration(db, tenant.id, body.provider)
+    if integ is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No Gmail or Outlook integration connected. Connect one under Settings.",
+        )
+
+    record = EmailSend(
+        tenant_id=tenant.id,
+        interaction_id=plan.interaction_id,
+        sender_user_id=principal.user.id if principal.user else None,
+        provider=integ.provider,
+        to_address=to_address,
+        cc_address=body.cc,
+        subject=subject,
+        body=body_text,
+        attachments=[],
+        status="pending",
+    )
+    db.add(record)
+    await db.flush()
+
+    sender = _build_sender(integ, principal_email_hint=_principal_email(principal))
+    try:
+        result = await sender.send(
+            to=[to_address],
+            subject=subject,
+            body=body_text,
+            cc=[body.cc] if body.cc else None,
+        )
+        record.status = "sent"
+        record.provider_message_id = result.provider_message_id or result.message_id
+        record.sent_at = datetime.utcnow()
+    except EmailAuthError as exc:
+        record.status = "failed"
+        record.error = f"auth: {exc}"[:500]
+        await db.commit()
+        await _close_sender(sender)
+        return SendStepEmailResult(
+            success=False, provider=integ.provider, email_send_id=record.id,
+            error=f"auth: {exc}",
+        )
+    except EmailSendError as exc:
+        record.status = "failed"
+        record.error = str(exc)[:500]
+        await db.commit()
+        await _close_sender(sender)
+        return SendStepEmailResult(
+            success=False, provider=integ.provider, email_send_id=record.id,
+            error=str(exc),
+        )
+    finally:
+        await _close_sender(sender)
+
+    # Transition the step like /sent does.
+    new_state = "awaiting_response" if getattr(step, "awaits_response", False) else "done"
+    if step.state in {"ready", "blocked", "in_progress"}:
+        step.state = new_state
+        step.started_at = step.started_at or datetime.utcnow()
+        if new_state == "done":
+            step.completed_at = datetime.utcnow()
+            engine = ActionPlanEngine()
+            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+
+    response = StepResponse(
+        step_id=step.id,
+        tenant_id=tenant.id,
+        source="outbound_email_sent",
+        outbound_message_id=record.provider_message_id or "",
+    )
+    db.add(response)
+    await db.commit()
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.email_sent",
+        plan_id=plan_id, step_id=step_id,
+        extra={"provider": integ.provider, "new_state": new_state},
+    )
+    return SendStepEmailResult(
+        success=True,
+        provider=integ.provider,
+        provider_message_id=record.provider_message_id,
+        email_send_id=record.id,
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# Per-step Commit to CRM (note + system_write)
+# ──────────────────────────────────────────────────────────
+
+
+class CommitStepRequest(BaseModel):
+    """Optional override for the body that gets pushed to the CRM."""
+    body_override: Optional[str] = None
+
+
+class CommitStepResult(BaseModel):
+    success: bool
+    provider: Optional[str] = None
+    external_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/commit",
+    response_model=CommitStepResult,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def commit_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: CommitStepRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Push a ``note`` or ``system_write`` step artifact into the
+    tenant's connected CRM.
+
+    For ``note`` channel: writes the artifact body as a CRM note on the
+    interaction's customer (uses :func:`write_back_interaction`'s
+    underlying note adapter selection).
+
+    For ``system_write`` channel: executes the synthesizer-emitted
+    payload against the named integration (e.g. HubSpot
+    ``create_task``).
+
+    On success, marks the step done and propagates completion.
+    """
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    if step.recommended_channel != "note":
+        # ``system_write`` is in the synthesizer schema but the CRM
+        # adapter Protocol exposes only ``create_note`` / ``create_activity``
+        # today — no generic ``execute_operation``. Until adapters
+        # gain a per-operation dispatcher (real HubSpot ``create_task``
+        # vs Salesforce custom-object writes vs ...), this endpoint
+        # handles the note channel only and refuses system_write with
+        # a clear message rather than silently no-op'ing.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Step channel '{step.recommended_channel}' is not yet "
+                "committable through this endpoint. Only 'note' is "
+                "supported today. ('system_write' is planned once the "
+                "CrmAdapter protocol grows an execute_operation method.)"
+            ),
+        )
+
+    artifact_stmt = (
+        select(StepArtifact)
+        .where(StepArtifact.step_id == step.id, StepArtifact.tenant_id == tenant.id)
+        .order_by(StepArtifact.generated_at.desc())
+        .limit(1)
+    )
+    artifact = (await db.execute(artifact_stmt)).scalar_one_or_none()
+    if artifact is None or not isinstance(artifact.payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Step has no artifact to commit.",
+        )
+
+    payload = artifact.payload
+
+    success = False
+    provider: Optional[str] = None
+    external_id: Optional[str] = None
+    err: Optional[str] = None
+
+    try:
+        from backend.app.services.crm.writeback import (
+            _load_writeback_adapter,
+            _pick_provider_for_writeback,
+        )
+        from backend.app.models import Contact, Customer
+
+        # _pick_provider_for_writeback needs (db, tenant, interaction).
+        # Load the interaction so the picker can prefer the contact's
+        # crm_source over the tenant default.
+        interaction_stmt = select(Interaction).where(
+            Interaction.id == plan.interaction_id,
+            Interaction.tenant_id == tenant.id,
+        )
+        interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+        if interaction is None:
+            raise RuntimeError("Plan's source interaction not found.")
+
+        provider = await _pick_provider_for_writeback(db, tenant, interaction)
+        if provider is None:
+            raise RuntimeError(
+                "No CRM integration connected. Connect HubSpot, Salesforce, "
+                "or Pipedrive under Settings."
+            )
+        adapter = await _load_writeback_adapter(db, tenant.id, provider)
+        if adapter is None:
+            raise RuntimeError(f"Failed to instantiate {provider} CRM adapter.")
+
+        # Resolve the contact + customer external IDs so the note
+        # anchors to the right CRM record. Best-effort: when neither
+        # exists, the note is created without an anchor and the rep
+        # can manually associate it.
+        contact_external_id: Optional[str] = None
+        customer_external_id: Optional[str] = None
+        if interaction.contact_id is not None:
+            contact = await db.get(Contact, interaction.contact_id)
+            if contact and contact.crm_id:
+                contact_external_id = contact.crm_id
+            if contact and contact.customer_id is not None:
+                customer = await db.get(Customer, contact.customer_id)
+                if customer and customer.crm_id:
+                    customer_external_id = customer.crm_id
+
+        note_body = body.body_override or payload.get("body") or ""
+        if not note_body:
+            raise RuntimeError("Note body is empty.")
+
+        external_id = await adapter.create_note(
+            content=note_body,
+            contact_external_id=contact_external_id,
+            customer_external_id=customer_external_id,
+        )
+        try:
+            await adapter.close()
+        except Exception:  # noqa: BLE001
+            pass
+        success = True
+    except Exception as exc:  # noqa: BLE001 — surfaced, not swallowed
+        logger.exception("commit_step failed")
+        err = str(exc)[:500]
+
+    if success and step.state in {"ready", "blocked", "in_progress"}:
+        step.state = "done"
+        step.started_at = step.started_at or datetime.utcnow()
+        step.completed_at = datetime.utcnow()
+        engine = ActionPlanEngine()
+        await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+
+    await db.commit()
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.committed",
+        plan_id=plan_id, step_id=step_id,
+        extra={"provider": provider, "success": success},
+    )
+    return CommitStepResult(
+        success=success, provider=provider, external_id=external_id, error=err,
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# Mark step sent / done manually (escape hatch for any channel)
+# ──────────────────────────────────────────────────────────
+
+
+class MarkStepSentRequest(BaseModel):
+    """``source`` is a free-form tag ('phone_dialed', 'sent_from_gmail',
+    'document_uploaded'). It's persisted on the StepResponse so the
+    audit trail records how the rep claims the action got done."""
+    source: str = Field(..., min_length=1, max_length=64)
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/mark-sent",
+    response_model=ActionPlanOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def mark_step_sent(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: MarkStepSentRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Manual escape hatch for any outbound-channel step.
+
+    When the rep took the action outside the app (sent the email from
+    their phone, made the call from their desk phone, faxed the
+    document), this records that fact and transitions the step like a
+    successful in-app send would. ``awaits_response=True`` steps land
+    in ``awaiting_response``; the rest land in ``done`` and cascade.
+    """
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    response = StepResponse(
+        step_id=step.id,
+        tenant_id=tenant.id,
+        source=f"manual:{body.source}",
+        note_text=body.note,
+    )
+    db.add(response)
+
+    new_state = "awaiting_response" if getattr(step, "awaits_response", False) else "done"
+    if step.state in {"ready", "blocked", "in_progress"}:
+        step.state = new_state
+        step.started_at = step.started_at or datetime.utcnow()
+        if new_state == "done":
+            step.completed_at = datetime.utcnow()
+            engine = ActionPlanEngine()
+            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+
+    await db.commit()
+    await db.refresh(plan)
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.marked_sent_manually",
+        plan_id=plan_id, step_id=step_id,
+        extra={"source": body.source, "new_state": new_state},
+    )
+    return await _build_plan_out(db, plan)
+
+
+# ──────────────────────────────────────────────────────────
+# Resolved attachments + participants (for in-step rendering)
+# ──────────────────────────────────────────────────────────
+
+
+class ResolvedAttachmentOut(BaseModel):
+    title: str
+    reason: Optional[str] = None
+    kb_doc_id: Optional[uuid.UUID] = None
+    source_url: Optional[str] = None
+    snippet: Optional[str] = None
+    match_score: Optional[float] = None
+
+
+class ResolvedParticipantOut(BaseModel):
+    name: str
+    role: Optional[str] = None
+    side: Optional[str] = None
+    email: Optional[str] = None
+
+
+class StepResolvedOut(BaseModel):
+    attachments: List[ResolvedAttachmentOut]
+    participants: List[ResolvedParticipantOut]
+
+
+@router.get(
+    "/action-plans/{plan_id}/steps/{step_id}/resolved",
+    response_model=StepResolvedOut,
+    dependencies=[Depends(require_scope("action_items:read"))],
+)
+async def resolved_for_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Resolve attachment titles to KB docs and participant names to
+    contact emails, for in-step rendering on the SPA.
+
+    Both resolutions are best-effort: an attachment that doesn't match
+    any KB doc still appears in the list with ``kb_doc_id=None`` so the
+    rep sees the synthesizer's suggestion; the SPA can render a "search
+    KB" CTA. Same for participants without an email match.
+    """
+    from sqlalchemy import or_ as _or, func as _func
+    from backend.app.models import KBDocument
+    from backend.app.services.meeting_scheduler.participant_resolver import (
+        resolve_participants,
+    )
+
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    # ─── Attachments ───
+    # Source of suggested_attachments depends on channel:
+    #  - email / document_send: artifact.payload.attachments (list of
+    #    {title, reason}) — produced by the document_send schema
+    #  - all other channels: step.prep_artifacts (list of strings)
+    artifact_stmt = (
+        select(StepArtifact)
+        .where(StepArtifact.step_id == step.id, StepArtifact.tenant_id == tenant.id)
+        .order_by(StepArtifact.generated_at.desc())
+        .limit(1)
+    )
+    artifact = (await db.execute(artifact_stmt)).scalar_one_or_none()
+    raw_attachments: List[Dict[str, Any]] = []
+    if artifact and isinstance(artifact.payload, dict):
+        payload_atts = artifact.payload.get("attachments")
+        if isinstance(payload_atts, list):
+            for a in payload_atts:
+                if isinstance(a, dict) and a.get("title"):
+                    raw_attachments.append(
+                        {"title": str(a["title"]), "reason": a.get("reason")}
+                    )
+    # Fall back to step.prep_artifacts when the artifact didn't emit
+    # attachments (most non-document_send channels).
+    if not raw_attachments:
+        for pa in step.prep_artifacts or []:
+            if isinstance(pa, str) and pa.strip():
+                raw_attachments.append({"title": pa.strip(), "reason": None})
+
+    resolved_attachments: List[ResolvedAttachmentOut] = []
+    for raw in raw_attachments:
+        title_lower = raw["title"].lower()
+        # ILIKE on title; pick the most-recent match. Cheap and
+        # adequate for the demo; for real scale this should be a vector
+        # similarity search against KB title embeddings.
+        kb_stmt = (
+            select(KBDocument)
+            .where(
+                KBDocument.tenant_id == tenant.id,
+                _func.lower(KBDocument.title).ilike(f"%{title_lower}%"),
+            )
+            .order_by(KBDocument.created_at.desc())
+            .limit(1)
+        )
+        kb_doc = (await db.execute(kb_stmt)).scalar_one_or_none()
+        if kb_doc:
+            resolved_attachments.append(
+                ResolvedAttachmentOut(
+                    title=raw["title"],
+                    reason=raw.get("reason"),
+                    kb_doc_id=kb_doc.id,
+                    source_url=kb_doc.source_url,
+                    snippet=(kb_doc.content or "")[:200] or None,
+                    match_score=0.8,  # placeholder for future similarity score
+                )
+            )
+        else:
+            resolved_attachments.append(
+                ResolvedAttachmentOut(
+                    title=raw["title"],
+                    reason=raw.get("reason"),
+                )
+            )
+
+    # ─── Participants ───
+    customer_id = None
+    interaction_stmt = select(Interaction).where(
+        Interaction.id == plan.interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+    if interaction:
+        customer_id = interaction.customer_id
+    resolved = await resolve_participants(
+        db,
+        tenant_id=tenant.id,
+        customer_id=customer_id,
+        raw_participants=step.participants or [],
+    )
+    resolved_participants = [
+        ResolvedParticipantOut(
+            name=p.name, role=p.role, side=p.side, email=p.email,
+        )
+        for p in resolved
+    ]
+
+    return StepResolvedOut(
+        attachments=resolved_attachments,
+        participants=resolved_participants,
+    )

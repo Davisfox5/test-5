@@ -359,3 +359,115 @@ export function useRecordSent(planId: string) {
         onSuccess: () => invalidatePlan(qc, planId),
     });
 }
+
+// ── Send email for a step ─────────────────────────────────────────────
+
+export interface SendStepEmailPayload {
+    to?: string | null;
+    cc?: string | null;
+    subject_override?: string | null;
+    body_override?: string | null;
+    provider?: "google" | "microsoft" | null;
+}
+
+export interface SendStepEmailResult {
+    success: boolean;
+    provider: string | null;
+    provider_message_id: string | null;
+    email_send_id: string | null;
+    error: string | null;
+}
+
+export function useSendStepEmail(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ stepId, payload }: { stepId: string; payload: SendStepEmailPayload }) =>
+            api.request<SendStepEmailResult>(
+                `/action-plans/${planId}/steps/${stepId}/send-email`,
+                { method: "POST", body: JSON.stringify(payload) },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
+// ── Commit a step (note → CRM today; system_write later) ──────────────
+
+export interface CommitStepPayload {
+    body_override?: string | null;
+}
+
+export interface CommitStepResult {
+    success: boolean;
+    provider: string | null;
+    external_id: string | null;
+    error: string | null;
+}
+
+export function useCommitStep(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ stepId, payload }: { stepId: string; payload: CommitStepPayload }) =>
+            api.request<CommitStepResult>(
+                `/action-plans/${planId}/steps/${stepId}/commit`,
+                { method: "POST", body: JSON.stringify(payload) },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
+// ── Mark step sent manually (escape hatch for any channel) ────────────
+
+export interface MarkStepSentPayload {
+    source: string;
+    note?: string | null;
+}
+
+export function useMarkStepSent(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ stepId, payload }: { stepId: string; payload: MarkStepSentPayload }) =>
+            api.request<ActionPlan>(
+                `/action-plans/${planId}/steps/${stepId}/mark-sent`,
+                { method: "POST", body: JSON.stringify(payload) },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
+// ── Resolved attachments + participants for in-step rendering ─────────
+
+export interface ResolvedAttachment {
+    title: string;
+    reason: string | null;
+    kb_doc_id: string | null;
+    source_url: string | null;
+    snippet: string | null;
+    match_score: number | null;
+}
+
+export interface ResolvedParticipant {
+    name: string;
+    role: string | null;
+    side: string | null;
+    email: string | null;
+}
+
+export interface StepResolved {
+    attachments: ResolvedAttachment[];
+    participants: ResolvedParticipant[];
+}
+
+export function useStepResolved(planId: string, stepId: string) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["action-plan-step-resolved", planId, stepId],
+        queryFn: () =>
+            api.get<StepResolved>(
+                `/action-plans/${planId}/steps/${stepId}/resolved`,
+            ),
+        staleTime: 60_000,
+    });
+}

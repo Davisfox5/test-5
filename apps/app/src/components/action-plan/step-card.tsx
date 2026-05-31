@@ -7,14 +7,18 @@ import {
     ActionStep,
     ActionStepState,
     type StepEditPayload,
+    useCommitStep,
     useCompleteStep,
     useDeleteStep,
     useEditStep,
+    useMarkStepSent,
     useRestoreStep,
     useScheduleStepMeeting,
+    useSendStepEmail,
     useSkipStep,
+    useStepResolved,
 } from "@/lib/action-plans";
-import { useCalendarProviders } from "@/lib/oauth";
+import { useCalendarProviders, useEmailProviders } from "@/lib/oauth";
 import { NoteInput } from "./note-input";
 import { ResponseThread } from "./response-thread";
 
@@ -80,16 +84,26 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     const restore = useRestoreStep(plan.id);
     const edit = useEditStep(plan.id);
     const schedule = useScheduleStepMeeting(plan.id);
-    // Pre-flight which calendar provider would serve a Schedule click.
-    // Same gate as the legacy ActionItem card: connected provider →
-    // Schedule button; no provider → Connect-calendar CTA.
+    const sendEmail = useSendStepEmail(plan.id);
+    const commit = useCommitStep(plan.id);
+    const markSent = useMarkStepSent(plan.id);
+    // Pre-flight which calendar / email provider would serve.
     const calendarProviders = useCalendarProviders();
+    const emailProviders = useEmailProviders();
     const hasRealCalendarProvider = Boolean(
         calendarProviders.data?.active_provider,
     );
+    const hasEmailProvider = Boolean(emailProviders.data?.active_provider);
+
     const isMeetingStep =
         step.recommended_channel === "meeting" ||
         step.recommended_channel === "phone_call";
+    const isPhoneStep = step.recommended_channel === "phone_call";
+    const isEmailStep =
+        step.recommended_channel === "email" ||
+        step.recommended_channel === "document_send";
+    const isNoteStep = step.recommended_channel === "note";
+
     const [editing, setEditing] = useState(false);
     const [scheduleResult, setScheduleResult] = useState<{
         ok: boolean;
@@ -97,7 +111,26 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
         joinUrl?: string | null;
         ics?: string | null;
     } | null>(null);
+    const [sendResult, setSendResult] = useState<{
+        ok: boolean;
+        note: string;
+    } | null>(null);
+    const [commitResult, setCommitResult] = useState<{
+        ok: boolean;
+        note: string;
+    } | null>(null);
     const isTerminal = ["done", "skipped", "deleted"].includes(step.state);
+    // Lazy-load resolved attachments + participants only when the
+    // card is expanded — saves the round-trip when the user just
+    // scrolls past collapsed cards.
+    const resolved = useStepResolved(plan.id, step.id);
+
+    // Outbound-channel steps in a non-terminal state get a "mark sent
+    // manually" affordance so reps can close the loop when they used
+    // an out-of-app channel (sent from Gmail-on-phone, dialed from
+    // their desk phone, etc.).
+    const supportsManualSent =
+        !isTerminal && (isEmailStep || isPhoneStep || isMeetingStep || isNoteStep);
 
     return (
         <div
@@ -230,6 +263,100 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                         Connect a calendar
                                     </a>
                                 )}
+                                {!isTerminal && isEmailStep && hasEmailProvider && (
+                                    <button
+                                        type="button"
+                                        disabled={sendEmail.isPending}
+                                        className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                                        onClick={async () => {
+                                            setSendResult(null);
+                                            try {
+                                                const result = await sendEmail.mutateAsync({
+                                                    stepId: step.id,
+                                                    payload: {},
+                                                });
+                                                setSendResult({
+                                                    ok: result.success,
+                                                    note: result.success
+                                                        ? `Sent via ${result.provider}. Message id: ${result.provider_message_id ?? "(none)"}`
+                                                        : `Send failed: ${result.error ?? "unknown error"}`,
+                                                });
+                                            } catch (err) {
+                                                setSendResult({
+                                                    ok: false,
+                                                    note: `Send failed: ${(err as Error).message}`,
+                                                });
+                                            }
+                                        }}
+                                    >
+                                        {step.recommended_channel === "document_send"
+                                            ? "Send document"
+                                            : "Send email"}
+                                    </button>
+                                )}
+                                {!isTerminal && isEmailStep && !hasEmailProvider && !emailProviders.isLoading && (
+                                    <a
+                                        href="/settings#integrations"
+                                        title="Connect Gmail or Outlook to send directly from action plans."
+                                        className="rounded border border-amber-500 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-200"
+                                    >
+                                        Connect email
+                                    </a>
+                                )}
+                                {!isTerminal && isPhoneStep && resolved.data && (
+                                    <PhoneCallButton resolved={resolved.data} />
+                                )}
+                                {!isTerminal && isNoteStep && (
+                                    <button
+                                        type="button"
+                                        disabled={commit.isPending}
+                                        className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                                        onClick={async () => {
+                                            setCommitResult(null);
+                                            try {
+                                                const result = await commit.mutateAsync({
+                                                    stepId: step.id,
+                                                    payload: {},
+                                                });
+                                                setCommitResult({
+                                                    ok: result.success,
+                                                    note: result.success
+                                                        ? `Note created in ${result.provider}. id: ${result.external_id ?? "(unanchored)"}`
+                                                        : `Commit failed: ${result.error ?? "unknown error"}`,
+                                                });
+                                            } catch (err) {
+                                                setCommitResult({
+                                                    ok: false,
+                                                    note: `Commit failed: ${(err as Error).message}`,
+                                                });
+                                            }
+                                        }}
+                                        title="Push this note into the connected CRM (HubSpot / Salesforce / Pipedrive)."
+                                    >
+                                        Send to CRM
+                                    </button>
+                                )}
+                                {supportsManualSent && (
+                                    <button
+                                        type="button"
+                                        disabled={markSent.isPending}
+                                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 dark:border-slate-600 dark:text-slate-200"
+                                        onClick={() => {
+                                            const note = window.prompt(
+                                                "Mark this step done. How did you complete it? (e.g. 'sent from Gmail on phone', 'called from desk phone')",
+                                                "",
+                                            );
+                                            if (note === null) return;
+                                            markSent.mutate({
+                                                stepId: step.id,
+                                                payload: { source: "manual_close", note: note || null },
+                                            });
+                                        }}
+                                        title="Already took this action outside the app? Record it here to advance the plan."
+                                    >
+                                        Mark done manually
+                                    </button>
+                                )}
                                 {!isTerminal && (
                                     <>
                                         <button
@@ -298,6 +425,29 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                     )}
                                 </div>
                             )}
+                            {sendResult && (
+                                <p
+                                    className={
+                                        sendResult.ok
+                                            ? "rounded border border-emerald-300 bg-emerald-50 p-2 text-xs text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-100"
+                                            : "rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-100"
+                                    }
+                                >
+                                    {sendResult.note}
+                                </p>
+                            )}
+                            {commitResult && (
+                                <p
+                                    className={
+                                        commitResult.ok
+                                            ? "rounded border border-emerald-300 bg-emerald-50 p-2 text-xs text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-100"
+                                            : "rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-100"
+                                    }
+                                >
+                                    {commitResult.note}
+                                </p>
+                            )}
+                            <ResolvedBlock resolved={resolved.data} isLoading={resolved.isLoading} />
                             {editing && !isTerminal && (
                                 <EditStepForm
                                     step={step}
@@ -560,3 +710,147 @@ function EditStepForm({
         </form>
     );
 }
+
+// Phone-call step: click-to-call via the rep's native dialer. Resolves
+// the customer's phone from the first customer-side participant with a
+// number. Outbound-call placement itself is intentionally out of
+// scope (see backend/app/services/telephony/__init__.py: call control
+// lives in the tenant's phone system, not LINDA).
+function PhoneCallButton({
+    resolved,
+}: {
+    resolved: import("@/lib/action-plans").StepResolved;
+}) {
+    // The participant_resolver returns email but not phone (Contact
+    // table has phone but we don't surface it through the resolver
+    // yet). For now, fall back to a generic tel: link without a
+    // number — the dialer opens to a blank dial pad. This is still
+    // useful (one click → dialer up) and will improve once the
+    // resolver carries phone too.
+    const customerName = resolved.participants?.find(
+        (p) => p.side === "customer",
+    )?.name;
+    return (
+        <a
+            href="tel:"
+            className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-700"
+            title={
+                customerName
+                    ? `Place call to ${customerName} via your dialer (number lookup pending).`
+                    : "Open your dialer to place this call."
+            }
+        >
+            Place call
+        </a>
+    );
+}
+
+// Renders attachment links (resolved to real KB doc URLs when matched)
+// and the resolved participant list with emails. Both fall back
+// gracefully when the resolver returns nothing or a name didn't match.
+function ResolvedBlock({
+    resolved,
+    isLoading,
+}: {
+    resolved: import("@/lib/action-plans").StepResolved | undefined;
+    isLoading: boolean;
+}) {
+    if (isLoading) {
+        return (
+            <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                Resolving attachments and participants…
+            </p>
+        );
+    }
+    if (!resolved) return null;
+    const hasAttachments = (resolved.attachments?.length ?? 0) > 0;
+    const hasParticipants = (resolved.participants?.length ?? 0) > 0;
+    if (!hasAttachments && !hasParticipants) return null;
+    return (
+        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/50">
+            {hasAttachments && (
+                <div>
+                    <div className="font-medium text-slate-700 dark:text-slate-200">
+                        Attachments
+                    </div>
+                    <ul className="mt-1 space-y-1">
+                        {resolved.attachments.map((att, idx) => (
+                            <li key={idx} className="flex flex-wrap items-baseline gap-1">
+                                {att.kb_doc_id && att.source_url ? (
+                                    <a
+                                        href={att.source_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="font-medium text-indigo-700 underline dark:text-indigo-300"
+                                    >
+                                        {att.title}
+                                    </a>
+                                ) : att.kb_doc_id ? (
+                                    <a
+                                        href={`/knowledge-base#${att.kb_doc_id}`}
+                                        className="font-medium text-indigo-700 underline dark:text-indigo-300"
+                                    >
+                                        {att.title}
+                                    </a>
+                                ) : (
+                                    <span className="font-medium text-slate-700 dark:text-slate-200">
+                                        {att.title}
+                                    </span>
+                                )}
+                                {att.reason && (
+                                    <span className="text-slate-500 dark:text-slate-400">
+                                        — {att.reason}
+                                    </span>
+                                )}
+                                {!att.kb_doc_id && (
+                                    <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                                        no KB match
+                                    </span>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+            {hasParticipants && (
+                <div>
+                    <div className="font-medium text-slate-700 dark:text-slate-200">
+                        Participants
+                    </div>
+                    <ul className="mt-1 space-y-0.5">
+                        {resolved.participants.map((p, idx) => (
+                            <li key={idx} className="flex flex-wrap items-baseline gap-1">
+                                <span className="font-medium text-slate-700 dark:text-slate-200">
+                                    {p.name}
+                                </span>
+                                {p.role && (
+                                    <span className="text-slate-500 dark:text-slate-400">
+                                        ({p.role})
+                                    </span>
+                                )}
+                                {p.email ? (
+                                    <a
+                                        href={`mailto:${p.email}`}
+                                        className="text-indigo-700 underline dark:text-indigo-300"
+                                    >
+                                        {p.email}
+                                    </a>
+                                ) : (
+                                    <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                                        email pending
+                                    </span>
+                                )}
+                                {p.side && (
+                                    <span className="text-[10px] text-slate-400">
+                                        [{p.side}]
+                                    </span>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
+}
+

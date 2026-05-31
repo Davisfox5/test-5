@@ -341,3 +341,61 @@ async def get_calendar_providers(
         if ok and active is None:
             active = cls.name
     return CalendarProvidersOut(providers=statuses, active_provider=active)
+
+
+class EmailProviderStatus(BaseModel):
+    name: str
+    ok: bool
+
+
+class EmailProvidersOut(BaseModel):
+    providers: list[EmailProviderStatus]
+    active_provider: Optional[str]
+
+
+@router.get("/me/email-providers", response_model=EmailProvidersOut)
+async def get_email_providers(
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+) -> EmailProvidersOut:
+    """Return which email providers can send for the current tenant.
+
+    Mirrors ``/me/calendar-providers`` so the SPA can pre-flight a Send
+    button: connected provider → Send; no provider → Connect-email CTA.
+    """
+    from backend.app.models import Integration as _Integration
+    from sqlalchemy import select as _select
+
+    tenant_id = principal.tenant.id
+    statuses: list[EmailProviderStatus] = []
+    active: Optional[str] = None
+    for name in ("google", "microsoft"):
+        stmt = _select(_Integration).where(
+            _Integration.tenant_id == tenant_id,
+            _Integration.provider == name,
+        ).limit(1)
+        row = (await db.execute(stmt)).scalar_one_or_none()
+        ok = row is not None
+        # Refuse to claim "ok" when the integration exists but doesn't
+        # have the relevant send scope. Both providers expose it as the
+        # same logical capability under different scope URLs.
+        if ok:
+            scopes = row.scopes or []
+            if name == "google":
+                ok = any(
+                    s in scopes for s in (
+                        "https://www.googleapis.com/auth/gmail.send",
+                        "gmail.send",
+                    )
+                )
+            elif name == "microsoft":
+                ok = any(
+                    s in scopes for s in (
+                        "https://graph.microsoft.com/Mail.Send",
+                        "Mail.Send",
+                    )
+                )
+        statuses.append(EmailProviderStatus(name=name, ok=ok))
+        if ok and active is None:
+            active = name
+    return EmailProvidersOut(providers=statuses, active_provider=active)
