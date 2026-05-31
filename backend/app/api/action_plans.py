@@ -47,6 +47,7 @@ from backend.app.db import get_db
 from backend.app.models import (
     ActionPlan,
     ActionStep,
+    Interaction,
     StepArtifact,
     StepResponse,
     Tenant,
@@ -181,6 +182,27 @@ class SkipRequest(BaseModel):
 
 class CompleteRequest(BaseModel):
     output_data: Optional[Dict[str, Any]] = None
+
+
+class ScheduleMeetingForStepRequest(BaseModel):
+    """Optional overrides for the per-step meeting scheduler."""
+    start: Optional[datetime] = None
+    duration_minutes: int = 30
+    location: Optional[str] = None
+    override_subject: Optional[str] = None
+    override_participants: Optional[list] = None
+    conference_provider: Optional[str] = None
+
+
+class ScheduleMeetingForStepResult(BaseModel):
+    success: bool
+    provider: str
+    event_id: Optional[str] = None
+    join_url: Optional[str] = None
+    html_link: Optional[str] = None
+    ics_payload: Optional[str] = None
+    note: Optional[str] = None
+    error: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────
@@ -792,3 +814,146 @@ async def record_sent(
         extra={"new_state": new_state},
     )
     return await _build_plan_out(db, plan)
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/schedule-meeting",
+    response_model=ScheduleMeetingForStepResult,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def schedule_meeting_for_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: ScheduleMeetingForStepRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Schedule a calendar event for a meeting/phone_call step.
+
+    Mirrors :func:`backend.app.api.action_items.schedule_meeting_for_action_item`
+    but sourced from an ActionStep instead of the legacy ActionItem.
+    Picks the best calendar provider for the user (Google → Microsoft →
+    Zoom → Cal.com → stub), creates the event, stamps
+    ``step.calendar_event_id`` on success, and returns the join URL or
+    the stub's ICS payload.
+    """
+    from backend.app.services.meeting_scheduler import (
+        MeetingRequest,
+        MeetingScheduler,
+    )
+    from backend.app.services.meeting_scheduler.participant_resolver import (
+        resolve_participants,
+    )
+
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    # Pull customer_id from the source interaction so the participant
+    # resolver can scope to that customer's contacts.
+    interaction_stmt = select(Interaction).where(
+        Interaction.id == plan.interaction_id,
+        Interaction.tenant_id == tenant.id,
+    )
+    interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
+    customer_id = interaction.customer_id if interaction else None
+
+    raw_parts = body.override_participants
+    if raw_parts is None:
+        raw_parts = step.participants or []
+    resolved = await resolve_participants(
+        db,
+        tenant_id=tenant.id,
+        customer_id=customer_id,
+        raw_participants=raw_parts,
+    )
+
+    organizer_email = (
+        principal.user.email if principal.user and principal.user.email
+        else "no-reply@linda.local"
+    )
+
+    subject = body.override_subject or step.title or "Meeting"
+    description_parts = [step.description or ""]
+    if step.channel_reasoning:
+        description_parts.append(f"\n\nWhy meeting: {step.channel_reasoning}")
+    if step.prep_artifacts:
+        description_parts.append("\n\nPrep:")
+        for artifact in step.prep_artifacts:
+            if isinstance(artifact, str) and artifact.strip():
+                description_parts.append(f"\n  - {artifact}")
+    body_text = "".join(description_parts).strip()
+
+    inferred_conference = body.conference_provider
+    inferred_location = body.location
+    if inferred_conference is None and step.recommended_channel == "phone_call":
+        inferred_conference = "none"
+        customer_phone = next(
+            (
+                getattr(p, "phone", None)
+                for p in resolved
+                if (p.side or "").lower() == "customer" and getattr(p, "phone", None)
+            ),
+            None,
+        )
+        if not customer_phone and interaction:
+            customer_phone = getattr(interaction, "caller_phone", None)
+        if customer_phone:
+            inferred_location = inferred_location or f"Phone: {customer_phone}"
+            body_text = f"Call: {customer_phone}\n\n{body_text}"
+
+    request = MeetingRequest(
+        subject=subject,
+        body=body_text,
+        organizer_email=organizer_email,
+        participants=resolved,
+        start=body.start,
+        duration_minutes=body.duration_minutes,
+        conference_provider=inferred_conference,
+        location=inferred_location,
+    )
+
+    tf = getattr(tenant, "features_enabled", None) or {}
+    preferred = tf.get("calendar_provider") if isinstance(tf, dict) else None
+    user_id = principal.user.id if principal.user else None
+    scheduler = MeetingScheduler(
+        db,
+        tenant_id=tenant.id,
+        user_id=user_id,
+        preferred_provider=preferred,
+    )
+    result_obj = await scheduler.create_meeting(request)
+
+    if result_obj.success and result_obj.event_id:
+        step.calendar_event_id = result_obj.event_id
+
+    # Phone/meeting steps that don't await a response transition to done
+    # on a successful schedule, matching the Sent-on-email semantics.
+    if result_obj.success and step.state in {"ready", "blocked", "in_progress"}:
+        if getattr(step, "awaits_response", False):
+            step.state = "awaiting_response"
+        else:
+            step.state = "done"
+            step.completed_at = datetime.utcnow()
+            engine = ActionPlanEngine()
+            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+        step.started_at = step.started_at or datetime.utcnow()
+
+    await db.commit()
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.scheduled_meeting",
+        plan_id=plan_id, step_id=step_id,
+        extra={"provider": result_obj.provider, "success": result_obj.success},
+    )
+
+    return ScheduleMeetingForStepResult(
+        success=result_obj.success,
+        provider=result_obj.provider,
+        event_id=result_obj.event_id,
+        join_url=result_obj.join_url,
+        html_link=result_obj.html_link,
+        ics_payload=result_obj.ics_payload,
+        note=result_obj.note,
+        error=result_obj.error,
+    )

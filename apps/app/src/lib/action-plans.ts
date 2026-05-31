@@ -298,6 +298,50 @@ export function useOverrideSlot(planId: string) {
     });
 }
 
+// ── Schedule meeting / call for a step ──────────────────────────────────
+
+export interface ScheduleStepMeetingPayload {
+    start?: string | null;
+    duration_minutes?: number;
+    location?: string | null;
+    override_subject?: string | null;
+    override_participants?: unknown[] | null;
+    conference_provider?: string | null;
+}
+
+export interface ScheduleStepMeetingResult {
+    success: boolean;
+    provider: string;
+    event_id: string | null;
+    join_url: string | null;
+    html_link: string | null;
+    ics_payload: string | null;
+    note: string | null;
+    error: string | null;
+}
+
+export function useScheduleStepMeeting(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            stepId,
+            payload,
+        }: {
+            stepId: string;
+            payload: ScheduleStepMeetingPayload;
+        }) =>
+            api.request<ScheduleStepMeetingResult>(
+                `/action-plans/${planId}/steps/${stepId}/schedule-meeting`,
+                {
+                    method: "POST",
+                    body: JSON.stringify(payload),
+                },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
+    });
+}
+
 export function useRecordSent(planId: string) {
     const api = useApi();
     const qc = useQueryClient();

@@ -51,9 +51,17 @@ Backfill preserves current behaviour bit-for-bit:
 ``require_domain_manager(domain)`` factory in ``backend.app.auth`` is
 additive.
 
-Revision ID: dom_001_first_class_domain_scopes
+Revision ID: dom_001_domain_scopes
 Revises: ab01c2d3e4f5
 Create Date: 2026-05-31
+
+Note on the revision-id length: Alembic stores ``version_num`` as
+``VARCHAR(32)``; the original slug
+``dom_001_first_class_domain_scopes`` (33 chars) tripped Postgres
+``StringDataRightTruncationError`` at release time on staging. Renamed
+to ``dom_001_domain_scopes`` (21 chars) to stay within the column
+width. DDL and the version bump are in one transaction, so the staging
+DB never advanced past ``ab01c2d3e4f5``; this rename is the full fix.
 
 """
 from __future__ import annotations
@@ -66,7 +74,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "dom_001_first_class_domain_scopes"
+revision: str = "dom_001_domain_scopes"
 down_revision: Union[str, None] = "ab01c2d3e4f5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

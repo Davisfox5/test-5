@@ -11,8 +11,10 @@ import {
     useDeleteStep,
     useEditStep,
     useRestoreStep,
+    useScheduleStepMeeting,
     useSkipStep,
 } from "@/lib/action-plans";
+import { useCalendarProviders } from "@/lib/oauth";
 import { NoteInput } from "./note-input";
 import { ResponseThread } from "./response-thread";
 
@@ -77,7 +79,24 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     const del = useDeleteStep(plan.id);
     const restore = useRestoreStep(plan.id);
     const edit = useEditStep(plan.id);
+    const schedule = useScheduleStepMeeting(plan.id);
+    // Pre-flight which calendar provider would serve a Schedule click.
+    // Same gate as the legacy ActionItem card: connected provider →
+    // Schedule button; no provider → Connect-calendar CTA.
+    const calendarProviders = useCalendarProviders();
+    const hasRealCalendarProvider = Boolean(
+        calendarProviders.data?.active_provider,
+    );
+    const isMeetingStep =
+        step.recommended_channel === "meeting" ||
+        step.recommended_channel === "phone_call";
     const [editing, setEditing] = useState(false);
+    const [scheduleResult, setScheduleResult] = useState<{
+        ok: boolean;
+        note: string;
+        joinUrl?: string | null;
+        ics?: string | null;
+    } | null>(null);
     const isTerminal = ["done", "skipped", "deleted"].includes(step.state);
 
     return (
@@ -162,6 +181,55 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                             <ResponseThread step={step} />
                             <NoteInput plan={plan} step={step} />
                             <div className="flex flex-wrap gap-2 pt-2">
+                                {!isTerminal && isMeetingStep && hasRealCalendarProvider && (
+                                    <button
+                                        type="button"
+                                        disabled={schedule.isPending}
+                                        className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                                        onClick={async () => {
+                                            setScheduleResult(null);
+                                            try {
+                                                const result = await schedule.mutateAsync({
+                                                    stepId: step.id,
+                                                    payload: {},
+                                                });
+                                                if (result.success) {
+                                                    setScheduleResult({
+                                                        ok: true,
+                                                        note: result.join_url
+                                                            ? `Created. Join: ${result.join_url}`
+                                                            : result.note ?? "Created (calendar invite ready).",
+                                                        joinUrl: result.join_url,
+                                                        ics: result.ics_payload,
+                                                    });
+                                                } else {
+                                                    setScheduleResult({
+                                                        ok: false,
+                                                        note: `Failed: ${result.error ?? "unknown error"}`,
+                                                    });
+                                                }
+                                            } catch (err) {
+                                                setScheduleResult({
+                                                    ok: false,
+                                                    note: `Failed: ${(err as Error).message}`,
+                                                });
+                                            }
+                                        }}
+                                    >
+                                        {step.recommended_channel === "phone_call"
+                                            ? "Schedule call"
+                                            : "Schedule meeting"}
+                                    </button>
+                                )}
+                                {!isTerminal && isMeetingStep && !hasRealCalendarProvider && !calendarProviders.isLoading && (
+                                    <a
+                                        href="/settings#integrations"
+                                        title="No calendar connected. Connect Google Calendar or Microsoft to schedule directly from action plans."
+                                        className="rounded border border-amber-500 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-200"
+                                    >
+                                        Connect a calendar
+                                    </a>
+                                )}
                                 {!isTerminal && (
                                     <>
                                         <button
@@ -201,6 +269,35 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                     </button>
                                 )}
                             </div>
+                            {scheduleResult && (
+                                <div
+                                    className={
+                                        scheduleResult.ok
+                                            ? "rounded border border-emerald-300 bg-emerald-50 p-2 text-xs text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-100"
+                                            : "rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-100"
+                                    }
+                                >
+                                    <p>{scheduleResult.note}</p>
+                                    {scheduleResult.joinUrl && (
+                                        <p className="mt-1">
+                                            <a
+                                                href={scheduleResult.joinUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="underline"
+                                            >
+                                                Open meeting
+                                            </a>
+                                        </p>
+                                    )}
+                                    {scheduleResult.ics && (
+                                        <details className="mt-1">
+                                            <summary className="cursor-pointer">ICS payload (copy/paste into your calendar)</summary>
+                                            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-slate-100 p-2 text-[10px] dark:bg-slate-800">{scheduleResult.ics}</pre>
+                                        </details>
+                                    )}
+                                </div>
+                            )}
                             {editing && !isTerminal && (
                                 <EditStepForm
                                     step={step}
