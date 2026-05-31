@@ -1467,7 +1467,7 @@ def _run_pipeline_impl(
     # where synthesis dropped (or whether it never started).
     _plan_diag: Dict[str, Any] = {"entered_block": True}
 
-    # synth-redeploy-marker-2026-05-31b-diag-fresh-session
+    # synth-redeploy-marker-2026-05-31c-diag-via-main-commit
     try:
         from backend.app.db import async_session as _async_session_factory
         from backend.app.services.action_plan.synthesizer import (
@@ -1588,44 +1588,17 @@ def _run_pipeline_impl(
         _plan_diag["caught_error"] = str(_plan_exc_other)[:200]
         import traceback as _tb
         _plan_diag["caught_traceback"] = _tb.format_exc()[:2000]
-    finally:
-        # Persist the diagnostic so we can read it via the standard
-        # interaction-detail endpoint. This is the only signal we
-        # currently have visibility into without Fly log access.
-        #
-        # We've observed the previous read-mutate-write approach on
-        # the main session silently failing to land the diag even
-        # when synthesis succeeded. Suspected cause: the main session
-        # had pending state (or a later commit in this task wiped
-        # the transaction containing the diag write). Fix is two-
-        # fold: (1) open a brand-new sync session isolated from
-        # whatever state the main session is in, (2) use a server-
-        # side JSONB merge (``insights || jsonb_build_object(...)``)
-        # so we don't need to read the current insights value at
-        # all -- the merge happens atomically in Postgres and
-        # preserves any concurrent writes to other top-level keys.
-        try:
-            import json as _json
-            from sqlalchemy import text as _sql_text
-            _diag_session = _SyncSessionFactory()
-            try:
-                _diag_session.execute(
-                    _sql_text(
-                        "UPDATE interactions SET insights = "
-                        "COALESCE(insights, '{}'::jsonb) "
-                        "|| jsonb_build_object('_plan_synthesis_diag', "
-                        "CAST(:diag AS jsonb)) "
-                        "WHERE id = :iid"
-                    ),
-                    {"diag": _json.dumps(_plan_diag), "iid": interaction.id},
-                )
-                _diag_session.commit()
-            finally:
-                _diag_session.close()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to stamp _plan_synthesis_diag on interaction (fresh-session path)"
-            )
+    # The synthesis block above populates ``_plan_diag`` but does NOT
+    # persist it here. Previous approaches (a separate session.commit
+    # mid-pipeline, then a fresh isolated session with JSONB merge)
+    # both failed silently in production for reasons we couldn't see
+    # without Fly log access. The current strategy is the simplest
+    # one: just assign the diag to ``interaction.insights`` via the
+    # main session's ORM and let the pipeline's final ``session.commit``
+    # at the bottom of this function persist it atomically with every
+    # other write. Since the main commit demonstrably succeeds (status
+    # flips to ``analyzed``, all other insights fields land), the diag
+    # rides along with that same successful commit.
 
     # ── Step 15: Insert interaction scores ───────────────────────────
     for sc in scorecard_results:
@@ -1844,6 +1817,15 @@ def _run_pipeline_impl(
                 )
             except Exception:
                 logger.exception("Conversation webhook dispatch raised (non-fatal)")
+
+    # ── Stamp _plan_synthesis_diag ───────────────────────────────────
+    # Persist the synthesis trace right before the final commit so it
+    # rides along with the same successful transaction that lands
+    # status='analyzed' and every other insights field. Always-runs;
+    # no try/except so a bug here is loud, not silent.
+    _diag_insights = dict(interaction.insights or {})
+    _diag_insights["_plan_synthesis_diag"] = _plan_diag
+    interaction.insights = _diag_insights
 
     session.commit()
     logger.info("Pipeline complete for interaction %s", interaction_id)
