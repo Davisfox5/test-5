@@ -837,6 +837,38 @@ def _format_transcript(
     return "\n".join(lines)
 
 
+# ── Per-domain prompt registry (added with ``dom_001``) ────────────────
+#
+# Today every domain dispatches to ``ANALYSIS_SYSTEM_PROMPT`` (the
+# sales-coach prompt). PRs 3 and 4 will swap in real CS and IT-Support
+# prompts; until they land, every motion gets analyzed by the existing
+# prompt, which is the safe behaviour because the sales prompt is the
+# one production-validated rubric we have.
+#
+# Keeping the registry explicit (rather than a generic ``getattr`` lookup)
+# means a typo in a domain name fails loud at import time instead of
+# silently degrading the wrong call type into the wrong rubric.
+ANALYSIS_SYSTEM_PROMPT_BY_DOMAIN: Dict[str, str] = {
+    "sales": ANALYSIS_SYSTEM_PROMPT,
+    "customer_service": ANALYSIS_SYSTEM_PROMPT,
+    "it_support": ANALYSIS_SYSTEM_PROMPT,
+    "generic": ANALYSIS_SYSTEM_PROMPT,
+}
+
+
+def _system_prompt_for_domain(domain: Optional[str]) -> str:
+    """Return the analysis system prompt for an interaction's ``domain``.
+
+    NULL / unknown / legacy values fall back to the sales prompt — the
+    one rubric we know is production-safe. PRs 3 and 4 will land
+    domain-specific prompts; the dispatch site (``AIAnalysisService.analyze``)
+    is already wired so flipping the dict entry is a one-line change.
+    """
+    if not domain:
+        return ANALYSIS_SYSTEM_PROMPT
+    return ANALYSIS_SYSTEM_PROMPT_BY_DOMAIN.get(domain, ANALYSIS_SYSTEM_PROMPT)
+
+
 class AIAnalysisService:
     """Run deep AI analysis on call transcripts."""
 
@@ -857,6 +889,7 @@ class AIAnalysisService:
         paralinguistic_block: Optional[Any] = None,
         complexity_score: Optional[float] = None,
         call_date: Optional[str] = None,
+        domain: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Analyze a transcript and return structured insights.
 
@@ -901,7 +934,11 @@ class AIAnalysisService:
             else ""
         )
         formatted = _format_transcript(transcript_segments, inline_tags)
-        system_prompt = system_prompt_override or ANALYSIS_SYSTEM_PROMPT
+        # Domain dispatch: pick the per-motion prompt unless the caller
+        # passed an explicit override (prompt-variant A/B swap). When
+        # ``domain`` is omitted (legacy callers, NULL on the row), the
+        # sales prompt is used — same behaviour as before ``dom_001``.
+        system_prompt = system_prompt_override or _system_prompt_for_domain(domain)
 
         # Build user message, optionally prepending triage + tenant + RAG context.
         parts: List[str] = []

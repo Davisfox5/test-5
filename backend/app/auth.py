@@ -84,6 +84,13 @@ logger = logging.getLogger(__name__)
 ROLES = ("agent", "manager", "admin")
 _ROLE_RANK = {"agent": 1, "manager": 2, "admin": 3}
 
+# Canonical domain vocabulary — mirrors the CHECK constraints on
+# ``tenants.default_domain`` / ``users.default_domain`` /
+# ``action_plans.domain`` / ``interactions.domain``. The auth-side
+# constant lives here so ``require_domain_*`` can validate at import
+# time without round-tripping through models.
+CANONICAL_DOMAINS = ("sales", "customer_service", "it_support", "generic")
+
 
 # Canonical scope namespace for API keys. Anything outside this set is
 # rejected on key creation/update with HTTP 422. ``"*"`` is the wildcard
@@ -286,6 +293,15 @@ class AuthPrincipal:
     source: str  # "api_key" | "session" | "clerk"
     scopes: list[str] = field(default_factory=lambda: ["*"])
     is_previewing: bool = False
+    # Domain scopes (added with ``dom_001``). For session/clerk principals
+    # these mirror the user's ``agent_domains`` / ``manager_domains`` /
+    # ``is_tenant_admin`` columns. For api_key principals — programmatic
+    # tenant credentials — the resolver fills these with "everything"
+    # (all canonical domains as manager, tenant-admin true) so the
+    # existing "API keys = tenant-wide" contract is preserved.
+    agent_domains: list[str] = field(default_factory=list)
+    manager_domains: list[str] = field(default_factory=list)
+    is_tenant_admin: bool = False
 
     @property
     def user_id(self) -> Optional[uuid.UUID]:
@@ -314,6 +330,29 @@ class AuthPrincipal:
         if "*" in self.scopes:
             return True
         return scope in self.scopes
+
+    def can_manage_domain(self, domain: str) -> bool:
+        """Return True if this principal has manager visibility into ``domain``.
+
+        Tenant admins always pass — managing settings implies they can
+        see every motion's dashboard. API-key principals likewise
+        (programmatic credentials are tenant-wide). For session/clerk
+        principals the check is the literal membership test against
+        ``manager_domains``.
+        """
+        if self.is_tenant_admin:
+            return True
+        return domain in self.manager_domains
+
+    def can_act_in_domain(self, domain: str) -> bool:
+        """Return True if this principal works front-line in ``domain``.
+
+        Used to scope agent-facing surfaces (inbox, action plans,
+        coaching). Tenant admins do NOT auto-pass here: the agent role
+        is "I take calls in this motion", which is a different
+        question from "I administer the tenant".
+        """
+        return domain in self.agent_domains
 
 
 # ── Sandbox preview-role overlay ──────────────────────────────────────
@@ -423,6 +462,9 @@ async def _principal_from_session_jwt(
         role=effective_role,
         source="session",
         is_previewing=is_previewing,
+        agent_domains=list(getattr(user, "agent_domains", None) or []),
+        manager_domains=list(getattr(user, "manager_domains", None) or []),
+        is_tenant_admin=bool(getattr(user, "is_tenant_admin", False)),
     )
 
 
@@ -470,6 +512,14 @@ async def _principal_from_api_key(
         role="admin",  # tenant-wide key → tenant-admin scope
         source="api_key",
         scopes=list(raw_scopes),
+        # API keys are programmatic tenant-wide credentials: they have no
+        # ``agent_domains`` (no human front-line work behind them) but
+        # carry manager visibility into every domain and the tenant-
+        # admin flag. Preserves the pre-``dom_001`` contract that an
+        # API-key caller can read any tenant data without an explicit grant.
+        agent_domains=[],
+        manager_domains=list(CANONICAL_DOMAINS),
+        is_tenant_admin=True,
     )
 
 
@@ -595,6 +645,9 @@ async def _principal_from_clerk(
         role=effective_role,
         source="clerk",
         is_previewing=is_previewing,
+        agent_domains=list(getattr(user, "agent_domains", None) or []),
+        manager_domains=list(getattr(user, "manager_domains", None) or []),
+        is_tenant_admin=bool(getattr(user, "is_tenant_admin", False)),
     )
 
 
@@ -663,6 +716,88 @@ def require_role(minimum: str) -> Callable[..., AuthPrincipal]:
         return principal
 
     _dep.__name__ = f"require_role_{minimum}"
+    return _dep
+
+
+def require_domain_manager(domain: str) -> Callable[..., AuthPrincipal]:
+    """Return a dependency that asserts the principal manages ``domain``.
+
+    Passes when:
+
+    * ``principal.is_tenant_admin`` (settings-admin sees every motion);
+    * OR ``domain in principal.manager_domains``.
+
+    Fails closed with 403 otherwise. Unknown domains fail at import-time
+    (typo in a route definition becomes a startup error, not a silent
+    always-403). Use this on new domain-scoped manager surfaces; legacy
+    routes that still use ``require_role("manager")`` keep working
+    against the backward-compat shim until they're migrated piece by piece.
+    """
+    if domain not in CANONICAL_DOMAINS:
+        raise ValueError(f"require_domain_manager: unknown domain {domain!r}")
+
+    async def _dep(
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
+        if principal.can_manage_domain(domain):
+            return principal
+        raise HTTPException(
+            status_code=403,
+            detail=f"Requires manager scope for domain: {domain}",
+        )
+
+    _dep.__name__ = f"require_domain_manager_{domain}"
+    return _dep
+
+
+def require_domain_agent(domain: str) -> Callable[..., AuthPrincipal]:
+    """Return a dependency that asserts the principal works in ``domain``.
+
+    Used for agent-facing surfaces (inbox, action plans, coaching) that
+    should only be available to users whose ``agent_domains`` includes
+    the motion. Tenant admins do NOT auto-pass — administering the
+    tenant is orthogonal to taking calls in a motion. API-key principals
+    pass through because they're tenant-wide programmatic credentials.
+    """
+    if domain not in CANONICAL_DOMAINS:
+        raise ValueError(f"require_domain_agent: unknown domain {domain!r}")
+
+    async def _dep(
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
+        # API keys: tenant-wide programmatic access, no front-line gate.
+        if principal.source == "api_key":
+            return principal
+        if principal.can_act_in_domain(domain):
+            return principal
+        raise HTTPException(
+            status_code=403,
+            detail=f"Requires agent scope for domain: {domain}",
+        )
+
+    _dep.__name__ = f"require_domain_agent_{domain}"
+    return _dep
+
+
+def require_tenant_admin() -> Callable[..., AuthPrincipal]:
+    """Return a dependency that asserts the principal administers the tenant.
+
+    Distinct from ``require_role("admin")``: that gate is based on the
+    legacy ``users.role`` column; this gate is based on the new
+    ``users.is_tenant_admin`` boolean, which is the source of truth
+    going forward. The two agree today (the ``dom_001`` backfill
+    populated ``is_tenant_admin`` from ``role='admin'``), but future
+    role/scope rewrites should aim this gate, not the role one.
+    """
+
+    async def _dep(
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
+        if principal.is_tenant_admin:
+            return principal
+        raise HTTPException(status_code=403, detail="Requires tenant admin")
+
+    _dep.__name__ = "require_tenant_admin"
     return _dep
 
 
