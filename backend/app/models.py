@@ -526,6 +526,68 @@ class Contact(Base):
 
 
 # ──────────────────────────────────────────────────────────
+# SUPPORT CASES (IT Support motion's anchor object)
+#
+# Sales calls are transactional; CS works at the account level; Support
+# has a ticket lifecycle that spans multiple interactions. A case is
+# the join object: one customer issue, many interactions, until the
+# case resolves and closes.
+# ──────────────────────────────────────────────────────────
+
+
+class SupportCase(Base):
+    """IT-Support ticket — groups every interaction on one customer issue.
+
+    Lifecycle: ``open`` → ``in_progress`` → optionally ``escalated``
+    (still actively worked at a higher tier) → ``resolved`` (problem
+    fixed, awaiting close window) → ``closed``. ``escalated_at`` and
+    ``first_response_at`` are timestamps stamped on state transitions;
+    the close-rate / TTR / FCR detectors read them directly.
+    """
+
+    __tablename__ = "support_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
+    assigned_to: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    subject: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    # Free-form category tag — agent-set or inferred from KB taxonomy.
+    category: Mapped[Optional[str]] = mapped_column(String(64))
+    # open | in_progress | escalated | resolved | closed (CHECK in migration).
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    # high | medium | low (CHECK in migration). Medium is the safe default.
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    # First-contact-resolution: True iff resolved within the first
+    # interaction. Stamped at resolve time.
+    first_contact_resolution: Mapped[Optional[bool]] = mapped_column(Boolean)
+    # 1-5 (CHECK in migration). NULL when not collected yet. Feeds the
+    # support CSAT-drop detector.
+    csat_score: Mapped[Optional[int]] = mapped_column(Integer)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    first_response_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    escalated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    customer: Mapped[Optional["Customer"]] = relationship()
+    assignee: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to])
+
+
+# ──────────────────────────────────────────────────────────
 # INTERACTIONS (omnichannel — voice, email, transcript)
 #
 # Old SMS / WhatsApp rows from prior backfills remain readable (the
@@ -577,6 +639,14 @@ class Interaction(Base):
     # by it. CHECK constraint pins the vocabulary; NULL is accepted for
     # legacy rows that pre-date the backfill.
     domain: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Optional FK to the support case this interaction belongs to.
+    # Populated for IT-Support motion interactions; NULL for Sales/CS.
+    # A case has many interactions; one interaction belongs to at most
+    # one case. ``ondelete='SET NULL'`` so case-delete doesn't cascade
+    # into the (shared) interactions table.
+    support_case_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("support_cases.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Which PromptVariant produced the most recent .insights (for A/B + rollback).
     prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
@@ -2791,14 +2861,20 @@ class ManagerAlert(Base):
     manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
-    # topic_spike | sentiment_drop | churn_surge | methodology_drop
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Sales: topic_spike | sentiment_drop | churn_surge | methodology_drop
+    # CS:    renewal_risk_spike | health_score_drop
+    # Support: csat_drop_support | escalation_surge | ttr_drift
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
     # high | medium | low
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     body: Mapped[Optional[str]] = mapped_column(Text)
     evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Which motion this alert belongs to. Drives which tab on the
+    # Manager portal renders it. NULL is accepted for legacy alerts;
+    # backfilled to tenant.default_domain by migration ``dom_002``.
+    domain: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -2829,8 +2905,14 @@ class ManagerRecommendation(Base):
     manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
-    # coach_rep | run_campaign | outreach_at_risk_customer | promote_winning_script
+    # Sales:   coach_rep | run_campaign | outreach_at_risk_customer | promote_winning_script
+    # CS:      schedule_qbr | flag_renewal_risk | assign_expansion_play | coach_csm
+    # Support: update_kb_article | route_to_specialist | coach_support_agent | escalate_recurring_issue
     category: Mapped[str] = mapped_column(String(48), nullable=False)
+    # Which motion this recommendation belongs to. Backfilled to
+    # tenant.default_domain by migration ``dom_002``; new rows are
+    # stamped from the producing detector/builder.
+    domain: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     rationale: Mapped[Optional[str]] = mapped_column(Text)
     evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
