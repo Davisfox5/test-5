@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -41,6 +41,7 @@ router = APIRouter()
 
 
 PreviewRole = Literal["agent", "manager", "admin"]
+Domain = Literal["sales", "customer_service", "it_support", "generic"]
 
 
 class PlanLimitsOut(BaseModel):
@@ -98,6 +99,20 @@ class UserOut(BaseModel):
     # True iff the principal resolver applied the preview overlay on
     # this request — drives the "you're in preview mode" banner.
     is_previewing: bool
+    # ── Domain scopes (added with ``dom_001``) ──────────────────────────
+    # The motions this user works front-line in. Drives which agent
+    # surfaces (inbox, action plans, coaching) the SPA shows. Empty list
+    # = no agent surfaces; common for a dedicated Sales Manager who
+    # only consumes dashboards.
+    agent_domains: List[Domain]
+    # The motions this user has manager-level visibility into. Drives
+    # which Manager sub-pages render; ``len >= 2`` unlocks the
+    # cross-motion Journey view.
+    manager_domains: List[Domain]
+    # Tenant-settings/admin gate, orthogonal to manager scope. A
+    # dedicated Sales Manager has ``manager_domains=["sales"]`` and
+    # ``is_tenant_admin=False``; the founder has both.
+    is_tenant_admin: bool
 
 
 class MeOut(BaseModel):
@@ -147,6 +162,19 @@ def _user_out(principal: AuthPrincipal) -> Optional[UserOut]:
     preview_role: Optional[PreviewRole] = (
         raw_preview if raw_preview in {"agent", "manager", "admin"} else None
     )
+    # Coerce any out-of-vocabulary value (corrupt JSON from a hand-edit,
+    # a future domain not yet declared in the Literal) to ``"generic"``
+    # rather than 500'ing the SPA boot. Pydantic would otherwise reject
+    # the response model.
+    def _coerce_domain_list(raw: Any) -> List[Domain]:
+        if not isinstance(raw, list):
+            return []
+        out: List[Domain] = []
+        for v in raw:
+            if v in ("sales", "customer_service", "it_support", "generic"):
+                out.append(v)  # type: ignore[arg-type]
+        return out
+
     return UserOut(
         id=user.id,
         email=user.email,
@@ -155,6 +183,9 @@ def _user_out(principal: AuthPrincipal) -> Optional[UserOut]:
         preview_role=preview_role,
         real_role=principal.real_role,
         is_previewing=principal.is_previewing,
+        agent_domains=_coerce_domain_list(principal.agent_domains),
+        manager_domains=_coerce_domain_list(principal.manager_domains),
+        is_tenant_admin=principal.is_tenant_admin,
     )
 
 

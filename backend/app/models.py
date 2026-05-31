@@ -155,6 +155,27 @@ class User(Base):
         ),
     )
 
+    # ── Domain scopes (added in dom_001) ────────────────────────────────
+    #
+    # ``agent_domains`` — domains the user works front-line in. A pure
+    # CS rep is ``["customer_service"]``; a blended IT/CS player is
+    # ``["customer_service", "it_support"]``; a dedicated manager who
+    # takes no calls is ``[]``.
+    #
+    # ``manager_domains`` — domains the user has manager-level visibility
+    # into. Composable: a Head of Revenue might hold
+    # ``["sales", "customer_service"]``; a founder running everything
+    # holds all three (Journey view unlocks at 2+).
+    #
+    # ``is_tenant_admin`` — Settings/Admin gate. Orthogonal to manager
+    # scope: a dedicated Sales Manager has ``manager_domains=["sales"]``
+    # but ``is_tenant_admin=False``; the founder has both.
+    #
+    # The legacy ``role`` column stays as a backward-compat shim so the
+    # existing ``require_role("manager")`` gates keep working. Backfilled
+    # by migration ``dom_001`` from the (role, tenant.default_domain)
+    # tuple to preserve current behaviour bit-for-bit.
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     clerk_user_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
@@ -187,6 +208,24 @@ class User(Base):
     # the single concern this addresses; if Teams ever land, the column
     # moves to teams cleanly.
     default_domain: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Domains the user works front-line in. See module-level comment
+    # above the User table for the model. Values from the canonical
+    # vocabulary (``sales`` / ``customer_service`` / ``it_support`` /
+    # ``generic``); validated at the API edge, not by a DB CHECK
+    # (Postgres CHECK on JSONB-array contents would require a function).
+    agent_domains: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    # Domains the user has manager visibility into. Composable; ``[]``
+    # means the user is not a manager anywhere.
+    manager_domains: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    # Tenant-level Settings/Admin gate. Orthogonal to manager scope —
+    # see the comment above the User table.
+    is_tenant_admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -528,6 +567,17 @@ class Interaction(Base):
     source: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)  # inbound|outbound|internal
 
+    # Promoted from the Action-Plan-synthesizer hint to a first-class
+    # property of every interaction (migration ``dom_001``). Values:
+    # ``sales`` / ``customer_service`` / ``it_support`` / ``generic``.
+    # Stamped at create time from (in order): explicit API input, the
+    # acting user's primary ``agent_domains`` value, ``Tenant.default_domain``.
+    # The analysis service dispatches its system prompt off this column;
+    # the manager portal filters its narrative / alerts / recommendations
+    # by it. CHECK constraint pins the vocabulary; NULL is accepted for
+    # legacy rows that pre-date the backfill.
+    domain: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Which PromptVariant produced the most recent .insights (for A/B + rollback).
     prompt_variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
 
@@ -611,6 +661,18 @@ class Interaction(Base):
         Index("ix_interaction_tenant_id", "tenant_id"),
         Index("ix_interaction_agent_id", "agent_id"),
         Index("ix_interaction_contact_id", "contact_id"),
+        # Manager-portal filters narrow by domain on top of tenant; the
+        # composite makes that selective without a sequential scan once
+        # CS and Support traffic shows up.
+        Index("ix_interactions_tenant_domain", "tenant_id", "domain"),
+        # Pin the domain vocabulary at the column level. NULL is
+        # accepted for legacy rows the backfill may have missed (e.g.
+        # interactions on a tenant whose ``default_domain`` was NULL,
+        # which the data model technically permitted before this migration).
+        CheckConstraint(
+            "domain IS NULL OR domain IN ('sales', 'customer_service', 'it_support', 'generic')",
+            name="ck_interactions_domain",
+        ),
     )
 
 

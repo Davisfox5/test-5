@@ -6,6 +6,14 @@ import { useApi } from "./api";
 export type PlanTier = "sandbox" | "starter" | "growth" | "enterprise";
 export type UserRole = "admin" | "manager" | "agent";
 
+// Canonical motion vocabulary. Mirrors the backend CHECK constraints
+// on ``tenants.default_domain`` / ``users.default_domain`` /
+// ``action_plans.domain`` / ``interactions.domain`` and the
+// ``CANONICAL_DOMAINS`` tuple in ``backend/app/auth.py``. The Manager
+// portal renders one tab per domain the user has manager scope for;
+// holding 2+ unlocks the cross-motion Journey view.
+export type Domain = "sales" | "customer_service" | "it_support" | "generic";
+
 export interface PlanLimits {
     real_time_transcription: boolean;
     live_coaching: boolean;
@@ -59,6 +67,20 @@ export interface MeUser {
     // True iff the principal resolver applied the preview overlay on
     // this request — drives the "preview mode" banner.
     is_previewing: boolean;
+    // Motions the user works front-line in. Drives which agent
+    // surfaces (inbox, action plans, coaching) the SPA shows. Empty
+    // list means no agent surfaces — common for a dedicated Sales
+    // Manager who only consumes dashboards. Added with backend
+    // migration ``dom_001`` (2026-05-31).
+    agent_domains: Domain[];
+    // Motions the user has manager-level visibility into. Drives which
+    // Manager sub-pages render; ``length >= 2`` unlocks the cross-
+    // motion Journey view.
+    manager_domains: Domain[];
+    // Tenant Settings/Admin gate, orthogonal to manager scope. A
+    // dedicated Sales Manager is ``manager_domains=["sales"]`` with
+    // ``is_tenant_admin=false``; a founder is both.
+    is_tenant_admin: boolean;
 }
 
 export interface Me {
