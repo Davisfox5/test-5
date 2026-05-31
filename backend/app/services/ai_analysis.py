@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +28,7 @@ MODELS = {
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.analysis_prompt_version`` so we can
 # cohort outcome data by prompt version when training the Phase 4 classifier.
-ANALYSIS_PROMPT_VERSION = "2026-05-28.action-items-overhaul"
+ANALYSIS_PROMPT_VERSION = "2026-05-30.contrast-tic-and-topic-generality"
 
 ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "You are a sales coach reviewing a call. Your voice is clipboard "
@@ -55,6 +56,21 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
     "'I want to make sure', 'I want to ensure', 'Just to be clear'. "
     "If you find yourself reaching for these, you're being too "
     "explanatory.\n"
+    "5a. AVOID rhetorical-contrast tics. Do NOT write 'X, not Y' / "
+    "'X rather than Y' / 'X instead of Y' / 'X, as opposed to Y' / "
+    "'X --- not Y' constructions to score a point. This is an AI ad-"
+    "copy pattern that reads as botspeak the moment the rep sees it. "
+    "BAD: 'the right questions, not assumed ones' / 'an ally, not a "
+    "skeptic' / 'a document, not a call' / 'your numbers, not a "
+    "projection we invented' / 'a recoverable number, not a panic "
+    "signal' / 'lets Thursday focus on the criteria rather than "
+    "guesses'. GOOD: state the positive assertion directly. 'lets "
+    "Thursday focus on the real evaluation criteria' / 'helps the "
+    "senior dispatcher arrive engaged' / 'a document keeps a "
+    "traceable trail' / 'your CFO's own numbers, organized' / 'three "
+    "carriers in six months is recoverable'. The model loves the "
+    "contrast construction because it sounds punchy; it always reads "
+    "as bot. Make the positive case once and stop.\n"
     "6. PLAIN ENGLISH for a non-technical rep. No invented technical "
     "phrases or internal slang. Do NOT coin shorthand like 'Pain-to-cost "
     "bridge', 'sanity-check dispatcher', 'qualified the pain', "
@@ -184,18 +200,29 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "- sentiment_trajectory: list of {time: str, score: float 0-10}\n"
         "- topics: list of {name: str, relevance: float 0 to 1, "
         "mentions: int}. ``name`` MUST be a GENERAL category that could "
-        "match the same theme across many calls. Use 1-3 words. Good "
-        "examples: 'pricing', 'ROI', 'integration concerns', "
-        "'competitor evaluation', 'compliance', 'onboarding', "
-        "'underwriting', 'medication disclosure'. BAD examples (too "
-        "call-specific, never reusable): 'dispatcher workflow / "
-        "swivel-chair inefficiency', 'David's CFO 1.4M figure', "
-        "'IT director vetting'. ``relevance`` is 0-1, defined as: how "
-        "central this topic was to the call's main thread. 1.0 = the "
-        "call was about this. 0.5 = an important sub-thread. 0.2 = "
-        "mentioned in passing. Do not use it as a probability. "
-        "``mentions`` is the literal count of times the topic came "
-        "up.\n"
+        "match the same theme across many calls in many industries. "
+        "Use 1-3 words. Good examples: 'pricing', 'ROI', 'integration "
+        "concerns', 'competitor evaluation', 'compliance', "
+        "'onboarding', 'underwriting', 'medication disclosure', "
+        "'system fragmentation', 'staff retention'. BAD examples "
+        "(too call-specific, never reusable): 'dispatcher workflow', "
+        "'swivel-chair inefficiency', 'carrier churn', 'David's CFO "
+        "1.4M figure', 'IT director vetting'. CRITICAL: if the "
+        "customer uses industry-specific jargon for a concept "
+        "('swivel-chair work', 'first-call-resolution dip', "
+        "'leakage', 'shrinkage'), the topic NAME must be the generic "
+        "concept ('system fragmentation', 'service-quality "
+        "regression', 'revenue loss'), NOT the literal customer "
+        "phrase. The customer's literal phrase belongs in "
+        "key_moments[].description, notable_snippets[].description, "
+        "or customer_signals as a verbatim quote, where it stays "
+        "anchored to the moment they said it. Topic names must read "
+        "naturally to a non-domain reader. ``relevance`` is 0-1, "
+        "defined as: how central this topic was to the call's main "
+        "thread. 1.0 = the call was about this. 0.5 = an important "
+        "sub-thread. 0.2 = mentioned in passing. Do not use it as a "
+        "probability. ``mentions`` is the literal count of times the "
+        "topic came up.\n"
         "- key_moments: list of {time: str, type: str, description: str, "
         "start_time: str, end_time: str}\n"
         "- competitor_mentions: list of {name: str, context: str, "
@@ -646,18 +673,58 @@ _BANNED_PHRASE_PATTERNS = [
     "one quick ask",
     "in an effort to",
     "going forward",
-    # Internal coinages flagged by the user
+    # Internal coinages we ask the model not to coin (these are the
+    # AI's own phrasing, not the customer's). Distinct from anything
+    # the customer literally said on the call, which is allowed
+    # through quote / key_moment fields.
     "pain-to-cost",
     "sanity-check dispatcher",
     "qualified the pain",
     "surfaced the buying committee",
-    "swivel-chair",
+    # AI-coined closers that read as cute / over-punchy
+    "talk thursday",
+    "talk monday",
+    "talk tuesday",
+    "talk wednesday",
+    "talk friday",
+    "onward.",
+    "onward,",
     # Stock fillers
     "it's important to",
     "it's worth noting",
     "remember to",
     "make sure to",
     "in conclusion",
+]
+
+
+# Rhetorical-contrast tic: "X, not Y" / "X — not Y" / "X rather than
+# Y" / "X instead of Y" / "X as opposed to Y" used for emphasis.
+# Catches multi-word Y up to ~6 words so "not assumed ones" /
+# "not a skeptic" / "not a projection we invented" all fire.
+_CONTRAST_TIC_PATTERNS = [
+    # ", not [up to 6 words]" — most common form
+    re.compile(r",\s+not\s+(?!only|just|merely|simply|necessarily|even|always|yet|sure\b)[a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*){0,5}\b", re.IGNORECASE),
+    # "— not [up to 6 words]" (em-dash or en-dash variant)
+    re.compile(r"[—–]\s*not\s+[a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*){0,5}\b", re.IGNORECASE),
+    # " rather than [up to 5 words]"
+    re.compile(r"\brather\s+than\s+[a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*){0,4}\b", re.IGNORECASE),
+    # " instead of [up to 5 words]" — slightly noisier so we require
+    # a clean lowercase tail (skips proper nouns like "instead of
+    # Salesforce")
+    re.compile(r"\binstead\s+of\s+[a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*){0,4}\b", re.IGNORECASE),
+    # " as opposed to "
+    re.compile(r"\bas\s+opposed\s+to\b", re.IGNORECASE),
+]
+
+
+# All-caps section labels and dashed dividers in artifact bodies.
+# Three uppercase letters or more followed by a colon ("EOD:", "CRM:",
+# "AGENDA:"), or a "--- HEADER ---" dashed divider. Skips legitimate
+# acronyms in running prose by requiring the colon or dashes.
+_ALLCAPS_LABEL_PATTERNS = [
+    re.compile(r"^\s*[-=*]{2,}\s*[A-Z][A-Z0-9 _'/&]+[-=*]{2,}\s*$", re.MULTILINE),
+    re.compile(r"^\s*[A-Z]{3,}[A-Z0-9 _'/&]{0,40}:\s*$", re.MULTILINE),
 ]
 
 
@@ -668,6 +735,10 @@ def _log_jargon_hits(result: Dict[str, Any], interaction_id: Optional[str] = Non
     (verbatim customer text is allowed to contain anything). Everywhere
     else, if a banned phrase appears in any string value, emit a warning
     with the field path so we can iterate the prompt without flying blind.
+
+    Also catches the rhetorical-contrast tic ("X, not Y" / "X rather
+    than Y") and all-caps section labels in artifact bodies. These are
+    structural AI tells that don't reduce to a literal phrase list.
     """
     hits: List[str] = []
 
@@ -687,6 +758,14 @@ def _log_jargon_hits(result: Dict[str, Any], interaction_id: Optional[str] = Non
             for phrase in _BANNED_PHRASE_PATTERNS:
                 if phrase in lower:
                     hits.append(f"{path}: '{phrase}'")
+            for pat in _CONTRAST_TIC_PATTERNS:
+                m = pat.search(obj)
+                if m:
+                    hits.append(f"{path}: contrast-tic '{m.group(0).strip()}'")
+            for pat in _ALLCAPS_LABEL_PATTERNS:
+                m = pat.search(obj)
+                if m:
+                    hits.append(f"{path}: allcaps-label '{m.group(0).strip()}'")
 
     _walk(result, "")
     if hits:
