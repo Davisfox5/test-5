@@ -1592,19 +1592,40 @@ def _run_pipeline_impl(
         # Persist the diagnostic so we can read it via the standard
         # interaction-detail endpoint. This is the only signal we
         # currently have visibility into without Fly log access.
+        #
+        # We've observed the previous read-mutate-write approach on
+        # the main session silently failing to land the diag even
+        # when synthesis succeeded. Suspected cause: the main session
+        # had pending state (or a later commit in this task wiped
+        # the transaction containing the diag write). Fix is two-
+        # fold: (1) open a brand-new sync session isolated from
+        # whatever state the main session is in, (2) use a server-
+        # side JSONB merge (``insights || jsonb_build_object(...)``)
+        # so we don't need to read the current insights value at
+        # all -- the merge happens atomically in Postgres and
+        # preserves any concurrent writes to other top-level keys.
         try:
-            current = dict(interaction.insights or {})
-            current["_plan_synthesis_diag"] = _plan_diag
-            interaction.insights = current
-            from sqlalchemy import update as _sql_update_diag
-            session.execute(
-                _sql_update_diag(Interaction)
-                .where(Interaction.id == interaction.id)
-                .values(insights=current)
-            )
-            session.commit()
+            import json as _json
+            from sqlalchemy import text as _sql_text
+            _diag_session = _SyncSessionFactory()
+            try:
+                _diag_session.execute(
+                    _sql_text(
+                        "UPDATE interactions SET insights = "
+                        "COALESCE(insights, '{}'::jsonb) "
+                        "|| jsonb_build_object('_plan_synthesis_diag', "
+                        "CAST(:diag AS jsonb)) "
+                        "WHERE id = :iid"
+                    ),
+                    {"diag": _json.dumps(_plan_diag), "iid": interaction.id},
+                )
+                _diag_session.commit()
+            finally:
+                _diag_session.close()
         except Exception:  # noqa: BLE001
-            logger.exception("Failed to stamp _plan_synthesis_diag on interaction")
+            logger.exception(
+                "Failed to stamp _plan_synthesis_diag on interaction (fresh-session path)"
+            )
 
     # ── Step 15: Insert interaction scores ───────────────────────────
     for sc in scorecard_results:
