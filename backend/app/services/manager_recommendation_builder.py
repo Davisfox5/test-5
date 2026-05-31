@@ -32,6 +32,7 @@ from backend.app.models import (
 from backend.app.services.llm_client import get_anthropic
 from backend.app.services.plain_english import (
     MANAGER_VOICE_RULES,
+    manager_voice_rules_for,
     sanitize_manager_payload,
 )
 
@@ -41,35 +42,121 @@ logger = logging.getLogger(__name__)
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 
-_SYSTEM_PROMPT = (
-    MANAGER_VOICE_RULES
-    + "\n"
-    + "You produce a JSON array of up to 5 manager recommendations. Each "
-    "item has keys: category (one of: coach_rep, run_campaign, "
-    "outreach_at_risk_customer, promote_winning_script), title (≤25 "
-    "words, plain English), rationale (≤40 words, evidence-cited), "
-    "target (object: rep_user_id|customer_id|script_phrase|"
-    "campaign_topic depending on category, or empty), evidence (object: "
-    "call_count|customer_count|dollar_estimate|sample_ids[] as available), "
-    "score (0-100, expected impact). Rank by score descending. Return "
-    "ONLY the JSON array, no surrounding prose."
-)
+# Per-motion recommendation categories. Each builder pass runs once
+# per domain the tenant cares about, telling Haiku which categories
+# are valid in that motion. A post-hoc filter
+# (``_VALID_CATEGORIES_BY_DOMAIN``) drops cross-motion contamination if
+# the model still emits a sales category on a CS run.
+_VALID_CATEGORIES_BY_DOMAIN: Dict[str, set] = {
+    "sales": {
+        "coach_rep",
+        "run_campaign",
+        "outreach_at_risk_customer",
+        "promote_winning_script",
+    },
+    "customer_service": {
+        "schedule_qbr",
+        "flag_renewal_risk",
+        "assign_expansion_play",
+        "coach_csm",
+    },
+    "it_support": {
+        "update_kb_article",
+        "route_to_specialist",
+        "coach_support_agent",
+        "escalate_recurring_issue",
+    },
+    "generic": {
+        "coach_rep",
+        "run_campaign",
+        "outreach_at_risk_customer",
+        "promote_winning_script",
+    },
+}
+
+
+_CATEGORY_LIST_BY_DOMAIN: Dict[str, str] = {
+    d: ", ".join(sorted(c)) for d, c in _VALID_CATEGORIES_BY_DOMAIN.items()
+}
+
+
+def _system_prompt_for(domain: str) -> str:
+    """Build the Haiku system prompt for one motion. Voice rules come
+    from ``plain_english.manager_voice_rules_for``; the category list
+    is restricted to that motion's whitelist."""
+    return (
+        manager_voice_rules_for(domain)
+        + "\n"
+        + "You produce a JSON array of up to 5 manager recommendations. Each "
+        "item has keys: category (one of: "
+        + _CATEGORY_LIST_BY_DOMAIN.get(domain, _CATEGORY_LIST_BY_DOMAIN["sales"])
+        + "), title (≤25 words, plain English), rationale (≤40 words, "
+        "evidence-cited), target (object: rep_user_id|customer_id|"
+        "script_phrase|campaign_topic|kb_article_topic depending on "
+        "category, or empty), evidence (object: "
+        "call_count|customer_count|dollar_estimate|sample_ids[] as "
+        "available), score (0-100, expected impact). Rank by score "
+        "descending. Return ONLY the JSON array, no surrounding prose."
+    )
+
+
+# Backward-compat alias. New code should call ``_system_prompt_for(domain)``.
+_SYSTEM_PROMPT = _system_prompt_for("sales")
 
 
 def build_for_tenant(session: Session, tenant: Tenant) -> List[ManagerRecommendation]:
     """Generate, sanitize, and insert recommendations for one tenant.
 
-    Returns the inserted rows. Empty list when there isn't enough
-    signal to recommend anything (no BusinessProfile, no alerts, etc.).
+    Multi-motion: runs the builder once per domain that has signal
+    (open alerts for that domain, or sales as the default fallback so
+    the legacy single-motion behaviour is preserved). Returns the
+    concatenated insert list across all motions.
     """
     profile = _latest_business_profile(session, tenant.id)
     open_alerts = _open_alerts(session, tenant.id)
     if profile is None and not open_alerts:
         return []
+
+    # Decide which domains to run. Every domain with at least one open
+    # alert gets a builder pass; plus the tenant's default_domain so a
+    # sales-only tenant with no alerts but a fresh profile still gets
+    # sales recommendations like before ``dom_002``.
+    default_domain = (tenant.default_domain or "sales").strip() or "sales"
+    domains_to_run = set()
+    for a in open_alerts:
+        d = a.domain or default_domain
+        if d in _VALID_CATEGORIES_BY_DOMAIN:
+            domains_to_run.add(d)
+    if default_domain in _VALID_CATEGORIES_BY_DOMAIN:
+        domains_to_run.add(default_domain)
+    if not domains_to_run:
+        domains_to_run.add("sales")
+
+    inserted: List[ManagerRecommendation] = []
+    for domain in domains_to_run:
+        inserted.extend(_build_for_tenant_domain(session, tenant, domain, profile, open_alerts))
+    return inserted
+
+
+def _build_for_tenant_domain(
+    session: Session,
+    tenant: Tenant,
+    domain: str,
+    profile: Optional[BusinessProfile],
+    open_alerts: List[ManagerAlert],
+) -> List[ManagerRecommendation]:
+    """Single-domain pass. Internal — ``build_for_tenant`` is the
+    public entry point and handles multi-motion fan-out."""
     candidates = _candidate_targets(session, tenant.id)
+    # Filter alerts to this motion so the Haiku prompt isn't conflating
+    # sales alerts with CS evidence (or vice versa).
+    motion_alerts = [
+        a for a in open_alerts if (a.domain or "sales") == domain
+    ][:20]
 
     prompt_body = {
         "tenant_id": str(tenant.id),
+        "domain": domain,
         "business_profile": (profile.profile if profile else {}),
         "top_factors": (profile.top_factors if profile else []),
         "open_alerts": [
@@ -79,28 +166,26 @@ def build_for_tenant(session: Session, tenant: Tenant) -> List[ManagerRecommenda
                 "title": a.title,
                 "evidence": a.evidence,
             }
-            for a in open_alerts[:20]
+            for a in motion_alerts
         ],
-        "playbook_insights": (tenant.tenant_context or {}).get("playbook_insights", {}),
+        "playbook_insights": (tenant.tenant_context or {}).get(
+            "playbook_insights", {}
+        ),
         "candidates": candidates,
     }
 
-    items = _invoke_haiku(prompt_body)
+    items = _invoke_haiku(prompt_body, domain=domain)
     if not items:
         return []
 
+    valid_categories = _VALID_CATEGORIES_BY_DOMAIN.get(domain, set())
     inserted: List[ManagerRecommendation] = []
     expires_at = datetime.now(timezone.utc) + timedelta(days=14)
     for item in items:
         if not isinstance(item, dict):
             continue
         category = item.get("category")
-        if category not in {
-            "coach_rep",
-            "run_campaign",
-            "outreach_at_risk_customer",
-            "promote_winning_script",
-        }:
+        if category not in valid_categories:
             continue
         title = item.get("title") or ""
         if not isinstance(title, str) or not title.strip():
@@ -112,6 +197,7 @@ def build_for_tenant(session: Session, tenant: Tenant) -> List[ManagerRecommenda
         )
         row = ManagerRecommendation(
             tenant_id=tenant.id,
+            domain=domain,
             category=category,
             title=item.get("title") or "",
             rationale=item.get("rationale"),
@@ -224,14 +310,18 @@ def _candidate_targets(session: Session, tenant_id) -> Dict[str, List[Dict[str, 
     }
 
 
-def _invoke_haiku(prompt_body: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Single Haiku call returning the parsed JSON array. Empty list on any failure."""
+def _invoke_haiku(
+    prompt_body: Dict[str, Any], domain: str = "sales"
+) -> List[Dict[str, Any]]:
+    """Single Haiku call returning the parsed JSON array. Empty list on
+    any failure. ``domain`` selects the per-motion system prompt so the
+    voice rules and category whitelist match the run."""
     try:
         client = get_anthropic()
         resp = client.messages.create(
             model=HAIKU_MODEL,
             max_tokens=2048,
-            system=_SYSTEM_PROMPT,
+            system=_system_prompt_for(domain),
             temperature=0.0,
             messages=[{"role": "user", "content": json.dumps(prompt_body, default=str)}],
         )

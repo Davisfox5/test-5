@@ -71,6 +71,7 @@ class AlertOut(BaseModel):
     title: str
     body: Optional[str]
     evidence: Dict[str, Any]
+    domain: Optional[str]
     opened_at: datetime
     acknowledged_at: Optional[datetime]
     dismissed_at: Optional[datetime]
@@ -86,6 +87,7 @@ class RecommendationOut(BaseModel):
     target: Dict[str, Any]
     score: float
     status: str
+    domain: Optional[str]
     applied_artifact_type: Optional[str]
     applied_artifact_id: Optional[uuid.UUID]
     expires_at: datetime
@@ -240,9 +242,24 @@ async def refresh_narrative(
 async def list_alerts(
     only_open: bool = Query(True),
     limit: int = Query(50, ge=1, le=200),
+    domain: Optional[str] = Query(
+        None,
+        description=(
+            "Restrict to one motion (sales | customer_service | "
+            "it_support | generic). Unset returns every domain — used "
+            "by the cross-motion Journey view."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    if domain is not None and domain not in {
+        "sales",
+        "customer_service",
+        "it_support",
+        "generic",
+    }:
+        raise HTTPException(status_code=422, detail=f"Unknown domain: {domain}")
     stmt = select(ManagerAlert).where(ManagerAlert.tenant_id == tenant.id)
     if only_open:
         stmt = stmt.where(
@@ -250,6 +267,17 @@ async def list_alerts(
             ManagerAlert.dismissed_at.is_(None),
             ManagerAlert.resolved_at.is_(None),
         )
+    if domain is not None:
+        # Treat NULL on the row as "sales" so pre-``dom_002`` legacy
+        # alerts still appear under their motion tab on a sales-only
+        # tenant. After backfill there shouldn't be any NULL rows in
+        # production, but keep the safety net.
+        if domain == "sales":
+            stmt = stmt.where(
+                (ManagerAlert.domain == "sales") | ManagerAlert.domain.is_(None)
+            )
+        else:
+            stmt = stmt.where(ManagerAlert.domain == domain)
     stmt = stmt.order_by(desc(ManagerAlert.opened_at)).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
     return [
@@ -260,6 +288,7 @@ async def list_alerts(
             title=r.title,
             body=r.body,
             evidence=r.evidence or {},
+            domain=r.domain,
             opened_at=r.opened_at,
             acknowledged_at=r.acknowledged_at,
             dismissed_at=r.dismissed_at,
@@ -316,9 +345,22 @@ async def dismiss_alert(
 async def list_recommendations(
     status: str = Query("open"),
     limit: int = Query(20, ge=1, le=100),
+    domain: Optional[str] = Query(
+        None,
+        description=(
+            "Restrict to one motion. Unset returns every domain."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    if domain is not None and domain not in {
+        "sales",
+        "customer_service",
+        "it_support",
+        "generic",
+    }:
+        raise HTTPException(status_code=422, detail=f"Unknown domain: {domain}")
     stmt = (
         select(ManagerRecommendation)
         .where(
@@ -328,6 +370,14 @@ async def list_recommendations(
         .order_by(desc(ManagerRecommendation.score))
         .limit(limit)
     )
+    if domain is not None:
+        if domain == "sales":
+            stmt = stmt.where(
+                (ManagerRecommendation.domain == "sales")
+                | ManagerRecommendation.domain.is_(None)
+            )
+        else:
+            stmt = stmt.where(ManagerRecommendation.domain == domain)
     rows = (await db.execute(stmt)).scalars().all()
     return [
         RecommendationOut(
@@ -339,6 +389,7 @@ async def list_recommendations(
             target=r.target or {},
             score=float(r.score or 0),
             status=r.status,
+            domain=r.domain,
             applied_artifact_type=r.applied_artifact_type,
             applied_artifact_id=r.applied_artifact_id,
             expires_at=r.expires_at,
@@ -377,6 +428,28 @@ async def apply_recommendation(
         artifact = await _apply_outreach(db, tenant.id, rec)
     elif rec.category == "promote_winning_script":
         artifact = await _apply_promote_script(db, tenant, rec)
+    # CS categories — all create CoachingNote-shaped artifacts at the
+    # spine level, with different titles/bodies and different
+    # ``assigned_to`` semantics. A QBR scheduled-for or expansion-play
+    # eventually wants its own object, but for the first cut the
+    # CoachingNote queue is the right surface (manager-to-rep memo).
+    elif rec.category == "coach_csm":
+        artifact = await _apply_coach_rep(db, tenant.id, rec, principal)
+    elif rec.category == "schedule_qbr":
+        artifact = await _apply_outreach(db, tenant.id, rec)
+    elif rec.category == "flag_renewal_risk":
+        artifact = await _apply_outreach(db, tenant.id, rec)
+    elif rec.category == "assign_expansion_play":
+        artifact = await _apply_outreach(db, tenant.id, rec)
+    # Support categories.
+    elif rec.category == "coach_support_agent":
+        artifact = await _apply_coach_rep(db, tenant.id, rec, principal)
+    elif rec.category == "update_kb_article":
+        artifact = await _apply_kb_article_request(db, tenant.id, rec, principal)
+    elif rec.category == "route_to_specialist":
+        artifact = await _apply_outreach(db, tenant.id, rec)
+    elif rec.category == "escalate_recurring_issue":
+        artifact = await _apply_kb_article_request(db, tenant.id, rec, principal)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown category: {rec.category}")
 
@@ -911,6 +984,307 @@ async def _apply_promote_script(
     db_tenant.tenant_context = ctx
     await db.flush()
     return {"type": "playbook_entry", "id": rec.id}
+
+
+async def _apply_kb_article_request(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    rec: ManagerRecommendation,
+    principal: AuthPrincipal,
+) -> Dict[str, Any]:
+    """Apply for Support-motion recommendations that ask the manager to
+    update or create a KB article (``update_kb_article``,
+    ``escalate_recurring_issue``).
+
+    We don't yet have a first-class KB-edit-request object, so the
+    artifact is a CoachingNote that the manager (or KB owner) sees as
+    a task. The note's body is composed from the rec's title +
+    rationale + suggested KB topic, so the recipient has everything in
+    one place. Once a KB-edit pipeline exists, swap the artifact for
+    that without changing the apply contract.
+    """
+    target = rec.target or {}
+    assigned_to = principal.user_id
+    raw = target.get("rep_user_id")
+    if raw:
+        try:
+            parsed = uuid.UUID(str(raw))
+            assigned_to = parsed
+        except (TypeError, ValueError):
+            pass
+    if assigned_to is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot create KB-article task without an assignee.",
+        )
+    kb_topic = target.get("kb_article_topic") or rec.title
+    body_lines = [rec.rationale or "", "", f"Suggested KB topic: {kb_topic}"]
+    note = CoachingNote(
+        tenant_id=tenant_id,
+        assigned_to=assigned_to,
+        author_id=principal.user_id,
+        title=rec.title[:300],
+        body="\n".join(body_lines).strip(),
+        source_recommendation_id=rec.id,
+    )
+    db.add(note)
+    await db.flush()
+    return {"type": "coaching_note", "id": note.id}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Cross-motion Journey view
+# ─────────────────────────────────────────────────────────────────────
+
+
+class JourneyHandoffRow(BaseModel):
+    """One row in the handoff-health table on the Journey view.
+
+    Captures customers stalled in a transition between two motions
+    (e.g. Sales handed off to CS more than 30 days ago but no CS
+    activity has occurred). Counts and average days are computed in
+    Python over a small N — the manager portal volumes don't justify
+    a window-function SQL query yet.
+    """
+
+    transition: str  # e.g. "sales_to_cs", "cs_to_support", "support_to_renewal"
+    customer_count: int
+    avg_days_stalled: Optional[float]
+
+
+class JourneyAccountRow(BaseModel):
+    """Per-account lifecycle bar for the Journey view's top section."""
+
+    customer_id: uuid.UUID
+    customer_name: str
+    last_sales_at: Optional[datetime]
+    last_cs_at: Optional[datetime]
+    last_support_at: Optional[datetime]
+    open_support_cases: int
+    health_signal: Optional[str]  # 'high' | 'medium' | 'low' | 'none'
+
+
+class JourneyReport(BaseModel):
+    """Top-level Journey response. The frontend renders the handoffs
+    row as a strip and the accounts list as a table; both are
+    truncated server-side."""
+
+    handoffs: List[JourneyHandoffRow]
+    accounts_at_risk: List[JourneyAccountRow]
+    motions_seen: List[str]
+
+
+@router.get(
+    "/manager/journey",
+    response_model=JourneyReport,
+    dependencies=[Depends(require_role("manager"))],
+)
+async def journey_view(
+    window_days: int = Query(90, ge=7, le=365),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> JourneyReport:
+    """Cross-motion view used by managers who hold 2+ ``manager_domains``.
+
+    Handoff health: counts of customers stuck in each transition
+    (Sales -> CS, CS -> Support, Support -> Renewal) using a simple
+    "X days since last interaction in motion Y, no follow-up in motion
+    Z" rule. Accounts at risk: customers with open support cases plus
+    a recent high-churn signal from their last CS or Sales call.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    motions_seen: List[str] = []
+    handoffs: List[JourneyHandoffRow] = []
+
+    # Sales -> CS: customers with a sales interaction in the window
+    # but no CS interaction since.
+    sales_to_cs = await _handoff_stall(db, tenant.id, "sales", "customer_service", cutoff)
+    if sales_to_cs is not None:
+        handoffs.append(JourneyHandoffRow(transition="sales_to_cs", **sales_to_cs))
+        motions_seen.extend(["sales", "customer_service"])
+
+    cs_to_support = await _handoff_stall(
+        db, tenant.id, "customer_service", "it_support", cutoff
+    )
+    if cs_to_support is not None:
+        handoffs.append(JourneyHandoffRow(transition="cs_to_support", **cs_to_support))
+        motions_seen.append("it_support")
+
+    accounts = await _accounts_at_risk(db, tenant.id, cutoff)
+    return JourneyReport(
+        handoffs=handoffs,
+        accounts_at_risk=accounts,
+        motions_seen=sorted(set(motions_seen)),
+    )
+
+
+async def _handoff_stall(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    from_domain: str,
+    to_domain: str,
+    cutoff: datetime,
+) -> Optional[Dict[str, Any]]:
+    """Find customers whose last interaction in ``from_domain`` is
+    within the window but who have no ``to_domain`` interaction since.
+
+    Returns ``{"customer_count": int, "avg_days_stalled": float}`` or
+    None when there's no signal.
+    """
+    last_from_stmt = (
+        select(
+            Interaction.customer_id,
+            func.max(Interaction.created_at).label("last_at"),
+        )
+        .where(
+            Interaction.tenant_id == tenant_id,
+            Interaction.domain == from_domain,
+            Interaction.customer_id.isnot(None),
+            Interaction.created_at >= cutoff,
+        )
+        .group_by(Interaction.customer_id)
+    )
+    last_from_rows = (await db.execute(last_from_stmt)).all()
+    if not last_from_rows:
+        return None
+
+    last_from = {cust_id: last_at for cust_id, last_at in last_from_rows}
+
+    last_to_stmt = (
+        select(
+            Interaction.customer_id,
+            func.max(Interaction.created_at).label("last_at"),
+        )
+        .where(
+            Interaction.tenant_id == tenant_id,
+            Interaction.domain == to_domain,
+            Interaction.customer_id.in_(list(last_from.keys())),
+        )
+        .group_by(Interaction.customer_id)
+    )
+    last_to = {
+        cust_id: last_at
+        for cust_id, last_at in (await db.execute(last_to_stmt)).all()
+    }
+
+    now = datetime.now(timezone.utc)
+    stalled_days: List[float] = []
+    for cust_id, last_from_at in last_from.items():
+        last_to_at = last_to.get(cust_id)
+        if last_to_at is not None and last_to_at >= last_from_at:
+            continue  # handed off successfully
+        days = (now - last_from_at).total_seconds() / 86400.0
+        if days >= 7:  # at least a week is "stalled"
+            stalled_days.append(days)
+
+    if not stalled_days:
+        return None
+    return {
+        "customer_count": len(stalled_days),
+        "avg_days_stalled": round(sum(stalled_days) / len(stalled_days), 1),
+    }
+
+
+async def _accounts_at_risk(
+    db: AsyncSession, tenant_id: uuid.UUID, cutoff: datetime
+) -> List[JourneyAccountRow]:
+    """Customers with at least one of: open Support case, recent
+    high-churn signal on a CS call, recent high-churn on a Sales call.
+    Ordered by severity proxy (open support cases first, then high
+    churn). Capped at 15 — this is a triage view, not an export.
+    """
+    from backend.app.models import SupportCase
+
+    # Open support cases per customer.
+    open_cases_stmt = (
+        select(SupportCase.customer_id, func.count(SupportCase.id).label("n"))
+        .where(
+            SupportCase.tenant_id == tenant_id,
+            SupportCase.status.in_(("open", "in_progress", "escalated")),
+            SupportCase.customer_id.isnot(None),
+        )
+        .group_by(SupportCase.customer_id)
+    )
+    open_cases = {
+        cust_id: int(n or 0)
+        for cust_id, n in (await db.execute(open_cases_stmt)).all()
+    }
+
+    # Last interaction per (customer, domain).
+    last_stmt = (
+        select(
+            Interaction.customer_id,
+            Interaction.domain,
+            func.max(Interaction.created_at).label("last_at"),
+        )
+        .where(
+            Interaction.tenant_id == tenant_id,
+            Interaction.customer_id.isnot(None),
+            Interaction.created_at >= cutoff,
+        )
+        .group_by(Interaction.customer_id, Interaction.domain)
+    )
+    last_per_motion: Dict[uuid.UUID, Dict[str, datetime]] = {}
+    for cust_id, dom, last_at in (await db.execute(last_stmt)).all():
+        if cust_id is None:
+            continue
+        last_per_motion.setdefault(cust_id, {})[dom or "sales"] = last_at
+
+    # Health signal: read the most recent insights.churn_risk_signal
+    # value across that customer's interactions.
+    health_stmt = (
+        select(Interaction.customer_id, Interaction.insights)
+        .where(
+            Interaction.tenant_id == tenant_id,
+            Interaction.customer_id.isnot(None),
+            Interaction.created_at >= cutoff,
+        )
+        .order_by(desc(Interaction.created_at))
+    )
+    health_signal: Dict[uuid.UUID, str] = {}
+    for cust_id, insights in (await db.execute(health_stmt)).all():
+        if cust_id in health_signal:
+            continue
+        if isinstance(insights, dict):
+            raw = insights.get("churn_risk_signal")
+            if isinstance(raw, str):
+                health_signal[cust_id] = raw.lower()
+
+    # Eligible customer ids: anyone with an open case OR a high-churn
+    # signal on a recent interaction.
+    eligible: set = set(open_cases.keys())
+    eligible |= {c for c, s in health_signal.items() if s == "high"}
+    if not eligible:
+        return []
+
+    name_stmt = select(Customer.id, Customer.name).where(Customer.id.in_(list(eligible)))
+    names = {cid: nm or "" for cid, nm in (await db.execute(name_stmt)).all()}
+
+    rows: List[JourneyAccountRow] = []
+    for cust_id in eligible:
+        motion_last = last_per_motion.get(cust_id, {})
+        rows.append(
+            JourneyAccountRow(
+                customer_id=cust_id,
+                customer_name=names.get(cust_id, ""),
+                last_sales_at=motion_last.get("sales"),
+                last_cs_at=motion_last.get("customer_service"),
+                last_support_at=motion_last.get("it_support"),
+                open_support_cases=open_cases.get(cust_id, 0),
+                health_signal=health_signal.get(cust_id),
+            )
+        )
+    # Sort: open cases first, then health=high, then most recent activity.
+    def _sort_key(r: JourneyAccountRow):
+        return (
+            -r.open_support_cases,
+            0 if r.health_signal == "high" else 1,
+            -(max(filter(None, [r.last_sales_at, r.last_cs_at, r.last_support_at]),
+                  default=datetime.fromtimestamp(0, tz=timezone.utc)).timestamp()),
+        )
+
+    rows.sort(key=_sort_key)
+    return rows[:15]
 
 
 # ─────────────────────────────────────────────────────────────────────

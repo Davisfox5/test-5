@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,6 +32,7 @@ from backend.app.models import (
     AlertChannelConfig,
     Interaction,
     ManagerAlert,
+    SupportCase,
     Tenant,
 )
 from backend.app.services.plain_english import sanitize_manager_text
@@ -55,6 +57,13 @@ class DetectedAnomaly:
     body: str
     evidence: Dict[str, Any]
     fingerprint: str
+    # Which motion this anomaly belongs to. Drives which tab on the
+    # Manager portal renders the resulting ManagerAlert and which
+    # voice rules the (eventual) Haiku title-rewriter uses. Added
+    # alongside migration ``dom_002``; existing detectors stamp
+    # ``"sales"`` because their underlying signals (topics, sentiment,
+    # churn) describe sales-floor activity.
+    domain: str = "sales"
 
 
 # ── Public entry points ──────────────────────────────────────────────────
@@ -72,7 +81,21 @@ def scan_tenant(session: Session, tenant: Tenant) -> List[ManagerAlert]:
     now = datetime.now(timezone.utc)
     found: List[DetectedAnomaly] = []
 
-    for detector in (_detect_topic_spike, _detect_sentiment_drop, _detect_churn_surge):
+    # Sales detectors operate on sales-domain interactions; CS detectors
+    # on customer_service; Support on it_support cases + interactions.
+    # Each detector knows its own filter; the dispatch is just "run them
+    # all and tolerate per-detector failures."
+    all_detectors = (
+        _detect_topic_spike,
+        _detect_sentiment_drop,
+        _detect_churn_surge,
+        _detect_renewal_risk_spike,
+        _detect_health_score_drop,
+        _detect_csat_drop_support,
+        _detect_escalation_surge,
+        _detect_ttr_drift,
+    )
+    for detector in all_detectors:
         try:
             anomalies = detector(session, tenant, config, now)
             found.extend(anomalies)
@@ -220,6 +243,7 @@ def _detect_topic_spike(
                 ),
                 evidence=evidence,
                 fingerprint=_fingerprint("topic_spike", topic),
+                domain="sales",
             )
         )
     return found
@@ -237,6 +261,11 @@ def _topic_counts(
         Interaction.tenant_id == tenant_id,
         Interaction.created_at >= start,
         Interaction.created_at < end,
+        # Restrict to sales-motion interactions. Pre-``dom_002`` rows
+        # were backfilled to the tenant's default_domain — typically
+        # "sales" — so this preserves behaviour for sales-only tenants
+        # while making the detector correct for multi-motion tenants.
+        sa.or_(Interaction.domain == "sales", Interaction.domain.is_(None)),
     )
     counts: Dict[str, int] = {}
     for (insights,) in session.execute(stmt).all():
@@ -318,6 +347,7 @@ def _detect_sentiment_drop(
             ),
             evidence=evidence,
             fingerprint=_fingerprint("sentiment_drop", "tenant"),
+            domain="sales",
         )
     ]
 
@@ -329,6 +359,11 @@ def _sentiment_scores(
         Interaction.tenant_id == tenant_id,
         Interaction.created_at >= start,
         Interaction.created_at < end,
+        # Restrict to sales-motion interactions. Pre-``dom_002`` rows
+        # were backfilled to the tenant's default_domain — typically
+        # "sales" — so this preserves behaviour for sales-only tenants
+        # while making the detector correct for multi-motion tenants.
+        sa.or_(Interaction.domain == "sales", Interaction.domain.is_(None)),
     )
     out: List[float] = []
     for (insights,) in session.execute(stmt).all():
@@ -396,6 +431,7 @@ def _detect_churn_surge(
             ),
             evidence=evidence,
             fingerprint=_fingerprint("churn_surge", "tenant"),
+            domain="sales",
         )
     ]
 
@@ -407,6 +443,11 @@ def _high_churn_count(
         Interaction.tenant_id == tenant_id,
         Interaction.created_at >= start,
         Interaction.created_at < end,
+        # Restrict to sales-motion interactions. Pre-``dom_002`` rows
+        # were backfilled to the tenant's default_domain — typically
+        # "sales" — so this preserves behaviour for sales-only tenants
+        # while making the detector correct for multi-motion tenants.
+        sa.or_(Interaction.domain == "sales", Interaction.domain.is_(None)),
     )
     count = 0
     for (insights,) in session.execute(stmt).all():
@@ -416,6 +457,409 @@ def _high_churn_count(
         if isinstance(signal, str) and signal.lower() == "high":
             count += 1
     return count
+
+
+# ── CS detector: renewal-risk spike ─────────────────────────────────────
+#
+# Mirrors the sales ``churn_surge`` detector but reads CS-domain
+# interactions only. The signal is the same shape (``churn_risk_signal``
+# in insights), but the framing is renewal/account-health, not
+# pipeline-loss.
+
+
+def _cs_high_risk_count(
+    session: Session, tenant_id, start: datetime, end: datetime
+) -> int:
+    stmt = select(Interaction.insights).where(
+        Interaction.tenant_id == tenant_id,
+        Interaction.created_at >= start,
+        Interaction.created_at < end,
+        Interaction.domain == "customer_service",
+    )
+    count = 0
+    for (insights,) in session.execute(stmt).all():
+        if not isinstance(insights, dict):
+            continue
+        signal = insights.get("churn_risk_signal")
+        if isinstance(signal, str) and signal.lower() == "high":
+            count += 1
+    return count
+
+
+def _detect_renewal_risk_spike(
+    session: Session,
+    tenant: Tenant,
+    config: AlertChannelConfig,
+    now: datetime,
+) -> List[DetectedAnomaly]:
+    multiplier = (
+        float(config.churn_surge_multiplier)
+        if config and config.churn_surge_multiplier is not None
+        else DEFAULT_CHURN_SURGE_MULTIPLIER
+    )
+
+    recent_start = now - timedelta(hours=24)
+    current = _cs_high_risk_count(session, tenant.id, recent_start, now)
+    if current < 3:
+        return []
+
+    baseline_start = now - timedelta(days=15)
+    daily_counts: List[int] = []
+    for i in range(14):
+        s = baseline_start + timedelta(days=i)
+        daily_counts.append(
+            _cs_high_risk_count(session, tenant.id, s, s + timedelta(days=1))
+        )
+    median = statistics.median(daily_counts) if daily_counts else 0.0
+    threshold = max(median * multiplier, 3.0)
+    if current < threshold:
+        return []
+
+    severity = "high" if current >= max(median * (multiplier + 1.0), 5.0) else "medium"
+    evidence = {
+        "current_count": current,
+        "baseline_daily_median": median,
+        "multiplier": multiplier,
+        "window_hours": 24,
+    }
+    title_raw = (
+        f"{current} customers flagged as renewal risks in 24 hours, "
+        f"vs typical {int(median)} per day."
+    )
+    return [
+        DetectedAnomaly(
+            kind="renewal_risk_spike",
+            severity=severity,
+            title=sanitize_manager_text(title_raw, max_words=25),
+            body=(
+                f"CS calls in the last 24 hours surfaced {current} accounts "
+                f"with high churn signal; the 14-day daily median is "
+                f"{median:.1f}."
+            ),
+            evidence=evidence,
+            fingerprint=_fingerprint("renewal_risk_spike", "tenant"),
+            domain="customer_service",
+        )
+    ]
+
+
+# ── CS detector: account-health drop ────────────────────────────────────
+#
+# Average sentiment across CS interactions over 24h vs a 14d baseline.
+# Conceptually similar to ``sentiment_drop`` but scoped to CS so a
+# noisy sales week doesn't trigger a CS alert (or vice versa).
+
+
+def _cs_sentiment_scores(
+    session: Session, tenant_id, start: datetime, end: datetime
+) -> List[float]:
+    stmt = select(Interaction.insights).where(
+        Interaction.tenant_id == tenant_id,
+        Interaction.created_at >= start,
+        Interaction.created_at < end,
+        Interaction.domain == "customer_service",
+    )
+    out: List[float] = []
+    for (insights,) in session.execute(stmt).all():
+        if not isinstance(insights, dict):
+            continue
+        raw = insights.get("sentiment_score")
+        try:
+            if raw is not None:
+                out.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _detect_health_score_drop(
+    session: Session,
+    tenant: Tenant,
+    config: AlertChannelConfig,
+    now: datetime,
+) -> List[DetectedAnomaly]:
+    drop = (
+        float(config.sentiment_drop_threshold)
+        if config and config.sentiment_drop_threshold is not None
+        else DEFAULT_SENTIMENT_DROP
+    )
+
+    recent_start = now - timedelta(hours=24)
+    baseline_start = now - timedelta(days=15)
+    baseline_end = recent_start
+
+    recent_scores = _cs_sentiment_scores(session, tenant.id, recent_start, now)
+    baseline_scores = _cs_sentiment_scores(session, tenant.id, baseline_start, baseline_end)
+
+    if len(recent_scores) < 5 or not baseline_scores:
+        return []
+
+    recent_avg = statistics.mean(recent_scores)
+    baseline_avg = statistics.mean(baseline_scores)
+    delta = baseline_avg - recent_avg
+    if delta < drop:
+        return []
+
+    severity = "high" if delta >= drop + 1.0 else "medium"
+    evidence = {
+        "current_avg": round(recent_avg, 2),
+        "baseline_avg": round(baseline_avg, 2),
+        "delta": round(delta, 2),
+        "current_n": len(recent_scores),
+        "baseline_n": len(baseline_scores),
+        "window_hours": 24,
+    }
+    title_raw = (
+        f"Account health dropped {delta:.1f} points across CS in 24 hours "
+        f"({recent_avg:.1f} vs {baseline_avg:.1f} baseline)."
+    )
+    return [
+        DetectedAnomaly(
+            kind="health_score_drop",
+            severity=severity,
+            title=sanitize_manager_text(title_raw, max_words=25),
+            body=(
+                f"{len(recent_scores)} CS calls in 24h averaged "
+                f"{recent_avg:.1f}; 14-day CS baseline was {baseline_avg:.1f}."
+            ),
+            evidence=evidence,
+            fingerprint=_fingerprint("health_score_drop", "tenant"),
+            domain="customer_service",
+        )
+    ]
+
+
+# ── Support detector: CSAT drop ─────────────────────────────────────────
+
+
+def _support_csat_scores(
+    session: Session, tenant_id, start: datetime, end: datetime
+) -> List[float]:
+    """CSAT scores on cases resolved in the window. Pulls from SupportCase
+    rows that have ``csat_score`` populated and a ``resolved_at`` in
+    range."""
+    stmt = select(SupportCase.csat_score).where(
+        SupportCase.tenant_id == tenant_id,
+        SupportCase.resolved_at.isnot(None),
+        SupportCase.resolved_at >= start,
+        SupportCase.resolved_at < end,
+        SupportCase.csat_score.isnot(None),
+    )
+    out: List[float] = []
+    for (score,) in session.execute(stmt).all():
+        if score is None:
+            continue
+        try:
+            out.append(float(score))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _detect_csat_drop_support(
+    session: Session,
+    tenant: Tenant,
+    config: AlertChannelConfig,
+    now: datetime,
+) -> List[DetectedAnomaly]:
+    """24h CSAT average vs 14d baseline. CSAT is 1-5; a 0.5-point drop is
+    significant. Re-uses the sentiment_drop_threshold knob, halved to
+    match CSAT's narrower range."""
+    raw_drop = (
+        float(config.sentiment_drop_threshold)
+        if config and config.sentiment_drop_threshold is not None
+        else DEFAULT_SENTIMENT_DROP
+    )
+    drop = max(raw_drop / 3.0, 0.5)  # 1-5 scale, so divide
+
+    recent_start = now - timedelta(hours=24)
+    baseline_start = now - timedelta(days=15)
+    baseline_end = recent_start
+
+    recent = _support_csat_scores(session, tenant.id, recent_start, now)
+    baseline = _support_csat_scores(session, tenant.id, baseline_start, baseline_end)
+    if len(recent) < 5 or not baseline:
+        return []
+    recent_avg = statistics.mean(recent)
+    baseline_avg = statistics.mean(baseline)
+    delta = baseline_avg - recent_avg
+    if delta < drop:
+        return []
+    severity = "high" if delta >= drop + 0.5 else "medium"
+    evidence = {
+        "current_avg": round(recent_avg, 2),
+        "baseline_avg": round(baseline_avg, 2),
+        "delta": round(delta, 2),
+        "current_n": len(recent),
+        "baseline_n": len(baseline),
+        "window_hours": 24,
+    }
+    title_raw = (
+        f"CSAT dropped {delta:.1f} points in support over 24 hours "
+        f"({recent_avg:.1f} vs {baseline_avg:.1f} baseline)."
+    )
+    return [
+        DetectedAnomaly(
+            kind="csat_drop_support",
+            severity=severity,
+            title=sanitize_manager_text(title_raw, max_words=25),
+            body=(
+                f"{len(recent)} cases closed in 24h averaged "
+                f"{recent_avg:.1f}; 14-day baseline was {baseline_avg:.1f}."
+            ),
+            evidence=evidence,
+            fingerprint=_fingerprint("csat_drop_support", "tenant"),
+            domain="it_support",
+        )
+    ]
+
+
+# ── Support detector: escalation surge ──────────────────────────────────
+
+
+def _support_escalation_count(
+    session: Session, tenant_id, start: datetime, end: datetime
+) -> int:
+    stmt = select(SupportCase.id).where(
+        SupportCase.tenant_id == tenant_id,
+        SupportCase.escalated_at.isnot(None),
+        SupportCase.escalated_at >= start,
+        SupportCase.escalated_at < end,
+    )
+    return len(session.execute(stmt).all())
+
+
+def _detect_escalation_surge(
+    session: Session,
+    tenant: Tenant,
+    config: AlertChannelConfig,
+    now: datetime,
+) -> List[DetectedAnomaly]:
+    multiplier = (
+        float(config.churn_surge_multiplier)
+        if config and config.churn_surge_multiplier is not None
+        else DEFAULT_CHURN_SURGE_MULTIPLIER
+    )
+    recent_start = now - timedelta(hours=24)
+    current = _support_escalation_count(session, tenant.id, recent_start, now)
+    if current < 3:
+        return []
+    baseline_start = now - timedelta(days=15)
+    daily_counts: List[int] = []
+    for i in range(14):
+        s = baseline_start + timedelta(days=i)
+        daily_counts.append(
+            _support_escalation_count(session, tenant.id, s, s + timedelta(days=1))
+        )
+    median = statistics.median(daily_counts) if daily_counts else 0.0
+    threshold = max(median * multiplier, 3.0)
+    if current < threshold:
+        return []
+    severity = "high" if current >= max(median * (multiplier + 1.0), 5.0) else "medium"
+    evidence = {
+        "current_count": current,
+        "baseline_daily_median": median,
+        "multiplier": multiplier,
+        "window_hours": 24,
+    }
+    title_raw = (
+        f"{current} support cases escalated in 24 hours, "
+        f"vs typical {int(median)} per day."
+    )
+    return [
+        DetectedAnomaly(
+            kind="escalation_surge",
+            severity=severity,
+            title=sanitize_manager_text(title_raw, max_words=25),
+            body=(
+                f"Baseline median is {median:.1f} escalations per day across "
+                f"the last 14 days; the current 24h count crossed {threshold:.0f}."
+            ),
+            evidence=evidence,
+            fingerprint=_fingerprint("escalation_surge", "tenant"),
+            domain="it_support",
+        )
+    ]
+
+
+# ── Support detector: time-to-resolve drift ─────────────────────────────
+
+
+def _support_ttr_hours(
+    session: Session, tenant_id, start: datetime, end: datetime
+) -> List[float]:
+    """Time-to-resolve in hours for cases resolved in the window. Only
+    includes cases with both an opened_at and a resolved_at."""
+    stmt = select(SupportCase.opened_at, SupportCase.resolved_at).where(
+        SupportCase.tenant_id == tenant_id,
+        SupportCase.resolved_at.isnot(None),
+        SupportCase.resolved_at >= start,
+        SupportCase.resolved_at < end,
+    )
+    out: List[float] = []
+    for opened, resolved in session.execute(stmt).all():
+        if opened is None or resolved is None:
+            continue
+        try:
+            delta = (resolved - opened).total_seconds() / 3600.0
+            if delta > 0:
+                out.append(delta)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _detect_ttr_drift(
+    session: Session,
+    tenant: Tenant,
+    config: AlertChannelConfig,
+    now: datetime,
+) -> List[DetectedAnomaly]:
+    """24h average TTR vs 14d baseline; alert when current rises >= 50%
+    above baseline (with a 1-hour absolute floor so a quiet day with one
+    long case doesn't fire)."""
+    recent_start = now - timedelta(hours=24)
+    baseline_start = now - timedelta(days=15)
+    baseline_end = recent_start
+
+    recent = _support_ttr_hours(session, tenant.id, recent_start, now)
+    baseline = _support_ttr_hours(session, tenant.id, baseline_start, baseline_end)
+    if len(recent) < 5 or not baseline:
+        return []
+    recent_avg = statistics.mean(recent)
+    baseline_avg = statistics.mean(baseline)
+    if recent_avg < baseline_avg * 1.5:
+        return []
+    if (recent_avg - baseline_avg) < 1.0:
+        # Sub-1h drift on a fast baseline isn't worth paging on.
+        return []
+    severity = "high" if recent_avg >= baseline_avg * 2.0 else "medium"
+    evidence = {
+        "current_avg_hours": round(recent_avg, 2),
+        "baseline_avg_hours": round(baseline_avg, 2),
+        "delta_hours": round(recent_avg - baseline_avg, 2),
+        "current_n": len(recent),
+        "baseline_n": len(baseline),
+        "window_hours": 24,
+    }
+    title_raw = (
+        f"Time to resolve rose to {recent_avg:.1f}h in 24 hours, "
+        f"vs {baseline_avg:.1f}h baseline."
+    )
+    return [
+        DetectedAnomaly(
+            kind="ttr_drift",
+            severity=severity,
+            title=sanitize_manager_text(title_raw, max_words=25),
+            body=(
+                f"{len(recent)} cases resolved in 24h averaged "
+                f"{recent_avg:.1f} hours; 14-day baseline was {baseline_avg:.1f}h."
+            ),
+            evidence=evidence,
+            fingerprint=_fingerprint("ttr_drift", "tenant"),
+            domain="it_support",
+        )
+    ]
 
 
 # ── Resolution check (used by resolve_stale) ────────────────────────────
@@ -452,6 +896,40 @@ def _still_active(session: Session, alert: ManagerAlert) -> bool:
         current = _high_churn_count(session, tenant.id, now - timedelta(hours=24), now)
         baseline = (alert.evidence or {}).get("baseline_daily_median") or 0
         return current >= max(float(baseline) * 1.2, 3.0)
+    if alert.kind == "renewal_risk_spike":
+        current = _cs_high_risk_count(session, tenant.id, now - timedelta(hours=24), now)
+        baseline = (alert.evidence or {}).get("baseline_daily_median") or 0
+        return current >= max(float(baseline) * 1.2, 3.0)
+    if alert.kind == "health_score_drop":
+        scores = _cs_sentiment_scores(session, tenant.id, now - timedelta(hours=24), now)
+        if len(scores) < 5:
+            return True
+        baseline_avg = (alert.evidence or {}).get("baseline_avg")
+        delta = (alert.evidence or {}).get("delta") or DEFAULT_SENTIMENT_DROP
+        if not isinstance(baseline_avg, (int, float)):
+            return True
+        return (float(baseline_avg) - statistics.mean(scores)) >= float(delta) * 0.5
+    if alert.kind == "csat_drop_support":
+        scores = _support_csat_scores(session, tenant.id, now - timedelta(hours=24), now)
+        if len(scores) < 5:
+            return True
+        baseline_avg = (alert.evidence or {}).get("baseline_avg")
+        delta = (alert.evidence or {}).get("delta") or 0.5
+        if not isinstance(baseline_avg, (int, float)):
+            return True
+        return (float(baseline_avg) - statistics.mean(scores)) >= float(delta) * 0.5
+    if alert.kind == "escalation_surge":
+        current = _support_escalation_count(session, tenant.id, now - timedelta(hours=24), now)
+        baseline = (alert.evidence or {}).get("baseline_daily_median") or 0
+        return current >= max(float(baseline) * 1.2, 3.0)
+    if alert.kind == "ttr_drift":
+        recent = _support_ttr_hours(session, tenant.id, now - timedelta(hours=24), now)
+        if len(recent) < 5:
+            return True
+        baseline_avg = (alert.evidence or {}).get("baseline_avg_hours") or 0
+        if not isinstance(baseline_avg, (int, float)) or baseline_avg <= 0:
+            return True
+        return statistics.mean(recent) >= float(baseline_avg) * 1.25
     return True
 
 
@@ -506,6 +984,7 @@ def _insert_alert(
         body=anomaly.body,
         evidence=anomaly.evidence,
         fingerprint=anomaly.fingerprint,
+        domain=anomaly.domain,
     )
     session.add(row)
     try:

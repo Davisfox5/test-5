@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Domain } from "./me";
 import { useApi } from "./api";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -14,11 +15,19 @@ export interface ManagerNarrative {
     playbook_insights: Record<string, unknown>;
 }
 
+// Union of every alert kind across all three motions. Each row carries
+// its own ``domain`` so the Manager portal can filter to the active
+// tab and the Journey view can mix them.
 export type AlertKind =
     | "topic_spike"
     | "sentiment_drop"
     | "churn_surge"
-    | "methodology_drop";
+    | "methodology_drop"
+    | "renewal_risk_spike"
+    | "health_score_drop"
+    | "csat_drop_support"
+    | "escalation_surge"
+    | "ttr_drift";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -29,6 +38,7 @@ export interface ManagerAlert {
     title: string;
     body: string | null;
     evidence: Record<string, unknown>;
+    domain: Domain | null;
     opened_at: string;
     acknowledged_at: string | null;
     dismissed_at: string | null;
@@ -36,10 +46,21 @@ export interface ManagerAlert {
 }
 
 export type RecommendationCategory =
+    // Sales
     | "coach_rep"
     | "run_campaign"
     | "outreach_at_risk_customer"
-    | "promote_winning_script";
+    | "promote_winning_script"
+    // CS
+    | "schedule_qbr"
+    | "flag_renewal_risk"
+    | "assign_expansion_play"
+    | "coach_csm"
+    // Support
+    | "update_kb_article"
+    | "route_to_specialist"
+    | "coach_support_agent"
+    | "escalate_recurring_issue";
 
 export interface ManagerRecommendation {
     id: string;
@@ -50,6 +71,7 @@ export interface ManagerRecommendation {
     target: Record<string, unknown>;
     score: number;
     status: "open" | "applied" | "dismissed" | "expired";
+    domain: Domain | null;
     applied_artifact_type: string | null;
     applied_artifact_id: string | null;
     expires_at: string;
@@ -81,7 +103,35 @@ export interface TrainingGapReport {
     rows: TrainingGapRow[];
 }
 
+// ── Journey (cross-motion) ────────────────────────────────────────────
+
+export interface JourneyHandoffRow {
+    transition: "sales_to_cs" | "cs_to_support" | "support_to_renewal";
+    customer_count: number;
+    avg_days_stalled: number | null;
+}
+
+export interface JourneyAccountRow {
+    customer_id: string;
+    customer_name: string;
+    last_sales_at: string | null;
+    last_cs_at: string | null;
+    last_support_at: string | null;
+    open_support_cases: number;
+    health_signal: "high" | "medium" | "low" | "none" | null;
+}
+
+export interface JourneyReport {
+    handoffs: JourneyHandoffRow[];
+    accounts_at_risk: JourneyAccountRow[];
+    motions_seen: Domain[];
+}
+
 // ── Hooks ─────────────────────────────────────────────────────────────
+
+// Optional ``domain`` on every list hook: pass it to scope a Manager
+// tab to one motion; omit it on the Journey view where we want
+// everything.
 
 export function useManagerNarrative() {
     const api = useApi();
@@ -103,13 +153,19 @@ export function useRefreshNarrative() {
     });
 }
 
-export function useManagerAlerts(opts: { onlyOpen?: boolean } = {}) {
+export function useManagerAlerts(
+    opts: { onlyOpen?: boolean; domain?: Domain } = {},
+) {
     const api = useApi();
     const onlyOpen = opts.onlyOpen ?? true;
+    const domain = opts.domain;
     return useQuery({
-        queryKey: ["manager", "alerts", { onlyOpen }],
-        queryFn: () =>
-            api.get<ManagerAlert[]>(`/manager/alerts?only_open=${onlyOpen}`),
+        queryKey: ["manager", "alerts", { onlyOpen, domain }],
+        queryFn: () => {
+            const params = new URLSearchParams({ only_open: String(onlyOpen) });
+            if (domain) params.set("domain", domain);
+            return api.get<ManagerAlert[]>(`/manager/alerts?${params.toString()}`);
+        },
         refetchInterval: 60_000,
     });
 }
@@ -138,14 +194,21 @@ export function useDismissAlert() {
     });
 }
 
-export function useManagerRecommendations(status: string = "open") {
+export function useManagerRecommendations(
+    status: string = "open",
+    opts: { domain?: Domain } = {},
+) {
     const api = useApi();
+    const domain = opts.domain;
     return useQuery({
-        queryKey: ["manager", "recommendations", status],
-        queryFn: () =>
-            api.get<ManagerRecommendation[]>(
-                `/manager/recommendations?status=${status}`,
-            ),
+        queryKey: ["manager", "recommendations", { status, domain }],
+        queryFn: () => {
+            const params = new URLSearchParams({ status });
+            if (domain) params.set("domain", domain);
+            return api.get<ManagerRecommendation[]>(
+                `/manager/recommendations?${params.toString()}`,
+            );
+        },
         refetchOnWindowFocus: false,
     });
 }
@@ -209,3 +272,52 @@ export function useTrainingGap(windowDays: number) {
             ),
     });
 }
+
+export function useJourney(windowDays: number = 90) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["manager", "journey", windowDays],
+        queryFn: () =>
+            api.get<JourneyReport>(`/manager/journey?window_days=${windowDays}`),
+        refetchOnWindowFocus: false,
+    });
+}
+
+// ── Vocabulary helpers ────────────────────────────────────────────────
+
+// Human-readable labels for the domain tabs and the recommendation
+// categories. Keep here so the page components don't drift.
+
+export const DOMAIN_LABEL: Record<Domain, string> = {
+    sales: "Sales",
+    customer_service: "Customer Success",
+    it_support: "IT Support",
+    generic: "General",
+};
+
+export const CATEGORY_LABEL: Record<RecommendationCategory, string> = {
+    coach_rep: "Coach a rep",
+    run_campaign: "Run a campaign",
+    outreach_at_risk_customer: "Reach out to at-risk customer",
+    promote_winning_script: "Promote a winning script",
+    schedule_qbr: "Schedule a QBR",
+    flag_renewal_risk: "Flag a renewal risk",
+    assign_expansion_play: "Assign an expansion play",
+    coach_csm: "Coach a CSM",
+    update_kb_article: "Update a KB article",
+    route_to_specialist: "Route to a specialist",
+    coach_support_agent: "Coach a support agent",
+    escalate_recurring_issue: "Escalate a recurring issue",
+};
+
+export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
+    topic_spike: "Topic spike",
+    sentiment_drop: "Sentiment drop",
+    churn_surge: "Churn surge",
+    methodology_drop: "Methodology drop",
+    renewal_risk_spike: "Renewal risk spike",
+    health_score_drop: "Account health drop",
+    csat_drop_support: "CSAT drop",
+    escalation_surge: "Escalation surge",
+    ttr_drift: "Time to resolve drift",
+};
