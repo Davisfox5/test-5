@@ -18,6 +18,7 @@ import { useMe, type Domain } from "@/lib/me";
 import { DOMAIN_LABEL } from "@/lib/manager";
 import {
     MotionRule,
+    MotionRulePatchPayload,
     useCreateMotionRule,
     useDeleteMotionRule,
     useMotionRules,
@@ -227,7 +228,7 @@ function RuleRow({
     onDelete,
 }: {
     rule: MotionRule;
-    onPatch: (p: Partial<MotionRule>) => void;
+    onPatch: (p: MotionRulePatchPayload) => void;
     onDelete: () => void;
 }) {
     const toggle = (
@@ -237,7 +238,7 @@ function RuleRow({
     ) =>
         onPatch({
             [key]: list.includes(d) ? list.filter((x) => x !== d) : [...list, d],
-        } as Partial<MotionRule>);
+        } as MotionRulePatchPayload);
 
     return (
         <li className="p-3">
