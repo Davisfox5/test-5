@@ -2980,6 +2980,144 @@ class AlertChannelConfig(Base):
     )
 
 
+class CustomerConcern(Base):
+    """A tracked pain-point / worry / risk for one customer.
+
+    Added in ``dom_006`` to power the customer relationship memory.
+    LINDA writes to this table at analysis time so every motion
+    (Sales / CS / Support) sees the same evolving picture: what's
+    active now, what's calmed down to monitoring, what's been
+    resolved, what's gone dormant.
+
+    Concerns are upserted per (customer, topic); each interaction
+    that touches the concern appends to ``evidence`` so the UI can
+    show provenance without re-running the analyzer.
+
+    Lifecycle: ``active`` → ``monitoring`` → ``resolved`` or
+    ``dormant``. The nightly job transitions stale ``active`` rows
+    to ``dormant`` after N days without a mention.
+    """
+
+    __tablename__ = "customer_concerns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    topic: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active"
+    )
+    severity: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="medium"
+    )
+    source_motion: Mapped[Optional[str]] = mapped_column(String(32))
+    first_seen_interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    last_seen_interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    status_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    evidence: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'monitoring', 'resolved', 'dormant')",
+            name="ck_customer_concerns_status",
+        ),
+        CheckConstraint(
+            "severity IN ('high', 'medium', 'low')",
+            name="ck_customer_concerns_severity",
+        ),
+        CheckConstraint(
+            "source_motion IS NULL OR source_motion IN "
+            "('sales', 'customer_service', 'it_support', 'generic')",
+            name="ck_customer_concerns_source_motion",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "customer_id",
+            "topic",
+            name="uq_customer_concerns_customer_topic",
+        ),
+        Index(
+            "ix_customer_concerns_customer_status",
+            "customer_id",
+            "status",
+        ),
+        Index(
+            "ix_customer_concerns_tenant_status",
+            "tenant_id",
+            "status",
+        ),
+    )
+
+
+class CustomerCommitment(Base):
+    """A commitment the CUSTOMER made to us.
+
+    The existing ``action_items`` table tracks commitments we make
+    (rep → customer). This is the symmetric mirror: what they promised.
+    Powers the "they said they'd send the contract by Friday" timeline
+    + a future broken-commitment detector that flags accounts whose
+    promises keep slipping.
+    """
+
+    __tablename__ = "customer_commitments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    source_interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL")
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    quote: Mapped[Optional[str]] = mapped_column(Text)
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="open"
+    )
+    met_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'met', 'broken', 'dismissed')",
+            name="ck_customer_commitments_status",
+        ),
+        Index(
+            "ix_customer_commitments_customer_status",
+            "customer_id",
+            "status",
+        ),
+    )
+
+
 class MotionProvisioningRule(Base):
     """IDP group → motion-scope mapping.
 
