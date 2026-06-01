@@ -150,6 +150,14 @@ celery_app.conf.update(
             "task": "audio_retention_sweep",
             "schedule": crontab(minute=15, hour=4),
         },
+        # QBR-overdue scan: daily after the orchestrator + audio sweep so
+        # last-CS-interaction reads see fresh data. 06:00 UTC keeps the
+        # ping out of late-night CSM hours; per-customer dedup (14d) keeps
+        # the same overdue account from re-pinging every day.
+        "qbr-overdue-scan": {
+            "task": "qbr_overdue_scan",
+            "schedule": crontab(minute=0, hour=6),
+        },
         # ── Email ingestion ───────────────────────────────────────────
         # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
         # poll is a safety net for integrations whose push subscription
@@ -2583,6 +2591,62 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+@celery_app.task(name="qbr_overdue_scan")
+def qbr_overdue_scan() -> Dict[str, Any]:
+    """Daily scan for QBR-overdue customers; fires the ``qbr_overdue``
+    notification per eligible account, deduped against unread pings
+    inside the dedup window. Best-effort: per-tenant or per-customer
+    failures land in the logger and the rest of the run continues.
+    """
+    from backend.app.models import Notification, Tenant
+    from backend.app.services.cs_account_health import (
+        find_qbr_overdue_customers,
+        should_fire_qbr_overdue,
+    )
+
+    session = _get_sync_session()
+    notifications_sent = 0
+    tenants_processed = 0
+    try:
+        tenants = session.execute(__import__("sqlalchemy").select(Tenant)).scalars().all()
+        for tenant in tenants:
+            try:
+                candidates = find_qbr_overdue_customers(session, tenant.id)
+                for customer in candidates:
+                    if not should_fire_qbr_overdue(session, customer):
+                        continue
+                    owner_id = customer.strongest_connection_user_id
+                    if owner_id is None:
+                        continue
+                    n = Notification(
+                        tenant_id=tenant.id,
+                        user_id=owner_id,
+                        kind="qbr_overdue",
+                        title=f"QBR overdue: {customer.name}",
+                        body=(
+                            f"No CS interaction in 90+ days. Schedule a "
+                            f"check-in with {customer.name}."
+                        ),
+                        link_url=f"/cs/accounts/{customer.id}",
+                    )
+                    session.add(n)
+                    notifications_sent += 1
+                session.commit()
+                tenants_processed += 1
+            except Exception:
+                logger.exception(
+                    "QBR-overdue scan failed for tenant %s (non-fatal)",
+                    tenant.id,
+                )
+                session.rollback()
+    finally:
+        session.close()
+    return {
+        "tenants_processed": tenants_processed,
+        "notifications_sent": notifications_sent,
+    }
 
 
 # ── Orchestrator Celery tasks ────────────────────────────────────────────
