@@ -748,6 +748,27 @@ class ActionPlanSynthesizer:
         if isinstance(endpoint_idx, int) and endpoint_idx in index_to_step_id:
             plan.customer_endpoint_step_id = index_to_step_id[endpoint_idx]
 
+        # Seed obvious slots from the source interaction so the rep
+        # doesn't see ``{contact_name}`` / ``{call_date}`` etc. literal
+        # placeholders in artifact bodies. The slot system was always
+        # designed to fill from upstream steps OR call data; this pass
+        # handles the call-data side, which was previously unwired.
+        try:
+            seeded = await _seed_slots_from_interaction(
+                db,
+                steps=step_rows,
+                interaction=inputs.interaction,
+            )
+            if seeded:
+                logger.info(
+                    "seeded %d slots from interaction for plan %s",
+                    seeded, plan.id,
+                )
+        except Exception:  # noqa: BLE001 — slot-seed must never fail synthesis
+            logger.exception(
+                "slot seeding failed for plan %s (non-fatal)", plan.id,
+            )
+
         await db.flush()
         return plan, step_rows, index_to_step_id
 
@@ -999,6 +1020,185 @@ def _format_output_schema(schema: Any) -> str:
             f"{s.get('description', '')}"
         )
     return "\n".join(lines)
+
+
+# ── Slot seeding from interaction ─────────────────────────────────────
+#
+# The synthesizer's ``input_slots`` system was always designed to fill
+# from two sources: (a) upstream steps in the same plan, and (b) the
+# source call's analysis insights. Path (a) is wired (see
+# ``filled_by_step_index`` -> ``filled_by_step_id``). Path (b) was
+# unwired until this commit — every slot the LLM declared came back
+# with ``filled_value=None``, so artifact bodies surfaced literal
+# placeholders like ``{contact_name}`` and ``{call_date}`` to the rep.
+#
+# The seed pass below maps common slot keys to interaction-derived
+# values. The mapping is intentionally generous (matches multiple
+# slot-key variants per concept) because the LLM emits creative
+# slot names: ``contact_name``, ``prospect_name``, ``customer_contact``,
+# ``decision_maker``, etc. all converge on the customer's contact name.
+
+
+def _slot_key_matches(key: str, *needles: str) -> bool:
+    """Lowercase substring match on slot keys for fuzzy seeding."""
+    k = (key or "").lower()
+    return any(n in k for n in needles)
+
+
+async def _seed_slots_from_interaction(
+    db: AsyncSession,
+    *,
+    steps: List[ActionStep],
+    interaction: Interaction,
+) -> int:
+    """Walk every step's input_slots and fill obvious ones from the
+    source interaction's data. Returns the count of slots seeded so
+    callers can log it.
+
+    Heuristic — match slot_key by substring against canonical concepts.
+    Anything we can't recognize stays ``filled_value=None`` and the
+    Call C placeholder system runs as today.
+    """
+    insights = interaction.insights or {}
+    if not isinstance(insights, dict):
+        insights = {}
+
+    contact_name: Optional[str] = None
+    if interaction.contact_id is not None:
+        from backend.app.models import Contact as _Contact
+        contact = await db.get(_Contact, interaction.contact_id)
+        if contact and contact.name:
+            contact_name = contact.name
+
+    call_date: Optional[str] = None
+    if interaction.created_at is not None:
+        call_date = interaction.created_at.date().isoformat()
+
+    summary: Optional[str] = (
+        insights.get("summary") if isinstance(insights.get("summary"), str) else None
+    )
+
+    topics_raw = insights.get("topics") if isinstance(insights.get("topics"), list) else []
+    top_topic_names: List[str] = []
+    for t in topics_raw[:5]:
+        if isinstance(t, dict) and t.get("name"):
+            top_topic_names.append(str(t["name"]))
+    topics_joined = ", ".join(top_topic_names) if top_topic_names else None
+
+    action_items_raw = (
+        insights.get("action_items") if isinstance(insights.get("action_items"), list) else []
+    )
+    rep_actions: List[str] = []
+    next_due_date: Optional[str] = None
+    for ai in action_items_raw:
+        if not isinstance(ai, dict):
+            continue
+        title = ai.get("title")
+        if isinstance(title, str) and title.strip():
+            rep_actions.append(title.strip())
+        if next_due_date is None:
+            due = ai.get("due_date")
+            if isinstance(due, str) and due.strip():
+                next_due_date = due.strip()
+    rep_action_items_joined: Optional[str] = None
+    if rep_actions:
+        rep_action_items_joined = "; ".join(rep_actions[:6])
+
+    customer_signals = insights.get("customer_signals") if isinstance(insights.get("customer_signals"), dict) else {}
+    commitment_quotes: List[str] = []
+    if isinstance(customer_signals, dict):
+        raw_commitments = customer_signals.get("commitment_language") or []
+        if isinstance(raw_commitments, list):
+            for q in raw_commitments[:4]:
+                if isinstance(q, str) and q.strip():
+                    commitment_quotes.append(q.strip())
+    customer_commitments_joined: Optional[str] = None
+    if commitment_quotes:
+        customer_commitments_joined = "; ".join(commitment_quotes)
+
+    key_moments_raw = (
+        insights.get("key_moments") if isinstance(insights.get("key_moments"), list) else []
+    )
+    key_moments_summary: Optional[str] = None
+    if key_moments_raw:
+        descs: List[str] = []
+        for km in key_moments_raw[:4]:
+            if isinstance(km, dict):
+                d = km.get("description")
+                if isinstance(d, str) and d.strip():
+                    descs.append(d.strip())
+        if descs:
+            key_moments_summary = "; ".join(descs)
+
+    seeded = 0
+    for step in steps:
+        slots = step.input_slots
+        if not isinstance(slots, list):
+            continue
+        changed = False
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("filled_value") is not None:
+                continue  # already filled by upstream step wiring
+            key = str(slot.get("slot_key") or "")
+            value: Optional[str] = None
+
+            if contact_name and _slot_key_matches(
+                key, "contact_name", "prospect_name", "customer_contact",
+                "customer_name", "decision_maker", "primary_contact",
+                "buyer_name", "lead_name",
+            ):
+                value = contact_name
+            elif call_date and _slot_key_matches(
+                key, "call_date", "interaction_date", "conversation_date",
+                "meeting_date_prior", "discovery_date",
+            ):
+                value = call_date
+            elif next_due_date and _slot_key_matches(
+                key, "due_date", "target_date", "deadline", "follow_up_date",
+                "delivery_date", "by_date",
+            ):
+                value = next_due_date
+            elif summary and _slot_key_matches(
+                key, "customer_stated_need", "customer_need", "stated_need",
+                "pain_point", "summary", "call_summary", "context",
+                "background",
+            ):
+                value = summary
+            elif topics_joined and _slot_key_matches(
+                key, "key_topics", "topics", "topics_discussed",
+                "discussion_areas", "themes", "focus_areas",
+            ):
+                value = topics_joined
+            elif rep_action_items_joined and _slot_key_matches(
+                key, "rep_action_items", "rep_actions", "next_steps",
+                "internal_actions", "vendor_actions",
+            ):
+                value = rep_action_items_joined
+            elif customer_commitments_joined and _slot_key_matches(
+                key, "customer_action_items", "customer_commitments",
+                "customer_actions", "customer_promises", "agreed_actions",
+            ):
+                value = customer_commitments_joined
+            elif key_moments_summary and _slot_key_matches(
+                key, "meeting_context", "key_moments", "discussion_highlights",
+                "conversation_highlights",
+            ):
+                value = key_moments_summary
+
+            if value is not None:
+                slot["filled_value"] = value
+                slot["filled_at"] = datetime.utcnow().isoformat()
+                slot["filled_by_source"] = "interaction_seed"
+                seeded += 1
+                changed = True
+        if changed:
+            # SQLAlchemy needs the JSONB column reassigned to detect a
+            # nested mutation; reassign the same list reference to a
+            # fresh shallow copy.
+            step.input_slots = list(slots)
+    return seeded
 
 
 def _artifact_kind_for_channel(channel: str) -> str:

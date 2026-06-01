@@ -24,7 +24,7 @@ training the Phase 4 classifier.
 from __future__ import annotations
 
 
-ACTION_PLAN_PROMPT_VERSION = "2026-05-30.voice-rules-and-timeline"
+ACTION_PLAN_PROMPT_VERSION = "2026-06-01.description-cap-and-slot-fill"
 
 
 # ──────────────────────────────────────────────────────────
@@ -149,8 +149,15 @@ CALL_A_SYSTEM_PROMPT = (
     "For each candidate:\n"
     "{{\n"
     "  title: str,            // imperative, <= 12 words\n"
-    "  description: str,      // one sentence of context\n"
-    "  intent: str,           // one sentence on what this achieves\n"
+    "  description: str,      // ONE sentence of context, <= 35 words "
+    "TOTAL. The rep scans this in 5 seconds; detail belongs in the "
+    "artifact body, not here. GOOD: 'Send David three Thursday slots "
+    "plus the ROI model and pilot scope as pre-reads.' BAD (do NOT "
+    "do this, this is the artifact body crammed into the description): "
+    "'Email David with three Thursday afternoon time slots for the "
+    "follow-up call that includes the CFO, IT director, and senior "
+    "dispatcher, noting that Rajiv (solutions architect) will join...'\n"
+    "  intent: str,           // ONE sentence on what this achieves, <= 25 words\n"
     "  channel: 'email' | 'phone_call' | 'meeting' | 'document_send' "
     "| 'research' | 'system_write' | 'note',\n"
     "  participants: [{{name, role, side: 'customer'|'vendor', "

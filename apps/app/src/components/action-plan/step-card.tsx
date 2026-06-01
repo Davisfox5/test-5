@@ -216,7 +216,6 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                     {step.channel_reasoning}
                                 </p>
                             )}
-                            <ParticipantsBlock step={step} />
                             <PrepArtifactsBlock step={step} />
                             <ArtifactBlock step={step} />
                             <ResponseThread step={step} />
@@ -524,30 +523,6 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     );
 }
 
-function ParticipantsBlock({ step }: { step: ActionStep }) {
-    if (!step.participants || step.participants.length === 0) return null;
-    return (
-        <div>
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Participants
-            </h4>
-            <ul className="mt-1 space-y-0.5 text-xs">
-                {step.participants.map((p, i) => (
-                    <li key={i}>
-                        <span className="font-medium">{p.name ?? "(unnamed)"}</span>
-                        {p.role ? <span className="text-slate-500">. {p.role}</span> : null}
-                        {p.side ? (
-                            <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                                {p.side}
-                            </span>
-                        ) : null}
-                    </li>
-                ))}
-            </ul>
-        </div>
-    );
-}
-
 function PrepArtifactsBlock({ step }: { step: ActionStep }) {
     if (!step.prep_artifacts || step.prep_artifacts.length === 0) return null;
     return (
@@ -570,18 +545,40 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
     const payload = a.payload as Record<string, unknown>;
     // Human heading per artifact kind. Internal metadata (kind code,
     // version number, model tier) is no longer surfaced to the rep.
-    const heading = a.kind === "email"
-        ? "Email draft"
-        : a.kind === "script"
-          ? "Call script"
-          : a.kind === "system_write_payload"
-            ? "System update"
-            : "Draft";
+    const heading =
+        a.kind === "email"
+            ? "Email draft"
+            : a.kind === "script"
+              ? "Call script"
+              : a.kind === "system_write_payload"
+                ? "System update"
+                : a.kind === "meeting"
+                  ? "Meeting plan"
+                  : a.kind === "research"
+                    ? "Research plan"
+                    : a.kind === "note"
+                      ? "CRM note"
+                      : "Draft";
+
+    // Collect placeholder slots the synthesizer left unfilled so we
+    // can warn the rep before they hit Send. We don't dump the
+    // unfilled_slots list raw inside the body — that's the JSON
+    // leak you saw — but it IS useful as a tiny banner.
+    const unfilled = Array.isArray(payload.unfilled_slots)
+        ? (payload.unfilled_slots as unknown[]).filter((s): s is string => typeof s === "string")
+        : [];
+
     return (
         <div>
             <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 {heading}
             </h4>
+            {unfilled.length > 0 && (
+                <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+                    {unfilled.length} placeholder{unfilled.length === 1 ? "" : "s"} not yet filled
+                    {unfilled.length <= 4 ? `: {${unfilled.join("}, {")}}` : ""}. Review before sending.
+                </p>
+            )}
             {a.kind === "email" || a.kind === "system_write_payload" ? (
                 <div className="mt-1 space-y-1 rounded border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700">
                     {payload.subject ? (
@@ -591,7 +588,7 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
                         </div>
                     ) : null}
                     <pre className="whitespace-pre-wrap text-[11px]">
-                        {String(payload.body ?? JSON.stringify(payload.payload ?? payload, null, 2))}
+                        {String(payload.body ?? "")}
                     </pre>
                 </div>
             ) : a.kind === "script" ? (
@@ -606,10 +603,85 @@ function ArtifactBlock({ step }: { step: ActionStep }) {
                     )}
                     {payload.closing_line ? <p>{String(payload.closing_line)}</p> : null}
                 </div>
+            ) : a.kind === "note" ? (
+                <div className="mt-1 rounded border border-slate-200 p-2 text-xs dark:border-slate-700">
+                    <pre className="whitespace-pre-wrap text-xs">
+                        {String(payload.body ?? "")}
+                    </pre>
+                </div>
+            ) : a.kind === "meeting" ? (
+                <div className="mt-1 space-y-2 rounded border border-slate-200 p-2 text-xs dark:border-slate-700">
+                    {Array.isArray(payload.proposed_times) && (payload.proposed_times as unknown[]).length > 0 && (
+                        <div>
+                            <div className="font-semibold">Proposed times</div>
+                            <ul className="list-inside list-disc">
+                                {(payload.proposed_times as unknown[]).map((t, i) => (
+                                    <li key={i}>{String(t)}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                    {Array.isArray(payload.agenda) && (payload.agenda as unknown[]).length > 0 && (
+                        <div>
+                            <div className="font-semibold">Agenda</div>
+                            <ol className="list-inside list-decimal">
+                                {(payload.agenda as unknown[]).map((a2, i) => (
+                                    <li key={i}>{String(a2)}</li>
+                                ))}
+                            </ol>
+                        </div>
+                    )}
+                    {Array.isArray(payload.pre_read) && (payload.pre_read as unknown[]).length > 0 && (
+                        <div>
+                            <div className="font-semibold">Pre-read</div>
+                            <ul className="list-inside list-disc">
+                                {(payload.pre_read as unknown[]).map((p, i) => (
+                                    <li key={i}>{String(p)}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            ) : a.kind === "research" ? (
+                <div className="mt-1 space-y-2 rounded border border-slate-200 p-2 text-xs dark:border-slate-700">
+                    {Array.isArray(payload.starting_points) && (payload.starting_points as unknown[]).length > 0 && (
+                        <div>
+                            <div className="font-semibold">Starting points</div>
+                            <ul className="list-inside list-disc">
+                                {(payload.starting_points as unknown[]).map((sp, i) => {
+                                    if (sp && typeof sp === "object" && "url_or_source" in sp) {
+                                        const obj = sp as { url_or_source: string; why?: string };
+                                        return (
+                                            <li key={i}>
+                                                <span className="font-medium">{obj.url_or_source}</span>
+                                                {obj.why ? <span className="text-slate-500"> — {obj.why}</span> : null}
+                                            </li>
+                                        );
+                                    }
+                                    return <li key={i}>{String(sp)}</li>;
+                                })}
+                            </ul>
+                        </div>
+                    )}
+                    {Array.isArray(payload.key_questions) && (payload.key_questions as unknown[]).length > 0 && (
+                        <div>
+                            <div className="font-semibold">Key questions</div>
+                            <ul className="list-inside list-disc">
+                                {(payload.key_questions as unknown[]).map((q, i) => (
+                                    <li key={i}>{String(q)}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
             ) : (
-                <pre className="mt-1 whitespace-pre-wrap rounded border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700">
-                    {JSON.stringify(payload, null, 2)}
-                </pre>
+                // Unknown artifact kind — fall back to a readable text
+                // dump rather than raw JSON braces. If a new artifact
+                // kind shows up here it means the synthesizer added a
+                // shape without a clean renderer; add a case above.
+                <p className="mt-1 rounded border border-slate-200 p-2 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                    (no renderer yet for artifact kind &quot;{a.kind}&quot;)
+                </p>
             )}
         </div>
     );
@@ -866,51 +938,73 @@ function ResolvedBlock({
             )}
             {hasParticipants && (
                 <div>
-                    <div className="font-medium text-slate-700 dark:text-slate-200">
-                        Participants
-                    </div>
-                    <ul className="mt-1 space-y-0.5">
-                        {resolved.participants.map((p, idx) => (
-                            <li key={idx} className="flex flex-wrap items-baseline gap-1">
-                                <span className="font-medium text-slate-700 dark:text-slate-200">
-                                    {p.name}
-                                </span>
-                                {p.role && (
-                                    <span className="text-slate-500 dark:text-slate-400">
-                                        ({p.role})
-                                    </span>
-                                )}
-                                {p.email ? (
-                                    <a
-                                        href={`mailto:${p.email}`}
-                                        className="text-indigo-700 underline dark:text-indigo-300"
-                                    >
-                                        {p.email}
-                                    </a>
-                                ) : (
-                                    <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                                        email pending
-                                    </span>
-                                )}
-                                {p.phone && (
-                                    <a
-                                        href={`tel:${p.phone.replace(/\s+/g, "")}`}
-                                        className="text-indigo-700 underline dark:text-indigo-300"
-                                    >
-                                        {p.phone}
-                                    </a>
-                                )}
-                                {p.side && (
-                                    <span className="text-[10px] text-slate-400">
-                                        [{p.side}]
-                                    </span>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
+                    {resolved.participants.length === 1 ? (
+                        <ParticipantLine p={resolved.participants[0]} prefix="Contact: " />
+                    ) : (
+                        <>
+                            <div className="font-medium text-slate-700 dark:text-slate-200">
+                                Participants
+                            </div>
+                            <ul className="mt-1 space-y-0.5">
+                                {resolved.participants.map((p, idx) => (
+                                    <li key={idx}>
+                                        <ParticipantLine p={p} />
+                                    </li>
+                                ))}
+                            </ul>
+                        </>
+                    )}
                 </div>
             )}
         </div>
+    );
+}
+
+// One participant rendered as a single inline line. The role chip
+// already communicates the customer-vs-vendor side, so we don't
+// surface a separate ``[customer]`` tag here — that was visual noise
+// without information beyond what the role already says.
+function ParticipantLine({
+    p,
+    prefix,
+}: {
+    p: import("@/lib/action-plans").ResolvedParticipant;
+    prefix?: string;
+}) {
+    return (
+        <span className="flex flex-wrap items-baseline gap-1">
+            {prefix && (
+                <span className="text-slate-500 dark:text-slate-400">{prefix}</span>
+            )}
+            <span className="font-medium text-slate-700 dark:text-slate-200">
+                {p.name}
+            </span>
+            {p.role && (
+                <span className="text-slate-500 dark:text-slate-400">
+                    · {p.role}
+                </span>
+            )}
+            {p.email ? (
+                <a
+                    href={`mailto:${p.email}`}
+                    className="text-indigo-700 underline dark:text-indigo-300"
+                >
+                    {p.email}
+                </a>
+            ) : (
+                <span className="text-[10px] text-amber-700 dark:text-amber-300">
+                    · email pending
+                </span>
+            )}
+            {p.phone ? (
+                <a
+                    href={`tel:${p.phone.replace(/\s+/g, "")}`}
+                    className="text-indigo-700 underline dark:text-indigo-300"
+                >
+                    {p.phone}
+                </a>
+            ) : null}
+        </span>
     );
 }
 
