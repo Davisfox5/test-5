@@ -158,6 +158,14 @@ celery_app.conf.update(
             "task": "qbr_overdue_scan",
             "schedule": crontab(minute=0, hour=6),
         },
+        # Cohort-driven predictive recommendation scan: daily at 06:30
+        # UTC, after the QBR scan + the existing recommendation builder
+        # (04:30, reads BusinessProfile). Deterministic detectors, no
+        # LLM cost; dedup over a 14-day window per (category, customer).
+        "cohort-recommendation-scan": {
+            "task": "cohort_recommendation_scan",
+            "schedule": crontab(minute=30, hour=6),
+        },
         # ── Email ingestion ───────────────────────────────────────────
         # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
         # poll is a safety net for integrations whose push subscription
@@ -2622,6 +2630,39 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+@celery_app.task(name="cohort_recommendation_scan")
+def cohort_recommendation_scan() -> Dict[str, Any]:
+    """Daily cohort detectors -> ManagerRecommendation inserts.
+
+    Wraps ``cohort_recommendations.run_for_tenant`` for every tenant.
+    Per-tenant failures land in the logger; the rest of the run
+    continues. Returns per-tenant counts so observability can correlate
+    a missing recommendation with a tenant-level failure.
+    """
+    from backend.app.models import Tenant
+    from backend.app.services.cohort_recommendations import run_for_tenant
+
+    session = _get_sync_session()
+    by_tenant: Dict[str, Dict[str, int]] = {}
+    try:
+        tenants = (
+            session.execute(__import__("sqlalchemy").select(Tenant))
+        ).scalars().all()
+        for t in tenants:
+            try:
+                by_tenant[str(t.id)] = run_for_tenant(session, t)
+            except Exception:
+                logger.exception(
+                    "Cohort recommendation scan failed for tenant %s",
+                    t.id,
+                )
+                session.rollback()
+                by_tenant[str(t.id)] = {"error": 1}
+    finally:
+        session.close()
+    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
 
 
 @celery_app.task(name="qbr_overdue_scan")
