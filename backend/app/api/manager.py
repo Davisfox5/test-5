@@ -451,6 +451,17 @@ async def apply_recommendation(
         artifact = await _apply_outreach(db, tenant.id, rec)
     elif rec.category == "escalate_recurring_issue":
         artifact = await _apply_kb_article_request(db, tenant.id, rec, principal)
+    # Predictive / cohort-derived categories from the cohort
+    # recommendation service. Apply converts the prediction into a
+    # concrete outreach (an ActionItem anchored to the customer's
+    # latest interaction) so the rep can act on it the same way as
+    # the reactive ``outreach_at_risk_customer`` flow.
+    elif rec.category in (
+        "prevent_no_touch_churn",
+        "prevent_lead_stall",
+        "proactive_outreach_repeat_support",
+    ):
+        artifact = await _apply_outreach(db, tenant.id, rec)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown category: {rec.category}")
 

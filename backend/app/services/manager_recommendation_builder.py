@@ -53,12 +53,18 @@ _VALID_CATEGORIES_BY_DOMAIN: Dict[str, set] = {
         "run_campaign",
         "outreach_at_risk_customer",
         "promote_winning_script",
+        # Predictive / cohort-derived (added in
+        # analytics-as-recommendations).
+        "prevent_lead_stall",
     },
     "customer_service": {
         "schedule_qbr",
         "flag_renewal_risk",
         "assign_expansion_play",
         "coach_csm",
+        # Predictive.
+        "prevent_no_touch_churn",
+        "proactive_outreach_repeat_support",
     },
     "it_support": {
         "update_kb_article",

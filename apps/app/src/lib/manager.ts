@@ -60,7 +60,11 @@ export type RecommendationCategory =
     | "update_kb_article"
     | "route_to_specialist"
     | "coach_support_agent"
-    | "escalate_recurring_issue";
+    | "escalate_recurring_issue"
+    // Predictive / cohort-derived
+    | "prevent_no_touch_churn"
+    | "prevent_lead_stall"
+    | "proactive_outreach_repeat_support";
 
 export interface ManagerRecommendation {
     id: string;
@@ -308,6 +312,9 @@ export const CATEGORY_LABEL: Record<RecommendationCategory, string> = {
     route_to_specialist: "Route to a specialist",
     coach_support_agent: "Coach a support agent",
     escalate_recurring_issue: "Escalate a recurring issue",
+    prevent_no_touch_churn: "Prevent no-touch churn",
+    prevent_lead_stall: "Prevent lead stall",
+    proactive_outreach_repeat_support: "Proactive outreach (repeat support)",
 };
 
 export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
