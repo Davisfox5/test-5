@@ -9,9 +9,12 @@ from backend.app.services.notifications import (
 
 
 def test_notification_kinds_match_migration_check_constraint():
-    # Phase 5B-6 vocabulary, extended by aa01b2c3d4e5 (manager-view
-    # overhaul) to include ``manager_alert`` so the alert-fanout layer
-    # can insert per-user notifications when an anomaly fires.
+    # Phase 5B-6 vocabulary, extended by:
+    # * ``aa01b2c3d4e5`` (manager-view overhaul) — adds ``manager_alert``
+    #   so the alert-fanout layer can insert per-user notifications.
+    # * ``dom_004_cross_motion_notifs`` (PR cross-motion-notifications)
+    #   — adds the four cross-motion kinds fired by SupportCase
+    #   lifecycle and CS account-health.
     expected = {
         "action_item_assigned",
         "action_item_comment",
@@ -21,6 +24,10 @@ def test_notification_kinds_match_migration_check_constraint():
         "manager_review_completed",
         "scorecard_review_assigned",
         "manager_alert",
+        "case_assigned",
+        "case_escalated",
+        "renewal_at_risk",
+        "qbr_overdue",
         "system",
         "other",
     }

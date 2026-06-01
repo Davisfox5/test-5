@@ -298,6 +298,7 @@ async def transition_case(
 ) -> SupportCaseDetail:
     case = await _load_case_for_tenant(db, principal.tenant.id, case_id)
     now = datetime.now(timezone.utc)
+    before_status = case.status
     case.status = body.status
     if body.status == "escalated" and case.escalated_at is None:
         case.escalated_at = now
@@ -309,7 +310,60 @@ async def transition_case(
     elif body.status == "closed" and case.closed_at is None:
         case.closed_at = now
     await db.flush()
+    # Cross-motion notification: fire ``case_escalated`` to the support
+    # managers when a case enters the escalated state for the first
+    # time. Best-effort — failures don't block the transition.
+    if (
+        body.status == "escalated"
+        and before_status != "escalated"
+    ):
+        await _notify_case_escalated(db, principal, case)
     return await _detail(db, case)
+
+
+async def _notify_case_escalated(
+    db: AsyncSession,
+    principal: AuthPrincipal,
+    case: SupportCase,
+) -> None:
+    """Fire a ``case_escalated`` notification to every support manager
+    in the tenant. Recipient resolution intentionally broad: a single
+    case_escalated event is rare enough that paging the support manager
+    pool is the right default. Volume-sensitive customers can move to
+    digest mode later."""
+    from backend.app.services.notifications import (
+        NotificationKind,
+        notify,
+    )
+
+    recipients = (
+        await db.execute(
+            select(User.id).where(
+                User.tenant_id == principal.tenant.id,
+                User.is_active.is_(True),
+                User.manager_domains.contains(["it_support"]),  # JSONB contains
+            )
+        )
+    ).all()
+    customer_name = ""
+    if case.customer_id is not None:
+        c = await db.get(Customer, case.customer_id)
+        customer_name = (c.name if c else "") or ""
+    title = (
+        f"Case escalated: {case.subject[:80]}"
+        if customer_name == ""
+        else f"Case escalated ({customer_name}): {case.subject[:80]}"
+    )
+    for (uid,) in recipients:
+        await notify(
+            db,
+            tenant_id=principal.tenant.id,
+            user_id=uid,
+            kind=NotificationKind.CASE_ESCALATED,
+            title=title,
+            body=case.subject,
+            link_url=f"/support/cases/{case.id}",
+        )
 
 
 @router.post(
@@ -323,6 +377,7 @@ async def assign_case(
     principal: AuthPrincipal = Depends(require_domain_agent("it_support")),
 ) -> SupportCaseDetail:
     case = await _load_case_for_tenant(db, principal.tenant.id, case_id)
+    before_assignee = case.assigned_to
     if body.user_id is None:
         case.assigned_to = None
     else:
@@ -344,6 +399,36 @@ async def assign_case(
             )
         case.assigned_to = body.user_id
     await db.flush()
+    # Cross-motion notification: only fire on real assignment changes
+    # (skip when assigning to the same person or unassigning).
+    if (
+        body.user_id is not None
+        and body.user_id != before_assignee
+        and body.user_id != principal.user_id  # don't notify self-assigns
+    ):
+        from backend.app.services.notifications import (
+            NotificationKind,
+            notify,
+        )
+
+        customer_name = ""
+        if case.customer_id is not None:
+            c = await db.get(Customer, case.customer_id)
+            customer_name = (c.name if c else "") or ""
+        title = (
+            f"Case assigned: {case.subject[:80]}"
+            if not customer_name
+            else f"Case assigned ({customer_name}): {case.subject[:80]}"
+        )
+        await notify(
+            db,
+            tenant_id=principal.tenant.id,
+            user_id=body.user_id,
+            kind=NotificationKind.CASE_ASSIGNED,
+            title=title,
+            body=case.subject,
+            link_url=f"/support/cases/{case.id}",
+        )
     return await _detail(db, case)
 
 

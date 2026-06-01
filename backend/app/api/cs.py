@@ -158,6 +158,44 @@ async def get_account_health(
     sync = await _sync_session_from(db)
     if recompute:
         breakdown = persist_health_score(sync, c)
+        # Cross-motion notification: refreshing the score is the
+        # natural moment to check whether the account just crossed
+        # into the renewal-at-risk band. Best-effort; the helper
+        # dedupes against any unread renewal_at_risk for the same
+        # account in the last 7 days.
+        try:
+            from backend.app.services.cs_account_health import (
+                should_fire_renewal_at_risk,
+            )
+            from backend.app.services.notifications import (
+                NotificationKind,
+                notify,
+            )
+
+            if should_fire_renewal_at_risk(sync, c):
+                owner_id = c.strongest_connection_user_id
+                if owner_id is not None:
+                    risk_preview = renewal_risk_score(sync, c)
+                    await notify(
+                        db,
+                        tenant_id=c.tenant_id,
+                        user_id=owner_id,
+                        kind=NotificationKind.RENEWAL_AT_RISK,
+                        title=f"Renewal risk: {c.name}",
+                        body=(
+                            f"Renewal risk score {risk_preview:.0f}/100"
+                            + (
+                                f", renews {c.renewal_date.isoformat()}"
+                                if c.renewal_date is not None
+                                else ""
+                            )
+                        ),
+                        link_url=f"/cs/accounts/{c.id}",
+                    )
+        except Exception:
+            logger.exception(
+                "renewal_at_risk notification failed (non-fatal)"
+            )
         await db.commit()
     else:
         breakdown = compute_health_score(sync, c)
