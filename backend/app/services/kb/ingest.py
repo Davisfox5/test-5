@@ -89,6 +89,11 @@ async def ingest_document(
                 id=chunk_id,
                 tenant_id=doc.tenant_id,
                 doc_id=doc.id,
+                # Denormalize the parent document's ``customer_id`` so
+                # search can filter chunks without a join. NULL on the
+                # doc → NULL here → matches the "general document"
+                # retrieval bucket (visible to every customer).
+                customer_id=getattr(doc, "customer_id", None),
                 chunk_idx=idx,
                 text=piece,
                 token_count=approx_token_count(piece),
