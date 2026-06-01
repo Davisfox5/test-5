@@ -677,9 +677,17 @@ class ActionPlanSynthesizer:
             step = ActionStep(
                 plan_id=plan.id,
                 tenant_id=inputs.tenant.id,
-                title=str(s.get("title") or "Untitled step")[:255],
-                description=s.get("description"),
-                intent=s.get("intent"),
+                title=_truncate_words(
+                    s.get("title") or "Untitled step", max_words=12,
+                ),
+                description=_truncate_words(
+                    s.get("description"), max_words=35,
+                    log_label=f"step[{idx}] description",
+                ),
+                intent=_truncate_words(
+                    s.get("intent"), max_words=25,
+                    log_label=f"step[{idx}] intent",
+                ),
                 priority=str(s.get("priority") or "medium"),
                 recommended_channel=channel,
                 channel_reasoning=s.get("channel_reasoning"),
@@ -1020,6 +1028,58 @@ def _format_output_schema(schema: Any) -> str:
             f"{s.get('description', '')}"
         )
     return "\n".join(lines)
+
+
+def _truncate_words(
+    text: Any,
+    *,
+    max_words: int,
+    log_label: Optional[str] = None,
+) -> Optional[str]:
+    """Hard cap word count for LLM-emitted step text fields.
+
+    The Call B prompt declares word limits on title (<=12), description
+    (<=35), intent (<=25), but the LLM routinely ignores them — a
+    customer-endpoint step description came back at 274 words on the
+    2026-06-01 audit. This server-side backstop enforces the cap
+    regardless of prompt compliance: if the model exceeds the cap, we
+    truncate at the last sentence boundary that fits, falling back to
+    a word boundary + ellipsis.
+
+    Field-aware: None / empty / non-string returns ``None`` so callers
+    can store NULL. The Call B prompt is still the right primary
+    signal — this just ensures the cap holds for downstream rendering.
+    """
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s:
+        return None
+    words = s.split()
+    if len(words) <= max_words:
+        return s
+
+    # Find the last sentence boundary that fits inside the cap.
+    truncated_at_sentence: Optional[str] = None
+    running: List[str] = []
+    for w in words[:max_words]:
+        running.append(w)
+        if w.endswith((".", "?", "!")):
+            truncated_at_sentence = " ".join(running)
+    if truncated_at_sentence:
+        final = truncated_at_sentence
+    else:
+        # No sentence boundary inside the cap — hard chop at word
+        # boundary and append an ellipsis so the reader sees it was
+        # trimmed.
+        final = " ".join(words[:max_words]).rstrip(",;:") + "…"
+
+    if log_label:
+        logger.warning(
+            "synth backstop truncated %s: %d -> %d words",
+            log_label, len(words), len(final.split()),
+        )
+    return final
 
 
 # ── Slot seeding from interaction ─────────────────────────────────────
