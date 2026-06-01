@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import (
     AlertChannelConfig,
+    AlertDomainConfig,
     Interaction,
     ManagerAlert,
     SupportCase,
@@ -492,10 +493,14 @@ def _detect_renewal_risk_spike(
     config: AlertChannelConfig,
     now: datetime,
 ) -> List[DetectedAnomaly]:
-    multiplier = (
-        float(config.churn_surge_multiplier)
-        if config and config.churn_surge_multiplier is not None
-        else DEFAULT_CHURN_SURGE_MULTIPLIER
+    domain_cfg = _load_domain_config(session, tenant.id, "customer_service")
+    multiplier = float(
+        _threshold(
+            domain_cfg,
+            config,
+            "churn_surge_multiplier",
+            DEFAULT_CHURN_SURGE_MULTIPLIER,
+        )
     )
 
     recent_start = now - timedelta(hours=24)
@@ -578,10 +583,14 @@ def _detect_health_score_drop(
     config: AlertChannelConfig,
     now: datetime,
 ) -> List[DetectedAnomaly]:
-    drop = (
-        float(config.sentiment_drop_threshold)
-        if config and config.sentiment_drop_threshold is not None
-        else DEFAULT_SENTIMENT_DROP
+    domain_cfg = _load_domain_config(session, tenant.id, "customer_service")
+    drop = float(
+        _threshold(
+            domain_cfg,
+            config,
+            "sentiment_drop_threshold",
+            DEFAULT_SENTIMENT_DROP,
+        )
     )
 
     recent_start = now - timedelta(hours=24)
@@ -665,10 +674,14 @@ def _detect_csat_drop_support(
     """24h CSAT average vs 14d baseline. CSAT is 1-5; a 0.5-point drop is
     significant. Re-uses the sentiment_drop_threshold knob, halved to
     match CSAT's narrower range."""
-    raw_drop = (
-        float(config.sentiment_drop_threshold)
-        if config and config.sentiment_drop_threshold is not None
-        else DEFAULT_SENTIMENT_DROP
+    domain_cfg = _load_domain_config(session, tenant.id, "it_support")
+    raw_drop = float(
+        _threshold(
+            domain_cfg,
+            config,
+            "sentiment_drop_threshold",
+            DEFAULT_SENTIMENT_DROP,
+        )
     )
     drop = max(raw_drop / 3.0, 0.5)  # 1-5 scale, so divide
 
@@ -735,10 +748,14 @@ def _detect_escalation_surge(
     config: AlertChannelConfig,
     now: datetime,
 ) -> List[DetectedAnomaly]:
-    multiplier = (
-        float(config.churn_surge_multiplier)
-        if config and config.churn_surge_multiplier is not None
-        else DEFAULT_CHURN_SURGE_MULTIPLIER
+    domain_cfg = _load_domain_config(session, tenant.id, "it_support")
+    multiplier = float(
+        _threshold(
+            domain_cfg,
+            config,
+            "churn_surge_multiplier",
+            DEFAULT_CHURN_SURGE_MULTIPLIER,
+        )
     )
     recent_start = now - timedelta(hours=24)
     current = _support_escalation_count(session, tenant.id, recent_start, now)
@@ -943,6 +960,37 @@ def _load_config(session: Session, tenant_id) -> AlertChannelConfig:
         session.add(cfg)
         session.flush()
     return cfg
+
+
+def _load_domain_config(
+    session: Session, tenant_id, domain: str
+) -> Optional[AlertDomainConfig]:
+    """Per-(tenant, domain) override row. None when no override exists."""
+    return session.get(AlertDomainConfig, (tenant_id, domain))
+
+
+def _threshold(
+    domain_cfg: Optional[AlertDomainConfig],
+    tenant_cfg: AlertChannelConfig,
+    field: str,
+    default,
+):
+    """Read a knob: domain override > tenant default > code default.
+
+    A NULL on the domain row means "use the tenant default for this
+    knob" — common case where a tenant has tuned CS specifically but
+    inherits the rest. Lets a CS-specific sentiment_drop threshold
+    coexist with a tenant-wide topic_spike threshold without duplicating
+    every value.
+    """
+    if domain_cfg is not None:
+        v = getattr(domain_cfg, field, None)
+        if v is not None:
+            return v
+    v = getattr(tenant_cfg, field, None)
+    if v is not None:
+        return v
+    return default
 
 
 def _fingerprint(kind: str, subject: str) -> str:

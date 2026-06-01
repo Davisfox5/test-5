@@ -34,6 +34,7 @@ from backend.app.db import get_db
 from backend.app.models import (
     ActionItem,
     AlertChannelConfig,
+    AlertDomainConfig,
     BusinessProfile,
     Campaign,
     CoachingNote,
@@ -529,6 +530,98 @@ async def update_alert_config(
     return await get_alert_config(db=db, tenant=tenant)
 
 
+# ── Per-domain alert thresholds (added in PR C / dom_003) ─────────────
+
+
+class AlertDomainConfigOut(BaseModel):
+    """Per-domain override row. NULL on a field means "inherit from the
+    tenant-wide row." The detector reads override-first."""
+
+    domain: str
+    topic_spike_pct_change_threshold: Optional[int]
+    topic_spike_min_volume: Optional[int]
+    sentiment_drop_threshold: Optional[float]
+    churn_surge_multiplier: Optional[float]
+    methodology_drop_threshold: Optional[float]
+
+
+class AlertDomainConfigUpdate(BaseModel):
+    topic_spike_pct_change_threshold: Optional[int] = None
+    topic_spike_min_volume: Optional[int] = None
+    sentiment_drop_threshold: Optional[float] = None
+    churn_surge_multiplier: Optional[float] = None
+    methodology_drop_threshold: Optional[float] = None
+
+
+_VALID_OVERRIDE_DOMAINS = {
+    "sales",
+    "customer_service",
+    "it_support",
+    "generic",
+}
+
+
+@router.get(
+    "/manager/alert-config/{domain}",
+    response_model=AlertDomainConfigOut,
+    dependencies=[Depends(require_role("manager"))],
+)
+async def get_alert_domain_config(
+    domain: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> AlertDomainConfigOut:
+    if domain not in _VALID_OVERRIDE_DOMAINS:
+        raise HTTPException(status_code=422, detail=f"Unknown domain: {domain}")
+    row = await db.get(AlertDomainConfig, (tenant.id, domain))
+    if row is None:
+        return AlertDomainConfigOut(
+            domain=domain,
+            topic_spike_pct_change_threshold=None,
+            topic_spike_min_volume=None,
+            sentiment_drop_threshold=None,
+            churn_surge_multiplier=None,
+            methodology_drop_threshold=None,
+        )
+    return AlertDomainConfigOut(
+        domain=row.domain,
+        topic_spike_pct_change_threshold=row.topic_spike_pct_change_threshold,
+        topic_spike_min_volume=row.topic_spike_min_volume,
+        sentiment_drop_threshold=row.sentiment_drop_threshold,
+        churn_surge_multiplier=row.churn_surge_multiplier,
+        methodology_drop_threshold=row.methodology_drop_threshold,
+    )
+
+
+@router.put(
+    "/manager/alert-config/{domain}",
+    response_model=AlertDomainConfigOut,
+    dependencies=[Depends(require_role("manager"))],
+)
+async def update_alert_domain_config(
+    domain: str,
+    body: AlertDomainConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> AlertDomainConfigOut:
+    """Upsert the per-(tenant, domain) threshold override row.
+
+    Each value can be NULL to mean "inherit from the tenant-wide row"
+    — sending an explicit ``null`` clears the override for that knob.
+    """
+    if domain not in _VALID_OVERRIDE_DOMAINS:
+        raise HTTPException(status_code=422, detail=f"Unknown domain: {domain}")
+    row = await db.get(AlertDomainConfig, (tenant.id, domain))
+    if row is None:
+        row = AlertDomainConfig(tenant_id=tenant.id, domain=domain)
+        db.add(row)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(row, k, v)
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return await get_alert_domain_config(domain=domain, db=db, tenant=tenant)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Overview (preserved from prior dashboard — consumed by the agent
 # home dashboard's manager-only block)
@@ -996,40 +1089,33 @@ async def _apply_kb_article_request(
     update or create a KB article (``update_kb_article``,
     ``escalate_recurring_issue``).
 
-    We don't yet have a first-class KB-edit-request object, so the
-    artifact is a CoachingNote that the manager (or KB owner) sees as
-    a task. The note's body is composed from the rec's title +
-    rationale + suggested KB topic, so the recipient has everything in
-    one place. Once a KB-edit pipeline exists, swap the artifact for
-    that without changing the apply contract.
+    Creates a ``KBArticleRequest`` row in the KB-owner's inbox. The
+    inbox lives at ``/kb/requests``; status / priority / assignment
+    flow independently from the rep coaching queue.
     """
+    from backend.app.models import KBArticleRequest
+
     target = rec.target or {}
-    assigned_to = principal.user_id
-    raw = target.get("rep_user_id")
+    topic = target.get("kb_article_topic") or rec.title
+    assigned_to: Optional[uuid.UUID] = None
+    raw = target.get("rep_user_id") or target.get("assigned_to")
     if raw:
         try:
-            parsed = uuid.UUID(str(raw))
-            assigned_to = parsed
+            assigned_to = uuid.UUID(str(raw))
         except (TypeError, ValueError):
             pass
-    if assigned_to is None:
-        raise HTTPException(
-            status_code=422,
-            detail="Cannot create KB-article task without an assignee.",
-        )
-    kb_topic = target.get("kb_article_topic") or rec.title
-    body_lines = [rec.rationale or "", "", f"Suggested KB topic: {kb_topic}"]
-    note = CoachingNote(
+    request = KBArticleRequest(
         tenant_id=tenant_id,
+        requested_by_user_id=principal.user_id,
         assigned_to=assigned_to,
-        author_id=principal.user_id,
-        title=rec.title[:300],
-        body="\n".join(body_lines).strip(),
         source_recommendation_id=rec.id,
+        topic=str(topic)[:300],
+        rationale=rec.rationale,
+        priority=("high" if rec.score and rec.score >= 75 else "medium"),
     )
-    db.add(note)
+    db.add(request)
     await db.flush()
-    return {"type": "coaching_note", "id": note.id}
+    return {"type": "kb_article_request", "id": request.id}
 
 
 # ─────────────────────────────────────────────────────────────────────
