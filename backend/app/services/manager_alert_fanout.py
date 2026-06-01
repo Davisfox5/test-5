@@ -137,12 +137,35 @@ def _deliver_inapp(
             )
 
 
+def _channel_for_alert(
+    slack: SlackIntegration, alert: ManagerAlert
+) -> str | None:
+    """Pick the Slack channel id for an alert.
+
+    Per-domain override map (``slack_integration.domain_channel_map``,
+    added in ``dom_003``) wins when present; falls back to the
+    tenant-wide ``default_channel_id``. Lets a tenant route Sales alerts
+    to ``#sales-alerts`` and Support alerts to ``#support-alerts``
+    without losing the legacy single-channel default.
+    """
+    domain_map = getattr(slack, "domain_channel_map", None) or {}
+    if alert.domain and isinstance(domain_map, dict):
+        override = domain_map.get(alert.domain)
+        if override:
+            return str(override)
+    return slack.default_channel_id
+
+
 def _slack_enabled_for(
     alert: ManagerAlert,
     config: AlertChannelConfig | None,
     slack: SlackIntegration | None,
 ) -> bool:
-    if slack is None or not slack.default_channel_id:
+    if slack is None:
+        return False
+    # We're enabled as long as SOME channel can take the message —
+    # either the per-domain override or the tenant default.
+    if not _channel_for_alert(slack, alert):
         return False
     if config is None:
         return False
@@ -160,7 +183,8 @@ def _deliver_slack(slack: SlackIntegration, alert: ManagerAlert) -> None:
             "Slack bot token decrypt failed for tenant %s", slack.tenant_id
         )
         return
-    if not bot_token or not slack.default_channel_id:
+    channel = _channel_for_alert(slack, alert)
+    if not bot_token or not channel:
         return
     blocks = _slack_blocks(alert)
     service = NotificationService()
@@ -168,20 +192,17 @@ def _deliver_slack(slack: SlackIntegration, alert: ManagerAlert) -> None:
         asyncio.run(
             service.post_to_slack_channel(
                 bot_token=bot_token,
-                channel_id=slack.default_channel_id,
+                channel_id=channel,
                 text=alert.title,
                 blocks=blocks,
             )
         )
     except RuntimeError:
-        # Already inside an event loop (rare from sync Celery, common
-        # if called from an async test). Schedule it on the running
-        # loop instead.
         loop = asyncio.get_event_loop()
         loop.create_task(
             service.post_to_slack_channel(
                 bot_token=bot_token,
-                channel_id=slack.default_channel_id,
+                channel_id=channel,
                 text=alert.title,
                 blocks=blocks,
             )

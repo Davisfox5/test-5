@@ -122,6 +122,8 @@ from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.admin_motions import router as admin_motions_router  # noqa: E402
 from backend.app.api.support import router as support_router  # noqa: E402
 from backend.app.api.support_csat import router as support_csat_router  # noqa: E402
+from backend.app.api.cs import router as cs_router  # noqa: E402
+from backend.app.api.kb_requests import router as kb_requests_router  # noqa: E402
 from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.emails import router as emails_router  # noqa: E402
@@ -183,6 +185,12 @@ app.include_router(support_router, prefix=settings.API_V1_PREFIX, tags=["support
 # the v1 prefix so the URL the customer follows reads as the rest of the
 # API surface; the route itself sits at /csat/<token> within that prefix.
 app.include_router(support_csat_router, prefix=settings.API_V1_PREFIX, tags=["csat"])
+# Customer Success (account health, renewals, drill-down).
+app.include_router(cs_router, prefix=settings.API_V1_PREFIX, tags=["cs"])
+# KB-article-request inbox + lifecycle.
+app.include_router(
+    kb_requests_router, prefix=settings.API_V1_PREFIX, tags=["kb-requests"]
+)
 app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
 app.include_router(
     crm_router,

@@ -353,13 +353,33 @@ class Customer(Base):
     strongest_connection_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    # ── CS columns (added in migration ``dom_003``) ─────────────────────
+    # Drives the CS portal's "Upcoming renewals" strip and the
+    # renewal-risk composite score. NULL until populated via CRM sync
+    # or manual entry — the migration never fabricates a value.
+    renewal_date: Mapped[Optional[date]] = mapped_column(Date)
+    # Composite account-health score, 0-100. Computed nightly by the
+    # ``account_health_job`` task. NULL means not yet computed.
+    health_score: Mapped[Optional[float]] = mapped_column(Float)
+    # Stage on the onboarding ladder. Vocabulary pinned by CHECK:
+    # not_started | in_progress | stalled | completed. ``stalled`` is
+    # distinguished from ``in_progress`` so a CS-side detector can fire
+    # on stalled onboardings without paging on every account mid-progress.
+    onboarding_status: Mapped[Optional[str]] = mapped_column(String(32))
 
     __table_args__ = (
-        # Tenant-scoped lookups + name-ordered pagination for the
-        # contact list; ``ix_customer_tenant_id`` backs IN/JOIN
-        # filters from CustomerOwner and elsewhere.
         Index("ix_customer_tenant_id", "tenant_id"),
         Index("ix_customer_tenant_name", "tenant_id", "name"),
+        Index("ix_customers_tenant_renewal_date", "tenant_id", "renewal_date"),
+        CheckConstraint(
+            "onboarding_status IS NULL OR onboarding_status IN "
+            "('not_started', 'in_progress', 'stalled', 'completed')",
+            name="ck_customers_onboarding_status",
+        ),
+        CheckConstraint(
+            "health_score IS NULL OR (health_score >= 0 AND health_score <= 100)",
+            name="ck_customers_health_score_range",
+        ),
     )
 
 
@@ -2960,6 +2980,90 @@ class AlertChannelConfig(Base):
     )
 
 
+class AlertDomainConfig(Base):
+    """Per-(tenant, domain) overrides for anomaly-detector thresholds.
+
+    Added in ``dom_003``. The detector first reads this row for a given
+    ``(tenant_id, domain)``; any NULL column falls back to the legacy
+    single ``AlertChannelConfig`` row. Lets the CS sentiment-drop
+    threshold differ from the Sales sentiment-drop threshold without
+    refactoring the legacy table's tenant-only PK.
+
+    Channel routing (in-app on/off, Slack on/off, Slack severity gate)
+    stays on the legacy row — those are tenant-level, not per-motion.
+    """
+
+    __tablename__ = "alert_domain_config"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    domain: Mapped[str] = mapped_column(String(32), primary_key=True)
+    topic_spike_pct_change_threshold: Mapped[Optional[int]] = mapped_column(Integer)
+    topic_spike_min_volume: Mapped[Optional[int]] = mapped_column(Integer)
+    sentiment_drop_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    churn_surge_multiplier: Mapped[Optional[float]] = mapped_column(Float)
+    methodology_drop_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "domain IN ('sales', 'customer_service', 'it_support', 'generic')",
+            name="ck_alert_domain_config_domain",
+        ),
+    )
+
+
+class KBArticleRequest(Base):
+    """KB-edit-request artifact for Support recommendations.
+
+    Replaces the CoachingNote stub the ``update_kb_article`` /
+    ``escalate_recurring_issue`` Apply paths created in PR #113. The
+    Support manager (or KB owner) works these from a dedicated inbox
+    at ``/kb/requests`` with its own lifecycle independent from coaching.
+    """
+
+    __tablename__ = "kb_article_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    assigned_to: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    source_recommendation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("manager_recommendations.id", ondelete="SET NULL")
+    )
+    # Optional anchor to an existing KB chunk this request is asking to
+    # update; NULL when it's a request to create something new.
+    source_kb_chunk_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("kb_chunks.id", ondelete="SET NULL")
+    )
+    topic: Mapped[str] = mapped_column(String(300), nullable=False)
+    rationale: Mapped[Optional[str]] = mapped_column(Text)
+    proposed_body: Mapped[Optional[str]] = mapped_column(Text)
+    # open | in_progress | published | dismissed (CHECK in migration).
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="open"
+    )
+    priority: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="medium"
+    )
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class CoachingNote(Base):
     """Manager-to-rep coaching memo. Created either manually or via the
     one-click-apply path on a ``ManagerRecommendation`` with
@@ -3012,6 +3116,14 @@ class SlackIntegration(Base):
     bot_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     default_channel_id: Mapped[Optional[str]] = mapped_column(String(64))
     default_channel_name: Mapped[Optional[str]] = mapped_column(String(255))
+    # Per-domain channel override map (added in ``dom_003``). Shape:
+    # ``{"sales": "C001", "customer_service": "C002", "it_support": "C003"}``.
+    # When a key is missing, the fanout layer falls back to
+    # ``default_channel_id``. Lets a tenant route Sales alerts to
+    # ``#sales-alerts`` and Support alerts to ``#support-alerts``.
+    domain_channel_map: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     installed_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
