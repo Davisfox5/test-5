@@ -12,9 +12,34 @@ export type NotificationKind =
     | "action_item_overdue"
     | "manager_review_completed"
     | "scorecard_review_assigned"
+    | "manager_alert"
+    // Cross-motion (added with PR cross-motion-notifications)
+    | "case_assigned"
+    | "case_escalated"
+    | "renewal_at_risk"
+    | "qbr_overdue"
     | "system"
     | "other"
     | string;
+
+// Human-readable labels for the tray. Kept here so tray components
+// stay declarative; falls back to the raw kind string when missing.
+export const KIND_LABEL: Record<string, string> = {
+    action_item_assigned: "Action item",
+    action_item_comment: "Comment",
+    action_item_returned: "Returned",
+    action_item_due_soon: "Due soon",
+    action_item_overdue: "Overdue",
+    manager_review_completed: "Review done",
+    scorecard_review_assigned: "Review assigned",
+    manager_alert: "Manager alert",
+    case_assigned: "Case assigned",
+    case_escalated: "Case escalated",
+    renewal_at_risk: "Renewal at risk",
+    qbr_overdue: "QBR overdue",
+    system: "System",
+    other: "Notification",
+};
 
 export interface Notification {
     id: string;

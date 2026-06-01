@@ -63,7 +63,13 @@ def publish_notification(
 
 
 class NotificationKind:
-    """String constants matching the Phase 5B-6 migration's CHECK vocabulary."""
+    """String constants matching the migration CHECK vocabulary.
+
+    Extended in ``dom_004_cross_motion_notifs`` with the cross-motion
+    kinds (case_assigned / case_escalated / renewal_at_risk /
+    qbr_overdue) so the SupportCase and CS account-health services
+    can fire on relevant lifecycle events.
+    """
 
     ACTION_ITEM_ASSIGNED = "action_item_assigned"
     ACTION_ITEM_COMMENT = "action_item_comment"
@@ -75,6 +81,11 @@ class NotificationKind:
     MANAGER_ALERT = "manager_alert"
     SYSTEM = "system"
     OTHER = "other"
+    # ── Cross-motion (PR cross-motion-notifications, ``dom_004``) ──
+    CASE_ASSIGNED = "case_assigned"
+    CASE_ESCALATED = "case_escalated"
+    RENEWAL_AT_RISK = "renewal_at_risk"
+    QBR_OVERDUE = "qbr_overdue"
 
 
 VALID_KINDS = frozenset(

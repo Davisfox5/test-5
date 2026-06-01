@@ -188,6 +188,59 @@ def persist_health_score(
     return breakdown
 
 
+# ── Renewal-at-risk notification (added with cross-motion-notifications) ──
+
+
+def should_fire_renewal_at_risk(
+    session: Session, customer: Customer
+) -> bool:
+    """Return True when ``customer`` warrants a ``renewal_at_risk``
+    notification right now.
+
+    Conditions:
+
+    * Renewal-risk composite is in the 'high' band (>= 70).
+    * No existing unread ``renewal_at_risk`` notification for the
+      customer's owner within the last 7 days (idempotency — keeps a
+      daily refresh from flooding the CSM with duplicates).
+
+    The 7-day dedup is the right window for renewal-risk: the situation
+    rarely changes day-to-day, but flips week-over-week as touches
+    land. Tunable via ``RENEWAL_NOTIF_DEDUP_DAYS`` if customers ask.
+    """
+    from datetime import timedelta
+
+    from backend.app.models import Notification
+
+    score = renewal_risk_score(session, customer)
+    if score < 70:
+        return False
+    if customer.strongest_connection_user_id is None:
+        # No owner to notify — orphan accounts don't get pinged.
+        # The nightly account-owner job populates this field; until
+        # it lands we skip rather than notifying the wrong person.
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RENEWAL_NOTIF_DEDUP_DAYS)
+    recent = (
+        session.execute(
+            select(Notification.id)
+            .where(
+                Notification.tenant_id == customer.tenant_id,
+                Notification.user_id == customer.strongest_connection_user_id,
+                Notification.kind == "renewal_at_risk",
+                Notification.created_at >= cutoff,
+                # Dedup is per customer; the link URL carries the id.
+                Notification.link_url == f"/cs/accounts/{customer.id}",
+            )
+            .limit(1)
+        )
+    ).first()
+    return recent is None
+
+
+RENEWAL_NOTIF_DEDUP_DAYS = 7
+
+
 # ── Renewal-risk composite ─────────────────────────────────────────────
 
 
