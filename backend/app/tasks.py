@@ -1234,6 +1234,26 @@ def _run_pipeline_impl(
             interaction_id,
         )
 
+    # ── Step 12b.5: Support-case attach (PR B / dom_002) ─────────────
+    # After entity resolution but before warnings + commitments so the
+    # case FK is on the row when the warnings engine reads it (a future
+    # warning kind may scope to "open IT-support case for this customer").
+    # Best-effort: any failure becomes a logged warning and the
+    # interaction continues through the pipeline as a normal IT-support
+    # interaction without a case attachment.
+    try:
+        if interaction.domain == "it_support":
+            from backend.app.services.support_case_service import (
+                attach_or_create_case,
+            )
+
+            attach_or_create_case(session, interaction)
+    except Exception:
+        logger.exception(
+            "Support-case attach failed for interaction %s (non-fatal)",
+            interaction_id,
+        )
+
     # ── Step 12c: Warnings + commitments ─────────────────────────────
     # Run after entity_resolution so we have ``interaction.customer_id``
     # populated (the warnings engine needs it to attach rows). Same
