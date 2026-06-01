@@ -47,24 +47,32 @@ const SEVERITY_BADGE: Record<Severity, string> = {
 
 type TabKey = Domain | "journey";
 
+const ORDERED_DOMAINS: Domain[] = [
+    "sales",
+    "customer_service",
+    "it_support",
+    "generic",
+];
+
 export default function ManagerPage() {
     const me = useMe();
     const managerDomains = (me.data?.user?.manager_domains || []) as Domain[];
     const isTenantAdmin = me.data?.user?.is_tenant_admin ?? false;
 
-    // Tenant admins implicitly see every motion (sales / CS / Support).
-    // The Journey tab unlocks at 2+ effective scopes.
-    const effectiveDomains = useMemo<Domain[]>(() => {
-        if (isTenantAdmin) {
-            return ["sales", "customer_service", "it_support"];
-        }
-        const order: Domain[] = ["sales", "customer_service", "it_support", "generic"];
-        return order.filter((d) => managerDomains.includes(d));
-    }, [isTenantAdmin, managerDomains]);
-
-    const showJourney = effectiveDomains.length >= 2;
-    const initialTab: TabKey = effectiveDomains[0] || "sales";
-    const [tab, setTab] = useState<TabKey>(initialTab);
+    // Multi-motion shell (tabs + Journey) is tenant-admin-only. Most
+    // managers oversee one motion; for the rare multi-scope manager,
+    // a small selector at the top of the page lets them switch which
+    // motion's dashboard they're looking at without exposing the
+    // cross-section. Admins get the full tabbed view + Journey.
+    const managerOwnDomains = useMemo<Domain[]>(
+        () => ORDERED_DOMAINS.filter((d) => managerDomains.includes(d)),
+        [managerDomains],
+    );
+    const adminAllDomains: Domain[] = [
+        "sales",
+        "customer_service",
+        "it_support",
+    ];
 
     if (me.isLoading) {
         return <p className="text-text-muted">Loading…</p>;
@@ -72,7 +80,7 @@ export default function ManagerPage() {
     if (!me.data?.user) {
         return <p className="text-text-muted">Sign in to view manager dashboards.</p>;
     }
-    if (effectiveDomains.length === 0) {
+    if (!isTenantAdmin && managerOwnDomains.length === 0) {
         return (
             <div className="rounded-lg border border-border bg-bg-card p-4">
                 <p className="text-text">
@@ -87,14 +95,71 @@ export default function ManagerPage() {
         );
     }
 
+    if (isTenantAdmin) {
+        return <AdminShell domains={adminAllDomains} />;
+    }
+    return <ManagerShell domains={managerOwnDomains} />;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Manager shell — single motion at a time, with a discrete picker
+// when the user happens to manage more than one. No Journey tab.
+// ─────────────────────────────────────────────────────────────────────
+
+function ManagerShell({ domains }: { domains: Domain[] }) {
+    const [selected, setSelected] = useState<Domain>(domains[0]);
+    // If a user's scope grant changes mid-session, drop back to the
+    // first valid motion rather than rendering an empty view.
+    const active = domains.includes(selected) ? selected : domains[0];
+
+    return (
+        <div className="space-y-6">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <h1 className="text-2xl font-bold">Manager</h1>
+                {domains.length > 1 ? (
+                    <label className="text-sm text-text-muted">
+                        Viewing:{" "}
+                        <select
+                            value={active}
+                            onChange={(e) =>
+                                setSelected(e.target.value as Domain)
+                            }
+                            className="ml-1 rounded border border-border bg-bg-card px-2 py-1 text-sm text-text"
+                        >
+                            {domains.map((d) => (
+                                <option key={d} value={d}>
+                                    {DOMAIN_LABEL[d]}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                ) : null}
+            </div>
+            <MotionView domain={active} />
+        </div>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Admin shell — tabs across every motion plus the Journey tab.
+// Reserved for ``is_tenant_admin=true`` because the multi-tab UI was
+// adding more confusion than utility for plain multi-scope managers.
+// ─────────────────────────────────────────────────────────────────────
+
+function AdminShell({ domains }: { domains: Domain[] }) {
+    const [tab, setTab] = useState<TabKey>(domains[0] || "sales");
+
     return (
         <div className="space-y-6">
             <div className="flex items-baseline justify-between gap-4">
                 <h1 className="text-2xl font-bold">Manager</h1>
+                <span className="text-xs text-text-subtle">
+                    Tenant admin view
+                </span>
             </div>
 
             <div className="flex flex-wrap gap-1 border-b border-border">
-                {effectiveDomains.map((d) => (
+                {domains.map((d) => (
                     <TabButton
                         key={d}
                         label={DOMAIN_LABEL[d]}
@@ -102,13 +167,11 @@ export default function ManagerPage() {
                         onClick={() => setTab(d)}
                     />
                 ))}
-                {showJourney && (
-                    <TabButton
-                        label="Journey"
-                        active={tab === "journey"}
-                        onClick={() => setTab("journey")}
-                    />
-                )}
+                <TabButton
+                    label="Journey"
+                    active={tab === "journey"}
+                    onClick={() => setTab("journey")}
+                />
             </div>
 
             {tab === "journey" ? (
