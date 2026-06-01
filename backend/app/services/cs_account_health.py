@@ -241,6 +241,105 @@ def should_fire_renewal_at_risk(
 RENEWAL_NOTIF_DEDUP_DAYS = 7
 
 
+# ── QBR-overdue detector (added with PR qbr-overdue-detector) ──────────
+
+# Days since the last CS interaction before a completed-onboarding
+# account counts as QBR-overdue. 90 days is the right floor: it's the
+# typical quarterly cadence; bumping to 120 misses accounts already
+# slipping. Tunable; not exposed yet because no customer has asked.
+QBR_OVERDUE_THRESHOLD_DAYS = 90
+
+# How often we'll re-ping a CSM about the same overdue account. Longer
+# than the renewal-at-risk window because QBR scheduling has a slower
+# cycle; once a week is right for the first version, can extend if
+# CSMs complain.
+QBR_NOTIF_DEDUP_DAYS = 14
+
+
+def find_qbr_overdue_customers(
+    session: Session, tenant_id: uuid.UUID
+) -> List[Customer]:
+    """Return customers in the tenant who need a QBR.
+
+    Eligible: ``onboarding_status='completed'``, has an owner
+    (``strongest_connection_user_id``), and either (a) no CS
+    interaction ever, or (b) their last CS interaction is older than
+    ``QBR_OVERDUE_THRESHOLD_DAYS``. Sales accounts that haven't been
+    onboarded yet stay out — they're not the QBR cadence's concern.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        days=QBR_OVERDUE_THRESHOLD_DAYS
+    )
+    candidates = (
+        session.execute(
+            select(Customer).where(
+                Customer.tenant_id == tenant_id,
+                Customer.onboarding_status == "completed",
+                Customer.strongest_connection_user_id.isnot(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: List[Customer] = []
+    for c in candidates:
+        last_cs = (
+            session.execute(
+                select(Interaction.created_at)
+                .where(
+                    Interaction.tenant_id == tenant_id,
+                    Interaction.customer_id == c.id,
+                    Interaction.domain == "customer_service",
+                )
+                .order_by(Interaction.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if last_cs is None:
+            out.append(c)
+            continue
+        # SQLite (test bind) loses tz info on read; Postgres keeps it.
+        # Normalize both sides so the comparison works either way.
+        if last_cs.tzinfo is None:
+            cmp_cutoff = cutoff.replace(tzinfo=None)
+        else:
+            cmp_cutoff = cutoff
+        if last_cs < cmp_cutoff:
+            out.append(c)
+    return out
+
+
+def should_fire_qbr_overdue(
+    session: Session, customer: Customer
+) -> bool:
+    """Per-customer dedup for ``qbr_overdue``. Same shape as the
+    renewal-at-risk gate: skip when there's already an unread
+    notification for the same account inside the dedup window.
+
+    Doesn't re-check the cadence threshold; the caller (the scheduled
+    detector) already filtered the candidate pool.
+    """
+    from backend.app.models import Notification
+
+    if customer.strongest_connection_user_id is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=QBR_NOTIF_DEDUP_DAYS)
+    recent = (
+        session.execute(
+            select(Notification.id)
+            .where(
+                Notification.tenant_id == customer.tenant_id,
+                Notification.user_id == customer.strongest_connection_user_id,
+                Notification.kind == "qbr_overdue",
+                Notification.created_at >= cutoff,
+                Notification.link_url == f"/cs/accounts/{customer.id}",
+            )
+            .limit(1)
+        )
+    ).first()
+    return recent is None
+
+
 # ── Renewal-risk composite ─────────────────────────────────────────────
 
 
