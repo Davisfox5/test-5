@@ -166,6 +166,15 @@ celery_app.conf.update(
             "task": "cohort_recommendation_scan",
             "schedule": crontab(minute=30, hour=6),
         },
+        # AI cross-customer trend detection. Daily at 07:00 UTC, after
+        # the cohort scan, so the recommendation queue reflects both
+        # cohort-derived and trend-derived predictive recommendations
+        # on the same refresh cycle. Voyage embedding is the dominant
+        # per-tenant cost; nightly batches are cheap.
+        "support-trend-scan": {
+            "task": "support_trend_scan",
+            "schedule": crontab(minute=0, hour=7),
+        },
         # ── Email ingestion ───────────────────────────────────────────
         # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
         # poll is a safety net for integrations whose push subscription
@@ -2630,6 +2639,43 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         return {"tenants_processed": processed}
     finally:
         session.close()
+
+
+@celery_app.task(name="support_trend_scan")
+def support_trend_scan() -> Dict[str, Any]:
+    """Daily AI-driven cross-customer trend scan.
+
+    Embeds any missing SupportCase subjects, clusters by similarity,
+    and persists alerts + recommendations for clusters that are
+    actually growing (not just hard-count thresholds). Per-tenant
+    failures land in the logger; the rest of the run continues.
+    """
+    import asyncio
+
+    from backend.app.models import Tenant
+    from backend.app.services.support_trend_detector import run_for_tenant
+
+    session = _get_sync_session()
+    by_tenant: Dict[str, Dict[str, Any]] = {}
+    try:
+        tenants = (
+            session.execute(__import__("sqlalchemy").select(Tenant))
+        ).scalars().all()
+        for t in tenants:
+            try:
+                # ``run_for_tenant`` does an async embed step, so spin
+                # a per-tenant loop (the orchestrator commits sync
+                # between tenants).
+                by_tenant[str(t.id)] = asyncio.run(run_for_tenant(session, t))
+            except Exception:
+                logger.exception(
+                    "Support trend scan failed for tenant %s", t.id
+                )
+                session.rollback()
+                by_tenant[str(t.id)] = {"error": 1}
+    finally:
+        session.close()
+    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
 
 
 @celery_app.task(name="cohort_recommendation_scan")

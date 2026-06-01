@@ -27,7 +27,8 @@ export type AlertKind =
     | "health_score_drop"
     | "csat_drop_support"
     | "escalation_surge"
-    | "ttr_drift";
+    | "ttr_drift"
+    | "recurring_issue_detected";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -64,7 +65,9 @@ export type RecommendationCategory =
     // Predictive / cohort-derived
     | "prevent_no_touch_churn"
     | "prevent_lead_stall"
-    | "proactive_outreach_repeat_support";
+    | "proactive_outreach_repeat_support"
+    // AI cross-customer trend detector
+    | "address_recurring_issue";
 
 export interface ManagerRecommendation {
     id: string;
@@ -315,6 +318,7 @@ export const CATEGORY_LABEL: Record<RecommendationCategory, string> = {
     prevent_no_touch_churn: "Prevent no-touch churn",
     prevent_lead_stall: "Prevent lead stall",
     proactive_outreach_repeat_support: "Proactive outreach (repeat support)",
+    address_recurring_issue: "Address recurring issue",
 };
 
 export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
@@ -327,4 +331,5 @@ export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
     csat_drop_support: "CSAT drop",
     escalation_surge: "Escalation surge",
     ttr_drift: "Time to resolve drift",
+    recurring_issue_detected: "Recurring issue detected",
 };
