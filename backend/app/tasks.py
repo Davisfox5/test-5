@@ -1487,7 +1487,7 @@ def _run_pipeline_impl(
     # where synthesis dropped (or whether it never started).
     _plan_diag: Dict[str, Any] = {"entered_block": True}
 
-    # synth-redeploy-marker-2026-05-31c-diag-via-main-commit
+    # synth-redeploy-marker-2026-06-01a-diag-cap-bump-investigating-runtime-error
     try:
         from backend.app.db import async_session as _async_session_factory
         from backend.app.services.action_plan.synthesizer import (
@@ -1605,9 +1605,13 @@ def _run_pipeline_impl(
             interaction.id,
         )
         _plan_diag["caught_kind"] = type(_plan_exc_other).__name__
-        _plan_diag["caught_error"] = str(_plan_exc_other)[:200]
+        _plan_diag["caught_error"] = str(_plan_exc_other)[:1000]
         import traceback as _tb
-        _plan_diag["caught_traceback"] = _tb.format_exc()[:2000]
+        # 8000 chars instead of 2000 — the SQLAlchemy stack alone hits
+        # 1800 chars before the actual root error line, leaving the
+        # meaningful exception text truncated. 8000 captures the full
+        # chain including any chained "caused by" exceptions.
+        _plan_diag["caught_traceback"] = _tb.format_exc()[:8000]
     # The synthesis block above populates ``_plan_diag`` but does NOT
     # persist it here. Previous approaches (a separate session.commit
     # mid-pipeline, then a fresh isolated session with JSONB merge)
