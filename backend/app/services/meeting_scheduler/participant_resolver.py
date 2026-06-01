@@ -94,28 +94,45 @@ async def resolve_participants(
         role = entry.get("role")
 
         email: Optional[str] = None
+        phone: Optional[str] = None
         if side == "customer":
-            email = _find_email(customer_contacts, name)
+            email, phone = _find_contact_match(customer_contacts, name)
         elif side == "vendor":
-            email = _find_email(tenant_users, name)
+            email, phone = _find_contact_match(tenant_users, name)
         else:
             # Side unknown — try contacts first, then users.
-            email = _find_email(customer_contacts, name) or _find_email(
-                tenant_users, name
-            )
+            email, phone = _find_contact_match(customer_contacts, name)
+            if not email and not phone:
+                email, phone = _find_contact_match(tenant_users, name)
 
         resolved.append(
-            MeetingParticipant(name=name, email=email, role=role, side=side)
+            MeetingParticipant(
+                name=name, email=email, role=role, side=side, phone=phone,
+            )
         )
 
     return resolved
 
 
-def _find_email(rows: List[Any], name: str) -> Optional[str]:
-    """Return the first email whose row name loosely matches ``name``."""
+def _find_contact_match(rows: List[Any], name: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (email, phone) for the first row whose name loosely matches.
+
+    Either field can be None when the matched row doesn't carry it
+    (most tenant ``User`` rows have email but not phone; some
+    ``Contact`` rows are the reverse).
+    """
     for row in rows:
         if _name_matches(getattr(row, "name", None), name):
-            email = getattr(row, "email", None)
-            if email:
-                return email
-    return None
+            return (
+                getattr(row, "email", None) or None,
+                getattr(row, "phone", None) or None,
+            )
+    return (None, None)
+
+
+def _find_email(rows: List[Any], name: str) -> Optional[str]:
+    """Backward-compatible helper — returns just the email half of
+    :func:`_find_contact_match` for any callers still on the old
+    single-value shape."""
+    email, _ = _find_contact_match(rows, name)
+    return email

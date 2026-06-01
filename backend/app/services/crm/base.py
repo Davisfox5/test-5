@@ -228,3 +228,88 @@ class CrmAdapter(Protocol):
         raise CrmCapabilityMissing(
             f"{self.provider} adapter does not update deal stages"
         )
+
+    async def execute_operation(
+        self,
+        *,
+        operation: str,
+        payload: Dict[str, Any],
+        contact_external_id: Optional[str] = None,
+        customer_external_id: Optional[str] = None,
+        deal_external_id: Optional[str] = None,
+    ) -> str:
+        """Generic dispatcher for synthesizer-emitted ``system_write``
+        steps, where the LLM produces ``{operation: str, payload: {...}}``
+        and we need to route it to the right concrete adapter method.
+
+        The default implementation handles the operations the LLM is
+        documented to emit (``create_task`` / ``create_activity`` /
+        ``create_note`` / ``update_deal_stage``) by translating to the
+        existing typed methods. Adapters that need provider-specific
+        operations (custom objects, custom fields) override and add
+        cases. Unknown operations raise CrmCapabilityMissing so the
+        caller can surface a clear "this operation is not implemented
+        on {provider}" message rather than a silent no-op.
+        """
+        op = (operation or "").lower().strip()
+        if op in {"create_task", "create_activity"}:
+            # LLM payload mirrors HubSpot's ``hs_task_*`` field names.
+            # Map them to the activity_type / subject / note / due_date
+            # the typed method expects. Any other key is preserved as
+            # contextual ``note`` body.
+            subject = (
+                payload.get("subject")
+                or payload.get("hs_task_subject")
+                or payload.get("title")
+                or "Task"
+            )
+            note = (
+                payload.get("note")
+                or payload.get("body")
+                or payload.get("hs_task_body")
+                or ""
+            )
+            due_date = (
+                payload.get("due_date")
+                or payload.get("hs_task_due_date")
+                or payload.get("dueDate")
+            )
+            activity_type = payload.get("activity_type") or payload.get("type") or "task"
+            return await self.create_activity(
+                subject=str(subject),
+                activity_type=str(activity_type),
+                due_date=str(due_date) if due_date else None,
+                note=str(note) if note else None,
+                deal_external_id=deal_external_id,
+                contact_external_id=contact_external_id,
+            )
+        if op == "create_note":
+            content = (
+                payload.get("content")
+                or payload.get("body")
+                or payload.get("hs_note_body")
+                or ""
+            )
+            if not content:
+                raise CrmError("create_note operation requires non-empty content")
+            return await self.create_note(
+                content=str(content),
+                deal_external_id=deal_external_id,
+                contact_external_id=contact_external_id,
+                customer_external_id=customer_external_id,
+            )
+        if op == "update_deal_stage":
+            deal_id = deal_external_id or payload.get("deal_external_id") or payload.get("deal_id")
+            stage_id = payload.get("stage_external_id") or payload.get("stage_id") or payload.get("dealstage")
+            if not deal_id or not stage_id:
+                raise CrmError(
+                    "update_deal_stage operation requires deal_external_id + stage_external_id"
+                )
+            await self.update_deal_stage(
+                deal_external_id=str(deal_id),
+                stage_external_id=str(stage_id),
+            )
+            return str(deal_id)
+        raise CrmCapabilityMissing(
+            f"{self.provider} adapter does not implement operation '{operation}'"
+        )

@@ -23,12 +23,15 @@ from typing import List, Optional
 class MeetingParticipant:
     """One person to invite. ``email`` may be None when we couldn't
     resolve it from contacts/users — the stub provider falls back to
-    name-only in that case."""
+    name-only in that case. ``phone`` is populated for customer-side
+    participants when a matching Contact row has a phone number; used
+    by the SPA's click-to-call link on phone_call steps."""
 
     name: str
     email: Optional[str] = None
     role: Optional[str] = None  # 'organizer' | 'required' | 'optional' | 'specialist'
     side: Optional[str] = None  # 'customer' | 'vendor'
+    phone: Optional[str] = None
 
 
 @dataclass

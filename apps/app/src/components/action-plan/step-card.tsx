@@ -6,11 +6,13 @@ import {
     ActionPlan,
     ActionStep,
     ActionStepState,
+    type GenerateDocumentResult,
     type StepEditPayload,
     useCommitStep,
     useCompleteStep,
     useDeleteStep,
     useEditStep,
+    useGenerateStepDocument,
     useMarkStepSent,
     useRestoreStep,
     useScheduleStepMeeting,
@@ -87,6 +89,9 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     const sendEmail = useSendStepEmail(plan.id);
     const commit = useCommitStep(plan.id);
     const markSent = useMarkStepSent(plan.id);
+    const generateDoc = useGenerateStepDocument(plan.id);
+    const [generatedDoc, setGeneratedDoc] = useState<GenerateDocumentResult | null>(null);
+    const [docError, setDocError] = useState<string | null>(null);
     // Pre-flight which calendar / email provider would serve.
     const calendarProviders = useCalendarProviders();
     const emailProviders = useEmailProviders();
@@ -102,7 +107,10 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
     const isEmailStep =
         step.recommended_channel === "email" ||
         step.recommended_channel === "document_send";
+    const isDocumentStep = step.recommended_channel === "document_send";
     const isNoteStep = step.recommended_channel === "note";
+    const isSystemWriteStep = step.recommended_channel === "system_write";
+    const isCommittableStep = isNoteStep || isSystemWriteStep;
 
     const [editing, setEditing] = useState(false);
     const [scheduleResult, setScheduleResult] = useState<{
@@ -303,10 +311,33 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                         Connect email
                                     </a>
                                 )}
+                                {!isTerminal && isDocumentStep && (
+                                    <button
+                                        type="button"
+                                        disabled={generateDoc.isPending}
+                                        className="rounded bg-fuchsia-600 px-2 py-1 text-xs font-medium text-white hover:bg-fuchsia-700 disabled:opacity-50"
+                                        onClick={async () => {
+                                            setDocError(null);
+                                            setGeneratedDoc(null);
+                                            try {
+                                                const result = await generateDoc.mutateAsync({
+                                                    stepId: step.id,
+                                                    payload: {},
+                                                });
+                                                setGeneratedDoc(result);
+                                            } catch (err) {
+                                                setDocError((err as Error).message);
+                                            }
+                                        }}
+                                        title="Run Claude Sonnet against this step + the source call to draft a full document body. Returns Markdown for review, download, or print."
+                                    >
+                                        {generateDoc.isPending ? "Generating…" : "Generate document"}
+                                    </button>
+                                )}
                                 {!isTerminal && isPhoneStep && resolved.data && (
                                     <PhoneCallButton resolved={resolved.data} />
                                 )}
-                                {!isTerminal && isNoteStep && (
+                                {!isTerminal && isCommittableStep && (
                                     <button
                                         type="button"
                                         disabled={commit.isPending}
@@ -321,7 +352,9 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                                 setCommitResult({
                                                     ok: result.success,
                                                     note: result.success
-                                                        ? `Note created in ${result.provider}. id: ${result.external_id ?? "(unanchored)"}`
+                                                        ? (isSystemWriteStep
+                                                            ? `Operation executed in ${result.provider}. id: ${result.external_id ?? "(none)"}`
+                                                            : `Note created in ${result.provider}. id: ${result.external_id ?? "(unanchored)"}`)
                                                         : `Commit failed: ${result.error ?? "unknown error"}`,
                                                 });
                                             } catch (err) {
@@ -331,9 +364,13 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                                 });
                                             }
                                         }}
-                                        title="Push this note into the connected CRM (HubSpot / Salesforce / Pipedrive)."
+                                        title={
+                                            isSystemWriteStep
+                                                ? "Execute the synthesizer-emitted system_write operation against the connected CRM."
+                                                : "Push this note into the connected CRM (HubSpot / Salesforce / Pipedrive)."
+                                        }
                                     >
-                                        Send to CRM
+                                        {isSystemWriteStep ? "Execute in CRM" : "Send to CRM"}
                                     </button>
                                 )}
                                 {supportsManualSent && (
@@ -448,6 +485,17 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                 </p>
                             )}
                             <ResolvedBlock resolved={resolved.data} isLoading={resolved.isLoading} />
+                            {docError && (
+                                <p className="rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-100">
+                                    Document generation failed: {docError}
+                                </p>
+                            )}
+                            {generatedDoc && (
+                                <GeneratedDocumentPanel
+                                    doc={generatedDoc}
+                                    onDismiss={() => setGeneratedDoc(null)}
+                                />
+                            )}
                             {editing && !isTerminal && (
                                 <EditStepForm
                                     step={step}
@@ -721,23 +769,27 @@ function PhoneCallButton({
 }: {
     resolved: import("@/lib/action-plans").StepResolved;
 }) {
-    // The participant_resolver returns email but not phone (Contact
-    // table has phone but we don't surface it through the resolver
-    // yet). For now, fall back to a generic tel: link without a
-    // number — the dialer opens to a blank dial pad. This is still
-    // useful (one click → dialer up) and will improve once the
-    // resolver carries phone too.
-    const customerName = resolved.participants?.find(
-        (p) => p.side === "customer",
-    )?.name;
+    // Prefer the first customer-side participant with a phone. Fall
+    // back to a blank tel: link when no number's on file so the rep
+    // still gets a one-click dialer open.
+    const customer = resolved.participants?.find(
+        (p) => p.side === "customer" && p.phone,
+    );
+    const customerNameForTooltip = customer?.name
+        ?? resolved.participants?.find((p) => p.side === "customer")?.name;
+    const href = customer?.phone
+        ? `tel:${customer.phone.replace(/\s+/g, "")}`
+        : "tel:";
     return (
         <a
-            href="tel:"
+            href={href}
             className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-700"
             title={
-                customerName
-                    ? `Place call to ${customerName} via your dialer (number lookup pending).`
-                    : "Open your dialer to place this call."
+                customer?.phone
+                    ? `Place call to ${customer.name} at ${customer.phone}.`
+                    : customerNameForTooltip
+                        ? `Place call to ${customerNameForTooltip} (no number on file — dialer opens blank).`
+                        : "Open your dialer to place this call."
             }
         >
             Place call
@@ -840,6 +892,14 @@ function ResolvedBlock({
                                         email pending
                                     </span>
                                 )}
+                                {p.phone && (
+                                    <a
+                                        href={`tel:${p.phone.replace(/\s+/g, "")}`}
+                                        className="text-indigo-700 underline dark:text-indigo-300"
+                                    >
+                                        {p.phone}
+                                    </a>
+                                )}
                                 {p.side && (
                                     <span className="text-[10px] text-slate-400">
                                         [{p.side}]
@@ -850,6 +910,199 @@ function ResolvedBlock({
                     </ul>
                 </div>
             )}
+        </div>
+    );
+}
+
+// Minimal Markdown → HTML for the LLM-emitted document body.
+// Handles the subset the system prompt asks for: ATX headings (# / ## /
+// ###), paragraphs, bulleted lists (- prefix), numbered lists, and
+// inline **bold** / *italic*. We intentionally do NOT pull in a real
+// markdown library — the AI output is constrained and a 30-line
+// converter is easier to audit than 200KB of dependency.
+function renderMarkdownToHtml(md: string): string {
+    const escape = (s: string) =>
+        s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    const inline = (s: string) =>
+        escape(s)
+            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+            .replace(/(^|\W)\*(\S(?:.*?\S)?)\*(?=\W|$)/g, "$1<em>$2</em>");
+
+    const lines = md.replace(/\r\n/g, "\n").split("\n");
+    const out: string[] = [];
+    let inList: null | "ul" | "ol" = null;
+    let paragraph: string[] = [];
+
+    function flushParagraph() {
+        if (paragraph.length) {
+            out.push(`<p>${inline(paragraph.join(" "))}</p>`);
+            paragraph = [];
+        }
+    }
+    function flushList() {
+        if (inList) {
+            out.push(`</${inList}>`);
+            inList = null;
+        }
+    }
+
+    for (const raw of lines) {
+        const line = raw.trimEnd();
+        if (!line.trim()) {
+            flushParagraph();
+            flushList();
+            continue;
+        }
+        const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+        if (heading) {
+            flushParagraph();
+            flushList();
+            const level = heading[1].length;
+            out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+            continue;
+        }
+        const ul = /^[-*]\s+(.+)$/.exec(line.trimStart());
+        if (ul) {
+            flushParagraph();
+            if (inList !== "ul") {
+                flushList();
+                out.push("<ul>");
+                inList = "ul";
+            }
+            out.push(`<li>${inline(ul[1])}</li>`);
+            continue;
+        }
+        const ol = /^\d+\.\s+(.+)$/.exec(line.trimStart());
+        if (ol) {
+            flushParagraph();
+            if (inList !== "ol") {
+                flushList();
+                out.push("<ol>");
+                inList = "ol";
+            }
+            out.push(`<li>${inline(ol[1])}</li>`);
+            continue;
+        }
+        flushList();
+        paragraph.push(line);
+    }
+    flushParagraph();
+    flushList();
+    return out.join("\n");
+}
+
+function GeneratedDocumentPanel({
+    doc,
+    onDismiss,
+}: {
+    doc: GenerateDocumentResult;
+    onDismiss: () => void;
+}) {
+    const [view, setView] = useState<"preview" | "source">("preview");
+    const html = renderMarkdownToHtml(doc.body_markdown);
+
+    function download() {
+        const safe = doc.title.replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+        const blob = new Blob([doc.body_markdown], { type: "text/markdown" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safe || "document"}.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+    function openPrintPreview() {
+        // Open a new tab with the rendered HTML, then trigger the
+        // browser print dialog. The rep can save-as-PDF from there;
+        // we avoid bringing a server-side PDF library into the Python
+        // image for what's already a first-class browser capability.
+        const w = window.open("", "_blank", "noopener,noreferrer");
+        if (!w) return;
+        w.document.write(
+            `<!doctype html><html><head><title>${doc.title}</title>` +
+            `<style>` +
+            `body{font-family:Georgia,'Times New Roman',serif;max-width:780px;margin:48px auto;padding:0 32px;color:#1a1a1a;line-height:1.55}` +
+            `h1{font-size:28px;margin-bottom:16px}` +
+            `h2{font-size:20px;margin-top:32px}` +
+            `h3{font-size:16px;margin-top:24px;color:#444}` +
+            `p{margin:12px 0}` +
+            `ul,ol{margin:12px 0;padding-left:24px}` +
+            `li{margin:4px 0}` +
+            `</style></head><body>${html}</body></html>`,
+        );
+        w.document.close();
+        // Let the layout settle before invoking print.
+        setTimeout(() => w.print(), 250);
+    }
+    async function copyToClipboard() {
+        try {
+            await navigator.clipboard.writeText(doc.body_markdown);
+        } catch {
+            // ignore — older browsers without clipboard API
+        }
+    }
+
+    return (
+        <div className="rounded border border-fuchsia-300 bg-fuchsia-50 p-3 text-xs dark:border-fuchsia-700 dark:bg-fuchsia-900/20">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div className="font-semibold text-fuchsia-900 dark:text-fuchsia-100">
+                    {doc.title}
+                </div>
+                <div className="text-[10px] text-fuchsia-700 dark:text-fuchsia-300">
+                    {doc.word_count} words · {doc.model}
+                </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
+                <button
+                    type="button"
+                    onClick={() => setView("preview")}
+                    className={
+                        view === "preview"
+                            ? "rounded border border-fuchsia-400 bg-white px-2 py-0.5 font-medium dark:bg-fuchsia-950"
+                            : "rounded border border-transparent px-2 py-0.5 text-fuchsia-700 dark:text-fuchsia-300"
+                    }
+                >
+                    Preview
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setView("source")}
+                    className={
+                        view === "source"
+                            ? "rounded border border-fuchsia-400 bg-white px-2 py-0.5 font-medium dark:bg-fuchsia-950"
+                            : "rounded border border-transparent px-2 py-0.5 text-fuchsia-700 dark:text-fuchsia-300"
+                    }
+                >
+                    Markdown source
+                </button>
+                <button type="button" onClick={copyToClipboard} className="ml-auto rounded border border-fuchsia-400 px-2 py-0.5 hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/40">
+                    Copy
+                </button>
+                <button type="button" onClick={download} className="rounded border border-fuchsia-400 px-2 py-0.5 hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/40">
+                    Download .md
+                </button>
+                <button type="button" onClick={openPrintPreview} className="rounded border border-fuchsia-400 px-2 py-0.5 hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/40">
+                    Print / save as PDF
+                </button>
+                <button type="button" onClick={onDismiss} className="rounded border border-fuchsia-400 px-2 py-0.5 hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/40">
+                    Dismiss
+                </button>
+            </div>
+            <div className="mt-2 max-h-96 overflow-auto rounded bg-white p-3 leading-relaxed text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+                {view === "preview" ? (
+                    <div
+                        className="prose-doc"
+                        dangerouslySetInnerHTML={{ __html: html }}
+                    />
+                ) : (
+                    <pre className="whitespace-pre-wrap text-[11px]">{doc.body_markdown}</pre>
+                )}
+            </div>
         </div>
     );
 }

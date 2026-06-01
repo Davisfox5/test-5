@@ -453,6 +453,7 @@ export interface ResolvedParticipant {
     role: string | null;
     side: string | null;
     email: string | null;
+    phone: string | null;
 }
 
 export interface StepResolved {
@@ -469,5 +470,37 @@ export function useStepResolved(planId: string, stepId: string) {
                 `/action-plans/${planId}/steps/${stepId}/resolved`,
             ),
         staleTime: 60_000,
+    });
+}
+
+// ── Generate a long-form document for a document_send / email step ────
+
+export interface GenerateDocumentPayload {
+    attachment_title?: string | null;
+    extra_instructions?: string | null;
+}
+
+export interface GenerateDocumentResult {
+    title: string;
+    body_markdown: string;
+    word_count: number;
+    model: string;
+    generated_at_unix: number;
+}
+
+export function useGenerateStepDocument(planId: string) {
+    const api = useApi();
+    return useMutation({
+        mutationFn: ({
+            stepId,
+            payload,
+        }: {
+            stepId: string;
+            payload: GenerateDocumentPayload;
+        }) =>
+            api.request<GenerateDocumentResult>(
+                `/action-plans/${planId}/steps/${stepId}/generate-document`,
+                { method: "POST", body: JSON.stringify(payload) },
+            ),
     });
 }

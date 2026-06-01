@@ -1212,21 +1212,14 @@ async def commit_step(
     plan = await _load_plan_or_404(db, tenant, plan_id)
     step = await _load_step_or_404(db, tenant, plan_id, step_id)
 
-    if step.recommended_channel != "note":
-        # ``system_write`` is in the synthesizer schema but the CRM
-        # adapter Protocol exposes only ``create_note`` / ``create_activity``
-        # today — no generic ``execute_operation``. Until adapters
-        # gain a per-operation dispatcher (real HubSpot ``create_task``
-        # vs Salesforce custom-object writes vs ...), this endpoint
-        # handles the note channel only and refuses system_write with
-        # a clear message rather than silently no-op'ing.
+    if step.recommended_channel not in {"note", "system_write"}:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Step channel '{step.recommended_channel}' is not yet "
-                "committable through this endpoint. Only 'note' is "
-                "supported today. ('system_write' is planned once the "
-                "CrmAdapter protocol grows an execute_operation method.)"
+                f"Step channel '{step.recommended_channel}' is not "
+                "committable through this endpoint. Only 'note' and "
+                "'system_write' use /commit. Email steps use "
+                "/send-email; meeting/phone_call use /schedule-meeting."
             ),
         )
 
@@ -1293,15 +1286,46 @@ async def commit_step(
                 if customer and customer.crm_id:
                     customer_external_id = customer.crm_id
 
-        note_body = body.body_override or payload.get("body") or ""
-        if not note_body:
-            raise RuntimeError("Note body is empty.")
-
-        external_id = await adapter.create_note(
-            content=note_body,
-            contact_external_id=contact_external_id,
-            customer_external_id=customer_external_id,
-        )
+        if step.recommended_channel == "note":
+            note_body = body.body_override or payload.get("body") or ""
+            if not note_body:
+                raise RuntimeError("Note body is empty.")
+            external_id = await adapter.create_note(
+                content=note_body,
+                contact_external_id=contact_external_id,
+                customer_external_id=customer_external_id,
+            )
+        else:  # system_write
+            # The synthesizer's Call C ``system_write`` payload shape:
+            # {integration: 'hubspot', operation: 'create_task',
+            #  payload: {...provider-specific...}}.
+            # Dispatch through the CrmAdapter Protocol's
+            # execute_operation method — the default impl handles
+            # create_task / create_activity / create_note /
+            # update_deal_stage; adapters override for anything custom.
+            operation = (
+                payload.get("operation")
+                or step.integration_operation
+                or ""
+            )
+            op_payload = payload.get("payload") or {}
+            if not isinstance(op_payload, dict):
+                op_payload = {}
+            if not operation:
+                raise RuntimeError(
+                    "system_write step missing 'operation' on artifact payload."
+                )
+            # Pull contact_external_id / customer_external_id from the
+            # synthesizer's op_payload too in case the LLM emitted
+            # custom anchoring; fall back to the interaction's contact
+            # we already resolved above.
+            external_id = await adapter.execute_operation(
+                operation=str(operation),
+                payload=op_payload,
+                contact_external_id=op_payload.get("contact_external_id") or contact_external_id,
+                customer_external_id=op_payload.get("customer_external_id") or customer_external_id,
+                deal_external_id=op_payload.get("deal_external_id"),
+            )
         try:
             await adapter.close()
         except Exception:  # noqa: BLE001
@@ -1400,6 +1424,103 @@ async def mark_step_sent(
 # ──────────────────────────────────────────────────────────
 
 
+class GenerateDocumentRequest(BaseModel):
+    """Optional knobs for the per-step document generator."""
+    attachment_title: Optional[str] = Field(
+        None,
+        description=(
+            "Which of the synthesizer's suggested attachments to render. "
+            "Defaults to step.title."
+        ),
+    )
+    extra_instructions: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Optional free-form guidance to layer on top of the system prompt.",
+    )
+
+
+class GenerateDocumentOut(BaseModel):
+    title: str
+    body_markdown: str
+    word_count: int
+    model: str
+    generated_at_unix: float
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/generate-document",
+    response_model=GenerateDocumentOut,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def generate_document_for_plan_step(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: GenerateDocumentRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Generate a full Markdown document body for a document_send step.
+
+    Calls Claude Sonnet against the step + source interaction context
+    to produce a one-page document grounded in what the call actually
+    said. The body is returned as Markdown; the SPA renders to HTML
+    for inline preview and exposes browser print-to-PDF + download
+    affordances. Cost: one Sonnet call (~$0.03 per page).
+    """
+    from backend.app.services.action_plan.document_generator import (
+        generate_document_for_step,
+    )
+
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    # Permit on document_send AND email channels — sometimes a
+    # synthesizer-emitted email step wants a longer attachment too.
+    if step.recommended_channel not in {"document_send", "email"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Document generation is only meaningful for document_send "
+                f"or email steps; this step's channel is "
+                f"'{step.recommended_channel}'."
+            ),
+        )
+
+    interaction: Optional[Interaction] = None
+    if plan.interaction_id is not None:
+        interaction = await db.get(Interaction, plan.interaction_id)
+        if interaction is not None and interaction.tenant_id != tenant.id:
+            interaction = None  # defensive — should not happen via auth
+
+    try:
+        result = await generate_document_for_step(
+            db,
+            step=step,
+            interaction=interaction,
+            attachment_title=body.attachment_title,
+            extra_instructions=body.extra_instructions,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface to caller
+        logger.exception("generate_document_for_step failed")
+        raise HTTPException(status_code=502, detail=f"Generation failed: {exc}")
+
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.document_generated",
+        plan_id=plan_id, step_id=step_id,
+        extra={"word_count": result.word_count, "model": result.model},
+    )
+    return GenerateDocumentOut(
+        title=result.title,
+        body_markdown=result.body_markdown,
+        word_count=result.word_count,
+        model=result.model,
+        generated_at_unix=result.generated_at_unix,
+    )
+
+
 class ResolvedAttachmentOut(BaseModel):
     title: str
     reason: Optional[str] = None
@@ -1414,6 +1535,7 @@ class ResolvedParticipantOut(BaseModel):
     role: Optional[str] = None
     side: Optional[str] = None
     email: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class StepResolvedOut(BaseModel):
@@ -1529,7 +1651,7 @@ async def resolved_for_step(
     )
     resolved_participants = [
         ResolvedParticipantOut(
-            name=p.name, role=p.role, side=p.side, email=p.email,
+            name=p.name, role=p.role, side=p.side, email=p.email, phone=p.phone,
         )
         for p in resolved
     ]
