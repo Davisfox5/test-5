@@ -71,6 +71,8 @@ _VALID_CATEGORIES_BY_DOMAIN: Dict[str, set] = {
         "route_to_specialist",
         "coach_support_agent",
         "escalate_recurring_issue",
+        # Cross-customer trend detector (PR ai-cross-customer-trends).
+        "address_recurring_issue",
     },
     "generic": {
         "coach_rep",

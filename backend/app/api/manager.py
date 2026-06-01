@@ -462,6 +462,11 @@ async def apply_recommendation(
         "proactive_outreach_repeat_support",
     ):
         artifact = await _apply_outreach(db, tenant.id, rec)
+    # AI-driven cross-customer trend detector. Apply turns the
+    # detected recurring issue into a KB-article request so the
+    # Support team has a tracked artifact to investigate against.
+    elif rec.category == "address_recurring_issue":
+        artifact = await _apply_kb_article_request(db, tenant.id, rec, principal)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown category: {rec.category}")
 

@@ -592,6 +592,13 @@ class SupportCase(Base):
     # support CSAT-drop detector.
     csat_score: Mapped[Optional[int]] = mapped_column(Integer)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    # Subject-embedding columns for the cross-customer trend detector
+    # (PR ``ai-cross-customer-trends`` / migration ``dom_008``). Stored
+    # as a JSONB list of floats (Voyage 1024-dim by default) so the
+    # cluster job runs deterministically in Python without a pgvector
+    # index. ``embedded_at`` lets the embedder backfill stale rows.
+    subject_embedding: Mapped[Optional[list]] = mapped_column(JSONB)
+    embedded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
