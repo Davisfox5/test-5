@@ -1615,6 +1615,15 @@ class KBDocument(Base):
     owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    # Customer-tagged KB (added with migration ``dom_007``). NULL means
+    # the document is general — applies to every customer. A populated
+    # value scopes retrieval so this document only surfaces in
+    # interactions with that customer (plus all the general docs).
+    # Auto-set for AI-produced artifacts; agent picks for manual
+    # uploads (default NULL).
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
     title: Mapped[Optional[str]] = mapped_column(String)
     content: Mapped[Optional[str]] = mapped_column(Text)
     content_hash: Mapped[Optional[str]] = mapped_column(String)
@@ -1640,6 +1649,13 @@ class KBChunk(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     doc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"), index=True)
+    # Denormalized from ``kb_documents.customer_id`` so the retrieval
+    # filter is a single-column index lookup rather than a join.
+    # Backfilled / re-set on every chunk write so it stays in sync with
+    # the parent doc.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
     chunk_idx: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[Optional[int]] = mapped_column(Integer)
@@ -1679,6 +1695,7 @@ class KBChunk(Base):
 
     __table_args__ = (
         Index("ix_kb_chunks_tenant_kind", "tenant_id", "kind"),
+        Index("ix_kb_chunks_tenant_customer", "tenant_id", "customer_id"),
     )
 
 

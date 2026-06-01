@@ -42,12 +42,18 @@ class KBDocCreate(BaseModel):
     # When True, the doc is the current user's personal KB and is
     # visible only to them + managers/admins. Defaults to tenant-wide.
     personal: bool = False
+    # Customer-tag (added in PR customer-tagged-kb). When populated, the
+    # doc only surfaces in retrieval when the calling context names
+    # that customer. NULL = general doc (visible to every customer
+    # context).
+    customer_id: Optional[uuid.UUID] = None
 
 
 class KBDocOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     owner_user_id: Optional[uuid.UUID] = None
+    customer_id: Optional[uuid.UUID] = None
     title: Optional[str]
     content: Optional[str]
     source_type: Optional[str]
@@ -63,6 +69,7 @@ class KBDocUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[List[str]] = None
+    customer_id: Optional[uuid.UUID] = None
 
 
 # ── Endpoints ────────────────────────────────────────────
@@ -172,6 +179,7 @@ async def create_kb_doc(
     doc = KBDocument(
         tenant_id=tenant.id,
         owner_user_id=owner_user_id,
+        customer_id=body.customer_id,
         title=body.title,
         content=body.content,
         source_type=body.source_type,
@@ -229,6 +237,24 @@ async def update_kb_doc(
         doc.content = body.content
     if body.tags is not None:
         doc.tags = body.tags
+    customer_tag_changed = False
+    if body.customer_id is not None or "customer_id" in body.model_fields_set:
+        # ``None`` is a meaningful value here (clearing the tag) so we
+        # check ``model_fields_set`` to distinguish "explicitly None"
+        # from "omitted." Also re-stamp the denormalized customer_id on
+        # every chunk so retrieval filtering stays consistent.
+        if doc.customer_id != body.customer_id:
+            doc.customer_id = body.customer_id
+            customer_tag_changed = True
+
+    if customer_tag_changed:
+        from backend.app.models import KBChunk as _KBChunk
+
+        await db.execute(
+            _KBChunk.__table__.update()
+            .where(_KBChunk.doc_id == doc.id)
+            .values(customer_id=doc.customer_id)
+        )
 
     if content_changed:
         try:
@@ -394,6 +420,15 @@ class KBSearchHitOut(BaseModel):
 async def search_kb(
     query: str = Query(..., min_length=1, description="Natural-language query"),
     limit: int = Query(5, le=20),
+    customer_id: Optional[uuid.UUID] = Query(
+        None,
+        description=(
+            "When set, restrict results to documents tagged for this "
+            "customer plus general (untagged) documents. The customer-"
+            "specific documents augment the general KB rather than "
+            "replacing it."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
@@ -403,7 +438,9 @@ async def search_kb(
     still get something useful when Voyage is down.
     """
     service = RetrievalService()
-    hits = await service.search(db, tenant.id, query, k=limit)
+    hits = await service.search(
+        db, tenant.id, query, k=limit, customer_id=customer_id
+    )
     if hits:
         return [
             KBSearchHitOut(
