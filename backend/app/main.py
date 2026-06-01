@@ -120,6 +120,8 @@ from backend.app.api.experiments import router as experiments_router  # noqa: E4
 from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
 from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.admin_motions import router as admin_motions_router  # noqa: E402
+from backend.app.api.support import router as support_router  # noqa: E402
+from backend.app.api.support_csat import router as support_csat_router  # noqa: E402
 from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.emails import router as emails_router  # noqa: E402
@@ -175,6 +177,12 @@ app.include_router(
 app.include_router(
     admin_motions_router, prefix=settings.API_V1_PREFIX, tags=["admin-motions"]
 )
+# Authenticated support endpoints (require IT-support agent or manager).
+app.include_router(support_router, prefix=settings.API_V1_PREFIX, tags=["support"])
+# Public CSAT survey routes — unauthenticated, token-gated. Mounted at
+# the v1 prefix so the URL the customer follows reads as the rest of the
+# API surface; the route itself sits at /csat/<token> within that prefix.
+app.include_router(support_csat_router, prefix=settings.API_V1_PREFIX, tags=["csat"])
 app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
 app.include_router(
     crm_router,
