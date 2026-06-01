@@ -558,6 +558,23 @@ async def _build_provider_authorize_url(
             state=state,
             prompt="consent",
         )
+        # google-auth-oauthlib >=1.0 auto-generates a PKCE code_verifier
+        # on the Flow instance during authorization_url(). The verifier
+        # lives on this Flow object, which doesn't survive the request.
+        # Stash it in Redis alongside the state token so the callback
+        # can restore it onto its (fresh) Flow before fetch_token().
+        # Without this, Google's token endpoint rejects the exchange
+        # with "code_verifier required" and the unhandled exception
+        # bubbles up as a 500 (we observed this on the first user
+        # connect attempt).
+        verifier = getattr(flow, "code_verifier", None)
+        if verifier:
+            payload["google_pkce_verifier"] = verifier
+            # Re-stash to update the existing state entry with the
+            # verifier we just learned. ``_stash_state`` is idempotent;
+            # the TTL window resets but that's fine — the user is
+            # about to redirect off to Google anyway.
+            await _stash_state(state, payload)
         return auth_url
 
     if provider == "microsoft":
@@ -970,6 +987,15 @@ async def oauth_callback(
             scopes=GOOGLE_SCOPES,
             redirect_uri=redirect_uri,
         )
+        # Restore the PKCE code_verifier that the authorize step stashed
+        # onto the Redis state payload. The library auto-generates one
+        # during authorization_url() and sends the matching challenge
+        # to Google; the token endpoint won't accept the exchange
+        # without it. See _build_provider_authorize_url's google branch
+        # for the stashing side.
+        stashed_verifier = state_payload.get("google_pkce_verifier")
+        if stashed_verifier:
+            flow.code_verifier = stashed_verifier
         flow.fetch_token(code=code)
         creds = flow.credentials
         await _upsert_integration(
