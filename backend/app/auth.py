@@ -638,6 +638,40 @@ async def _principal_from_clerk(
     user = (await db.execute(stmt)).scalar_one_or_none()
     if user is None:
         return None
+
+    # JIT motion-scope provisioning. When the JWT carries an IDP groups
+    # claim, apply matching ``motion_provisioning_rule`` rows so changes
+    # at the IDP (group add/remove) reflect on the next login without
+    # an admin having to touch the grid. Closed-by-default: a user with
+    # no matching rules ends up with empty scopes. Best-effort — failures
+    # don't block sign-in.
+    try:
+        group_claim = (
+            payload.get("groups")
+            or payload.get("org_groups")
+            or payload.get("https://linda.app/groups")
+            or []
+        )
+        if isinstance(group_claim, list) and group_claim:
+            from backend.app.services.sso_provisioning import (
+                apply_scopes_to_user,
+                resolve_scopes_from_groups,
+            )
+
+            sync = getattr(db, "sync_session", None)
+            if sync is not None:
+                resolved = resolve_scopes_from_groups(
+                    sync, user.tenant_id, [str(g) for g in group_claim]
+                )
+                if resolved.matched_rule_count > 0:
+                    if apply_scopes_to_user(sync, user, resolved):
+                        await db.commit()
+    except Exception:
+        logger.exception(
+            "JIT scope provisioning failed for clerk user %s (non-fatal)",
+            clerk_user_id,
+        )
+
     effective_role, is_previewing = _resolve_effective_role(user, user.tenant)
     return AuthPrincipal(
         tenant=user.tenant,

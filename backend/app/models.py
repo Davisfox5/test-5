@@ -2980,6 +2980,92 @@ class AlertChannelConfig(Base):
     )
 
 
+class MotionProvisioningRule(Base):
+    """IDP group → motion-scope mapping.
+
+    Added in ``dom_005`` for SSO/SCIM auto-provisioning. Tenant admin
+    creates one rule per IDP group: when the user shows up via SSO or
+    SCIM with that group in their claims, the rule contributes its
+    ``agent_domains`` / ``manager_domains`` / ``grants_tenant_admin`` to
+    the resolved scope set. Multiple rules merge; the result is the
+    union across every matching rule.
+
+    Closed-by-default: a user whose IDP claims don't match any rule
+    gets nothing. The tenant default-motion is invite-time-only and
+    does not apply to SSO-driven provisioning.
+    """
+
+    __tablename__ = "motion_provisioning_rule"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    group_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_domains: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    manager_domains: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    grants_tenant_admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "group_name", name="uq_motion_rule_tenant_group"
+        ),
+        Index("ix_motion_rule_tenant_active", "tenant_id", "is_active"),
+    )
+
+
+class ScimAccountLink(Base):
+    """SCIM external_id → local User link.
+
+    Added in ``dom_005``. SCIM PUT/PATCH operations look the user up
+    through this table so IDP-side renames or email changes don't
+    strand the link. ``external_id`` is unique per tenant so a single
+    IDP user can't shadow two local accounts; ``user_id`` is unique
+    globally because a local user maps to one IDP identity.
+    """
+
+    __tablename__ = "scim_account_link"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "external_id", name="uq_scim_link_tenant_external"
+        ),
+        UniqueConstraint("user_id", name="uq_scim_link_user"),
+    )
+
+
 class AlertDomainConfig(Base):
     """Per-(tenant, domain) overrides for anomaly-detector thresholds.
 
