@@ -173,6 +173,53 @@ export interface UserImportSummary {
     rows: UserImportRowResult[];
 }
 
+// ── Per-user audit log (admin profile drawer) ─────────────────────────
+
+export interface AuditLogRow {
+    id: string;
+    tenant_id: string;
+    actor_user_id: string | null;
+    actor_principal: "user" | "api_key" | "system";
+    action: string;
+    resource_type: string;
+    resource_id: string | null;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+    meta: Record<string, unknown>;
+    created_at: string;
+}
+
+export interface AuditLogPage {
+    items: AuditLogRow[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export function useUserAuditLog(userId: string | null, limit: number = 25) {
+    const api = useApi();
+    return useQuery({
+        queryKey: ["users", "audit", userId, limit],
+        queryFn: () =>
+            api.get<AuditLogPage>(
+                `/admin/audit-logs?resource_type=user&resource_id=${userId}&limit=${limit}`,
+            ),
+        enabled: !!userId,
+        // Audit log is append-only, so a 60s staleTime is fine —
+        // re-opening the drawer for the same user shouldn't always
+        // round-trip.
+        staleTime: 60_000,
+    });
+}
+
+export function useSetUserPassword() {
+    const api = useApi();
+    return useMutation({
+        mutationFn: ({ id, password }: { id: string; password: string }) =>
+            api.post<void>(`/users/${id}/set-password`, { password }),
+    });
+}
+
 export function useImportUsers() {
     const api = useApi();
     const qc = useQueryClient();

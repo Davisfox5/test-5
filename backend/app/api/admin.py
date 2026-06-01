@@ -992,6 +992,7 @@ class AuditLogPage(BaseModel):
 async def list_audit_logs(
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
     actor: Optional[str] = None,
     from_: Optional[datetime] = Query(None, alias="from"),
     to: Optional[datetime] = None,
@@ -1022,6 +1023,11 @@ async def list_audit_logs(
         base_filters.append(AuditLog.action == action)
     if resource_type:
         base_filters.append(AuditLog.resource_type == resource_type)
+    if resource_id:
+        # Stored as a string in the audit row so the filter accepts
+        # both UUIDs (most rows) and synthetic ids like
+        # ``tenant:settings:features``. Exact match only.
+        base_filters.append(AuditLog.resource_id == resource_id)
     if actor:
         if actor in {"api_key", "user", "system"}:
             base_filters.append(AuditLog.actor_principal == actor)
