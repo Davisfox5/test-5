@@ -27,6 +27,7 @@ import {
     humanizeError,
 } from "@/components/admin/section";
 import { Modal } from "@/components/admin/modal";
+import { UserProfileDrawer } from "@/components/team/user-profile-drawer";
 
 const ROLES: UserRole[] = ["agent", "manager", "admin"];
 const ALL_DOMAINS: Domain[] = ["sales", "customer_service", "it_support", "generic"];
@@ -50,6 +51,11 @@ export default function TeamPage() {
 
     const [inviteOpen, setInviteOpen] = useState(false);
     const [csvOpen, setCsvOpen] = useState(false);
+    const [profileUserId, setProfileUserId] = useState<string | null>(null);
+    const profileUser =
+        profileUserId !== null
+            ? (users ?? []).find((u) => u.id === profileUserId) ?? null
+            : null;
     const needsSwap =
         !!reconciliation &&
         reconciliation.active_users >= reconciliation.seat_limit;
@@ -135,6 +141,12 @@ export default function TeamPage() {
                                             key={u.id}
                                             user={u}
                                             canEdit={isAdmin}
+                                            onOpenProfile={
+                                                isAdmin
+                                                    ? () =>
+                                                          setProfileUserId(u.id)
+                                                    : undefined
+                                            }
                                             onChangeRole={(next) =>
                                                 patch.mutate({
                                                     id: u.id,
@@ -245,6 +257,12 @@ export default function TeamPage() {
                 onClose={() => setInviteOpen(false)}
             />
             <CsvImportModal open={csvOpen} onClose={() => setCsvOpen(false)} />
+            <UserProfileDrawer
+                user={profileUser}
+                canEdit={isAdmin}
+                onClose={() => setProfileUserId(null)}
+                onPatch={(id, p) => patch.mutate({ id, patch: p })}
+            />
         </div>
     );
 }
@@ -491,16 +509,30 @@ function UserRow({
     onChangeRole,
     onDeactivate,
     onReactivate,
+    onOpenProfile,
 }: {
     user: TeamUser;
     canEdit: boolean;
     onChangeRole: (next: UserRole) => void;
     onDeactivate: () => void;
     onReactivate: () => void;
+    onOpenProfile?: () => void;
 }) {
     return (
         <tr className="border-t border-border align-middle">
-            <td className="py-2">{user.name ?? <em>unnamed</em>}</td>
+            <td className="py-2">
+                {onOpenProfile ? (
+                    <button
+                        type="button"
+                        onClick={onOpenProfile}
+                        className="text-text hover:underline"
+                    >
+                        {user.name ?? <em>unnamed</em>}
+                    </button>
+                ) : (
+                    user.name ?? <em>unnamed</em>
+                )}
+            </td>
             <td className="py-2 text-text-muted">{user.email}</td>
             <td className="py-2">
                 {canEdit ? (
