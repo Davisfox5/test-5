@@ -60,6 +60,9 @@ class LoginOut(BaseModel):
     user: "UserOut"
 
 
+_DOMAIN_VALUES = {"sales", "customer_service", "it_support", "generic"}
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
@@ -69,6 +72,14 @@ class UserOut(BaseModel):
     is_active: bool
     last_login_at: Optional[datetime] = None
     created_at: datetime
+    # ── Motion scopes (added in PR motion-assignment-admin-ui) ──────────
+    # Mirror the columns added by migration ``dom_001``. Driven by the
+    # Settings → User Management grid. Empty arrays are valid (a pure
+    # tenant admin who takes no calls and manages no motion is a real
+    # role at small companies).
+    agent_domains: List[str] = []
+    manager_domains: List[str] = []
+    is_tenant_admin: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -87,12 +98,50 @@ class UserCreate(BaseModel):
     name: Optional[str] = None
     role: Literal["agent", "manager", "admin"] = "agent"
     password: str = Field(..., min_length=8, max_length=200)
+    # Motion scopes — optional at create time. When omitted, the
+    # tenant's ``default_domain`` is used as the agent motion for
+    # ``role=agent`` and the manager motion for ``role=manager``.
+    # An empty list explicitly grants nothing for that slot.
+    agent_domains: Optional[List[str]] = None
+    manager_domains: Optional[List[str]] = None
+    is_tenant_admin: Optional[bool] = None
 
 
 class UserPatch(BaseModel):
     name: Optional[str] = None
     role: Optional[Literal["agent", "manager", "admin"]] = None
     is_active: Optional[bool] = None
+    agent_domains: Optional[List[str]] = None
+    manager_domains: Optional[List[str]] = None
+    is_tenant_admin: Optional[bool] = None
+
+
+def _validate_domain_list(value: Optional[List[str]], field: str) -> List[str]:
+    """Reject anything outside the canonical vocabulary at the API edge.
+
+    A typo like ``"customer-service"`` (kebab-cased) silently fails the
+    ``can_manage_domain`` check downstream and produces "I should see the
+    CS tab but I don't" tickets. Catching at the boundary makes the
+    failure mode loud.
+    """
+    if value is None:
+        return []
+    cleaned: List[str] = []
+    for v in value:
+        if not isinstance(v, str):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field}: domains must be strings",
+            )
+        v = v.strip()
+        if v not in _DOMAIN_VALUES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field}: {v!r} is not a known domain",
+            )
+        if v not in cleaned:
+            cleaned.append(v)
+    return cleaned
 
 
 class SetPasswordIn(BaseModel):
@@ -287,6 +336,31 @@ async def create_user(
             ),
         )
 
+    # Defaulting rules when motion scopes aren't supplied: agent gets
+    # the tenant's default_domain as their agent motion, manager gets it
+    # as both agent + manager motions, admin gets it as everything plus
+    # ``is_tenant_admin=True``. Matches the ``dom_001`` backfill behaviour
+    # so an admin who clicks "Invite" with no extra fields gets the same
+    # result as the existing seed data.
+    default_domain = tenant.default_domain or "sales"
+    if body.agent_domains is None:
+        agent_domains = (
+            [default_domain] if body.role in ("agent", "manager", "admin") else []
+        )
+    else:
+        agent_domains = _validate_domain_list(body.agent_domains, "agent_domains")
+    if body.manager_domains is None:
+        manager_domains = (
+            [default_domain] if body.role in ("manager", "admin") else []
+        )
+    else:
+        manager_domains = _validate_domain_list(body.manager_domains, "manager_domains")
+    is_tenant_admin = (
+        body.is_tenant_admin
+        if body.is_tenant_admin is not None
+        else (body.role == "admin")
+    )
+
     user = User(
         tenant_id=tenant.id,
         email=email,
@@ -294,6 +368,9 @@ async def create_user(
         role=body.role,
         password_hash=hash_password(body.password),
         is_active=True,
+        agent_domains=agent_domains,
+        manager_domains=manager_domains,
+        is_tenant_admin=is_tenant_admin,
     )
     db.add(user)
     await db.flush()
@@ -303,7 +380,14 @@ async def create_user(
         action="user.created",
         resource_type="user",
         resource_id=str(user.id),
-        after={"email": user.email, "role": user.role, "name": user.name},
+        after={
+            "email": user.email,
+            "role": user.role,
+            "name": user.name,
+            "agent_domains": agent_domains,
+            "manager_domains": manager_domains,
+            "is_tenant_admin": is_tenant_admin,
+        },
     )
     return user
 
@@ -360,6 +444,38 @@ async def patch_user(
             status_code=400, detail=f"Seat limit reached ({principal.tenant.seat_limit})."
         )
 
+    # Validate domain lists before assigning so a bad value rejects the
+    # whole patch rather than partially applying.
+    if "agent_domains" in updates:
+        updates["agent_domains"] = _validate_domain_list(
+            updates["agent_domains"], "agent_domains"
+        )
+    if "manager_domains" in updates:
+        updates["manager_domains"] = _validate_domain_list(
+            updates["manager_domains"], "manager_domains"
+        )
+
+    # Guard: don't strip the last tenant admin via ``is_tenant_admin``
+    # toggle (separate from the role guard above so an admin who took
+    # themselves off the admin role months ago still trips this).
+    if updates.get("is_tenant_admin") is False and user.is_tenant_admin:
+        tenant_admins = (
+            await db.execute(
+                select(func.count())
+                .select_from(User)
+                .where(
+                    User.tenant_id == principal.tenant.id,
+                    User.is_active.is_(True),
+                    User.is_tenant_admin.is_(True),
+                )
+            )
+        ).scalar_one()
+        if int(tenant_admins) <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one tenant admin must remain.",
+            )
+
     for k, v in updates.items():
         setattr(user, k, v)
     await db.flush()
@@ -370,7 +486,14 @@ async def patch_user(
         resource_type="user",
         resource_id=str(user.id),
         before=before,
-        after={"role": user.role, "is_active": user.is_active, "name": user.name},
+        after={
+            "role": user.role,
+            "is_active": user.is_active,
+            "name": user.name,
+            "agent_domains": user.agent_domains,
+            "manager_domains": user.manager_domains,
+            "is_tenant_admin": user.is_tenant_admin,
+        },
     )
     return user
 

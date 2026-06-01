@@ -41,8 +41,24 @@ export function useApi() {
         return (await resp.json()) as T;
     }
 
+    async function fetchRaw(
+        path: string,
+        init: RequestInit = {},
+    ): Promise<Response> {
+        // Escape hatch for multipart uploads (CSV import, file attachments
+        // etc.) where we cannot let ``request`` set
+        // ``Content-Type: application/json``. Authorization header is
+        // still applied; the caller deals with the Response directly.
+        const token = await getToken();
+        const headers = new Headers(init.headers);
+        headers.set("Accept", "application/json");
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+        return fetch(`${API_BASE}${path}`, { ...init, headers });
+    }
+
     return {
         request,
+        fetchRaw,
         // Method-shaped sugar so call sites read like a normal REST
         // client. ``request`` stays exposed for the rare endpoint that
         // needs a custom init (form uploads, streaming, etc.).

@@ -119,6 +119,7 @@ from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
 from backend.app.api.experiments import router as experiments_router  # noqa: E402
 from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
 from backend.app.api.admin import router as admin_router  # noqa: E402
+from backend.app.api.admin_motions import router as admin_motions_router  # noqa: E402
 from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.emails import router as emails_router  # noqa: E402
@@ -167,6 +168,12 @@ app.include_router(
     prefix=settings.API_V1_PREFIX,
     tags=["admin"],
     dependencies=[_Depends(_require_role("admin"))],
+)
+# Motion-assignment admin endpoints (CSV import, tenant default motion).
+# Routes carry their own ``require_role("admin")`` dependency so we don't
+# stack two role checks.
+app.include_router(
+    admin_motions_router, prefix=settings.API_V1_PREFIX, tags=["admin-motions"]
 )
 app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
 app.include_router(
