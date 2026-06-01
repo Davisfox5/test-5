@@ -1299,6 +1299,33 @@ def _run_pipeline_impl(
             interaction_id,
         )
 
+    # ── Step 12d: Customer relationship memory (PR dom_006) ──────────
+    # Upsert customer concerns + their-side commitments from the AI
+    # analyzer's ``concerns_raised`` and ``customer_commitments`` keys.
+    # Best-effort: failures log and the interaction still lands. Only
+    # runs when the interaction has a customer linkage; the extractor
+    # short-circuits otherwise.
+    try:
+        if interaction.customer_id is not None:
+            from backend.app.services.customer_memory import (
+                update_from_interaction,
+            )
+
+            mem_counts = update_from_interaction(session, interaction, insights)
+            if mem_counts.get("concerns") or mem_counts.get("commitments"):
+                logger.info(
+                    "Customer memory updated for interaction %s: "
+                    "concerns=%d commitments=%d",
+                    interaction_id,
+                    mem_counts.get("concerns", 0),
+                    mem_counts.get("commitments", 0),
+                )
+    except Exception:
+        logger.exception(
+            "Customer relationship memory update failed for interaction %s",
+            interaction_id,
+        )
+
     # ── Step 13: Update interaction row ──────────────────────────────
     interaction.status = "analyzed"
     interaction.transcript = segments_dicts

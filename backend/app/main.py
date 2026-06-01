@@ -126,6 +126,7 @@ from backend.app.api.cs import router as cs_router  # noqa: E402
 from backend.app.api.kb_requests import router as kb_requests_router  # noqa: E402
 from backend.app.api.sso_provisioning import router as sso_router  # noqa: E402
 from backend.app.api.scim import router as scim_router  # noqa: E402
+from backend.app.api.customer_memory import router as customer_memory_router  # noqa: E402
 from backend.app.api.auth_session import router as auth_session_router  # noqa: E402
 from backend.app.api.crm import router as crm_router  # noqa: E402
 from backend.app.api.emails import router as emails_router  # noqa: E402
@@ -197,6 +198,12 @@ app.include_router(
 # gated by a tenant API key (``users:write`` scope).
 app.include_router(sso_router, prefix=settings.API_V1_PREFIX, tags=["sso"])
 app.include_router(scim_router, prefix=settings.API_V1_PREFIX, tags=["scim"])
+# Customer relationship memory.
+app.include_router(
+    customer_memory_router,
+    prefix=settings.API_V1_PREFIX,
+    tags=["customer-memory"],
+)
 app.include_router(auth_session_router, prefix=settings.API_V1_PREFIX, tags=["auth"])
 app.include_router(
     crm_router,
