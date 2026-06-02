@@ -1561,6 +1561,25 @@ def _run_pipeline_impl(
         _plan_diag["sync_commit_ok"] = True
 
         async def _run_plan_synthesis() -> None:
+            # Dispose the engine pool first so the connection we open
+            # is bound to THIS task's event loop. asyncpg connections
+            # are loop-coupled; the async engine in backend.app.db is
+            # module-level (created once at worker boot), and its
+            # pool retains connections bound to whatever loop opened
+            # them. After this worker has handled any prior async DB
+            # work (an earlier Celery task, a beat-scheduled scan),
+            # the pool holds connections bound to a stale loop. The
+            # next checkout's pool_pre_ping fires "RuntimeError: Task
+            # got Future attached to a different loop" against
+            # asyncpg.protocol.query, killing synthesis silently.
+            #
+            # Disposing is a no-op when the pool is empty and cheap
+            # (~5ms) when it isn't. Forces the next checkout to open
+            # a fresh asyncpg connection bound to the loop _TaskEventLoop
+            # created for this task.
+            from backend.app.db import engine as _async_engine
+            await _async_engine.dispose()
+
             async with _async_session_factory() as async_db:
                 synthesizer = ActionPlanSynthesizer()
                 # Re-fetch the tenant + interaction from the async
