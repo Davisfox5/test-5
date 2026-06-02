@@ -11,9 +11,6 @@ Targets the slow queries surfaced by the perf audit:
 * ``(tenant_id, status)`` on ``Interaction`` and ``ActionItem`` powers the
   listing/dashboard filters that exist on both. Existing single-column
   indexes don't combine well with the tenant scope filter.
-* ``(tenant_id, created_at)`` on ``customers`` for "recently created" list
-  filters and trend rollups.
-
 All ``CREATE INDEX`` statements use ``IF NOT EXISTS`` and target stable,
 already-existing columns; the migration is a no-op on a database that
 already has them.
@@ -60,14 +57,9 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_action_items_tenant_assigned "
         "ON action_items (tenant_id, assigned_to)"
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_customer_tenant_created "
-        "ON customers (tenant_id, created_at)"
-    )
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS ix_customer_tenant_created")
     op.execute("DROP INDEX IF EXISTS ix_action_items_tenant_assigned")
     op.execute("DROP INDEX IF EXISTS ix_action_items_tenant_status")
     op.execute("DROP INDEX IF EXISTS ix_interaction_tenant_status")
