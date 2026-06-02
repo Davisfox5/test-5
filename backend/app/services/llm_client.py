@@ -66,6 +66,7 @@ def compute_max_tokens(
     task_type: Optional[str] = None,
     complexity_score: Optional[float] = None,
     explicit_override: Optional[int] = None,
+    call_site: Optional[str] = None,
 ) -> int:
     """Return a sane ``max_tokens`` for an Anthropic call.
 
@@ -82,13 +83,32 @@ def compute_max_tokens(
         explicit_override: Caller-supplied cap. Honored, but still clamped
             to the tier's ceiling so a misbehaving caller can't escalate
             cost.
+        call_site: Optional stable identifier used to look up a learned
+            ceiling from ``llm_ceiling_recommendation``. When a learned
+            ceiling exists, it replaces the static ceiling for this call
+            (still subject to the absolute cap below).
 
     Returns:
         An integer ``max_tokens`` value safe to pass to ``messages.create``.
     """
     tier_key = (tier or "sonnet").lower()
     base = _BASE_MAX_TOKENS.get(tier_key, _BASE_MAX_TOKENS["sonnet"])
-    ceiling = _CEILING_MAX_TOKENS.get(tier_key, _CEILING_MAX_TOKENS["sonnet"])
+    static_ceiling = _CEILING_MAX_TOKENS.get(tier_key, _CEILING_MAX_TOKENS["sonnet"])
+    ceiling = static_ceiling
+
+    if call_site is not None:
+        try:
+            from backend.app.services.llm_telemetry import learned_ceiling
+
+            learned = learned_ceiling(call_site, tier_key)
+            if learned is not None:
+                # Never exceed the static tier cap — a learned ceiling
+                # high enough to bust the static cap means the call site
+                # is doing something unintended; raise the static cap
+                # deliberately instead of silently.
+                ceiling = min(learned, static_ceiling)
+        except Exception:  # pragma: no cover — telemetry is optional
+            pass
 
     expansion = 1.0 + min(max(input_tokens, 0) / 8000.0, 2.0) * 0.5  # 1.0×..2.0×
     budget = min(int(base * expansion), ceiling)

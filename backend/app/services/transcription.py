@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from backend.app.config import get_settings
 
@@ -37,6 +37,54 @@ class Segment:
 # instance per process — Celery workers reuse it across tasks.
 _diarization_pipeline: Any = None
 _diarization_pipeline_loaded = False
+
+
+# ── Module-level model caches ────────────────────────────────────────────
+#
+# faster-whisper's ``WhisperModel("large-v3")`` is ~3 GB. Loading it per
+# task adds 5-15s of cold-start. Cache it the same way pyannote already is
+# below. Worker process holds the model for the lifetime of the process;
+# eager preloading is done from the celery ``worker_process_init`` warmup
+# when ``LINDA_WORKER_WARMUP=1``.
+
+_whisper_model: Any = None
+_whisper_model_loaded: bool = False
+
+
+def _get_whisper_model() -> Any:
+    """Return a cached faster-whisper ``WhisperModel`` instance."""
+    global _whisper_model, _whisper_model_loaded
+    if _whisper_model_loaded:
+        return _whisper_model
+    _whisper_model_loaded = True
+    from faster_whisper import WhisperModel
+
+    device = "cpu"
+    compute_type = "int8"
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            device = "cuda"
+            compute_type = "float16"
+    except Exception:
+        pass
+
+    settings = get_settings()
+    model_size = getattr(settings, "WHISPER_MODEL_SIZE", "large-v3") or "large-v3"
+    try:
+        _whisper_model = WhisperModel(
+            model_size, device=device, compute_type=compute_type
+        )
+    except Exception:
+        # Fall back to a CPU-friendly compute_type if int8 isn't supported.
+        logger.exception(
+            "Failed to load Whisper %s on %s; retrying with default compute_type",
+            model_size, device,
+        )
+        _whisper_model = WhisperModel(model_size, device=device)
+    logger.info("Whisper model %s loaded on %s", model_size, device)
+    return _whisper_model
 
 
 def _get_diarization_pipeline() -> Any:
@@ -105,16 +153,21 @@ class TranscriptionService:
         language: str = "en",
         keyterms: Optional[List[str]] = None,
         model: Optional[str] = None,
+        tenant_features: Optional[Dict[str, Any]] = None,
     ) -> List[Segment]:
         """Transcribe audio using the specified engine.
 
         Exactly one of ``audio_path`` or ``audio_url`` must be provided.
         URL mode is only supported by the Deepgram engine.
 
-        ``model`` is an optional engine-specific model override. For
-        Deepgram, defaults to ``"nova-3"`` when unset; tenants on a
-        cheaper plan can request ``"nova-2"`` via
-        ``tenant.features_enabled["deepgram_model"]``.
+        ``model`` is an optional engine-specific model override; takes
+        precedence over the tenant's ``features_enabled["deepgram_model"]``.
+        Deepgram defaults to Nova-2 when neither is set.
+
+        ``tenant_features`` carries the tenant's ``features_enabled`` dict.
+        Controls Deepgram premium flags (``deepgram_diarize`` defaults on,
+        ``deepgram_smart_format`` / ``deepgram_utterances`` /
+        ``deepgram_punctuate`` default off) and the model override.
         """
         if not audio_path and not audio_url:
             raise ValueError("Either audio_path or audio_url must be provided")
@@ -133,6 +186,7 @@ class TranscriptionService:
                 language=language,
                 keyterms=keyterms,
                 model=model,
+                tenant_features=tenant_features,
             )
         except Exception as exc:
             self._emit_failure_metric(engine, exc)
@@ -150,6 +204,7 @@ class TranscriptionService:
         language: str,
         keyterms: Optional[List[str]],
         model: Optional[str] = None,
+        tenant_features: Optional[Dict[str, Any]] = None,
     ) -> List[Segment]:
         if engine == "deepgram":
             return await self._transcribe_deepgram(
@@ -158,6 +213,7 @@ class TranscriptionService:
                 language=language,
                 keyterms=keyterms,
                 model=model,
+                tenant_features=tenant_features,
             )
         if engine == "whisper":
             if audio_url:
@@ -214,12 +270,16 @@ class TranscriptionService:
         language: str,
         keyterms: Optional[List[str]],
         model: Optional[str] = None,
+        tenant_features: Optional[Dict[str, Any]] = None,
     ) -> List[Segment]:
         """Transcribe via Deepgram with native diarization.
 
-        Defaults to Nova-3 (highest accuracy). Tenants can opt their
-        low-value support traffic to ``nova-2`` for ~50% cost reduction
-        via ``tenant.features_enabled["deepgram_model"] = "nova-2"``.
+        Defaults to Nova-2 (cheaper, ~equivalent accuracy on conversational
+        speech). Tenants who need maximum accuracy on hard audio can opt in
+        to Nova-3 via ``tenant.features_enabled["deepgram_model"] =
+        "nova-3"``. Premium flags (``smart_format``, ``utterances``,
+        ``punctuate``, ``diarize``) are tenant-opt-in so AI-only pipelines
+        don't pay for human-readable formatting they never consume.
         """
         try:
             from deepgram import DeepgramClient, PrerecordedOptions, FileSource, UrlSource
@@ -233,17 +293,31 @@ class TranscriptionService:
         if not settings.DEEPGRAM_API_KEY:
             raise RuntimeError("DEEPGRAM_API_KEY is not configured")
 
-        client = DeepgramClient(settings.DEEPGRAM_API_KEY)
+        features = tenant_features or {}
+        tenant_model_override = features.get("deepgram_model")
         # Whitelist allowed values to keep API surface predictable.
-        chosen_model = model if model in {"nova-3", "nova-2"} else "nova-3"
+        # Order: explicit call-site override → tenant feature → cheapest default.
+        candidate = model or tenant_model_override or "nova-2"
+        chosen_model = candidate if candidate in {"nova-3", "nova-2"} else "nova-2"
+
+        client = DeepgramClient(settings.DEEPGRAM_API_KEY)
         options_kwargs: dict[str, Any] = {
             "model": chosen_model,
-            "diarize": True,
             "language": language,
-            "smart_format": True,
-            "utterances": True,
-            "punctuate": True,
         }
+        # Diarization defaults ON (most callers use it) but tenants who
+        # only run AI-side analysis can set ``deepgram_diarize=False``.
+        if bool(features.get("deepgram_diarize", True)):
+            options_kwargs["diarize"] = True
+        # smart_format / utterances / punctuate are premium add-ons that
+        # produce human-readable text; AI-only downstream pipelines don't
+        # need them. Default off; tenants opt in per feature.
+        if bool(features.get("deepgram_smart_format", False)):
+            options_kwargs["smart_format"] = True
+        if bool(features.get("deepgram_utterances", False)):
+            options_kwargs["utterances"] = True
+        if bool(features.get("deepgram_punctuate", False)):
+            options_kwargs["punctuate"] = True
         if keyterms:
             options_kwargs["keywords"] = keyterms
         options = PrerecordedOptions(**options_kwargs)
@@ -378,9 +452,7 @@ class TranscriptionService:
     @staticmethod
     def _whisper_sync(audio_path: str, language: str) -> List[Segment]:
         """Synchronous Whisper transcription + diarization merge."""
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel("large-v3")
+        model = _get_whisper_model()
         raw_segments, _info = model.transcribe(
             audio_path,
             language=language,

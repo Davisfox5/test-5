@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import Contact, Customer, CustomerOwner, Interaction
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 
 logger = logging.getLogger(__name__)
 
@@ -454,12 +455,20 @@ async def _extract(
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1500,
-            system=_EXTRACTION_SYSTEM_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": _EXTRACTION_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_block}],
         )
     except Exception:
         logger.exception("entity_resolution: Haiku call failed")
         return ExtractionResult()
+
+    record_llm_completion("entity_resolution", "haiku", 1500, resp)
 
     text = "".join(
         getattr(block, "text", "") for block in (resp.content or [])

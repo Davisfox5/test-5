@@ -26,6 +26,7 @@ from typing import Optional
 import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,9 @@ async def _haiku_classify(text: str) -> ClassifierResult:
             ),
             messages=[{"role": "user", "content": text}],
         )
+        # No cache_control here — the inline prompt is well under the
+        # 1024-token minimum cacheable block, so it would be a silent no-op.
+        record_llm_completion("kb_classifier", "haiku", 120, resp)
         raw = resp.content[0].text
         data = json.loads(raw)
         return ClassifierResult(

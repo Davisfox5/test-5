@@ -161,10 +161,22 @@ async def live_transcription(websocket: WebSocket, session_id: str):
         # ── Deepgram live transcription setup ────────────────────
         dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
 
+        # Live Deepgram defaults to nova-2 for the same cost reason as
+        # batch (see _transcribe_deepgram). Tenants that need nova-3 set
+        # ``features_enabled["deepgram_model"]="nova-3"``. interim_results
+        # is only useful when the agent UI surfaces partial transcripts
+        # (the live coaching feature) — gated behind a tenant flag so
+        # tenants who don't render interims aren't billed for them.
+        tenant_model = (features_enabled or {}).get("deepgram_model")
+        live_model = tenant_model if tenant_model in {"nova-2", "nova-3"} else "nova-2"
+        want_interims = bool(
+            (features_enabled or {}).get("live_coaching", True)
+        )
+
         dg_options = {
-            "model": "nova-3",
+            "model": live_model,
             "diarize": True,
-            "interim_results": True,
+            "interim_results": want_interims,
             "utterance_end_ms": "1000",
         }
 

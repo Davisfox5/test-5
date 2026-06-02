@@ -10,7 +10,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
             new QueryClient({
                 defaultOptions: {
                     queries: {
-                        staleTime: 30 * 1000,
+                        // 5 minutes — most read endpoints don't change
+                        // meaningfully between user clicks, and a 30s
+                        // staleTime was firing a refetch on practically
+                        // every page nav. Pages that genuinely need
+                        // tighter freshness pass their own staleTime.
+                        staleTime: 5 * 60 * 1000,
                         refetchOnWindowFocus: false,
                     },
                 },

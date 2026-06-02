@@ -67,7 +67,10 @@ export function useSupportCases(params: ListCasesParams = {}) {
                 `/support/cases${qp.toString() ? `?${qp}` : ""}`,
             );
         },
-        refetchInterval: 30_000,
+        // 5 min — support cases mutate by user action which already
+        // invalidates this query. 30s polling generated ~2.9K req/day per
+        // agent on the queue view for no real freshness benefit.
+        refetchInterval: 5 * 60_000,
     });
 }
 

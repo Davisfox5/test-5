@@ -196,9 +196,16 @@ def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
         resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=8192,
-            system=system_prompt,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": raw_text}],
         )
+        record_llm_completion("text_segmenter", "haiku", 8192, resp)
         labeled = resp.content[0].text if resp.content else ""
     except Exception:
         logger.exception("LLM speaker-tagging failed; falling back")

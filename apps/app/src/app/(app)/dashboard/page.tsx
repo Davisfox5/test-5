@@ -75,7 +75,12 @@ export default function DashboardPage() {
     const recent = useInteractions(
         { limit: 5 },
         {
-            refetchInterval: 60_000,
+            // 5-min poll for the dashboard "recent calls" tile. A 60s
+            // refetch with refetchOnWindowFocus generated ~1.4K req/day
+            // per active agent; new interactions also push via SSE
+            // (notifications) so a tighter cadence isn't required to
+            // surface a brand-new call.
+            refetchInterval: 5 * 60_000,
             refetchOnWindowFocus: true,
         },
     );

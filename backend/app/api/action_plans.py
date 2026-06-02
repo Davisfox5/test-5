@@ -237,50 +237,12 @@ async def _load_step_or_404(
     return step
 
 
-async def _build_plan_out(
-    db: AsyncSession, plan: ActionPlan,
-) -> ActionPlanOut:
-    """Load steps + latest artifact + responses for the plan."""
-    step_rows = list(
-        (
-            await db.execute(
-                select(ActionStep)
-                .where(ActionStep.plan_id == plan.id)
-                .order_by(ActionStep.created_at)
-            )
-        ).scalars()
-    )
-    step_ids = [s.id for s in step_rows]
-
-    latest_artifacts: Dict[uuid.UUID, StepArtifact] = {}
-    if step_ids:
-        artifact_rows = list(
-            (
-                await db.execute(
-                    select(StepArtifact)
-                    .where(StepArtifact.step_id.in_(step_ids))
-                    .order_by(StepArtifact.step_id, StepArtifact.version.desc())
-                )
-            ).scalars()
-        )
-        for a in artifact_rows:
-            if a.step_id not in latest_artifacts:
-                latest_artifacts[a.step_id] = a
-
-    responses_by_step: Dict[uuid.UUID, List[StepResponse]] = {}
-    if step_ids:
-        resp_rows = list(
-            (
-                await db.execute(
-                    select(StepResponse)
-                    .where(StepResponse.step_id.in_(step_ids))
-                    .order_by(StepResponse.received_at)
-                )
-            ).scalars()
-        )
-        for r in resp_rows:
-            responses_by_step.setdefault(r.step_id, []).append(r)
-
+def _build_step_outs(
+    step_rows: List[ActionStep],
+    latest_artifacts: Dict[uuid.UUID, StepArtifact],
+    responses_by_step: Dict[uuid.UUID, List[StepResponse]],
+) -> List[ActionStepOut]:
+    """Pure projection from already-loaded rows to ``ActionStepOut`` list."""
     step_outs: List[ActionStepOut] = []
     for s in step_rows:
         artifact = latest_artifacts.get(s.id)
@@ -329,6 +291,12 @@ async def _build_plan_out(
             )
         )
 
+    return step_outs
+
+
+def _plan_out_from_rows(
+    plan: ActionPlan, step_outs: List[ActionStepOut]
+) -> ActionPlanOut:
     return ActionPlanOut(
         id=plan.id,
         tenant_id=plan.tenant_id,
@@ -346,6 +314,115 @@ async def _build_plan_out(
         completed_at=plan.completed_at,
         steps=step_outs,
     )
+
+
+async def _build_plan_out(
+    db: AsyncSession, plan: ActionPlan,
+) -> ActionPlanOut:
+    """Load steps + latest artifact + responses for one plan."""
+    step_rows = list(
+        (
+            await db.execute(
+                select(ActionStep)
+                .where(ActionStep.plan_id == plan.id)
+                .order_by(ActionStep.created_at)
+            )
+        ).scalars()
+    )
+    step_ids = [s.id for s in step_rows]
+
+    latest_artifacts: Dict[uuid.UUID, StepArtifact] = {}
+    if step_ids:
+        artifact_rows = list(
+            (
+                await db.execute(
+                    select(StepArtifact)
+                    .where(StepArtifact.step_id.in_(step_ids))
+                    .order_by(StepArtifact.step_id, StepArtifact.version.desc())
+                )
+            ).scalars()
+        )
+        for a in artifact_rows:
+            if a.step_id not in latest_artifacts:
+                latest_artifacts[a.step_id] = a
+
+    responses_by_step: Dict[uuid.UUID, List[StepResponse]] = {}
+    if step_ids:
+        resp_rows = list(
+            (
+                await db.execute(
+                    select(StepResponse)
+                    .where(StepResponse.step_id.in_(step_ids))
+                    .order_by(StepResponse.received_at)
+                )
+            ).scalars()
+        )
+        for r in resp_rows:
+            responses_by_step.setdefault(r.step_id, []).append(r)
+
+    step_outs = _build_step_outs(step_rows, latest_artifacts, responses_by_step)
+    return _plan_out_from_rows(plan, step_outs)
+
+
+async def _build_plan_outs_bulk(
+    db: AsyncSession, plans: List[ActionPlan],
+) -> List[ActionPlanOut]:
+    """Same projection as ``_build_plan_out`` but for many plans at once
+    using three batched IN-queries (steps, artifacts, responses) — avoids
+    the N+1 storm a list endpoint would otherwise generate. With limit=50
+    this collapses 151 queries into 4."""
+    if not plans:
+        return []
+    plan_ids = [p.id for p in plans]
+
+    all_steps = list(
+        (
+            await db.execute(
+                select(ActionStep)
+                .where(ActionStep.plan_id.in_(plan_ids))
+                .order_by(ActionStep.created_at)
+            )
+        ).scalars()
+    )
+    steps_by_plan: Dict[uuid.UUID, List[ActionStep]] = {pid: [] for pid in plan_ids}
+    for s in all_steps:
+        steps_by_plan.setdefault(s.plan_id, []).append(s)
+
+    step_ids = [s.id for s in all_steps]
+    latest_artifacts: Dict[uuid.UUID, StepArtifact] = {}
+    responses_by_step: Dict[uuid.UUID, List[StepResponse]] = {}
+    if step_ids:
+        artifact_rows = list(
+            (
+                await db.execute(
+                    select(StepArtifact)
+                    .where(StepArtifact.step_id.in_(step_ids))
+                    .order_by(StepArtifact.step_id, StepArtifact.version.desc())
+                )
+            ).scalars()
+        )
+        for a in artifact_rows:
+            if a.step_id not in latest_artifacts:
+                latest_artifacts[a.step_id] = a
+        resp_rows = list(
+            (
+                await db.execute(
+                    select(StepResponse)
+                    .where(StepResponse.step_id.in_(step_ids))
+                    .order_by(StepResponse.received_at)
+                )
+            ).scalars()
+        )
+        for r in resp_rows:
+            responses_by_step.setdefault(r.step_id, []).append(r)
+
+    out: List[ActionPlanOut] = []
+    for p in plans:
+        step_outs = _build_step_outs(
+            steps_by_plan.get(p.id, []), latest_artifacts, responses_by_step
+        )
+        out.append(_plan_out_from_rows(p, step_outs))
+    return out
 
 
 def _emit_event(
@@ -409,7 +486,7 @@ async def list_plans(
         .offset(offset)
     )
     plans = list(rows.scalars())
-    items = [await _build_plan_out(db, p) for p in plans]
+    items = await _build_plan_outs_bulk(db, plans)
     return ActionPlanList(items=items)
 
 

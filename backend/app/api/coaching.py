@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import AuthPrincipal, require_role
@@ -66,11 +66,15 @@ async def list_coaching_sessions(
     """
     tenant_id = principal.tenant.id
 
-    # Total count for the paging footer.
+    # Pagination footer uses a real SQL COUNT(*) (was ``len(... .all())``
+    # which materialised every primary key into Python — a ~500ms tax on
+    # large tenants even when the user is paging the first page of 50K
+    # rows). One COUNT + one LIMIT+OFFSET; the heavy lifting now stays
+    # in the database.
     total_stmt = (
-        select(LiveSession.id).where(LiveSession.tenant_id == tenant_id)
+        select(func.count(LiveSession.id)).where(LiveSession.tenant_id == tenant_id)
     )
-    total = len((await db.execute(total_stmt)).all())
+    total = int((await db.execute(total_stmt)).scalar_one())
 
     stmt = (
         select(LiveSession, User, Interaction)

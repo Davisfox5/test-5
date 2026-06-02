@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.models import KBDocument, Tenant
 
 logger = logging.getLogger(__name__)
@@ -290,9 +291,16 @@ class ContextBuilderService:
         response = await self._client.messages.create(
             model=_MODEL,
             max_tokens=1600,
-            system=_SYSTEM_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": _SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_message}],
         )
+        record_llm_completion("kb_context_builder", "haiku", 1600, response)
         raw = response.content[0].text
         try:
             data = json.loads(raw)

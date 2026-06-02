@@ -59,6 +59,7 @@ from backend.app.models import (
     User,
 )
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 
 logger = logging.getLogger(__name__)
 
@@ -545,12 +546,20 @@ async def _extract(
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2000,
-            system=_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": _PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_block}],
         )
     except Exception:
         logger.exception("warnings_commitments: Haiku call failed")
         return ExtractionPayload()
+
+    record_llm_completion("warnings_commitments_extract", "haiku", 2000, resp)
 
     raw = "".join(
         getattr(b, "text", "") for b in (resp.content or [])
@@ -657,12 +666,20 @@ async def _scan_done(
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
-            system=_DONE_MATCH_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": _DONE_MATCH_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_block}],
         )
     except Exception:
         logger.exception("warnings_commitments: done-match call failed")
         return []
+
+    record_llm_completion("warnings_commitments_done_match", "haiku", 800, resp)
 
     raw = "".join(getattr(b, "text", "") for b in (resp.content or [])).strip()
     raw = _strip_md_fences(raw)

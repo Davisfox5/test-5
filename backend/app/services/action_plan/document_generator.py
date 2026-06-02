@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import ActionStep, Interaction
 from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 
 logger = logging.getLogger(__name__)
 
@@ -181,14 +182,22 @@ async def generate_document_for_step(
         input_tokens=len(user_message) // 4,
         task_type="document_generation",
         explicit_override=4096,
+        call_site="action_plan_document_generator",
     )
     started = time.monotonic()
     response = await client.messages.create(
         model=_SONNET,
         max_tokens=max_tokens,
-        system=_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": _SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_message}],
     )
+    record_llm_completion("action_plan_document_generator", "sonnet", max_tokens, response)
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     body = ""

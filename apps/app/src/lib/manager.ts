@@ -173,7 +173,8 @@ export function useManagerAlerts(
             if (domain) params.set("domain", domain);
             return api.get<ManagerAlert[]>(`/manager/alerts?${params.toString()}`);
         },
-        refetchInterval: 60_000,
+        // 5 min — alerts also push over SSE; this poll is a safety net.
+        refetchInterval: 5 * 60_000,
     });
 }
 
