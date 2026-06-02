@@ -1130,22 +1130,44 @@ def _run_pipeline_impl(
     _call_dt = getattr(interaction, "started_at", None) or interaction.created_at
     _call_date_str = _call_dt.date().isoformat() if _call_dt else None
 
-    insights: Dict[str, Any] = _loop.run(
-        _get_analysis_service().analyze(
-            compressed_for_llm,
-            tier=overrides.get("force_tier") or recommended_tier,
-            triage_result=triage_result,
-            system_prompt_override=variant.prompt_template,
-            tenant_context_block=tenant_block,
-            rag_context_block=rag_block,
-            max_tokens_override=overrides.get("max_tokens"),
-            tenant_context=tenant_context,
-            customer_brief=customer_brief,
-            paralinguistic_block=paralinguistic_block,
-            complexity_score=complexity_score,
-            call_date=_call_date_str,
+    # Idempotency check: when a downstream step (scorecard, snippets,
+    # webhook fan-out) fails the whole task is retried. Re-running the
+    # Sonnet analysis on a retry is the most expensive part of the
+    # pipeline and we already persisted its output on the prior attempt
+    # — so reuse it instead of paying for a second Anthropic call.
+    # ``summary`` is the analyzer's canonical output field; presence of
+    # a non-trivial value + the absence of a retry-error stamp tells us
+    # the prior pass got past step 9 cleanly.
+    prior_insights = dict(getattr(interaction, "insights", None) or {})
+    prior_summary = prior_insights.get("summary")
+    prior_has_error = "error" in prior_insights
+    if (
+        isinstance(prior_summary, str)
+        and len(prior_summary.strip()) >= 40
+        and not prior_has_error
+    ):
+        logger.info(
+            "Skipping AI analysis for interaction %s — reusing insights from prior attempt",
+            interaction_id,
         )
-    )
+        insights = prior_insights
+    else:
+        insights = _loop.run(
+            _get_analysis_service().analyze(
+                compressed_for_llm,
+                tier=overrides.get("force_tier") or recommended_tier,
+                triage_result=triage_result,
+                system_prompt_override=variant.prompt_template,
+                tenant_context_block=tenant_block,
+                rag_context_block=rag_block,
+                max_tokens_override=overrides.get("max_tokens"),
+                tenant_context=tenant_context,
+                customer_brief=customer_brief,
+                paralinguistic_block=paralinguistic_block,
+                complexity_score=complexity_score,
+                call_date=_call_date_str,
+            )
+        )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
     logger.info(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
@@ -3150,26 +3172,74 @@ def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
     return True
 
 
-@celery_app.task(name="orchestrator_weekly_all_tenants")
-def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
-    """Weekly self-improvement reflection across all tenants."""
-    from backend.app.models import Tenant
+@celery_app.task(name="_orchestrate_one_tenant_weekly")
+def _orchestrate_one_tenant_weekly(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant weekly orchestration. Returns a small status dict so
+    the chord callback can aggregate counts without serialising the full
+    orchestrator output back through Redis."""
     from backend.app.services.orchestrator import get_orchestrator
 
     session = _get_sync_session()
-    orch = get_orchestrator()
-    results: Dict[str, Any] = {}
     try:
-        for tenant in session.query(Tenant).all():
-            try:
-                results[str(tenant.id)] = orch.run_weekly(session, tenant.id)
-            except Exception:
-                logger.exception(
-                    "Weekly orchestrator failed for tenant %s", tenant.id
-                )
+        orch = get_orchestrator()
+        try:
+            orch.run_weekly(session, tenant_id)
+            return {"tenant_id": tenant_id, "success": True}
+        except Exception:
+            logger.exception(
+                "Weekly orchestrator failed for tenant %s", tenant_id
+            )
+            return {"tenant_id": tenant_id, "success": False}
     finally:
         session.close()
-    return {"tenants_processed": len(results)}
+
+
+@celery_app.task(name="_aggregate_orchestration_weekly")
+def _aggregate_orchestration_weekly(per_tenant: List[Dict[str, Any]]) -> Dict[str, Any]:
+    processed = 0
+    failed: List[str] = []
+    for r in per_tenant:
+        if not isinstance(r, dict):
+            continue
+        if r.get("success"):
+            processed += 1
+        else:
+            failed.append(str(r.get("tenant_id") or "unknown"))
+    return {"tenants_processed": processed, "failed_tenants": failed}
+
+
+@celery_app.task(name="orchestrator_weekly_all_tenants")
+def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
+    """Weekly self-improvement reflection across all tenants.
+
+    Was a sequential loop — a single slow tenant blocked every following
+    tenant, and a 50-tenant run could stretch past 4 h. Now fans out
+    via a Celery chord so per-tenant work parallelises across workers,
+    with the callback aggregating into the small status dict the beat
+    consumer expects.
+    """
+    from celery import chord, group
+
+    from backend.app.models import Tenant
+
+    session = _get_sync_session()
+    try:
+        tenant_ids = [str(t.id) for t in session.query(Tenant.id).all()]
+    finally:
+        session.close()
+
+    if not tenant_ids:
+        return {"tenants_processed": 0, "failed_tenants": []}
+
+    header = group(_orchestrate_one_tenant_weekly.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_aggregate_orchestration_weekly.s())
+    try:
+        return async_result.get(disable_sync_subtasks=False, timeout=3600)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "weekly orchestrator chord aggregation failed; partial state"
+        )
+        return {"tenants_processed": 0, "failed_tenants": tenant_ids}
 
 
 # ── Outcomes backfill & calibration ──────────────────────────────────────
