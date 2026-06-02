@@ -543,7 +543,7 @@ def _diarization_cache_set(audio_hash: str, turns: List[_DiarTurn]) -> None:
         logger.debug("diarization cache write failed", exc_info=True)
 
 
-def _vad_has_speech(audio_path: str, min_speech_fraction: float = 0.05) -> bool:
+def _vad_has_speech(audio_path: str, min_speech_fraction: float = 0.02) -> bool:
     """Cheap energy-based VAD: return False when the file is essentially
     silence / hold music, so we can skip pyannote entirely.
 
@@ -552,8 +552,10 @@ def _vad_has_speech(audio_path: str, min_speech_fraction: float = 0.05) -> bool:
     that needs to exceed the silence threshold; below it we treat the
     audio as non-speech.
 
-    Defaults are conservative — when in doubt, we say "yes, run pyannote"
-    so we never silently drop diarization on a real call.
+    The 2% floor is deliberately low so a hold-heavy support call (40
+    min of music plus a 1-min real exchange = 2.5% speech) still gets
+    diarized. The intent is to skip pyannote only on recordings that
+    are *all* music / silence — not on real calls with long pauses.
     """
     try:
         from pydub import AudioSegment, silence  # type: ignore

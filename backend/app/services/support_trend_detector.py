@@ -112,21 +112,37 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 # ── Embedding pass ───────────────────────────────────────────────────
 
 
+EMBED_TTL_DAYS = 30
+
+
 async def embed_missing_subjects(
     session: Session, tenant: Tenant
 ) -> int:
     """Embed any case whose ``subject_embedding`` is missing or stale.
 
+    A case qualifies if (a) it has no embedding yet, or (b) the
+    embedding is older than ``EMBED_TTL_DAYS`` — case subjects evolve
+    over time (rep updates the title, the underlying issue changes
+    flavor) and stale embeddings drift the cluster centroids. The TTL
+    forces a refresh so trends fire on current language.
+
     Best-effort: Voyage failures land in the logger; the cluster pass
     skips cases without an embedding so the run still progresses.
     Returns the number of cases embedded.
     """
+    from sqlalchemy import or_
+
+    ttl_cutoff = datetime.now(timezone.utc) - timedelta(days=EMBED_TTL_DAYS)
     cases = (
         session.execute(
             select(SupportCase).where(
                 SupportCase.tenant_id == tenant.id,
-                SupportCase.subject_embedding.is_(None),
                 SupportCase.subject.is_not(None),
+                or_(
+                    SupportCase.subject_embedding.is_(None),
+                    SupportCase.embedded_at.is_(None),
+                    SupportCase.embedded_at < ttl_cutoff,
+                ),
             )
         ).scalars().all()
     )

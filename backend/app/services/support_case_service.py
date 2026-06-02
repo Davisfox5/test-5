@@ -129,6 +129,22 @@ def attach_or_create_case(
         "Opened new case %s from interaction %s (customer=%s)",
         case.id, interaction.id, interaction.customer_id,
     )
+    # Fire-and-forget background embed so the daily trend scan doesn't
+    # have to spike-embed every backlogged case at 07:00 UTC. Case
+    # creation stays fast (we don't await Voyage on the hot path); the
+    # async task picks up the row and writes ``subject_embedding`` +
+    # ``embedded_at`` once it lands. If Celery is unreachable the daily
+    # scan's TTL+missing-embedding query will still pick it up as a
+    # fallback.
+    try:
+        from backend.app.tasks import embed_support_case_subject
+
+        embed_support_case_subject.delay(str(case.id))
+    except Exception:
+        logger.debug(
+            "Failed to enqueue background embed for support case %s", case.id,
+            exc_info=True,
+        )
     return case
 
 

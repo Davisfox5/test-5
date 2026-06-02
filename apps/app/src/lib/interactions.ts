@@ -296,7 +296,19 @@ export function useUploadInteraction() {
                 xhr.send(fd);
             });
         },
-        onSuccess: () => {
+        onSuccess: (data) => {
+            // Prepend the freshly-created row into every cached list
+            // page so the user sees instant feedback, then invalidate
+            // so the server's authoritative ordering eventually wins.
+            // The optimistic prepend matters most on the dashboard
+            // tile where the upload UI lives next to the list.
+            if (data) {
+                qc.setQueriesData<InteractionOut[]>(
+                    { queryKey: ["interactions"] },
+                    (old) => (Array.isArray(old) ? [data, ...old] : old),
+                );
+                qc.setQueryData(["interaction", data.id], data);
+            }
             qc.invalidateQueries({ queryKey: ["interactions"] });
             qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
         },
@@ -309,7 +321,14 @@ export function useIngestRecording() {
     return useMutation({
         mutationFn: (payload: IngestRecordingPayload) =>
             api.post<InteractionOut>("/interactions/ingest-recording", payload),
-        onSuccess: () => {
+        onSuccess: (data) => {
+            if (data) {
+                qc.setQueriesData<InteractionOut[]>(
+                    { queryKey: ["interactions"] },
+                    (old) => (Array.isArray(old) ? [data, ...old] : old),
+                );
+                qc.setQueryData(["interaction", data.id], data);
+            }
             qc.invalidateQueries({ queryKey: ["interactions"] });
             qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
         },
@@ -376,9 +395,22 @@ export function useRedriveInteraction() {
     return useMutation({
         mutationFn: (id: string) =>
             api.post<InteractionOut>(`/interactions/${id}/redrive`, {}),
-        onSuccess: (_data, id) => {
-            qc.invalidateQueries({ queryKey: ["interactions"] });
-            qc.invalidateQueries({ queryKey: ["interaction", id] });
+        onSuccess: (data, id) => {
+            // Redrive returns the updated row (status flips to
+            // 'processing'). Patch it into cached list pages so the
+            // user sees the status change immediately, plus the detail
+            // view. The polling-while-processing hook then keeps the
+            // UI fresh until analysis completes.
+            if (data) {
+                qc.setQueriesData<InteractionOut[]>(
+                    { queryKey: ["interactions"] },
+                    (old) =>
+                        Array.isArray(old)
+                            ? old.map((row) => (row.id === id ? { ...row, ...data } : row))
+                            : old,
+                );
+                qc.setQueryData(["interaction", id], data);
+            }
             qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
         },
     });
