@@ -20,23 +20,123 @@ export interface PlanCanvasProps {
     plan: ActionPlan;
 }
 
+/**
+ * Topologically sort steps so any step's ``depends_on`` predecessors
+ * appear before it. Stable: ties (no dependency edge between two
+ * steps) break by ``created_at`` so the synthesizer's emission order
+ * shows through where it doesn't conflict with the DAG.
+ *
+ * Kahn's algorithm. Cross-group dependencies (e.g. customer_endpoint
+ * depends on a preparation step) are honored at the macro level by
+ * the role grouping itself; this sort is mainly about WITHIN-group
+ * ordering ("Brief Rajiv depends on Log CRM, so Log CRM should be
+ * listed first inside the preparation lane").
+ *
+ * Cycles can't exist in practice (Call B builds a DAG), but defend
+ * anyway: if a cycle is detected, fall back to created_at order so
+ * the rep at least sees every step rather than nothing.
+ */
+function topologicalSort(steps: ActionStep[]): ActionStep[] {
+    const byId = new Map(steps.map((s) => [s.id, s]));
+    const inScope = new Set(steps.map((s) => s.id));
+    const remainingDeps = new Map<string, Set<string>>();
+    const dependents = new Map<string, string[]>();
+
+    for (const s of steps) {
+        const deps = (s.depends_on || []).filter((d) => inScope.has(d));
+        remainingDeps.set(s.id, new Set(deps));
+        for (const d of deps) {
+            const list = dependents.get(d) ?? [];
+            list.push(s.id);
+            dependents.set(d, list);
+        }
+    }
+
+    // Initial frontier: steps with no remaining deps inside this scope,
+    // ordered by created_at so emission order is the tie-break.
+    const ready: ActionStep[] = steps
+        .filter((s) => (remainingDeps.get(s.id) || new Set()).size === 0)
+        .sort(
+            (a, b) =>
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        );
+
+    const out: ActionStep[] = [];
+    const seen = new Set<string>();
+    while (ready.length > 0) {
+        const next = ready.shift()!;
+        if (seen.has(next.id)) continue;
+        seen.add(next.id);
+        out.push(next);
+        for (const dependentId of dependents.get(next.id) || []) {
+            const remaining = remainingDeps.get(dependentId);
+            if (!remaining) continue;
+            remaining.delete(next.id);
+            if (remaining.size === 0) {
+                const dep = byId.get(dependentId);
+                if (dep && !seen.has(dep.id)) {
+                    // Insert ordered by created_at so within a single
+                    // "frontier batch" the synthesizer's emission
+                    // order still shows through.
+                    const insertAt = ready.findIndex(
+                        (r) =>
+                            new Date(r.created_at).getTime() >
+                            new Date(dep.created_at).getTime(),
+                    );
+                    if (insertAt === -1) ready.push(dep);
+                    else ready.splice(insertAt, 0, dep);
+                }
+            }
+        }
+    }
+
+    // Defensive: if a cycle (or any orphan) prevented us from emitting
+    // every step, append the missing ones in created_at order so they
+    // still render. This shouldn't happen on a synthesized plan.
+    if (out.length !== steps.length) {
+        const leftovers = steps
+            .filter((s) => !seen.has(s.id))
+            .sort(
+                (a, b) =>
+                    new Date(a.created_at).getTime() -
+                    new Date(b.created_at).getTime(),
+            );
+        out.push(...leftovers);
+    }
+    return out;
+}
+
 function visibleSteps(plan: ActionPlan): ActionStep[] {
-    return plan.steps
-        .filter((s) => s.state !== "deleted")
-        .sort((a, b) => {
-            // Custom ordering: preparation -> customer_endpoint -> post_completion,
-            // then by created_at within each group so the swim lane reads
-            // logically.
-            const order = {
-                preparation: 0,
-                customer_endpoint: 1,
-                post_completion: 2,
-            } as const;
-            const ra = order[a.role_in_plan as keyof typeof order] ?? 0;
-            const rb = order[b.role_in_plan as keyof typeof order] ?? 0;
-            if (ra !== rb) return ra - rb;
-            return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        });
+    const ROLE_ORDER = {
+        preparation: 0,
+        customer_endpoint: 1,
+        post_completion: 2,
+    } as const;
+    const visible = plan.steps.filter((s) => s.state !== "deleted");
+
+    // Group by role first, then topo-sort each group. A step depending
+    // on another step in the SAME group needs to appear after it; a
+    // step depending on a step in an EARLIER role group is fine because
+    // role group ordering already enforces the macro chronology.
+    const byRole = new Map<string, ActionStep[]>();
+    for (const s of visible) {
+        const key = s.role_in_plan || "preparation";
+        const list = byRole.get(key) ?? [];
+        list.push(s);
+        byRole.set(key, list);
+    }
+
+    const roles = Array.from(byRole.keys()).sort(
+        (a, b) =>
+            (ROLE_ORDER[a as keyof typeof ROLE_ORDER] ?? 99) -
+            (ROLE_ORDER[b as keyof typeof ROLE_ORDER] ?? 99),
+    );
+
+    const out: ActionStep[] = [];
+    for (const role of roles) {
+        out.push(...topologicalSort(byRole.get(role) ?? []));
+    }
+    return out;
 }
 
 function slotKeyByEdge(plan: ActionPlan): Map<string, string[]> {
