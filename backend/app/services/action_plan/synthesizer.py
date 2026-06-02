@@ -546,23 +546,27 @@ class ActionPlanSynthesizer:
 
         # Build the per-channel job set.
         for step in steps:
-            # Debug: log every step's draft_state as we enter the
-            # render loop so we can correlate post-deploy audits with
-            # the actual classifier decision. Remove once the lazy
-            # pipeline is verified end-to-end.
-            logger.info(
-                "render_artifacts: step %s draft_state=%r channel=%s",
-                step.id, step.draft_state, step.recommended_channel,
-            )
-            # Skip steps that aren't ready to draft. These have one or
-            # more unfilled CRITICAL slots and would only produce a
-            # placeholder-laden artifact. The engine's
-            # _propagate_completion fires Call C for them later when
-            # upstream slots fill.
-            if step.draft_state and step.draft_state not in ("drafted", "ready_to_draft"):
+            # Skip steps that aren't ready to draft. Compute readiness
+            # DIRECTLY from input_slots rather than reading
+            # ``step.draft_state`` — empirical: the classifier's raw
+            # UPDATE in _persist_plan auto-expires the ORM, and the
+            # post-expiry re-read isn't returning the freshly-written
+            # value in this code path (audit on plan 64ad8047 had
+            # step.output_data._classify_debug='pending_upstream' but
+            # draft_state='drafted' after render). Reading slots
+            # avoids the entire dirty-tracking + expiry quagmire.
+            critical_unfilled = 0
+            for slot in step.input_slots or []:
+                if not isinstance(slot, dict):
+                    continue
+                if not slot.get("critical"):
+                    continue
+                if slot.get("filled_value") is None:
+                    critical_unfilled += 1
+            if critical_unfilled > 0:
                 logger.info(
-                    "Call C skipped for step %s (draft_state=%s)",
-                    step.id, step.draft_state,
+                    "Call C skipped for step %s (critical_unfilled=%d)",
+                    step.id, critical_unfilled,
                 )
                 continue
 
