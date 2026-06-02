@@ -849,9 +849,11 @@ class ActionPlanSynthesizer:
         from sqlalchemy import update as _sql_update_draft
         for step in step_rows:
             critical_unfilled = 0
+            total_slots = 0
             for slot in step.input_slots or []:
                 if not isinstance(slot, dict):
                     continue
+                total_slots += 1
                 if not slot.get("critical"):
                     continue
                 if slot.get("filled_value") is None:
@@ -859,11 +861,24 @@ class ActionPlanSynthesizer:
             new_draft_state = (
                 "ready_to_draft" if critical_unfilled == 0 else "pending_upstream"
             )
+            # Diagnostic stamp so we can read the classifier's decision
+            # via the regular plan API. Reads back via step.output_data
+            # which the SPA already exposes.
+            cur_output = dict(step.output_data or {})
+            cur_output["_classify_debug"] = {
+                "critical_unfilled": critical_unfilled,
+                "total_slots": total_slots,
+                "decision": new_draft_state,
+            }
+            step.output_data = cur_output
             step.draft_state = new_draft_state  # in-memory for _render_artifacts
             await db.execute(
                 _sql_update_draft(ActionStep)
                 .where(ActionStep.id == step.id)
-                .values(draft_state=new_draft_state)
+                .values(
+                    draft_state=new_draft_state,
+                    output_data=cur_output,
+                )
             )
 
         await db.flush()
