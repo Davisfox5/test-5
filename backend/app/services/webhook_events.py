@@ -43,6 +43,22 @@ WEBHOOK_EVENTS: Dict[str, str] = {
     # KB
     "kb.document_uploaded":     "A new KB document was ingested.",
 
+    # Action items
+    "action_item.created":        "A new action item was created.",
+    "action_item.completed":      "An action item was marked done.",
+    "action_item.dismissed":      "An action item was dismissed.",
+
+    # Action plans
+    "action_plan.created":            "A new action plan was created.",
+    "action_plan.step_completed":     "An action-plan step was marked complete.",
+    "action_plan.step_skipped":       "An action-plan step was skipped.",
+    "action_plan.completed":          "An action plan reached its customer endpoint.",
+
+    # Support cases
+    "support_case.opened":            "A new support case was opened.",
+    "support_case.status_changed":    "A support case transitioned (open / in_progress / resolved / closed / escalated).",
+    "support_case.assigned":          "A support case was assigned (or unassigned).",
+
     # System
     "webhook.test":             "Manual test ping from the admin UI.",
 }

@@ -705,6 +705,32 @@ async def complete_step(
         plan_id=plan_id, step_id=step_id,
         extra={"new_state": "done", "affected_step_ids": [str(s) for s in affected]},
     )
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        await emit_event(
+            db, tenant.id, "action_plan.step_completed",
+            {
+                "plan_id": str(plan_id),
+                "step_id": str(step_id),
+                "step_title": step.title,
+                "affected_step_ids": [str(s) for s in affected],
+            },
+        )
+        # Plan completion fires when this step *was* the customer endpoint
+        # and the engine just moved the plan to status='completed'.
+        if plan.status == "completed":
+            await emit_event(
+                db, tenant.id, "action_plan.completed",
+                {
+                    "plan_id": str(plan_id),
+                    "customer_id": str(plan.customer_id) if plan.customer_id else None,
+                    "goal": plan.goal,
+                    "domain": plan.domain,
+                },
+            )
+    except Exception:
+        logger.exception("emit action_plan.step_completed webhook failed for %s", step_id)
     return await _build_plan_out(db, plan)
 
 
@@ -733,6 +759,21 @@ async def skip_step(
         plan_id=plan_id, step_id=step_id,
         extra={"new_state": "skipped", "affected_step_ids": [str(s) for s in affected]},
     )
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        await emit_event(
+            db, tenant.id, "action_plan.step_skipped",
+            {
+                "plan_id": str(plan_id),
+                "step_id": str(step_id),
+                "step_title": step.title,
+                "reason": body.reason,
+                "affected_step_ids": [str(s) for s in affected],
+            },
+        )
+    except Exception:
+        logger.exception("emit action_plan.step_skipped webhook failed for %s", step_id)
     return await _build_plan_out(db, plan)
 
 

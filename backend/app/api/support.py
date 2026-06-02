@@ -243,6 +243,21 @@ async def create_case(
         embed_support_case_subject.delay(str(case.id))
     except Exception:
         pass
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        await emit_event(
+            db, principal.tenant.id, "support_case.opened",
+            {
+                "case_id": str(case.id),
+                "customer_id": str(case.customer_id) if case.customer_id else None,
+                "subject": case.subject,
+                "priority": case.priority,
+                "category": case.category,
+            },
+        )
+    except Exception:
+        logger.exception("emit support_case.opened webhook failed for %s", case.id)
     return await _detail(db, case)
 
 
@@ -327,6 +342,24 @@ async def transition_case(
         and before_status != "escalated"
     ):
         await _notify_case_escalated(db, principal, case)
+    if before_status != case.status:
+        try:
+            from backend.app.services.webhook_dispatcher import emit_event
+
+            await emit_event(
+                db, principal.tenant.id, "support_case.status_changed",
+                {
+                    "case_id": str(case.id),
+                    "customer_id": str(case.customer_id) if case.customer_id else None,
+                    "subject": case.subject,
+                    "old_status": before_status,
+                    "new_status": case.status,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "emit support_case.status_changed webhook failed for %s", case.id,
+            )
     return await _detail(db, case)
 
 
@@ -438,6 +471,24 @@ async def assign_case(
             body=case.subject,
             link_url=f"/support/cases/{case.id}",
         )
+    if case.assigned_to != before_assignee:
+        try:
+            from backend.app.services.webhook_dispatcher import emit_event
+
+            await emit_event(
+                db, principal.tenant.id, "support_case.assigned",
+                {
+                    "case_id": str(case.id),
+                    "customer_id": str(case.customer_id) if case.customer_id else None,
+                    "subject": case.subject,
+                    "old_assignee_id": str(before_assignee) if before_assignee else None,
+                    "new_assignee_id": str(case.assigned_to) if case.assigned_to else None,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "emit support_case.assigned webhook failed for %s", case.id,
+            )
     return await _detail(db, case)
 
 
