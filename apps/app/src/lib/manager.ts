@@ -316,10 +316,10 @@ export const CATEGORY_LABEL: Record<RecommendationCategory, string> = {
     route_to_specialist: "Route to a specialist",
     coach_support_agent: "Coach a support agent",
     escalate_recurring_issue: "Escalate a recurring issue",
-    prevent_no_touch_churn: "Prevent no-touch churn",
-    prevent_lead_stall: "Prevent lead stall",
-    proactive_outreach_repeat_support: "Proactive outreach (repeat support)",
-    address_recurring_issue: "Address recurring issue",
+    prevent_no_touch_churn: "Reach out before renewal",
+    prevent_lead_stall: "Re-engage warm prospect",
+    proactive_outreach_repeat_support: "Check in on repeat customer",
+    address_recurring_issue: "Investigate recurring issue",
 };
 
 export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
@@ -332,5 +332,5 @@ export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
     csat_drop_support: "CSAT drop",
     escalation_surge: "Escalation surge",
     ttr_drift: "Time to resolve drift",
-    recurring_issue_detected: "Recurring issue detected",
+    recurring_issue_detected: "Recurring issue",
 };

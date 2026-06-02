@@ -154,14 +154,11 @@ def detect_no_touch_renewal_risk(
             RecommendationCandidate(
                 category="prevent_no_touch_churn",
                 domain="customer_service",
-                title=(
-                    f"Schedule a CS touch with {cust.name} before renewal"
-                ),
+                title=f"Reach out to {cust.name} before renewal",
                 rationale=(
-                    f"Renewal in {days_to_renewal} days and no CS interaction "
-                    "in the last 45. Accounts on this trajectory historically "
-                    "churn at 3x the baseline; a single touch reverses it for "
-                    "most of them."
+                    f"Renewal in {days_to_renewal} days and {cust.name} "
+                    "hasn't heard from CS in over a month. Schedule a "
+                    "touch this week."
                 ),
                 customer_id=cust.id,
                 score=80.0 if days_to_renewal <= 30 else 65.0,
@@ -246,9 +243,8 @@ def detect_lead_stall(
                 domain="sales",
                 title=f"Re-engage {cust.name}",
                 rationale=(
-                    "Warm prospect with no follow-up in the last 21 days. "
-                    "Cohorts re-engaged inside 30 days win at roughly 2x "
-                    "the baseline rate."
+                    f"{cust.name} hasn't been contacted in 3+ weeks. "
+                    "A quick check-in keeps the deal warm."
                 ),
                 customer_id=cust.id,
                 score=60.0,
@@ -293,12 +289,11 @@ def detect_repeat_support_churn_risk(
             RecommendationCandidate(
                 category="proactive_outreach_repeat_support",
                 domain="customer_service",
-                title=f"Proactive outreach to {cust.name} — repeat support",
+                title=f"Check in with {cust.name}",
                 rationale=(
-                    f"{int(n)} support cases in the last 90 days. Accounts "
-                    "in this band churn at 2.5x the baseline; a single "
-                    "proactive CS check-in inside two weeks of the "
-                    "threshold crossing is the most effective intervention."
+                    f"{int(n)} support cases in the last 90 days for "
+                    f"{cust.name}. Schedule a CS check-in before "
+                    "frustration sets in."
                 ),
                 customer_id=cust.id,
                 score=70.0,
