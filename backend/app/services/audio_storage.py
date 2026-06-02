@@ -204,17 +204,75 @@ class AudioStore:
 
     # ── Janitor ──────────────────────────────────────────────────────
 
+    # Resume-cursor for the daily sweep, stored as a single Redis string.
+    # The audit's prior full-bucket scan paid a list_objects_v2 page +
+    # one get_object_tagging per object every run; this lets us advance
+    # through the bucket in bounded chunks instead. When the cursor
+    # reaches the end of the bucket, it's cleared and the next run
+    # restarts from the top.
+    _SWEEP_CURSOR_KEY = "audio_retention_sweep:start_after"
+    _SWEEP_MAX_OBJECTS_PER_RUN = 5000
+
+    @classmethod
+    def _sweep_redis_client(cls) -> Any:
+        import redis as _redis_lib  # type: ignore
+
+        from backend.app.config import get_settings
+
+        return _redis_lib.Redis.from_url(
+            get_settings().REDIS_URL, decode_responses=True
+        )
+
+    @classmethod
+    def _load_sweep_cursor(cls) -> Optional[str]:
+        try:
+            r = cls._sweep_redis_client()
+            val = r.get(cls._SWEEP_CURSOR_KEY)
+            return val if val else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _save_sweep_cursor(cls, key: Optional[str]) -> None:
+        try:
+            r = cls._sweep_redis_client()
+            if key is None:
+                r.delete(cls._SWEEP_CURSOR_KEY)
+            else:
+                # 7-day TTL so a stuck cursor self-heals if the sweep
+                # task somehow stops running (would otherwise loop a
+                # single bucket region forever).
+                r.set(cls._SWEEP_CURSOR_KEY, key, ex=7 * 86400)
+        except Exception:
+            logger.debug("audio sweep cursor save failed", exc_info=True)
+
     def sweep_expired(self) -> int:
-        """Delete every object past its retention window.  Returns count."""
+        """Delete every object past its retention window. Returns count.
+
+        S3 path is chunked + resumable: each run lists at most
+        ``_SWEEP_MAX_OBJECTS_PER_RUN`` keys starting after the cursor
+        persisted in Redis from the prior run. When the listing hits the
+        end of the bucket, the cursor is cleared and the next run restarts
+        from the start. A bucket with 100K objects takes ~20 runs (~3
+        weeks at the daily schedule) to fully traverse — fine, because
+        objects past retention will stay past retention until they're
+        reached.
+        """
         now = datetime.now(timezone.utc)
         deleted = 0
         if self.backend == "s3" and self._s3 is not None:
-            # Rely on the tags we set at put-time; pagination handled by boto3.
-            paginator = self._s3.get_paginator("list_objects_v2")
+            start_after = self._load_sweep_cursor() or ""
+            seen = 0
+            next_cursor: Optional[str] = None
             try:
-                for page in paginator.paginate(Bucket=self._bucket):
+                paginator = self._s3.get_paginator("list_objects_v2")
+                paginate_kwargs: Dict[str, Any] = {"Bucket": self._bucket}
+                if start_after:
+                    paginate_kwargs["StartAfter"] = start_after
+                for page in paginator.paginate(**paginate_kwargs):
                     for obj in page.get("Contents", []):
                         key = obj["Key"]
+                        seen += 1
                         try:
                             tags = {
                                 t["Key"]: t["Value"]
@@ -230,11 +288,20 @@ class AudioStore:
                                 deleted += 1
                             except Exception:
                                 logger.exception("Sweep delete failed for %s", key)
+                        if seen >= self._SWEEP_MAX_OBJECTS_PER_RUN:
+                            next_cursor = key
+                            break
+                    if next_cursor is not None:
+                        break
             except Exception:
                 logger.exception("Sweep list failed")
+            # next_cursor unset → we walked off the end; clear so the
+            # next run starts over.
+            self._save_sweep_cursor(next_cursor)
             return deleted
 
-        # Local filesystem.
+        # Local filesystem (no cursoring — the local store is dev-only
+        # and bounded by disk size).
         for meta in self._local_dir.rglob("*.meta"):
             try:
                 tags = dict(

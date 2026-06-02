@@ -183,6 +183,53 @@ CELERY_QUEUE_DEPTH = Gauge(
 )
 
 
+# ── LLM observability ────────────────────────────────────────────────────
+
+LLM_OUTPUT_TOKENS = Histogram(
+    "linda_llm_output_tokens",
+    "Output tokens per Anthropic completion, sliced by call site + tier. "
+    "Feeds the cost dashboards and the adaptive max_tokens learner.",
+    ["call_site", "tier"],
+    buckets=(128, 256, 512, 1024, 2048, 4096, 8192, 16384),
+)
+
+LLM_INPUT_TOKENS = Counter(
+    "linda_llm_input_tokens_total",
+    "Cumulative billable input tokens per call site + tier "
+    "(uncached prompt tokens; cache reads are tracked separately).",
+    ["call_site", "tier"],
+)
+
+LLM_CACHE_READ_TOKENS = Counter(
+    "linda_llm_cache_read_tokens_total",
+    "Cumulative input tokens served from Anthropic's prompt cache.",
+    ["call_site", "tier"],
+)
+
+LLM_CACHE_CREATION_TOKENS = Counter(
+    "linda_llm_cache_creation_tokens_total",
+    "Cumulative input tokens written into the prompt cache.",
+    ["call_site", "tier"],
+)
+
+LLM_TRUNCATIONS = Counter(
+    "linda_llm_truncations_total",
+    "Completions that hit stop_reason='max_tokens'. Watch this alongside "
+    "the adaptive ceiling — a sustained > 5% rate is the trigger for "
+    "raising the learned ceiling automatically.",
+    ["call_site", "tier"],
+)
+
+
+# ── Adaptive ceiling recompute outcome ───────────────────────────────────
+
+LLM_CEILING_RECOMPUTE = Counter(
+    "linda_llm_ceiling_recompute_total",
+    "Daily ceiling-recompute outcomes (updated|skipped|error).",
+    ["status"],
+)
+
+
 # ── CRM ──────────────────────────────────────────────────────────────────
 
 CRM_SYNC_OUTCOMES = Counter(

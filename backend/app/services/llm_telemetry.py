@@ -157,9 +157,10 @@ def record_llm_completion(
     """
     try:
         usage = _extract_usage(response)
+        tier_key = (tier or "sonnet").lower()
         payload = {
             "call_site": call_site,
-            "tier": (tier or "sonnet").lower(),
+            "tier": tier_key,
             "model": usage["model"],
             "request_max_tokens": int(request_max_tokens),
             "input_tokens": usage["input_tokens"],
@@ -173,6 +174,32 @@ def record_llm_completion(
     except Exception:
         logger.debug("llm_telemetry: payload assembly failed", exc_info=True)
         return
+
+    # Prometheus emission — synchronous, in-process, ~free. Decoupled from
+    # the Postgres write below so a DB hiccup doesn't drop the live metric.
+    try:
+        from backend.app.services.metrics import (
+            LLM_CACHE_CREATION_TOKENS,
+            LLM_CACHE_READ_TOKENS,
+            LLM_INPUT_TOKENS,
+            LLM_OUTPUT_TOKENS,
+            LLM_TRUNCATIONS,
+        )
+
+        labels = (call_site, payload["tier"])
+        LLM_OUTPUT_TOKENS.labels(*labels).observe(payload["output_tokens"])
+        if payload["input_tokens"]:
+            LLM_INPUT_TOKENS.labels(*labels).inc(payload["input_tokens"])
+        if payload["cache_read_input_tokens"]:
+            LLM_CACHE_READ_TOKENS.labels(*labels).inc(payload["cache_read_input_tokens"])
+        if payload["cache_creation_input_tokens"]:
+            LLM_CACHE_CREATION_TOKENS.labels(*labels).inc(
+                payload["cache_creation_input_tokens"]
+            )
+        if payload["truncated"]:
+            LLM_TRUNCATIONS.labels(*labels).inc()
+    except Exception:
+        logger.debug("llm_telemetry: prometheus emit failed", exc_info=True)
 
     try:
         loop = asyncio.get_running_loop()
@@ -380,9 +407,24 @@ def recompute_ceilings() -> Dict[str, Any]:
             deleted_old = int(result.rowcount or 0)
     except Exception:
         logger.exception("llm_telemetry: recompute_ceilings failed")
+        try:
+            from backend.app.services.metrics import LLM_CEILING_RECOMPUTE
+
+            LLM_CEILING_RECOMPUTE.labels(status="error").inc()
+        except Exception:
+            pass
         return {"updated": updated, "skipped": skipped, "error": True}
 
     invalidate_cache()
+    try:
+        from backend.app.services.metrics import LLM_CEILING_RECOMPUTE
+
+        if updated:
+            LLM_CEILING_RECOMPUTE.labels(status="updated").inc(updated)
+        if skipped:
+            LLM_CEILING_RECOMPUTE.labels(status="skipped").inc(skipped)
+    except Exception:
+        pass
     summary = {
         "updated": updated,
         "skipped": skipped,

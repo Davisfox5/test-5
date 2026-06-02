@@ -451,9 +451,19 @@ def _on_task_postrun(
         )
 
         task_name = getattr(sender, "name", "unknown")
-        status = "success" if state == "SUCCESS" else (
-            "retry" if state == "RETRY" else "failure"
-        )
+        # When state == SUCCESS we additionally check ``request.retries``;
+        # a non-zero retry count means we succeeded only after at least
+        # one failure, which is what the operator wants to track separately
+        # from "succeeded first try". The ``retry_success`` status lets
+        # alerts distinguish "retry logic is working" from "task is flaky".
+        request = getattr(sender, "request", None)
+        retries = getattr(request, "retries", 0) if request is not None else 0
+        if state == "SUCCESS":
+            status = "retry_success" if retries > 0 else "success"
+        elif state == "RETRY":
+            status = "retry"
+        else:
+            status = "failure"
         CELERY_TASK_RUNS.labels(task_name=task_name, status=status).inc()
         if runtime is not None:
             CELERY_TASK_LATENCY.labels(task_name=task_name).observe(float(runtime))
