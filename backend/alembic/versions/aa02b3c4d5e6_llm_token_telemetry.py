@@ -19,8 +19,8 @@ The model's billing is on actual output tokens, not the cap, so this
 isn't primarily a cost saver — it's a quality + observability tool that
 catches silent truncation and removes the need to guess ceilings.
 
-Revision ID: aa01b2c3d4e5
-Revises: z3b4c5d6e7f8
+Revision ID: aa02b3c4d5e6
+Revises: ab01c2d3e4f5
 Create Date: 2026-06-01
 """
 from __future__ import annotations
@@ -32,8 +32,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 
-revision: str = "aa01b2c3d4e5"
-down_revision: Union[str, None] = "z3b4c5d6e7f8"
+revision: str = "aa02b3c4d5e6"
+down_revision: Union[str, None] = "ab01c2d3e4f5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
