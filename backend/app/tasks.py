@@ -12,11 +12,11 @@ import logging
 import os
 import uuid
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_prerun, task_postrun, worker_process_init
+from celery.signals import task_failure, task_prerun, task_postrun, worker_process_init
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -384,6 +384,49 @@ def _on_task_prerun(sender: Any = None, task_id: str = "", args=None, kwargs=Non
         task_request.linda_context_tokens = bind_context(**values)
     else:
         bind_context(**values)
+
+
+@task_failure.connect
+def _on_task_failure(
+    sender: Any = None,
+    task_id: str = "",
+    exception: Optional[BaseException] = None,
+    einfo: Any = None,
+    args: Any = None,
+    kwargs: Any = None,
+    **_: Any,
+) -> None:
+    """Dead-letter logging for terminal task failures.
+
+    Celery fires ``task_failure`` whenever an exception propagates out of
+    a task — including the final retry. Detecting "this was the last
+    attempt" requires checking ``sender.request.retries`` against the
+    task's ``max_retries``: when they're equal *and* the task isn't
+    asking for another retry, the work is permanently lost without a
+    dead-letter signal.
+
+    The previous behaviour was that terminal failures landed only as a
+    state=FAILURE marker in Redis + a generic ``failure`` counter; there
+    was no visibility into *which* task instance / args were dropped.
+    """
+    try:
+        request = getattr(sender, "request", None)
+        retries = getattr(request, "retries", 0) if request is not None else 0
+        max_retries = getattr(sender, "max_retries", None)
+        is_terminal = max_retries is None or retries >= int(max_retries)
+        if not is_terminal:
+            return  # an intermediate-retry failure; not dead-lettered yet
+
+        task_name = getattr(sender, "name", "unknown")
+        logger.error(
+            "celery dlq: task=%s task_id=%s retries=%s/%s exc=%r args=%r kwargs=%r",
+            task_name, task_id, retries, max_retries, exception, args, kwargs,
+        )
+        # Prometheus counter for "terminal failure" alerts.
+        from backend.app.services.metrics import CELERY_TASK_RUNS
+        CELERY_TASK_RUNS.labels(task_name=task_name, status="dead_letter").inc()
+    except Exception:  # pragma: no cover — telemetry is best-effort
+        logger.debug("dlq handler failed", exc_info=True)
 
 
 @task_postrun.connect
@@ -2703,18 +2746,33 @@ def support_trend_scan() -> Dict[str, Any]:
         tenants = (
             session.execute(__import__("sqlalchemy").select(Tenant))
         ).scalars().all()
-        for t in tenants:
+
+        async def _run_for_one(t: Tenant) -> Tuple[str, Dict[str, Any]]:
             try:
-                # ``run_for_tenant`` does an async embed step, so spin
-                # a per-tenant loop (the orchestrator commits sync
-                # between tenants).
-                by_tenant[str(t.id)] = asyncio.run(run_for_tenant(session, t))
+                result = await run_for_tenant(session, t)
+                return str(t.id), result
             except Exception:
                 logger.exception(
                     "Support trend scan failed for tenant %s", t.id
                 )
-                session.rollback()
-                by_tenant[str(t.id)] = {"error": 1}
+                return str(t.id), {"error": 1}
+
+        async def _run_all() -> List[Tuple[str, Dict[str, Any]]]:
+            # Sequential under one loop, not parallel — the shared sync
+            # ``session`` is not safe for concurrent use. The win is
+            # eliminating the per-tenant loop spin-up cost (~100-500ms
+            # each from httpx / asyncpg pool reinit) by keeping the same
+            # event loop and HTTP client pools warm across tenants.
+            results: List[Tuple[str, Dict[str, Any]]] = []
+            for t in tenants:
+                results.append(await _run_for_one(t))
+                # rollback any failed-tenant txn before the next one
+                if results[-1][1].get("error"):
+                    session.rollback()
+            return results
+
+        for tid, result in asyncio.run(_run_all()):
+            by_tenant[tid] = result
     finally:
         session.close()
     return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}

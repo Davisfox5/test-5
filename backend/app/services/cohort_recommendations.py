@@ -331,31 +331,28 @@ def persist_candidates(
     expires_at = datetime.now(timezone.utc) + timedelta(days=14)
 
     for c in candidates:
-        # Dedup: same category + same customer + within window.
-        existing = None
+        # Dedup window: same (category, customer_id) within DEDUP_WINDOW_DAYS,
+        # provided the prior recommendation is still active (open|applied).
+        # Cohort-wide candidates with no customer_id dedup on category alone
+        # (the same tenant-wide recommendation shouldn't fire twice in a
+        # 14-day window even when it doesn't target a specific account).
+        filters = [
+            ManagerRecommendation.tenant_id == tenant_id,
+            ManagerRecommendation.category == c.category,
+            ManagerRecommendation.status.in_(("open", "applied")),
+            ManagerRecommendation.created_at >= cutoff,
+        ]
         if c.customer_id is not None:
-            existing = (
-                session.execute(
-                    select(ManagerRecommendation.id).where(
-                        ManagerRecommendation.tenant_id == tenant_id,
-                        ManagerRecommendation.category == c.category,
-                        ManagerRecommendation.status.in_(("open", "applied")),
-                        ManagerRecommendation.created_at >= cutoff,
-                        # The target JSONB carries the customer id; match
-                        # against it. Postgres ``->>`` is the right
-                        # operator; on SQLite (tests) the dialect falls
-                        # back to JSON1, which exposes the same value via
-                        # ``json_extract``. We dodge both by stuffing the
-                        # customer id into an indexed-side column? — for
-                        # now we just match by category + window and
-                        # rely on the target JSONB containing the id;
-                        # the next nightly pass will re-run anyway.
-                    )
-                )
-            ).first()
+            # JSONB ``->>`` extracts the text form; works on Postgres in
+            # prod and is bypassed by the SQLite test fixture (which has
+            # no cohort recommendations to compare against anyway).
+            filters.append(
+                ManagerRecommendation.target["customer_id"].astext == str(c.customer_id)
+            )
+        existing = session.execute(select(ManagerRecommendation.id).where(*filters)).first()
         if existing is not None:
-            # Same category fired recently for this tenant. Skip;
-            # the prior recommendation is still in the queue.
+            # Same (category, customer) fired recently. Skip; the prior
+            # recommendation is still active.
             continue
         row = ManagerRecommendation(
             tenant_id=tenant_id,
