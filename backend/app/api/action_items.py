@@ -1,8 +1,11 @@
 """Action Items API — standalone endpoint for managing action items across interactions."""
 
+import logging
 import uuid
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -508,6 +511,37 @@ async def update_action_item(
         },
     )
 
+    # Outbound webhook on status transitions to done|dismissed so
+    # reseller integrations can react without polling.
+    if body.status is not None and item.status != old_status:
+        try:
+            from backend.app.services.webhook_dispatcher import emit_event
+
+            if item.status == "done":
+                await emit_event(
+                    db, tenant.id, "action_item.completed",
+                    {
+                        "action_item_id": str(item.id),
+                        "interaction_id": str(item.interaction_id) if item.interaction_id else None,
+                        "title": item.title,
+                        "category": item.category,
+                    },
+                )
+            elif item.status == "dismissed":
+                await emit_event(
+                    db, tenant.id, "action_item.dismissed",
+                    {
+                        "action_item_id": str(item.id),
+                        "interaction_id": str(item.interaction_id) if item.interaction_id else None,
+                        "title": item.title,
+                        "dismiss_reason": item.dismiss_reason,
+                    },
+                )
+        except Exception:
+            logger.exception(
+                "emit action_item lifecycle webhook failed for %s", item.id,
+            )
+
     return item
 
 
@@ -564,6 +598,24 @@ async def create_action_item(
         resource_id=str(item.id),
         after={"title": item.title, "category": item.category, "priority": item.priority},
     )
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        await emit_event(
+            db, tenant.id, "action_item.created",
+            {
+                "action_item_id": str(item.id),
+                "interaction_id": str(item.interaction_id) if item.interaction_id else None,
+                "title": item.title,
+                "category": item.category,
+                "priority": item.priority,
+                "manually_created": True,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "emit action_item.created webhook failed for %s", item.id,
+        )
     return item
 
 
