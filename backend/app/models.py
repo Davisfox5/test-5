@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any, List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -3379,6 +3380,60 @@ class SlackIntegration(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class LLMCallTelemetry(Base):
+    """One row per Anthropic completion. Feeds the adaptive max_tokens
+    ceiling — recompute_llm_ceilings reads this table and writes the
+    aggregate ``llm_ceiling_recommendation`` row that ``compute_max_tokens``
+    consults at request time."""
+
+    __tablename__ = "llm_call_telemetry"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    call_site: Mapped[str] = mapped_column(String(64), nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(80))
+    request_max_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_read_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stop_reason: Mapped[Optional[str]] = mapped_column(String(32))
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_llm_telemetry_site_tier_created", "call_site", "tier", "created_at"),
+        Index("ix_llm_telemetry_created", "created_at"),
+    )
+
+
+class LLMCeilingRecommendation(Base):
+    """Recommended ``max_tokens`` per (call_site, tier). Recomputed nightly
+    from ``llm_call_telemetry`` once a (call_site, tier) has ≥200 samples
+    or 14 days of history. ``compute_max_tokens`` reads with an in-process
+    LRU cache; until a row exists, the static per-tier ceiling applies."""
+
+    __tablename__ = "llm_ceiling_recommendation"
+
+    call_site: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    p50: Mapped[int] = mapped_column(Integer, nullable=False)
+    p95: Mapped[int] = mapped_column(Integer, nullable=False)
+    p99: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_observed: Mapped[int] = mapped_column(Integer, nullable=False)
+    truncation_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    recommended_ceiling: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # Wire the tenant-config cache invalidation listener once models are loaded.

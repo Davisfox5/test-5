@@ -74,11 +74,12 @@ celery_app.conf.update(
     task_track_started=False,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
-    # Expire task results after 1h. Without this, every Celery result
+    # Expire task results after 6h. Without this, every Celery result
     # accumulates in Redis forever (default behavior) and bloats memory
-    # over weeks. 1h is enough for in-flight chord aggregation and any
-    # short-lived consumer (CI, admin tools) that wants to fetch a result.
-    result_expires=3600,
+    # over weeks. 6h is well above the longest in-flight chord aggregator
+    # (the daily orchestrator can run > 1h on a slow tenant cohort) while
+    # still bounding Redis growth.
+    result_expires=21600,
     # ── Redis broker tuning for per-command billing ──
     # Celery's default Redis transport polls BRPOP with a ~1s block,
     # which generates one command per worker per second even when the
@@ -302,6 +303,15 @@ celery_app.conf.update(
         "manager-anomaly-resolve": {
             "task": "manager_anomaly_resolve",
             "schedule": crontab(minute=0, hour="*/6"),
+        },
+        # Recompute the adaptive ``max_tokens`` ceiling per (call_site, tier)
+        # from the rolling 14-day usage window. Daily, after the nightly
+        # backup window settles. Requires at least 200 samples OR 14 days
+        # of history per (call_site, tier) before publishing a learned
+        # ceiling; until then call sites keep the static tier cap.
+        "recompute-llm-ceilings": {
+            "task": "recompute_llm_ceilings",
+            "schedule": crontab(minute=50, hour=4),
         },
     },
 )
@@ -2641,6 +2651,17 @@ def email_ingest_poll() -> Dict[str, Any]:
         return poll_all(session)
     finally:
         session.close()
+
+
+@celery_app.task(name="recompute_llm_ceilings")
+def recompute_llm_ceilings() -> Dict[str, Any]:
+    """Daily aggregation of ``llm_call_telemetry`` into
+    ``llm_ceiling_recommendation``. Once a (call_site, tier) has enough
+    history, ``compute_max_tokens`` will pick up the learned ceiling on
+    the next request (in-process cache TTL = 1h)."""
+    from backend.app.services.llm_telemetry import recompute_ceilings
+
+    return recompute_ceilings()
 
 
 @celery_app.task(name="tenant_insights_weekly")
