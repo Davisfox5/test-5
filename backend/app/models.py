@@ -1011,6 +1011,20 @@ class ActionStep(Base):
         Boolean, default=False, server_default="false"
     )
 
+    # Lazy artifact generation: distinguishes steps whose draft body has
+    # been produced (`drafted`) from steps that are waiting on critical
+    # inputs (`pending_upstream`) or are about to fire Call C
+    # (`ready_to_draft`) or are blocked because an upstream step that
+    # provided a critical slot got skipped or deleted (`draft_blocked`).
+    # The synthesizer classifies this per step after Call B and persists
+    # it; the engine flips it on upstream completion. The SPA renders a
+    # different per-step UI per state so reps don't see "drafts" full
+    # of unfilled placeholders. Default ``drafted`` for back-compat with
+    # plans built before this column existed.
+    draft_state: Mapped[str] = mapped_column(
+        String(24), default="drafted", server_default="drafted"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

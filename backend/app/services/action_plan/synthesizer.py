@@ -546,6 +546,18 @@ class ActionPlanSynthesizer:
 
         # Build the per-channel job set.
         for step in steps:
+            # Skip steps that aren't ready to draft. These have one or
+            # more unfilled CRITICAL slots and would only produce a
+            # placeholder-laden artifact. The engine's
+            # _propagate_completion fires Call C for them later when
+            # upstream slots fill.
+            if step.draft_state and step.draft_state not in ("drafted", "ready_to_draft"):
+                logger.info(
+                    "Call C skipped for step %s (draft_state=%s)",
+                    step.id, step.draft_state,
+                )
+                continue
+
             channel = (step.recommended_channel or "note").lower()
             schema = CALL_C_PAYLOAD_SCHEMAS.get(channel)
             if schema is None:
@@ -614,6 +626,10 @@ class ActionPlanSynthesizer:
             db.add(artifact)
             step.artifact_version = new_version
             step.artifact_stale = False
+            # Mark drafted now that Call C has produced (or attempted)
+            # the artifact body. The engine reads this to know whether
+            # downstream completion should trigger fresh drafts.
+            step.draft_state = "drafted"
 
     # ── Persistence ───────────────────────────────────────
 
@@ -736,6 +752,18 @@ class ActionPlanSynthesizer:
                     if isinstance(fb_idx, int) and fb_idx in index_to_step_id
                     else None
                 )
+                # ``slot_category`` is required by the new Call B prompt
+                # but tolerate older / malformed payloads by defaulting
+                # to "other" so synthesis never fails on a missing tag.
+                # ``critical`` defaults to True — the safer side when the
+                # model omits it (we'd rather mark a step pending than
+                # silently let a draft go out with missing data).
+                slot_category = slot.get("slot_category")
+                if not isinstance(slot_category, str) or not slot_category.strip():
+                    slot_category = "other"
+                critical_flag = slot.get("critical")
+                if not isinstance(critical_flag, bool):
+                    critical_flag = bool(slot.get("required", True))
                 new_slots.append(
                     {
                         "slot_key": str(slot.get("slot_key") or ""),
@@ -744,6 +772,8 @@ class ActionPlanSynthesizer:
                         "filled_by_step_id": fb_id,
                         "filled_value": None,
                         "filled_at": None,
+                        "slot_category": slot_category,
+                        "critical": critical_flag,
                     }
                 )
             step.input_slots = new_slots
@@ -756,25 +786,61 @@ class ActionPlanSynthesizer:
         if isinstance(endpoint_idx, int) and endpoint_idx in index_to_step_id:
             plan.customer_endpoint_step_id = index_to_step_id[endpoint_idx]
 
-        # Seed obvious slots from the source interaction so the rep
-        # doesn't see ``{contact_name}`` / ``{call_date}`` etc. literal
-        # placeholders in artifact bodies. The slot system was always
-        # designed to fill from upstream steps OR call data; this pass
-        # handles the call-data side, which was previously unwired.
+        # Resolve the requesting user's first name once so the seed
+        # pass can fill rep_metadata slots (rep_name, rep_first_name)
+        # without each per-step pass re-reading the User row.
+        requesting_user_first_name: Optional[str] = None
+        if inputs.acting_user_id is not None:
+            from backend.app.models import User as _UserModel
+            user_row = await db.get(_UserModel, inputs.acting_user_id)
+            if user_row and user_row.name:
+                # Best-effort first-name extraction. ``User.name`` is
+                # free-form ("Maria Chen") so we just take the first
+                # token; falls back to the whole name when there's no
+                # space.
+                requesting_user_first_name = user_row.name.strip().split()[0]
+
+        # Seed obvious slots from the source interaction + requesting
+        # user so the rep doesn't see ``{contact_name}`` / ``{call_date}``
+        # / ``{rep_name}`` literal placeholders in artifact bodies. The
+        # slot system was always designed to fill from upstream steps OR
+        # call data; this pass handles the call-data side. Slot
+        # classification (slot_category + critical) is the primary signal,
+        # with legacy slot_key substring matching as fallback.
         try:
-            seeded = await _seed_slots_from_interaction(
+            seeded, considered = await _seed_slots_from_interaction(
                 db,
                 steps=step_rows,
                 interaction=inputs.interaction,
+                requesting_user_first_name=requesting_user_first_name,
             )
-            if seeded:
-                logger.info(
-                    "seeded %d slots from interaction for plan %s",
-                    seeded, plan.id,
-                )
+            logger.info(
+                "slot seed for plan %s: considered=%d seeded=%d",
+                plan.id, considered, seeded,
+            )
         except Exception:  # noqa: BLE001 — slot-seed must never fail synthesis
             logger.exception(
                 "slot seeding failed for plan %s (non-fatal)", plan.id,
+            )
+
+        # Classify each step's draft_state. A step is ``ready_to_draft``
+        # when all of its CRITICAL input_slots have a ``filled_value``
+        # (filled either by interaction seed above or by a None-indexed
+        # external source the rep is expected to provide before Call C).
+        # Otherwise the step is ``pending_upstream`` and Call C will not
+        # fire at synthesis time — the engine will trigger it later when
+        # the upstream step completes (see engine._propagate_completion).
+        for step in step_rows:
+            critical_unfilled = 0
+            for slot in step.input_slots or []:
+                if not isinstance(slot, dict):
+                    continue
+                if not slot.get("critical"):
+                    continue
+                if slot.get("filled_value") is None:
+                    critical_unfilled += 1
+            step.draft_state = (
+                "ready_to_draft" if critical_unfilled == 0 else "pending_upstream"
             )
 
         await db.flush()
@@ -1110,14 +1176,17 @@ async def _seed_slots_from_interaction(
     *,
     steps: List[ActionStep],
     interaction: Interaction,
-) -> int:
+    requesting_user_first_name: Optional[str] = None,
+) -> Tuple[int, int]:
     """Walk every step's input_slots and fill obvious ones from the
-    source interaction's data. Returns the count of slots seeded so
-    callers can log it.
+    source interaction's data. Returns ``(seeded, considered)`` so
+    callers can log seed-rate (positive evidence that the pass ran).
 
-    Heuristic — match slot_key by substring against canonical concepts.
-    Anything we can't recognize stays ``filled_value=None`` and the
-    Call C placeholder system runs as today.
+    Matches primarily on ``slot_category`` (canonical small enum from
+    Call B) and falls back to ``slot_key`` substring patterns for
+    legacy plans / unclassified slots. Anything that doesn't match
+    stays ``filled_value=None`` and the Call C placeholder system
+    runs as today.
     """
     insights = interaction.insights or {}
     if not isinstance(insights, dict):
@@ -1191,6 +1260,7 @@ async def _seed_slots_from_interaction(
             key_moments_summary = "; ".join(descs)
 
     seeded = 0
+    considered = 0
     for step in steps:
         slots = step.input_slots
         if not isinstance(slots, list):
@@ -1201,51 +1271,81 @@ async def _seed_slots_from_interaction(
                 continue
             if slot.get("filled_value") is not None:
                 continue  # already filled by upstream step wiring
+            considered += 1
             key = str(slot.get("slot_key") or "")
+            category = str(slot.get("slot_category") or "").lower()
             value: Optional[str] = None
 
-            if contact_name and _slot_key_matches(
-                key, "contact_name", "prospect_name", "customer_contact",
-                "customer_name", "decision_maker", "primary_contact",
-                "buyer_name", "lead_name",
-            ):
-                value = contact_name
-            elif call_date and _slot_key_matches(
-                key, "call_date", "interaction_date", "conversation_date",
-                "meeting_date_prior", "discovery_date",
-            ):
-                value = call_date
-            elif next_due_date and _slot_key_matches(
-                key, "due_date", "target_date", "deadline", "follow_up_date",
-                "delivery_date", "by_date",
-            ):
+            # ── Primary path: canonical slot_category match ────────
+            if category == "rep_metadata" and requesting_user_first_name:
+                value = requesting_user_first_name
+            elif category == "participant_email" and contact_name:
+                # We have a name but not necessarily an email here; the
+                # participant_resolver fills emails on outbound paths.
+                # Skip this seed; resolver handles it at send time.
+                value = None
+            elif category == "due_date" and next_due_date:
                 value = next_due_date
-            elif summary and _slot_key_matches(
-                key, "customer_stated_need", "customer_need", "stated_need",
-                "pain_point", "summary", "call_summary", "context",
-                "background",
-            ):
-                value = summary
-            elif topics_joined and _slot_key_matches(
-                key, "key_topics", "topics", "topics_discussed",
-                "discussion_areas", "themes", "focus_areas",
-            ):
-                value = topics_joined
-            elif rep_action_items_joined and _slot_key_matches(
-                key, "rep_action_items", "rep_actions", "next_steps",
-                "internal_actions", "vendor_actions",
-            ):
-                value = rep_action_items_joined
-            elif customer_commitments_joined and _slot_key_matches(
-                key, "customer_action_items", "customer_commitments",
-                "customer_actions", "customer_promises", "agreed_actions",
-            ):
-                value = customer_commitments_joined
-            elif key_moments_summary and _slot_key_matches(
-                key, "meeting_context", "key_moments", "discussion_highlights",
-                "conversation_highlights",
-            ):
-                value = key_moments_summary
+            elif category == "meeting_time" and next_due_date:
+                # Best-effort: a step-level "meeting_time" slot can
+                # accept the next action_item due_date when present.
+                # Reps can override per step.
+                value = next_due_date
+
+            # ── Fallback: legacy slot_key substring match ──────────
+            # Plans authored before the slot_category field landed
+            # don't carry the canonical tag. The legacy substring
+            # heuristic still catches the common interaction-derivable
+            # concepts; slot_category is the preferred signal but this
+            # avoids regressing old-plan behavior.
+            if value is None:
+                if contact_name and _slot_key_matches(
+                    key, "contact_name", "prospect_name", "customer_contact",
+                    "customer_name", "decision_maker", "primary_contact",
+                    "buyer_name", "lead_name",
+                ):
+                    value = contact_name
+                elif call_date and _slot_key_matches(
+                    key, "call_date", "interaction_date", "conversation_date",
+                    "meeting_date_prior", "discovery_date",
+                ):
+                    value = call_date
+                elif next_due_date and _slot_key_matches(
+                    key, "due_date", "target_date", "deadline", "follow_up_date",
+                    "delivery_date", "by_date",
+                ):
+                    value = next_due_date
+                elif summary and _slot_key_matches(
+                    key, "customer_stated_need", "customer_need", "stated_need",
+                    "pain_point", "summary", "call_summary", "context",
+                    "background",
+                ):
+                    value = summary
+                elif topics_joined and _slot_key_matches(
+                    key, "key_topics", "topics", "topics_discussed",
+                    "discussion_areas", "themes", "focus_areas",
+                ):
+                    value = topics_joined
+                elif rep_action_items_joined and _slot_key_matches(
+                    key, "rep_action_items", "rep_actions", "next_steps",
+                    "internal_actions", "vendor_actions",
+                ):
+                    value = rep_action_items_joined
+                elif customer_commitments_joined and _slot_key_matches(
+                    key, "customer_action_items", "customer_commitments",
+                    "customer_actions", "customer_promises", "agreed_actions",
+                ):
+                    value = customer_commitments_joined
+                elif key_moments_summary and _slot_key_matches(
+                    key, "meeting_context", "key_moments", "discussion_highlights",
+                    "conversation_highlights",
+                ):
+                    value = key_moments_summary
+                elif requesting_user_first_name and _slot_key_matches(
+                    key, "rep_name", "rep_first_name", "sales_rep_name",
+                    "sender_name", "agent_name", "rep_signature",
+                ):
+                    value = requesting_user_first_name
 
             if value is not None:
                 slot["filled_value"] = value
@@ -1258,7 +1358,143 @@ async def _seed_slots_from_interaction(
             # nested mutation; reassign the same list reference to a
             # fresh shallow copy.
             step.input_slots = list(slots)
-    return seeded
+    return seeded, considered
+
+
+async def render_single_step_artifact(
+    db: AsyncSession,
+    *,
+    step: ActionStep,
+    tenant: Tenant,
+    interaction: Optional[Interaction] = None,
+    slot_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[StepArtifact]:
+    """Render a Call C artifact for one step without re-running the
+    full synthesizer pipeline.
+
+    Used by:
+    - /action-plans/{plan_id}/steps/{step_id}/draft-now (the rep clicks
+      "Draft now" on a ``ready_to_draft`` step, or "Draft anyway" on a
+      ``draft_blocked`` step after providing slot_overrides)
+    - The engine's downstream-completion hook (in a future v2 that
+      auto-fires draft generation from a Celery task)
+
+    Uses a slimmed-down context vs. the full synthesizer: no fresh KB
+    retrieval, no external CRM snapshot — just the step's own metadata
+    plus the source interaction's insights. Quality is somewhat lower
+    than the batch synthesis path but is sufficient for "I'm filling
+    in the missing piece, give me a clean draft now."
+    """
+    if slot_overrides:
+        new_slots = []
+        for slot in step.input_slots or []:
+            if not isinstance(slot, dict):
+                new_slots.append(slot)
+                continue
+            key = slot.get("slot_key")
+            if key in slot_overrides and slot.get("filled_value") is None:
+                copy = dict(slot)
+                copy["filled_value"] = slot_overrides[key]
+                copy["filled_at"] = datetime.utcnow().isoformat()
+                copy["filled_by_source"] = "rep_override"
+                new_slots.append(copy)
+            else:
+                new_slots.append(slot)
+        step.input_slots = new_slots
+
+    channel = (step.recommended_channel or "note").lower()
+    schema = CALL_C_PAYLOAD_SCHEMAS.get(channel)
+    if schema is None:
+        channel = "note"
+        schema = CALL_C_PAYLOAD_SCHEMAS["note"]
+
+    insights = (interaction.insights or {}) if interaction else {}
+    if not isinstance(insights, dict):
+        insights = {}
+    summary_block = _slim_summary_block(insights)
+    customer_brief_block = "(brief not loaded — single-step render path)"
+    template = get_domain("sales")  # default; real plan.domain ideally
+    if step.plan_id:
+        # Re-read plan.domain so we don't always default to sales.
+        plan_row = await db.get(ActionPlan, step.plan_id)
+        if plan_row and plan_row.domain:
+            template = get_domain(plan_row.domain)
+
+    system_prompt = CALL_C_SYSTEM_PROMPT.format(
+        domain_role=template.role,
+        tone=template.tone,
+        tone_description=template.tone_description,
+        tenant_name=tenant.name,
+        summary_block=summary_block,
+        customer_brief_block=customer_brief_block,
+        step_title=step.title,
+        step_intent=step.intent or step.description or "",
+        step_channel=channel,
+        step_participants=_format_participants(step.participants),
+        filled_slots_block=_format_filled_slots(step.input_slots),
+        output_schema_block=_format_output_schema(step.output_schema),
+        kb_template_block="(no template in KB)",
+        payload_schema_block=schema,
+    )
+    user_content = (
+        f"Draft the {channel} artifact now. Return ONLY the JSON "
+        "per the schema in the system prompt."
+    )
+
+    client = get_async_anthropic()
+    is_endpoint = step.role_in_plan == "customer_endpoint"
+    tier = "sonnet" if is_endpoint else "haiku"
+    max_tokens = 4000 if is_endpoint else 2500
+    try:
+        response = await client.messages.create(
+            model=_MODELS[tier],
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        body_text = ""
+        for block in getattr(response, "content", []) or []:
+            if getattr(block, "type", None) == "text":
+                body_text += getattr(block, "text", "") or ""
+        from backend.app.services.triage_service import _strip_json_fences
+        payload = json.loads(_strip_json_fences(body_text.strip()))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Single-step Call C failed for step %s", step.id)
+        payload = {"error": str(exc)[:200]}
+
+    new_version = (step.artifact_version or 0) + 1
+    artifact = StepArtifact(
+        step_id=step.id,
+        tenant_id=tenant.id,
+        version=new_version,
+        kind=_artifact_kind_for_channel(channel),
+        payload=payload,
+        model_tier=tier,
+    )
+    db.add(artifact)
+    step.artifact_version = new_version
+    step.artifact_stale = False
+    step.draft_state = "drafted"
+    await db.flush()
+    return artifact
+
+
+def _slim_summary_block(insights: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    summary = insights.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        parts.append(f"Call summary: {summary.strip()}")
+    key_moments = insights.get("key_moments") or []
+    if isinstance(key_moments, list):
+        descs = [
+            str(km.get("description") or "").strip()
+            for km in key_moments[:5]
+            if isinstance(km, dict)
+        ]
+        descs = [d for d in descs if d]
+        if descs:
+            parts.append("Key moments:\n" + "\n".join(f"- {d}" for d in descs))
+    return "\n\n".join(parts) if parts else "(insights not available)"
 
 
 def _artifact_kind_for_channel(channel: str) -> str:

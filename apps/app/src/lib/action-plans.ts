@@ -61,6 +61,19 @@ export interface ActionStepSlot {
     filled_by_step_id: string | null;
     filled_value: unknown | null;
     filled_at: string | null;
+    /** Critical slots gate the lazy-draft pipeline — when any is
+     * unfilled, the step lands in pending_upstream / draft_blocked
+     * instead of getting a placeholder-laden draft. Optional slots
+     * are auto-filled at synthesis from interaction data (seed pass)
+     * or omitted gracefully by the Call C prose. */
+    critical?: boolean;
+    /** Canonical category from a small enum (participant_availability,
+     * participant_email, meeting_time, attachment_document,
+     * customer_decision, customer_data_share, internal_artifact,
+     * internal_review, external_query, rep_metadata, due_date, other).
+     * The seed pass keys off this rather than substring-matching
+     * slot_key. */
+    slot_category?: string;
 }
 
 export interface ActionStepOutputSlot {
@@ -113,6 +126,13 @@ export interface ActionStep {
      * Send button uses this to decide whether to transition to
      * awaiting_response (needs reply) or done (fire-and-forget). */
     awaits_response: boolean;
+    /** Lazy-draft state. Drives the StepCard's per-state UI:
+     *   drafted          -> artifact body is ready; show it normally
+     *   ready_to_draft   -> all critical slots filled; show "Draft now"
+     *   pending_upstream -> waiting on an upstream step; show "Waiting on..."
+     *   draft_blocked    -> upstream that was the critical-slot source
+     *                       got skipped; show "Draft anyway" with form */
+    draft_state: "drafted" | "ready_to_draft" | "pending_upstream" | "draft_blocked";
     created_at: string;
     latest_artifact: StepArtifact | null;
     responses: StepResponse[];
@@ -502,5 +522,39 @@ export function useGenerateStepDocument(planId: string) {
                 `/action-plans/${planId}/steps/${stepId}/generate-document`,
                 { method: "POST", body: JSON.stringify(payload) },
             ),
+    });
+}
+
+// ── Lazy-draft: fire Call C for a single step on demand ───────────────
+
+export interface DraftNowPayload {
+    /** Rep-supplied values for unfilled slots — used on the "Draft anyway"
+     * path when an upstream that provided a critical slot got skipped. */
+    slot_overrides?: Record<string, unknown>;
+}
+
+export interface DraftNowResult {
+    success: boolean;
+    draft_state: string;
+    artifact_version: number;
+    error: string | null;
+}
+
+export function useDraftStepNow(planId: string) {
+    const api = useApi();
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            stepId,
+            payload,
+        }: {
+            stepId: string;
+            payload: DraftNowPayload;
+        }) =>
+            api.request<DraftNowResult>(
+                `/action-plans/${planId}/steps/${stepId}/draft-now`,
+                { method: "POST", body: JSON.stringify(payload) },
+            ),
+        onSuccess: () => invalidatePlan(qc, planId),
     });
 }

@@ -312,6 +312,23 @@ class ActionPlanEngine:
                 _mark_stale_and_schedule(downstream)
             # Re-evaluate readiness for downstream.
             await _evaluate_readiness(downstream, plan_steps)
+            # Re-classify draft_state. Three cases:
+            #  1. completed_step was skipped AND it provided one of
+            #     downstream's CRITICAL slots that's still unfilled
+            #     -> draft_blocked (rep needs to draft anyway or skip)
+            #  2. downstream's CRITICAL slots are now all filled AND
+            #     downstream hasn't been drafted yet
+            #     -> ready_to_draft (SPA shows a "Draft now" button;
+            #        rep clicks to fire Call C for this step)
+            #  3. downstream still has unfilled critical slots
+            #     -> pending_upstream (no change from synthesis)
+            # Steps already in ``drafted`` keep that state regardless;
+            # ``artifact_stale=True`` is the signal that an existing
+            # draft should be regenerated, separate from draft_state.
+            if downstream.draft_state != "drafted":
+                _reclassify_draft_state(
+                    downstream, was_skipped_upstream=was_skipped,
+                )
             affected.append(downstream.id)
         return affected
 
@@ -361,6 +378,53 @@ class ActionPlanEngine:
 # ──────────────────────────────────────────────────────────
 # Module-level helpers (called from engine + other surfaces)
 # ──────────────────────────────────────────────────────────
+
+
+def _reclassify_draft_state(
+    step: ActionStep,
+    *,
+    was_skipped_upstream: bool = False,
+) -> None:
+    """Re-evaluate a non-drafted step's ``draft_state`` after one of
+    its upstream slots changes.
+
+    Three terminal classifications:
+
+    * ``draft_blocked`` — an upstream that the synthesizer pointed at
+      for a CRITICAL slot was skipped, leaving that critical slot
+      unfillable without manual intervention. The SPA shows a "Draft
+      anyway" affordance with an inline form for the rep to supply
+      the missing value.
+    * ``ready_to_draft`` — all critical slots are now filled. The SPA
+      shows a "Draft now" button that fires Call C via the
+      /draft-now endpoint. (We don't auto-fire from the engine in v1
+      to keep the engine sync-only; v2 can enqueue a Celery render.)
+    * ``pending_upstream`` — at least one critical slot is still
+      unfilled and depends on another upstream not yet complete.
+
+    Already-drafted steps are NOT downgraded by this helper; their
+    ``artifact_stale`` flag is the separate signal for "regenerate me."
+    """
+    if step.draft_state == "drafted":
+        return
+
+    critical_slots = [
+        s for s in (step.input_slots or [])
+        if isinstance(s, dict) and s.get("critical")
+    ]
+    critical_unfilled = [
+        s for s in critical_slots if s.get("filled_value") is None
+    ]
+
+    if was_skipped_upstream and critical_unfilled:
+        step.draft_state = "draft_blocked"
+        return
+
+    if not critical_unfilled:
+        step.draft_state = "ready_to_draft"
+        return
+
+    step.draft_state = "pending_upstream"
 
 
 def _mark_stale_and_schedule(step: ActionStep) -> None:

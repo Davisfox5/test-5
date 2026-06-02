@@ -131,6 +131,11 @@ class ActionStepOut(BaseModel):
     # (typically an email) requires a customer reply. Drives the
     # post-Send transition: True → awaiting_response, False → done.
     awaits_response: bool = False
+    # Lazy-draft state: drafted | ready_to_draft | pending_upstream |
+    # draft_blocked. The SPA renders different per-step UI per state.
+    # Defaults to "drafted" for back-compat with plans built before
+    # this column existed.
+    draft_state: str = "drafted"
     created_at: datetime
     # Computed surfaces
     latest_artifact: Optional[StepArtifactOut] = None
@@ -1595,6 +1600,95 @@ async def generate_document_for_plan_step(
         word_count=result.word_count,
         model=result.model,
         generated_at_unix=result.generated_at_unix,
+    )
+
+
+# ──────────────────────────────────────────────────────────
+# Draft-now: fire Call C for a single step (lazy-draft flow)
+# ──────────────────────────────────────────────────────────
+
+
+class DraftNowRequest(BaseModel):
+    """Optional rep-provided values for unfilled slots. Use this when
+    the step is ``draft_blocked`` (upstream was skipped or deleted) or
+    when the rep wants to draft a ``pending_upstream`` step manually."""
+    slot_overrides: Optional[Dict[str, Any]] = None
+
+
+class DraftNowResult(BaseModel):
+    success: bool
+    draft_state: str
+    artifact_version: int
+    error: Optional[str] = None
+
+
+@router.post(
+    "/action-plans/{plan_id}/steps/{step_id}/draft-now",
+    response_model=DraftNowResult,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def draft_step_now(
+    plan_id: uuid.UUID,
+    step_id: uuid.UUID,
+    body: DraftNowRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Render a Call C artifact for a single step on demand.
+
+    Three call sites:
+
+    * SPA clicks "Draft now" on a ``ready_to_draft`` step (all critical
+      slots are filled but the synthesizer skipped drafting because the
+      step was waiting on upstream completion when synthesis ran).
+    * SPA clicks "Draft anyway" on a ``draft_blocked`` step (upstream
+      that was the source of a critical slot got skipped). The
+      ``slot_overrides`` map carries the rep's manual values for those
+      missing slots.
+    * SPA clicks "Re-draft" on a ``drafted`` step whose ``artifact_stale``
+      flag is True (an upstream slot fill changed the data).
+
+    Returns the step's new draft_state ("drafted" on success). The
+    artifact body itself is reachable via the regular plan-detail
+    endpoint, which is what the SPA already polls.
+    """
+    from backend.app.services.action_plan.synthesizer import (
+        render_single_step_artifact,
+    )
+
+    plan = await _load_plan_or_404(db, tenant, plan_id)
+    step = await _load_step_or_404(db, tenant, plan_id, step_id)
+
+    interaction: Optional[Interaction] = None
+    if plan.interaction_id is not None:
+        interaction = await db.get(Interaction, plan.interaction_id)
+        if interaction is not None and interaction.tenant_id != tenant.id:
+            interaction = None
+
+    try:
+        await render_single_step_artifact(
+            db,
+            step=step,
+            tenant=tenant,
+            interaction=interaction,
+            slot_overrides=body.slot_overrides,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("draft_step_now failed")
+        raise HTTPException(status_code=502, detail=f"Draft failed: {exc}")
+
+    await db.commit()
+    _emit_event(
+        tenant=tenant, principal=principal,
+        event="action_step.drafted_lazily",
+        plan_id=plan_id, step_id=step_id,
+        extra={"draft_state": step.draft_state},
+    )
+    return DraftNowResult(
+        success=True,
+        draft_state=step.draft_state,
+        artifact_version=step.artifact_version,
     )
 
 

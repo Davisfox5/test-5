@@ -11,6 +11,7 @@ import {
     useCommitStep,
     useCompleteStep,
     useDeleteStep,
+    useDraftStepNow,
     useEditStep,
     useGenerateStepDocument,
     useMarkStepSent,
@@ -217,7 +218,7 @@ export function StepCard({ plan, step, highlightAsEndpoint }: StepCardProps) {
                                 </p>
                             )}
                             <PrepArtifactsBlock step={step} />
-                            <ArtifactBlock step={step} />
+                            <DraftStateBlock plan={plan} step={step} />
                             <ResponseThread step={step} />
                             <NoteInput plan={plan} step={step} />
                             <div className="flex flex-wrap gap-2 pt-2">
@@ -535,6 +536,232 @@ function PrepArtifactsBlock({ step }: { step: ActionStep }) {
                     <li key={i}>{String(p)}</li>
                 ))}
             </ul>
+        </div>
+    );
+}
+
+// Renders the right panel for a step based on its lazy-draft state.
+// drafted        -> show the artifact body (existing ArtifactBlock)
+// ready_to_draft -> "Draft now" button (one click, fires Call C)
+// pending_upstream -> "Waiting on: …" panel listing the unfilled
+//                     critical slot(s) and what step(s) will produce
+//                     them. Includes an escape-hatch "Draft anyway"
+//                     button with an inline form for rep-supplied
+//                     values.
+// draft_blocked  -> Red banner explaining the upstream that provided
+//                   a critical slot was skipped, plus the same
+//                   inline form as above.
+function DraftStateBlock({
+    plan,
+    step,
+}: {
+    plan: ActionPlan;
+    step: ActionStep;
+}) {
+    const draftNow = useDraftStepNow(plan.id);
+    const [showOverrideForm, setShowOverrideForm] = useState(false);
+    const [overrides, setOverrides] = useState<Record<string, string>>({});
+    const [draftError, setDraftError] = useState<string | null>(null);
+
+    if (step.draft_state === "drafted") {
+        return <ArtifactBlock step={step} />;
+    }
+
+    // Find the unfilled critical slots so we can list them and (when
+    // the rep opens "Draft anyway") render an input per slot.
+    // Fallback to ``required`` when ``critical`` isn't set (legacy
+    // plans built before slot classification landed).
+    const unfilledCritical = (step.input_slots || []).filter(
+        (s) => (s.critical ?? s.required) && s.filled_value === null,
+    );
+
+    async function fire(overrideSlots?: Record<string, string>) {
+        setDraftError(null);
+        try {
+            await draftNow.mutateAsync({
+                stepId: step.id,
+                payload: { slot_overrides: overrideSlots },
+            });
+            // success — useDraftStepNow invalidates the plan query, so
+            // the parent re-renders with draft_state="drafted" and
+            // ArtifactBlock takes over.
+        } catch (err) {
+            setDraftError((err as Error).message);
+        }
+    }
+
+    if (step.draft_state === "ready_to_draft") {
+        return (
+            <div className="rounded border border-emerald-300 bg-emerald-50 p-2 text-xs dark:border-emerald-700 dark:bg-emerald-900/30">
+                <p className="font-medium text-emerald-900 dark:text-emerald-100">
+                    Ready to draft.
+                </p>
+                <p className="mt-0.5 text-emerald-800 dark:text-emerald-200">
+                    All required inputs are in place. Click to generate the artifact for this step.
+                </p>
+                <button
+                    type="button"
+                    onClick={() => fire()}
+                    disabled={draftNow.isPending}
+                    className="mt-2 rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                    {draftNow.isPending ? "Drafting…" : "Draft now"}
+                </button>
+                {draftError && (
+                    <p className="mt-1 text-rose-700 dark:text-rose-300">{draftError}</p>
+                )}
+            </div>
+        );
+    }
+
+    if (step.draft_state === "pending_upstream") {
+        return (
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 text-xs dark:border-amber-700 dark:bg-amber-900/30">
+                <p className="font-medium text-amber-900 dark:text-amber-100">
+                    Waiting on data from an earlier step.
+                </p>
+                {unfilledCritical.length > 0 && (
+                    <ul className="mt-1 list-inside list-disc text-amber-800 dark:text-amber-200">
+                        {unfilledCritical.map((s, i) => (
+                            <li key={i}>
+                                <span className="font-mono">{s.slot_key}</span>
+                                {s.description ? `: ${s.description}` : ""}
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <p className="mt-1 text-amber-700 dark:text-amber-300">
+                    The draft will appear here automatically once the upstream step completes, or you can draft now with the values you already have.
+                </p>
+                {!showOverrideForm ? (
+                    <button
+                        type="button"
+                        onClick={() => setShowOverrideForm(true)}
+                        className="mt-2 rounded border border-amber-500 px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                    >
+                        Draft anyway
+                    </button>
+                ) : (
+                    <SlotOverrideForm
+                        slots={unfilledCritical}
+                        overrides={overrides}
+                        setOverrides={setOverrides}
+                        pending={draftNow.isPending}
+                        onCancel={() => {
+                            setShowOverrideForm(false);
+                            setOverrides({});
+                        }}
+                        onSubmit={() => fire(overrides)}
+                        error={draftError}
+                    />
+                )}
+            </div>
+        );
+    }
+
+    if (step.draft_state === "draft_blocked") {
+        return (
+            <div className="rounded border border-rose-300 bg-rose-50 p-2 text-xs dark:border-rose-700 dark:bg-rose-900/30">
+                <p className="font-medium text-rose-900 dark:text-rose-100">
+                    Upstream step was skipped or deleted.
+                </p>
+                <p className="mt-0.5 text-rose-800 dark:text-rose-200">
+                    This step depended on it for the data below. Provide values manually to draft anyway, or skip this step too.
+                </p>
+                <SlotOverrideForm
+                    slots={unfilledCritical}
+                    overrides={overrides}
+                    setOverrides={setOverrides}
+                    pending={draftNow.isPending}
+                    onCancel={() => setOverrides({})}
+                    onSubmit={() => fire(overrides)}
+                    error={draftError}
+                />
+            </div>
+        );
+    }
+
+    // Unknown state — defensive fallback. Should not reach in practice.
+    return <ArtifactBlock step={step} />;
+}
+
+function SlotOverrideForm({
+    slots,
+    overrides,
+    setOverrides,
+    pending,
+    onCancel,
+    onSubmit,
+    error,
+}: {
+    slots: Array<{ slot_key: string; description: string }>;
+    overrides: Record<string, string>;
+    setOverrides: (next: Record<string, string>) => void;
+    pending: boolean;
+    onCancel: () => void;
+    onSubmit: () => void;
+    error: string | null;
+}) {
+    if (slots.length === 0) {
+        return (
+            <div className="mt-2">
+                <button
+                    type="button"
+                    onClick={onSubmit}
+                    disabled={pending}
+                    className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                    {pending ? "Drafting…" : "Draft now"}
+                </button>
+                {error && (
+                    <p className="mt-1 text-rose-700 dark:text-rose-300">{error}</p>
+                )}
+            </div>
+        );
+    }
+    return (
+        <div className="mt-2 space-y-2">
+            {slots.map((s, i) => (
+                <label key={i} className="block">
+                    <span className="block font-mono text-[11px] text-slate-700 dark:text-slate-200">
+                        {s.slot_key}
+                    </span>
+                    {s.description && (
+                        <span className="block text-[10px] text-slate-500 dark:text-slate-400">
+                            {s.description}
+                        </span>
+                    )}
+                    <input
+                        type="text"
+                        value={overrides[s.slot_key] || ""}
+                        onChange={(e) =>
+                            setOverrides({ ...overrides, [s.slot_key]: e.target.value })
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800"
+                        placeholder="Type the value…"
+                    />
+                </label>
+            ))}
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    onClick={onSubmit}
+                    disabled={pending}
+                    className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                    {pending ? "Drafting…" : "Draft now"}
+                </button>
+                <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                >
+                    Cancel
+                </button>
+            </div>
+            {error && (
+                <p className="text-rose-700 dark:text-rose-300">{error}</p>
+            )}
         </div>
     );
 }
