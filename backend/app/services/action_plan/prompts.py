@@ -358,7 +358,7 @@ CALL_B_SYSTEM_PROMPT = (
     "containing the rep's first name (a generic salutation works); "
     "a recap of prior key moments (the email reads fine without "
     "the recap); a deal_id reference (the CRM associates the note "
-    "without it). When unsure, mark FALSE — the bias is toward "
+    "without it). When unsure, mark FALSE; the bias is toward "
     "graceful copy that handles missing data, not toward gating "
     "draft generation behind every nice-to-have. Reps prefer a "
     "concise complete draft to a longer placeholder-laden one.\n"
