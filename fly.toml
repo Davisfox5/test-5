@@ -63,7 +63,11 @@ primary_region = "iad"
   # ~86K/day.
   # NOTE: also disabled mingle/gossip in tasks.py so adding workers
   # doesn't fire pub/sub bursts on every deploy.
-  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2 --without-mingle --without-gossip"
+  # ``-Q priority,default,batch`` drains in that order, so SLA-sensitive
+  # customer-facing work pre-empts the nightly batch sweeps and weekly
+  # aggregations. Routes themselves are declared in tasks.py
+  # (task_routes).
+  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2 -Q priority,default,batch --without-mingle --without-gossip"
   beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
   # SIPREC SRS — uses a *different image* from api/worker/beat. The
   # build/image directives below the [[vm]] blocks override the default

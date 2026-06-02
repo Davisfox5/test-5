@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from backend.app.auth import (
     AuthPrincipal,
@@ -65,6 +66,24 @@ class KBDocOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class KBDocSummary(BaseModel):
+    """Same as ``KBDocOut`` minus the ``content`` blob — that column is
+    often 10 KB-1 MB per row and the list endpoint never renders it."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    owner_user_id: Optional[uuid.UUID] = None
+    customer_id: Optional[uuid.UUID] = None
+    title: Optional[str]
+    source_type: Optional[str]
+    source_url: Optional[str]
+    tags: list
+    last_synced_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class KBDocUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
@@ -75,7 +94,7 @@ class KBDocUpdate(BaseModel):
 # ── Endpoints ────────────────────────────────────────────
 
 
-@router.get("/kb/docs", response_model=List[KBDocOut])
+@router.get("/kb/docs", response_model=List[KBDocSummary])
 async def list_kb_docs(
     source_type: Optional[str] = Query(None, description="Filter by source type: editor, upload, confluence, notion, gdrive"),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by"),
@@ -97,8 +116,25 @@ async def list_kb_docs(
     tenant: Tenant = Depends(get_current_tenant),
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
+    # load_only drops ``content`` from the SELECT — it can be 10 KB-1 MB
+    # per row and the list view never shows it. Detail endpoint
+    # (/kb/docs/{id}) still fetches the full row.
     stmt = (
         select(KBDocument)
+        .options(
+            load_only(
+                KBDocument.id,
+                KBDocument.tenant_id,
+                KBDocument.owner_user_id,
+                KBDocument.customer_id,
+                KBDocument.title,
+                KBDocument.source_type,
+                KBDocument.source_url,
+                KBDocument.tags,
+                KBDocument.last_synced_at,
+                KBDocument.created_at,
+            )
+        )
         .where(KBDocument.tenant_id == tenant.id)
         .order_by(KBDocument.created_at.desc())
         .limit(limit)

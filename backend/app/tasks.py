@@ -113,6 +113,49 @@ celery_app.conf.update(
     # pub/sub burst per machine restart.
     worker_enable_remote_control=False,
     worker_send_task_events=False,
+    # ── Queue routing ────────────────────────────────────────────
+    # Three queues so SLA-sensitive customer-facing work (voice / email
+    # interaction processing, push notifications) can't queue behind
+    # a slow nightly backup or weekly aggregation. The worker process
+    # is started with ``-Q priority,default,batch`` and Celery drains
+    # them in that listed order, so priority always pre-empts default
+    # which always pre-empts batch.
+    #
+    # Routing here uses glob patterns evaluated against the task
+    # ``name`` (the value passed to ``@celery_app.task(name=...)`),
+    # not the Python function name — keeps the routes intelligible
+    # without sprinkling ``queue=`` on every decorator.
+    task_default_queue="default",
+    task_routes={
+        # Customer-facing realtime path.
+        "process_voice_interaction": {"queue": "priority"},
+        "process_text_interaction": {"queue": "priority"},
+        "email_push_process_gmail": {"queue": "priority"},
+        "email_push_process_graph": {"queue": "priority"},
+        # Heavy nightly/weekly batch work — keeps it off the path of
+        # customer-facing interaction processing.
+        "tenant_backup_*": {"queue": "batch"},
+        "tenant_export_to_s3": {"queue": "batch"},
+        "audio_retention_sweep": {"queue": "batch"},
+        "event_retention_sweep": {"queue": "batch"},
+        "cross_tenant_aggregate_metrics": {"queue": "batch"},
+        "recompute_llm_ceilings": {"queue": "batch"},
+        "support_trend_scan": {"queue": "batch"},
+        "cohort_recommendation_scan": {"queue": "batch"},
+        "orchestrator_daily_all_tenants": {"queue": "batch"},
+        "orchestrator_weekly_all_tenants": {"queue": "batch"},
+        "tenant_insights_weekly": {"queue": "batch"},
+        "calibration_fit_all_tenants": {"queue": "batch"},
+        "irt_fit_all_tenants": {"queue": "batch"},
+        "churn_train_all_tenants": {"queue": "batch"},
+        "outcomes_backfill_all_tenants": {"queue": "batch"},
+        "refresh_few_shot_pools": {"queue": "batch"},
+        "compute_wer_weekly": {"queue": "batch"},
+        "discover_vocabulary_candidates": {"queue": "batch"},
+        "vocabulary_digest_weekly": {"queue": "batch"},
+        "tenant_brief_refiner_weekly": {"queue": "batch"},
+        "infer_from_sources_weekly": {"queue": "batch"},
+    },
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
         "tenant-insights-weekly": {
@@ -451,9 +494,19 @@ def _on_task_postrun(
         )
 
         task_name = getattr(sender, "name", "unknown")
-        status = "success" if state == "SUCCESS" else (
-            "retry" if state == "RETRY" else "failure"
-        )
+        # When state == SUCCESS we additionally check ``request.retries``;
+        # a non-zero retry count means we succeeded only after at least
+        # one failure, which is what the operator wants to track separately
+        # from "succeeded first try". The ``retry_success`` status lets
+        # alerts distinguish "retry logic is working" from "task is flaky".
+        request = getattr(sender, "request", None)
+        retries = getattr(request, "retries", 0) if request is not None else 0
+        if state == "SUCCESS":
+            status = "retry_success" if retries > 0 else "success"
+        elif state == "RETRY":
+            status = "retry"
+        else:
+            status = "failure"
         CELERY_TASK_RUNS.labels(task_name=task_name, status=status).inc()
         if runtime is not None:
             CELERY_TASK_LATENCY.labels(task_name=task_name).observe(float(runtime))
@@ -1077,22 +1130,44 @@ def _run_pipeline_impl(
     _call_dt = getattr(interaction, "started_at", None) or interaction.created_at
     _call_date_str = _call_dt.date().isoformat() if _call_dt else None
 
-    insights: Dict[str, Any] = _loop.run(
-        _get_analysis_service().analyze(
-            compressed_for_llm,
-            tier=overrides.get("force_tier") or recommended_tier,
-            triage_result=triage_result,
-            system_prompt_override=variant.prompt_template,
-            tenant_context_block=tenant_block,
-            rag_context_block=rag_block,
-            max_tokens_override=overrides.get("max_tokens"),
-            tenant_context=tenant_context,
-            customer_brief=customer_brief,
-            paralinguistic_block=paralinguistic_block,
-            complexity_score=complexity_score,
-            call_date=_call_date_str,
+    # Idempotency check: when a downstream step (scorecard, snippets,
+    # webhook fan-out) fails the whole task is retried. Re-running the
+    # Sonnet analysis on a retry is the most expensive part of the
+    # pipeline and we already persisted its output on the prior attempt
+    # — so reuse it instead of paying for a second Anthropic call.
+    # ``summary`` is the analyzer's canonical output field; presence of
+    # a non-trivial value + the absence of a retry-error stamp tells us
+    # the prior pass got past step 9 cleanly.
+    prior_insights = dict(getattr(interaction, "insights", None) or {})
+    prior_summary = prior_insights.get("summary")
+    prior_has_error = "error" in prior_insights
+    if (
+        isinstance(prior_summary, str)
+        and len(prior_summary.strip()) >= 40
+        and not prior_has_error
+    ):
+        logger.info(
+            "Skipping AI analysis for interaction %s — reusing insights from prior attempt",
+            interaction_id,
         )
-    )
+        insights = prior_insights
+    else:
+        insights = _loop.run(
+            _get_analysis_service().analyze(
+                compressed_for_llm,
+                tier=overrides.get("force_tier") or recommended_tier,
+                triage_result=triage_result,
+                system_prompt_override=variant.prompt_template,
+                tenant_context_block=tenant_block,
+                rag_context_block=rag_block,
+                max_tokens_override=overrides.get("max_tokens"),
+                tenant_context=tenant_context,
+                customer_brief=customer_brief,
+                paralinguistic_block=paralinguistic_block,
+                complexity_score=complexity_score,
+                call_date=_call_date_str,
+            )
+        )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
     logger.info(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
@@ -2610,8 +2685,15 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
         logger.info("PUBLIC_WEBHOOK_BASE_URL unset — skipping push renewal")
         return {"status": "skipped", "reason": "no_public_url"}
 
+    from datetime import datetime, timedelta, timezone
+
     session = _get_sync_session()
-    gmail_ok = graph_ok = failed = 0
+    gmail_ok = graph_ok = failed = skipped = 0
+    now = datetime.now(timezone.utc)
+    # Renew when the existing subscription is inside the 24 h tail of its
+    # lifetime — re-registering earlier just burns Google / Microsoft API
+    # calls (verified against the audit's ~$5/month leak estimate).
+    renew_horizon = now + timedelta(hours=24)
     try:
         integrations = (
             session.query(Integration)
@@ -2640,12 +2722,28 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
                 session.add(cursor)
                 session.flush()
 
+            # Skip if the existing subscription is still healthy. NULL
+            # expires_at means "never registered" → always renew.
+            existing_expiry = cursor.push_subscription_expires_at
+            if existing_expiry is not None and existing_expiry > renew_horizon:
+                skipped += 1
+                continue
+
             try:
                 if integ.provider == "google" and s.GMAIL_PUBSUB_TOPIC:
                     resp = watch_gmail(access_token, s.GMAIL_PUBSUB_TOPIC)
                     # Persist the watch's historyId so the first push
                     # notification has something to diff against.
                     cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
+                    # Gmail returns expiration as epoch milliseconds (string).
+                    raw_exp = resp.get("expiration")
+                    if raw_exp:
+                        try:
+                            cursor.push_subscription_expires_at = (
+                                datetime.fromtimestamp(int(raw_exp) / 1000, tz=timezone.utc)
+                            )
+                        except (TypeError, ValueError):
+                            pass
                     gmail_ok += 1
                 elif integ.provider == "microsoft" and s.GRAPH_CLIENT_STATE:
                     notification_url = (
@@ -2659,6 +2757,15 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
                     # Reuse delta_link as a handle to the subscription id —
                     # the notification endpoint looks it up there.
                     cursor.delta_link = resp.get("id") or cursor.delta_link
+                    # Graph returns ISO-8601 expirationDateTime.
+                    raw_exp = resp.get("expirationDateTime")
+                    if raw_exp:
+                        try:
+                            cursor.push_subscription_expires_at = (
+                                datetime.fromisoformat(raw_exp.replace("Z", "+00:00"))
+                            )
+                        except ValueError:
+                            pass
                     graph_ok += 1
             except Exception:
                 failed += 1
@@ -2674,6 +2781,7 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
         "status": "ok",
         "gmail_subscribed": gmail_ok,
         "graph_subscribed": graph_ok,
+        "skipped_healthy": skipped,
         "failed": failed,
     }
 
@@ -3064,26 +3172,74 @@ def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
     return True
 
 
-@celery_app.task(name="orchestrator_weekly_all_tenants")
-def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
-    """Weekly self-improvement reflection across all tenants."""
-    from backend.app.models import Tenant
+@celery_app.task(name="_orchestrate_one_tenant_weekly")
+def _orchestrate_one_tenant_weekly(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant weekly orchestration. Returns a small status dict so
+    the chord callback can aggregate counts without serialising the full
+    orchestrator output back through Redis."""
     from backend.app.services.orchestrator import get_orchestrator
 
     session = _get_sync_session()
-    orch = get_orchestrator()
-    results: Dict[str, Any] = {}
     try:
-        for tenant in session.query(Tenant).all():
-            try:
-                results[str(tenant.id)] = orch.run_weekly(session, tenant.id)
-            except Exception:
-                logger.exception(
-                    "Weekly orchestrator failed for tenant %s", tenant.id
-                )
+        orch = get_orchestrator()
+        try:
+            orch.run_weekly(session, tenant_id)
+            return {"tenant_id": tenant_id, "success": True}
+        except Exception:
+            logger.exception(
+                "Weekly orchestrator failed for tenant %s", tenant_id
+            )
+            return {"tenant_id": tenant_id, "success": False}
     finally:
         session.close()
-    return {"tenants_processed": len(results)}
+
+
+@celery_app.task(name="_aggregate_orchestration_weekly")
+def _aggregate_orchestration_weekly(per_tenant: List[Dict[str, Any]]) -> Dict[str, Any]:
+    processed = 0
+    failed: List[str] = []
+    for r in per_tenant:
+        if not isinstance(r, dict):
+            continue
+        if r.get("success"):
+            processed += 1
+        else:
+            failed.append(str(r.get("tenant_id") or "unknown"))
+    return {"tenants_processed": processed, "failed_tenants": failed}
+
+
+@celery_app.task(name="orchestrator_weekly_all_tenants")
+def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
+    """Weekly self-improvement reflection across all tenants.
+
+    Was a sequential loop — a single slow tenant blocked every following
+    tenant, and a 50-tenant run could stretch past 4 h. Now fans out
+    via a Celery chord so per-tenant work parallelises across workers,
+    with the callback aggregating into the small status dict the beat
+    consumer expects.
+    """
+    from celery import chord, group
+
+    from backend.app.models import Tenant
+
+    session = _get_sync_session()
+    try:
+        tenant_ids = [str(t.id) for t in session.query(Tenant.id).all()]
+    finally:
+        session.close()
+
+    if not tenant_ids:
+        return {"tenants_processed": 0, "failed_tenants": []}
+
+    header = group(_orchestrate_one_tenant_weekly.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_aggregate_orchestration_weekly.s())
+    try:
+        return async_result.get(disable_sync_subtasks=False, timeout=3600)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "weekly orchestrator chord aggregation failed; partial state"
+        )
+        return {"tenants_processed": 0, "failed_tenants": tenant_ids}
 
 
 # ── Outcomes backfill & calibration ──────────────────────────────────────
@@ -3860,7 +4016,7 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
 # add new queue names here when task routing is introduced. Do NOT scan
 # the keyspace — on per-command-billed Redis (Upstash) a SCAN + TYPE on
 # every key every 30 s dominates the bill.
-_SAMPLED_CELERY_QUEUES: tuple[str, ...] = ("celery",)
+_SAMPLED_CELERY_QUEUES: tuple[str, ...] = ("priority", "default", "batch")
 
 
 @celery_app.task(name="sample_queue_depth")

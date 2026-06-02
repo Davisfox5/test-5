@@ -269,6 +269,95 @@ class ModelRouter:
                 await self.ainvoke(r)
             return "local-fallback"
 
+    async def fetch_batch_results(
+        self, batch_id: str, *, poll_interval_seconds: float = 30.0,
+        timeout_seconds: float = 1800.0,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Block until an Anthropic Messages Batches job completes, then
+        return a dict ``{custom_id: {"text": str, "usage": dict,
+        "stop_reason": str|None}}``.
+
+        Falls back to an empty dict if the SDK doesn't expose
+        ``beta.messages.batches`` or the batch is the ``local-fallback``
+        sentinel returned by :meth:`submit_batch`.
+
+        The Anthropic Batches API normally completes within minutes; the
+        30-min default ceiling accommodates rare slow runs without holding
+        a Celery worker forever. Polling interval of 30 s keeps the
+        request count low (Anthropic doesn't bill polls separately).
+        """
+        if batch_id == "local-fallback":
+            return {}
+
+        elapsed = 0.0
+        try:
+            while True:
+                batch = await self._client.beta.messages.batches.retrieve(batch_id)  # type: ignore[attr-defined]
+                status = getattr(batch, "processing_status", None) or getattr(batch, "status", "")
+                if status == "ended":
+                    break
+                if elapsed >= timeout_seconds:
+                    logger.warning(
+                        "Batch %s still %s after %.0fs; bailing", batch_id, status, elapsed
+                    )
+                    return {}
+                await asyncio.sleep(poll_interval_seconds)
+                elapsed += poll_interval_seconds
+
+            results: Dict[str, Dict[str, Any]] = {}
+            # results() returns an async iterator of JSONL entries.
+            async for entry in await self._client.beta.messages.batches.results(batch_id):  # type: ignore[attr-defined]
+                custom_id = getattr(entry, "custom_id", None) or (
+                    entry.get("custom_id") if isinstance(entry, dict) else None
+                )
+                if not custom_id:
+                    continue
+                # Each entry has a ``result`` payload — either succeeded
+                # or errored. We unpack only the success path; errors get
+                # an empty text so callers can fall back per-row.
+                result = getattr(entry, "result", None) or (
+                    entry.get("result") if isinstance(entry, dict) else None
+                )
+                if result is None:
+                    results[custom_id] = {"text": "", "usage": {}, "stop_reason": None}
+                    continue
+                rtype = getattr(result, "type", None) or (
+                    result.get("type") if isinstance(result, dict) else None
+                )
+                if rtype != "succeeded":
+                    results[custom_id] = {"text": "", "usage": {}, "stop_reason": None}
+                    continue
+                message = getattr(result, "message", None) or (
+                    result.get("message") if isinstance(result, dict) else None
+                )
+                content_blocks = (
+                    getattr(message, "content", None)
+                    or (message.get("content") if isinstance(message, dict) else None)
+                    or []
+                )
+                text = ""
+                for block in content_blocks:
+                    btext = getattr(block, "text", None) or (
+                        block.get("text") if isinstance(block, dict) else ""
+                    )
+                    if btext:
+                        text += btext
+                stop_reason = getattr(message, "stop_reason", None) or (
+                    message.get("stop_reason") if isinstance(message, dict) else None
+                )
+                results[custom_id] = {
+                    "text": text,
+                    "usage": _usage_dict(message) if message is not None else {},
+                    "stop_reason": stop_reason,
+                }
+            return results
+        except AttributeError:
+            logger.warning("Batches results API unavailable")
+            return {}
+        except Exception:
+            logger.exception("Failed to fetch batch results for %s", batch_id)
+            return {}
+
 
 # ── Prompt-cache helpers ─────────────────────────────────────────────────
 

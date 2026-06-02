@@ -101,6 +101,13 @@ def is_safe_webhook_url(url: str) -> bool:
 _BACKOFF_SECONDS: List[int] = [10, 60, 300, 1800, 7200]
 _MAX_ATTEMPTS = len(_BACKOFF_SECONDS)
 
+# Auto-disable threshold. When a single webhook racks up this many
+# consecutive_failures (across all its deliveries) we flip
+# ``Webhook.active = False`` and short-circuit every pending delivery
+# to that URL to dead_letter — otherwise a single permanently-broken
+# customer endpoint can park hundreds of retry tasks in the queue.
+_CIRCUIT_BREAKER_THRESHOLD = 10
+
 
 def sign_payload(payload: str, secret: str) -> str:
     """HMAC-SHA256 hex digest of ``payload`` using ``secret``."""
@@ -257,6 +264,47 @@ async def emit_event(
     return deliveries
 
 
+async def _maybe_trip_circuit_breaker(
+    db: AsyncSession, webhook: Webhook, now: datetime
+) -> bool:
+    """If a webhook has accumulated enough consecutive failures, flip
+    ``active=False`` and dead-letter every pending delivery to that URL
+    so they don't park in the queue retrying forever.
+
+    Returns ``True`` when the breaker actually flipped this call.
+    """
+    threshold = _CIRCUIT_BREAKER_THRESHOLD
+    if (webhook.consecutive_failures or 0) < threshold:
+        return False
+    if not webhook.active:
+        return False  # already tripped earlier
+    webhook.active = False
+    try:
+        pending = (
+            await db.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.webhook_id == webhook.id,
+                    WebhookDelivery.status == "pending",
+                )
+            )
+        ).scalars().all()
+        for d in pending:
+            d.status = "dead_letter"
+            d.next_retry_at = None
+            d.last_error = "circuit_breaker_open"
+        logger.warning(
+            "webhook circuit breaker tripped: webhook=%s consecutive_failures=%s "
+            "dead-lettered=%d pending deliveries",
+            webhook.id, webhook.consecutive_failures, len(pending),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to dead-letter pending deliveries for tripped webhook %s",
+            webhook.id,
+        )
+    return True
+
+
 async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any]:
     """Attempt one HTTP delivery for a ``WebhookDelivery`` row.
 
@@ -344,6 +392,7 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
         delivery.next_retry_at = None
         webhook.last_failure_at = now
         webhook.consecutive_failures = (webhook.consecutive_failures or 0) + 1
+        await _maybe_trip_circuit_breaker(db, webhook, now)
         return {
             "status": "dead_letter",
             "id": str(delivery.id),
@@ -357,6 +406,19 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
     delivery.next_retry_at = now + timedelta(seconds=next_delay)
     webhook.last_failure_at = now
     webhook.consecutive_failures = (webhook.consecutive_failures or 0) + 1
+    tripped = await _maybe_trip_circuit_breaker(db, webhook, now)
+    if tripped:
+        # Circuit just opened — this delivery is dead-lettered along
+        # with every other pending delivery for this URL. No retry
+        # task gets enqueued.
+        delivery.status = "dead_letter"
+        delivery.next_retry_at = None
+        return {
+            "status": "dead_letter",
+            "id": str(delivery.id),
+            "status_code": status_code,
+            "error": "circuit_breaker_open",
+        }
 
     # Kick the retry task now; the caller (Celery) may also do this itself.
     try:
