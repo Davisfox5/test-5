@@ -2620,8 +2620,15 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
         logger.info("PUBLIC_WEBHOOK_BASE_URL unset — skipping push renewal")
         return {"status": "skipped", "reason": "no_public_url"}
 
+    from datetime import datetime, timedelta, timezone
+
     session = _get_sync_session()
-    gmail_ok = graph_ok = failed = 0
+    gmail_ok = graph_ok = failed = skipped = 0
+    now = datetime.now(timezone.utc)
+    # Renew when the existing subscription is inside the 24 h tail of its
+    # lifetime — re-registering earlier just burns Google / Microsoft API
+    # calls (verified against the audit's ~$5/month leak estimate).
+    renew_horizon = now + timedelta(hours=24)
     try:
         integrations = (
             session.query(Integration)
@@ -2650,12 +2657,28 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
                 session.add(cursor)
                 session.flush()
 
+            # Skip if the existing subscription is still healthy. NULL
+            # expires_at means "never registered" → always renew.
+            existing_expiry = cursor.push_subscription_expires_at
+            if existing_expiry is not None and existing_expiry > renew_horizon:
+                skipped += 1
+                continue
+
             try:
                 if integ.provider == "google" and s.GMAIL_PUBSUB_TOPIC:
                     resp = watch_gmail(access_token, s.GMAIL_PUBSUB_TOPIC)
                     # Persist the watch's historyId so the first push
                     # notification has something to diff against.
                     cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
+                    # Gmail returns expiration as epoch milliseconds (string).
+                    raw_exp = resp.get("expiration")
+                    if raw_exp:
+                        try:
+                            cursor.push_subscription_expires_at = (
+                                datetime.fromtimestamp(int(raw_exp) / 1000, tz=timezone.utc)
+                            )
+                        except (TypeError, ValueError):
+                            pass
                     gmail_ok += 1
                 elif integ.provider == "microsoft" and s.GRAPH_CLIENT_STATE:
                     notification_url = (
@@ -2669,6 +2692,15 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
                     # Reuse delta_link as a handle to the subscription id —
                     # the notification endpoint looks it up there.
                     cursor.delta_link = resp.get("id") or cursor.delta_link
+                    # Graph returns ISO-8601 expirationDateTime.
+                    raw_exp = resp.get("expirationDateTime")
+                    if raw_exp:
+                        try:
+                            cursor.push_subscription_expires_at = (
+                                datetime.fromisoformat(raw_exp.replace("Z", "+00:00"))
+                            )
+                        except ValueError:
+                            pass
                     graph_ok += 1
             except Exception:
                 failed += 1
@@ -2684,6 +2716,7 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
         "status": "ok",
         "gmail_subscribed": gmail_ok,
         "graph_subscribed": graph_ok,
+        "skipped_healthy": skipped,
         "failed": failed,
     }
 

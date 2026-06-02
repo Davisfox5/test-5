@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from backend.app.auth import (
     AuthPrincipal,
@@ -127,8 +128,17 @@ async def list_interactions(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    # Defer the heavy text columns — list view returns InteractionOut
+    # which doesn't include them. raw_text is still used by the search
+    # ILIKE filter below so we can't drop it from the SELECT
+    # unconditionally; transcript/transcript_translated are pure
+    # bandwidth waste here. detail endpoint fetches the full row.
     stmt = (
         select(Interaction)
+        .options(
+            defer(Interaction.transcript),
+            defer(Interaction.transcript_translated),
+        )
         .where(Interaction.tenant_id == tenant.id)
         .order_by(Interaction.created_at.desc())
         .limit(limit)

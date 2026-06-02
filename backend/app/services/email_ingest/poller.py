@@ -181,8 +181,41 @@ def poll_all(session: Session) -> dict:
         .filter(Integration.provider.in_(providers))
         .all()
     )
-    summary = {"integrations": 0, "emails_ingested": 0, "polled_providers": providers}
+
+    # Per-integration push gating: even when push is globally enabled
+    # we may have individual integrations whose subscription is still
+    # healthy — those don't need polling. We materialise the cursor
+    # state into a dict so the loop below stays cheap.
+    from datetime import datetime, timezone
+
+    from backend.app.models import EmailSyncCursor
+
+    cursors_by_integration = {
+        c.integration_id: c
+        for c in session.query(EmailSyncCursor)
+        .filter(
+            EmailSyncCursor.integration_id.in_([i.id for i in integrations])
+        )
+        .all()
+    } if integrations else {}
+    now = datetime.now(timezone.utc)
+
+    summary = {
+        "integrations": 0,
+        "emails_ingested": 0,
+        "polled_providers": providers,
+        "skipped_healthy_push": 0,
+    }
     for integ in integrations:
+        cursor = cursors_by_integration.get(integ.id)
+        # Skip if this integration's push subscription is still healthy.
+        # ``force_all`` is the smoke-test escape hatch — when set we ignore
+        # the cursor entirely and poll everything.
+        if not force_all and cursor is not None:
+            expires = getattr(cursor, "push_subscription_expires_at", None)
+            if expires is not None and expires > now:
+                summary["skipped_healthy_push"] += 1
+                continue
         try:
             count = poll_integration(session, integ)
         except Exception:

@@ -2239,6 +2239,13 @@ class EmailSyncCursor(Base):
     history_id: Mapped[Optional[str]] = mapped_column(String)
     delta_link: Mapped[Optional[str]] = mapped_column(Text)
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Expiry of the corresponding Gmail watch / Graph subscription. NULL
+    # when no push subscription has ever been registered. Used to gate
+    # both renewal (re-register only inside the 24h-before-expiry window)
+    # and the safety-net poll (skip integrations whose push is healthy).
+    push_subscription_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 # ──────────────────────────────────────────────────────────

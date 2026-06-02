@@ -322,8 +322,14 @@ export function useDeleteInteraction() {
     return useMutation({
         mutationFn: (id: string) => api.del<void>(`/interactions/${id}`),
         onSuccess: (_data, id) => {
-            qc.invalidateQueries({ queryKey: ["interactions"] });
-            qc.invalidateQueries({ queryKey: ["interaction", id] });
+            // Remove the row from every cached list page rather than
+            // re-fetching every paginated list.
+            qc.setQueriesData<InteractionOut[]>(
+                { queryKey: ["interactions"] },
+                (old) =>
+                    Array.isArray(old) ? old.filter((row) => row.id !== id) : old,
+            );
+            qc.removeQueries({ queryKey: ["interaction", id] });
             qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
         },
     });
@@ -338,9 +344,21 @@ export function useUpdateInteraction() {
             patch: { title?: string; contact_id?: string };
         }) =>
             api.patch<InteractionOut>(`/interactions/${args.id}`, args.patch),
-        onSuccess: (_data, args) => {
-            qc.invalidateQueries({ queryKey: ["interactions"] });
-            qc.invalidateQueries({ queryKey: ["interaction", args.id] });
+        onSuccess: (data, args) => {
+            // Patch the row in every cached list page directly, instead
+            // of invalidating every list query (which was firing a
+            // refetch per paginated filter combination on every title
+            // edit). Detail view gets the full response set in place.
+            qc.setQueryData(["interaction", args.id], data);
+            qc.setQueriesData<InteractionOut[]>(
+                { queryKey: ["interactions"] },
+                (old) =>
+                    Array.isArray(old)
+                        ? old.map((row) =>
+                              row.id === args.id ? { ...row, ...data } : row,
+                          )
+                        : old,
+            );
         },
     });
 }
