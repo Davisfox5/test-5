@@ -30,6 +30,7 @@ from backend.app.models import (
     User,
 )
 from backend.app.services.llm_client import get_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.services.plain_english import (
     MANAGER_VOICE_RULES,
     manager_voice_rules_for,
@@ -329,9 +330,18 @@ def _invoke_haiku(
         resp = client.messages.create(
             model=HAIKU_MODEL,
             max_tokens=2048,
-            system=_system_prompt_for(domain),
+            system=[
+                {
+                    "type": "text",
+                    "text": _system_prompt_for(domain),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             temperature=0.0,
             messages=[{"role": "user", "content": json.dumps(prompt_body, default=str)}],
+        )
+        record_llm_completion(
+            f"manager_recommendations_{domain}", "haiku", 2048, resp
         )
         text = "".join(
             block.text for block in resp.content if getattr(block, "type", None) == "text"

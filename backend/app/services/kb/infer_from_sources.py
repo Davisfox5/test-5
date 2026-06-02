@@ -39,6 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.models import (
     CustomerOutcomeEvent,
     Interaction,
@@ -261,9 +262,16 @@ class InferFromSources:
             resp = await self._client.messages.create(
                 model=_MODEL,
                 max_tokens=1400,
-                system=_SYSTEM_PROMPT,
+                system=[
+                    {
+                        "type": "text",
+                        "text": _SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": user_message}],
             )
+            record_llm_completion("kb_infer_from_sources", "haiku", 1400, resp)
             raw = resp.content[0].text
             data = json.loads(raw)
         except (anthropic.APIError, json.JSONDecodeError, IndexError, KeyError):

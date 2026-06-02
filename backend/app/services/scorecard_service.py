@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -117,9 +118,16 @@ class ScorecardService:
             response = await self._client.messages.create(
                 model=HAIKU_MODEL,
                 max_tokens=2048,
-                system=SCORECARD_SYSTEM_PROMPT,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SCORECARD_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": user_content}],
             )
+            record_llm_completion("scorecard_single", "haiku", 2048, response)
 
             raw_text = response.content[0].text
             result: Dict[str, Any] = json.loads(_strip_json_fences(raw_text))
@@ -203,14 +211,24 @@ class ScorecardService:
             f"## Transcript\n{formatted}"
         )
 
+        batched_max_tokens = min(8192, 1024 + 512 * len(templates))
         try:
             response = await self._client.messages.create(
                 model=HAIKU_MODEL,
                 # Scales with template count — each template produces a few
                 # hundred tokens. Cap so we don't blow past sensible limits.
-                max_tokens=min(8192, 1024 + 512 * len(templates)),
-                system=SCORECARD_SYSTEM_PROMPT,
+                max_tokens=batched_max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SCORECARD_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": user_content}],
+            )
+            record_llm_completion(
+                "scorecard_batched", "haiku", batched_max_tokens, response
             )
             raw_text = response.content[0].text
             parsed = json.loads(_strip_json_fences(raw_text))
