@@ -2,6 +2,7 @@
 
 /** Shared row helpers for the customer list views. */
 
+import Image from "next/image";
 import Link from "next/link";
 import { useMemo } from "react";
 import { faviconFor, type CustomerListItem } from "@/lib/customers";
@@ -31,12 +32,13 @@ export function CustomerLogo({
                 className="overflow-hidden rounded-md bg-bg-secondary"
                 style={{ width: size, height: size }}
             >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
+                <Image
                     src={fav}
                     alt={`${domain ?? name} logo`}
+                    width={size}
+                    height={size}
                     className="object-cover"
-                    style={{ width: size, height: size }}
+                    unoptimized={false}
                     loading="lazy"
                 />
             </div>

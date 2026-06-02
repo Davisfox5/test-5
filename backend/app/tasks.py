@@ -155,6 +155,10 @@ celery_app.conf.update(
         "vocabulary_digest_weekly": {"queue": "batch"},
         "tenant_brief_refiner_weekly": {"queue": "batch"},
         "infer_from_sources_weekly": {"queue": "batch"},
+        # Background embed of a single support case — non-realtime but
+        # not a giant nightly sweep either. Default queue keeps it off
+        # the priority lane while still draining quickly.
+        "embed_support_case_subject": {"queue": "default"},
     },
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
@@ -2802,6 +2806,61 @@ def email_ingest_poll() -> Dict[str, Any]:
     session = _get_sync_session()
     try:
         return poll_all(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="embed_support_case_subject", max_retries=2, bind=True)
+def embed_support_case_subject(self, case_id: str) -> Dict[str, Any]:
+    """Embed one SupportCase's subject off the case-creation hot path.
+
+    The daily trend scan previously absorbed all the embedding work in a
+    07:00 UTC spike; this lets cases get embedded as they're created so
+    the daily scan only has to mop up stragglers. Failures don't
+    propagate — the daily scan's TTL+missing-embedding query still
+    catches anything this task missed.
+
+    Idempotent: skips if the case already has a fresh embedding.
+    """
+    import asyncio as _asyncio
+    from datetime import timezone as _tz
+
+    from backend.app.models import SupportCase
+    from backend.app.services.support_trend_detector import EMBED_TTL_DAYS
+
+    session = _get_sync_session()
+    try:
+        case = (
+            session.query(SupportCase)
+            .filter(SupportCase.id == uuid.UUID(case_id))
+            .first()
+        )
+        if case is None or not case.subject:
+            return {"status": "skipped", "reason": "case_missing_or_no_subject"}
+        if case.embedded_at is not None:
+            age = datetime.now(_tz.utc) - case.embedded_at
+            if age.days < EMBED_TTL_DAYS:
+                return {"status": "skipped", "reason": "fresh_embedding"}
+        try:
+            from backend.app.services.embeddings import VoyageEmbedder
+        except Exception:
+            return {"status": "skipped", "reason": "voyage_unavailable"}
+        embedder = VoyageEmbedder()
+
+        async def _embed() -> List[List[float]]:
+            return await embedder.embed([case.subject], input_type="document")
+
+        vecs = _asyncio.run(_embed())
+        if not vecs:
+            return {"status": "skipped", "reason": "no_embedding_returned"}
+        case.subject_embedding = list(vecs[0])
+        case.embedded_at = datetime.now(_tz.utc)
+        session.commit()
+        return {"status": "embedded", "case_id": case_id}
+    except Exception as exc:
+        logger.exception("embed_support_case_subject failed for %s", case_id)
+        session.rollback()
+        raise self.retry(exc=exc, countdown=60)
     finally:
         session.close()
 

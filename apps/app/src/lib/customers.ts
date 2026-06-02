@@ -60,9 +60,17 @@ export function useCustomerList(params?: {
     if (params?.ownerUserId) search.set("owner_user_id", params.ownerUserId);
 
     return useQuery({
+        // Flat tuple instead of an inline object — React Query compares
+        // queryKey entries by reference, and the prior object literal
+        // produced a new reference on every render, evicting the cache
+        // unnecessarily.
         queryKey: [
             "customers-list",
-            { sort, name: params?.name ?? "", ownerUserId: params?.ownerUserId ?? "", limit, offset },
+            sort,
+            params?.name ?? "",
+            params?.ownerUserId ?? "",
+            limit,
+            offset,
         ],
         queryFn: () =>
             api.get<CustomerListResponse>(`/customers/list?${search.toString()}`),

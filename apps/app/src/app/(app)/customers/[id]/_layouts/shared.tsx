@@ -10,6 +10,7 @@
  * building blocks here, not from layout-specific renderings.
  */
 
+import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import {
@@ -50,11 +51,11 @@ export function CustomerLogo({
                 className="overflow-hidden rounded-md bg-bg-secondary"
                 style={{ width: size, height: size }}
             >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
+                <Image
                     src={fav}
                     alt={`${domain ?? name} logo`}
-                    style={{ width: size, height: size }}
+                    width={size}
+                    height={size}
                     className="object-cover"
                     loading="lazy"
                 />

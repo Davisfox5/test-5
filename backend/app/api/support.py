@@ -234,6 +234,15 @@ async def create_case(
     )
     db.add(case)
     await db.flush()
+    # Background embed so the daily trend scan doesn't have to spike-
+    # embed every backlogged case at 07:00 UTC. Falls back to the
+    # daily scan's missing-embedding query if Celery is unreachable.
+    try:
+        from backend.app.tasks import embed_support_case_subject
+
+        embed_support_case_subject.delay(str(case.id))
+    except Exception:
+        pass
     return await _detail(db, case)
 
 
