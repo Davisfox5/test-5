@@ -546,6 +546,14 @@ class ActionPlanSynthesizer:
 
         # Build the per-channel job set.
         for step in steps:
+            # Debug: log every step's draft_state as we enter the
+            # render loop so we can correlate post-deploy audits with
+            # the actual classifier decision. Remove once the lazy
+            # pipeline is verified end-to-end.
+            logger.info(
+                "render_artifacts: step %s draft_state=%r channel=%s",
+                step.id, step.draft_state, step.recommended_channel,
+            )
             # Skip steps that aren't ready to draft. These have one or
             # more unfilled CRITICAL slots and would only produce a
             # placeholder-laden artifact. The engine's
