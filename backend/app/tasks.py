@@ -2157,6 +2157,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                             language=language,
                             keyterms=keyterms,
                             model=deepgram_model,
+                            tenant_features=tenant_features_for_engine,
                         )
                     )
                 else:
@@ -2188,6 +2189,7 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                             language=language,
                             keyterms=keyterms,
                             model=deepgram_model,
+                            tenant_features=tenant_features_for_engine,
                         )
                     )
                 segments_dicts = _segments_to_dicts(segments)

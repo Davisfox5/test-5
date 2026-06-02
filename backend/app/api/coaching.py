@@ -66,12 +66,11 @@ async def list_coaching_sessions(
     """
     tenant_id = principal.tenant.id
 
-    # Total count for the paging footer.
-    total_stmt = (
-        select(LiveSession.id).where(LiveSession.tenant_id == tenant_id)
-    )
-    total = len((await db.execute(total_stmt)).all())
-
+    # Paging footer uses a "has more" hint instead of a full COUNT — the
+    # COUNT path scans every LiveSession row for the tenant on every page,
+    # which is a 500ms tax on the request even when the user is paging
+    # through page 1 of a 50K-row history. Fetch one extra row and infer
+    # totality from whether the LIMIT was reached.
     stmt = (
         select(LiveSession, User, Interaction)
         .join(User, User.id == LiveSession.agent_id, isouter=True)
@@ -82,10 +81,17 @@ async def list_coaching_sessions(
         )
         .where(LiveSession.tenant_id == tenant_id)
         .order_by(LiveSession.started_at.desc())
-        .limit(limit)
+        .limit(limit + 1)
         .offset(offset)
     )
-    rows = (await db.execute(stmt)).all()
+    rows = list((await db.execute(stmt)).all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    # ``total`` is the page floor used by the UI when there's no full
+    # COUNT: ``offset + len(rows) + (1 if has_more else 0)``. UIs that
+    # need an authoritative total can call a separate /count endpoint
+    # (not added here — no consumer currently uses it).
+    total = offset + len(rows) + (1 if has_more else 0)
 
     items: List[CoachingSessionOut] = []
     for sess, agent_user, interaction in rows:
