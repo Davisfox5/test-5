@@ -349,15 +349,15 @@ def persist_trends(
                 kind="recurring_issue_detected",
                 severity=severity,
                 title=(
-                    f"Possible recurring issue: {t.sample_subjects[0][:80]}"
+                    f"Recurring issue: {t.sample_subjects[0][:80]}"
                     if t.sample_subjects
-                    else "Possible recurring issue across cases"
+                    else "Recurring issue across cases"
                 ),
                 body=(
-                    f"{t.recent_count} similar cases in the last "
-                    f"{GROWTH_WINDOW_DAYS} days (vs {t.prior_count} in the "
-                    f"prior window). Growth ratio {t.growth_ratio:.1f}x, "
-                    f"confidence {t.confidence:.0%}."
+                    f"{t.recent_count} similar cases in the last two "
+                    f"weeks, up from {t.prior_count} the two weeks before. "
+                    f"{t.customer_count} customer"
+                    f"{'s' if t.customer_count != 1 else ''} affected."
                 ),
                 evidence={
                     "recent_count": t.recent_count,
@@ -405,16 +405,15 @@ def persist_trends(
                 domain="it_support",
                 category="address_recurring_issue",
                 title=(
-                    f"Address recurring issue: {t.sample_subjects[0][:80]}"
+                    f"Investigate recurring issue: {t.sample_subjects[0][:80]}"
                     if t.sample_subjects
-                    else "Address recurring issue across cases"
+                    else "Investigate recurring issue across cases"
                 ),
                 rationale=(
-                    f"{t.recent_count} similar cases in the last "
-                    f"{GROWTH_WINDOW_DAYS} days from {t.customer_count} "
-                    f"customer(s). Growth {t.growth_ratio:.1f}x; confidence "
-                    f"{t.confidence:.0%}. Likely root-cause investigation "
-                    "candidate."
+                    f"{t.recent_count} similar cases in the last two "
+                    f"weeks from {t.customer_count} customer"
+                    f"{'s' if t.customer_count != 1 else ''}. "
+                    "Worth digging into the root cause."
                 ),
                 evidence={
                     "recent_count": t.recent_count,
