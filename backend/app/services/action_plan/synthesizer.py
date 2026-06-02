@@ -838,6 +838,15 @@ class ActionPlanSynthesizer:
         # Otherwise the step is ``pending_upstream`` and Call C will not
         # fire at synthesis time — the engine will trigger it later when
         # the upstream step completes (see engine._propagate_completion).
+        #
+        # We persist via a direct UPDATE rather than relying on ORM
+        # dirty-tracking from ``step.draft_state = ...``. Earlier audit
+        # showed the in-memory assignment wasn't always reflected in
+        # the post-flush state for steps that had already gone through
+        # an INSERT — suspected to be a JSONB-column-near-Mapped[str]
+        # ORM quirk after the per-step flush in the first persist
+        # pass. The raw UPDATE sidesteps it.
+        from sqlalchemy import update as _sql_update_draft
         for step in step_rows:
             critical_unfilled = 0
             for slot in step.input_slots or []:
@@ -847,8 +856,14 @@ class ActionPlanSynthesizer:
                     continue
                 if slot.get("filled_value") is None:
                     critical_unfilled += 1
-            step.draft_state = (
+            new_draft_state = (
                 "ready_to_draft" if critical_unfilled == 0 else "pending_upstream"
+            )
+            step.draft_state = new_draft_state  # in-memory for _render_artifacts
+            await db.execute(
+                _sql_update_draft(ActionStep)
+                .where(ActionStep.id == step.id)
+                .values(draft_state=new_draft_state)
             )
 
         await db.flush()
