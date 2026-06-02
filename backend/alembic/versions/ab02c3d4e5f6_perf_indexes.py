@@ -19,7 +19,7 @@ already-existing columns; the migration is a no-op on a database that
 already has them.
 
 Revision ID: ab02c3d4e5f6
-Revises: aa01b2c3d4e5
+Revises: aa02b3c4d5e6
 Create Date: 2026-06-01
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from alembic import op
 
 
 revision: str = "ab02c3d4e5f6"
-down_revision: Union[str, None] = "aa01b2c3d4e5"
+down_revision: Union[str, None] = "aa02b3c4d5e6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
