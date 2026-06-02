@@ -113,6 +113,49 @@ celery_app.conf.update(
     # pub/sub burst per machine restart.
     worker_enable_remote_control=False,
     worker_send_task_events=False,
+    # ── Queue routing ────────────────────────────────────────────
+    # Three queues so SLA-sensitive customer-facing work (voice / email
+    # interaction processing, push notifications) can't queue behind
+    # a slow nightly backup or weekly aggregation. The worker process
+    # is started with ``-Q priority,default,batch`` and Celery drains
+    # them in that listed order, so priority always pre-empts default
+    # which always pre-empts batch.
+    #
+    # Routing here uses glob patterns evaluated against the task
+    # ``name`` (the value passed to ``@celery_app.task(name=...)`),
+    # not the Python function name — keeps the routes intelligible
+    # without sprinkling ``queue=`` on every decorator.
+    task_default_queue="default",
+    task_routes={
+        # Customer-facing realtime path.
+        "process_voice_interaction": {"queue": "priority"},
+        "process_text_interaction": {"queue": "priority"},
+        "email_push_process_gmail": {"queue": "priority"},
+        "email_push_process_graph": {"queue": "priority"},
+        # Heavy nightly/weekly batch work — keeps it off the path of
+        # customer-facing interaction processing.
+        "tenant_backup_*": {"queue": "batch"},
+        "tenant_export_to_s3": {"queue": "batch"},
+        "audio_retention_sweep": {"queue": "batch"},
+        "event_retention_sweep": {"queue": "batch"},
+        "cross_tenant_aggregate_metrics": {"queue": "batch"},
+        "recompute_llm_ceilings": {"queue": "batch"},
+        "support_trend_scan": {"queue": "batch"},
+        "cohort_recommendation_scan": {"queue": "batch"},
+        "orchestrator_daily_all_tenants": {"queue": "batch"},
+        "orchestrator_weekly_all_tenants": {"queue": "batch"},
+        "tenant_insights_weekly": {"queue": "batch"},
+        "calibration_fit_all_tenants": {"queue": "batch"},
+        "irt_fit_all_tenants": {"queue": "batch"},
+        "churn_train_all_tenants": {"queue": "batch"},
+        "outcomes_backfill_all_tenants": {"queue": "batch"},
+        "refresh_few_shot_pools": {"queue": "batch"},
+        "compute_wer_weekly": {"queue": "batch"},
+        "discover_vocabulary_candidates": {"queue": "batch"},
+        "vocabulary_digest_weekly": {"queue": "batch"},
+        "tenant_brief_refiner_weekly": {"queue": "batch"},
+        "infer_from_sources_weekly": {"queue": "batch"},
+    },
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
         "tenant-insights-weekly": {
@@ -3903,7 +3946,7 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
 # add new queue names here when task routing is introduced. Do NOT scan
 # the keyspace — on per-command-billed Redis (Upstash) a SCAN + TYPE on
 # every key every 30 s dominates the bill.
-_SAMPLED_CELERY_QUEUES: tuple[str, ...] = ("celery",)
+_SAMPLED_CELERY_QUEUES: tuple[str, ...] = ("priority", "default", "batch")
 
 
 @celery_app.task(name="sample_queue_depth")

@@ -487,13 +487,139 @@ class _DiarTurn:
     speaker: str
 
 
+_DIARIZATION_CACHE_TTL_SECONDS = 14 * 24 * 3600  # 2 weeks — long enough to cover redrives
+
+
+def _audio_content_hash(audio_path: str) -> Optional[str]:
+    """SHA-256 of the audio bytes, used as the diarization cache key.
+
+    Returns ``None`` if the file can't be read — caller falls back to a
+    fresh diarization pass.
+    """
+    import hashlib
+
+    try:
+        h = hashlib.sha256()
+        with open(audio_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _diarization_cache_get(audio_hash: str) -> Optional[List[_DiarTurn]]:
+    try:
+        import json as _json
+        import redis as _redis_lib  # type: ignore
+
+        r = _redis_lib.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        raw = r.get(f"diarization:{audio_hash}")
+        if not raw:
+            return None
+        return [
+            _DiarTurn(start=t["start"], end=t["end"], speaker=t["speaker"])
+            for t in _json.loads(raw)
+        ]
+    except Exception:
+        logger.debug("diarization cache read failed", exc_info=True)
+        return None
+
+
+def _diarization_cache_set(audio_hash: str, turns: List[_DiarTurn]) -> None:
+    try:
+        import json as _json
+        import redis as _redis_lib  # type: ignore
+
+        r = _redis_lib.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        r.set(
+            f"diarization:{audio_hash}",
+            _json.dumps(
+                [{"start": t.start, "end": t.end, "speaker": t.speaker} for t in turns]
+            ),
+            ex=_DIARIZATION_CACHE_TTL_SECONDS,
+        )
+    except Exception:
+        logger.debug("diarization cache write failed", exc_info=True)
+
+
+def _vad_has_speech(audio_path: str, min_speech_fraction: float = 0.05) -> bool:
+    """Cheap energy-based VAD: return False when the file is essentially
+    silence / hold music, so we can skip pyannote entirely.
+
+    Uses pydub (already a dep) to chunk the audio and look at the RMS
+    distribution. ``min_speech_fraction`` is the share of the recording
+    that needs to exceed the silence threshold; below it we treat the
+    audio as non-speech.
+
+    Defaults are conservative — when in doubt, we say "yes, run pyannote"
+    so we never silently drop diarization on a real call.
+    """
+    try:
+        from pydub import AudioSegment, silence  # type: ignore
+    except ImportError:
+        return True
+
+    try:
+        audio = AudioSegment.from_file(audio_path)
+    except Exception:
+        return True  # let pyannote try its luck
+
+    duration_ms = len(audio)
+    if duration_ms < 1500:
+        return True  # too short to bother filtering
+
+    try:
+        nonsilent = silence.detect_nonsilent(
+            audio,
+            # 500ms chunks; -45 dBFS roughly matches a quiet call's noise floor.
+            min_silence_len=500,
+            silence_thresh=-45.0,
+        )
+    except Exception:
+        return True
+
+    speech_ms = sum(end - start for start, end in (nonsilent or []))
+    if duration_ms <= 0:
+        return True
+    speech_fraction = speech_ms / duration_ms
+    if speech_fraction < min_speech_fraction:
+        logger.info(
+            "VAD: skipping pyannote — speech_fraction=%.3f below threshold %.3f",
+            speech_fraction, min_speech_fraction,
+        )
+        return False
+    return True
+
+
 def _run_pyannote_diarization(audio_path: str) -> List[_DiarTurn]:
     """Run pyannote speaker-diarization-3.1 on the audio and return a flat
     list of ``(start, end, speaker)`` turns.
 
+    Results are keyed by the SHA-256 of the audio bytes and cached in
+    Redis for 2 weeks, so a redrive of the same interaction reuses the
+    prior diarization (a single pyannote pass is ~10-30 s of CPU on a
+    typical worker, and redrives previously paid this cost every time).
+
+    A cheap VAD pre-filter (pydub RMS chunks) short-circuits on audio
+    files that are essentially silence / hold-music, so we don't pay the
+    full pyannote pass on recordings that have no speakers to diarize.
+
     Returns an empty list if the pipeline cannot be loaded or the audio
     file is unusable — callers then leave ``speaker_id=None``.
     """
+    audio_hash = _audio_content_hash(audio_path)
+    if audio_hash is not None:
+        cached = _diarization_cache_get(audio_hash)
+        if cached is not None:
+            return cached
+
+    if not _vad_has_speech(audio_path):
+        # Cache the empty result too so a redrive doesn't re-run VAD.
+        if audio_hash is not None:
+            _diarization_cache_set(audio_hash, [])
+        return []
+
     pipeline = _get_diarization_pipeline()
     if pipeline is None:
         return []
@@ -511,6 +637,8 @@ def _run_pyannote_diarization(audio_path: str) -> List[_DiarTurn]:
                 speaker=str(speaker),
             )
         )
+    if audio_hash is not None and turns:
+        _diarization_cache_set(audio_hash, turns)
     return turns
 
 
