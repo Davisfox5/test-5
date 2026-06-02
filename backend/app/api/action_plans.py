@@ -284,6 +284,8 @@ def _build_step_outs(
                 artifact_stale=s.artifact_stale,
                 regen_debounce_until=s.regen_debounce_until,
                 skip_reason=s.skip_reason,
+                awaits_response=bool(getattr(s, "awaits_response", False)),
+                draft_state=getattr(s, "draft_state", None) or "drafted",
                 created_at=s.created_at,
                 latest_artifact=(
                     StepArtifactOut.model_validate(artifact, from_attributes=True)
@@ -506,6 +508,168 @@ async def get_plan(
     tenant: Tenant = Depends(get_current_tenant),
 ):
     plan = await _load_plan_or_404(db, tenant, plan_id)
+    return await _build_plan_out(db, plan)
+
+
+# ──────────────────────────────────────────────────────────
+# Manual creation
+# ──────────────────────────────────────────────────────────
+
+
+class PlanStepIn(BaseModel):
+    """Initial step shape when creating a plan from scratch.
+
+    Only ``title`` is required — everything else has sensible defaults
+    on ``ActionStep``. ``due_date`` accepts ISO date strings; ``priority``
+    accepts ``low|medium|high``.
+    """
+
+    title: str = Field(..., min_length=1, max_length=300)
+    description: Optional[str] = None
+    intent: Optional[str] = None
+    priority: Optional[str] = Field(default="medium")
+    due_date: Optional[str] = None  # ISO date YYYY-MM-DD
+    recommended_channel: Optional[str] = None
+    assigned_to: Optional[uuid.UUID] = None
+
+
+class ActionPlanCreate(BaseModel):
+    """POST body for manually creating a plan.
+
+    Plans that come out of the analysis pipeline have an
+    ``interaction_id`` and a synthesised step graph; this endpoint is for
+    plans that don't (Linda chat, reseller-built UIs, admin dashboards).
+    ``customer_id`` is optional — a plan can be a generic to-do list with
+    no specific customer attached.
+    """
+
+    goal: str = Field(..., min_length=1, max_length=1000)
+    customer_id: Optional[uuid.UUID] = None
+    domain: Optional[str] = Field(
+        default=None,
+        description=(
+            "sales | customer_service | it_support | generic. "
+            "Defaults to the tenant's default_domain."
+        ),
+    )
+    status: Optional[str] = Field(
+        default="active",
+        description="draft | active | completed | abandoned",
+    )
+    steps: List[PlanStepIn] = Field(default_factory=list)
+
+
+@router.post(
+    "/action-plans",
+    response_model=ActionPlanOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("action_items:write"))],
+)
+async def create_plan(
+    body: ActionPlanCreate,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    """Create an Action Plan from scratch (no interaction required).
+
+    Plans created via this endpoint are stamped ``manually_created=True``
+    so the synthesis pipeline knows not to overwrite them on the next
+    interaction-driven re-plan. Returns the freshly-built plan with any
+    inline steps attached.
+    """
+    from datetime import date as _date
+
+    valid_domains = {"sales", "customer_service", "it_support", "generic"}
+    valid_statuses = {"draft", "active", "completed", "abandoned"}
+
+    domain = (body.domain or tenant.default_domain or "generic").strip()
+    if domain not in valid_domains:
+        raise HTTPException(
+            status_code=422,
+            detail=f"domain must be one of {sorted(valid_domains)}",
+        )
+    status = (body.status or "active").strip()
+    if status not in valid_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {sorted(valid_statuses)}",
+        )
+    if body.customer_id is not None:
+        # Tenant-scope check so a caller can't attach a plan to another
+        # tenant's customer by guessing the id.
+        from backend.app.models import Customer
+
+        customer = await db.get(Customer, body.customer_id)
+        if customer is None or customer.tenant_id != tenant.id:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+    plan = ActionPlan(
+        tenant_id=tenant.id,
+        interaction_id=None,
+        customer_id=body.customer_id,
+        goal=body.goal.strip(),
+        domain=domain,
+        status=status,
+        manually_created=True,
+    )
+    db.add(plan)
+    await db.flush()
+
+    for step_body in body.steps:
+        priority = (step_body.priority or "medium").strip()
+        if priority not in {"low", "medium", "high"}:
+            priority = "medium"
+        due: Optional[_date] = None
+        if step_body.due_date:
+            try:
+                due = _date.fromisoformat(step_body.due_date)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"step.due_date must be ISO YYYY-MM-DD (got {step_body.due_date!r})",
+                )
+        step = ActionStep(
+            tenant_id=tenant.id,
+            plan_id=plan.id,
+            title=step_body.title.strip()[:300],
+            description=step_body.description,
+            intent=step_body.intent,
+            priority=priority,
+            due_date=due,
+            recommended_channel=step_body.recommended_channel,
+            assigned_to=step_body.assigned_to,
+        )
+        db.add(step)
+    await db.flush()
+
+    # Emit a webhook event so subscribers can react to manually-created
+    # plans the same way they react to pipeline-generated ones.
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        await emit_event(
+            db,
+            tenant.id,
+            "action_plan.created",
+            {
+                "plan_id": str(plan.id),
+                "customer_id": str(plan.customer_id) if plan.customer_id else None,
+                "goal": plan.goal,
+                "domain": plan.domain,
+                "status": plan.status,
+                "manually_created": True,
+                "step_count": len(body.steps),
+            },
+        )
+    except Exception:
+        logger.exception("emit action_plan.created webhook failed for %s", plan.id)
+
+    _emit_event(
+        tenant=tenant, principal=principal, event="action_plan.created",
+        plan_id=plan.id,
+    )
+
     return await _build_plan_out(db, plan)
 
 
