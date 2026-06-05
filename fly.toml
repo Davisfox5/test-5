@@ -75,7 +75,11 @@ primary_region = "iad"
   # ``flyctl deploy --config fly.toml --image $REGISTRY/linda-siprec-srs:tag``
   # this process will fail to start; the api/worker/beat processes
   # are unaffected.
-  siprec_srs = "/usr/local/bin/entrypoint.sh freeswitch -nonat -nf"
+  #
+  # DISABLED 2026-06-04 to cut Fly costs — the SIPREC machine sat
+  # stopped with zero traffic. To re-enable, uncomment this line AND
+  # the [[vm]] / three [[services]] blocks for siprec_srs further down.
+  # siprec_srs = "/usr/local/bin/entrypoint.sh freeswitch -nonat -nf"
 
 # Persistent storage for celerybeat-schedule. Without this the beat
 # scheduler resets its "last fired" state on every restart, which
@@ -142,16 +146,23 @@ primary_region = "iad"
   memory = "1gb"
   processes = ["beat"]
 
+# ── SIPREC SRS config: DISABLED 2026-06-04 ────────────────────────────
+# The siprec_srs process command (above), this [[vm]] block, and the
+# three [[services]] blocks below were commented out together because
+# the perf-2x VM was sitting stopped at $$ with no SIPREC traffic. To
+# re-enable: uncomment all four blocks plus the `siprec_srs = ...` line
+# in [processes]. The machine will be re-provisioned on next deploy.
+#
 # SIPREC SRS sizing. FreeSWITCH userspace mode burns ~25 MHz per
 # concurrent call for SRTP termination + audio fork; performance-2x
 # (4 vCPU / 8 GB) handles ~150 concurrent calls comfortably. Per-customer
 # load limits are enforced at the SBC, not here. Down-size to
 # performance-1x for a single-customer pilot; up-size to performance-4x
 # for >300 concurrent calls.
-[[vm]]
-  size = "performance-2x"
-  memory = "8gb"
-  processes = ["siprec_srs"]
+# [[vm]]
+#   size = "performance-2x"
+#   memory = "8gb"
+#   processes = ["siprec_srs"]
 
 # UDP services for SIP-TLS signaling and the RTP port range. Fly
 # Edge does TCP/HTTP load-balancing transparently but UDP needs an
@@ -159,36 +170,36 @@ primary_region = "iad"
 # so each SRS machine's NAT mapping table stays small; high-volume
 # tenants get a dedicated machine. SIP-TLS is registered on the same
 # 5061 the customer's SBC dials directly via the public hostname.
-[[services]]
-  protocol = "udp"
-  internal_port = 5061
-  processes = ["siprec_srs"]
+# [[services]]
+#   protocol = "udp"
+#   internal_port = 5061
+#   processes = ["siprec_srs"]
+#
+#   [[services.ports]]
+#     port = 5061
 
-  [[services.ports]]
-    port = 5061
-
-[[services]]
-  protocol = "tcp"
-  internal_port = 5061
-  processes = ["siprec_srs"]
-
-  [[services.ports]]
-    port = 5061
-    handlers = ["tls"]
-    # No tls_options — Fly's API only accepts ALPN values "h2" or
-    # "http/1.1". SIP-TLS doesn't negotiate ALPN, so we let Fly's
-    # default handler pass the TLS handshake through unchanged.
+# [[services]]
+#   protocol = "tcp"
+#   internal_port = 5061
+#   processes = ["siprec_srs"]
+#
+#   [[services.ports]]
+#     port = 5061
+#     handlers = ["tls"]
+#     # No tls_options — Fly's API only accepts ALPN values "h2" or
+#     # "http/1.1". SIP-TLS doesn't negotiate ALPN, so we let Fly's
+#     # default handler pass the TLS handshake through unchanged.
 
 # RTP port range — declared as a sidecar service. Fly bills UDP
 # services per-port-range, so widening this is a deliberate cost
 # decision (see USER_TODO.md → "Procure a Fly machine size capable of
 # media processing"). The image's RTP_PORT_MIN/MAX env vars must
 # match this range exactly or the SBC will see ICMP unreachable.
-[[services]]
-  protocol = "udp"
-  internal_port = 16384
-  processes = ["siprec_srs"]
-
-  [[services.ports]]
-    start_port = 16384
-    end_port = 32768
+# [[services]]
+#   protocol = "udp"
+#   internal_port = 16384
+#   processes = ["siprec_srs"]
+#
+#   [[services.ports]]
+#     start_port = 16384
+#     end_port = 32768
