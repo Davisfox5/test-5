@@ -16,7 +16,7 @@ Goals per ``docs/SCORING_ARCHITECTURE.md``:
 
 The module is careful to work without ``boto3`` installed.  In that
 case the :class:`AudioStore` falls back to a local-filesystem
-implementation at ``$AUDIO_LOCAL_DIR`` (default ``/tmp/callsight-audio``)
+implementation at ``$AUDIO_LOCAL_DIR`` (default ``/tmp/linda-audio``)
 so developers can run the pipeline end-to-end without cloud creds.
 """
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 BUCKET_ENV = "AUDIO_BUCKET"
 LOCAL_DIR_ENV = "AUDIO_LOCAL_DIR"
-DEFAULT_LOCAL_DIR = "/tmp/callsight-audio"
+DEFAULT_LOCAL_DIR = "/tmp/linda-audio"
 
 
 # ── Contract ─────────────────────────────────────────────────────────────

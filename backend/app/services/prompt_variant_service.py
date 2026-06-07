@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 # Bucket allocation (mod 100). Defaults: 5% shadow, 15% canary, 80% active.
-SHADOW_PCT = int(os.environ.get("CALLSIGHT_AB_SHADOW_PCT", "5"))
-CANARY_PCT = int(os.environ.get("CALLSIGHT_AB_CANARY_PCT", "15"))
+SHADOW_PCT = int(os.environ.get("LINDA_AB_SHADOW_PCT", "5"))
+CANARY_PCT = int(os.environ.get("LINDA_AB_CANARY_PCT", "15"))
 
 # Variant cache TTL — 60s gives "hot reload without restart" feel.
 _CACHE_TTL_SECONDS = 60

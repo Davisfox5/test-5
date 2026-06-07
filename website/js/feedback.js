@@ -1,18 +1,18 @@
-/* CallSight feedback hook — batches UI events and POSTs to /api/v1/feedback/batch.
+/* LINDA feedback hook — batches UI events and POSTs to /api/v1/feedback/batch.
  *
- * Exposes a small global `CallSightFeedback` API:
- *   CallSightFeedback.emit({surface, event_type, ...})
- *   CallSightFeedback.thumbsWidget(container, ctx)   — attach a thumbs up/down to a DOM node
- *   CallSightFeedback.ratingWidget(container, ctx)   — attach a 1–5 star rating
- *   CallSightFeedback.trackReplyEdit(textarea, ctx)  — track edits to a reply textarea
- *   CallSightFeedback.classificationOverride(button, ctx) — fires classification_overridden
+ * Exposes a small global `LindaFeedback` API:
+ *   LindaFeedback.emit({surface, event_type, ...})
+ *   LindaFeedback.thumbsWidget(container, ctx)   — attach a thumbs up/down to a DOM node
+ *   LindaFeedback.ratingWidget(container, ctx)   — attach a 1–5 star rating
+ *   LindaFeedback.trackReplyEdit(textarea, ctx)  — track edits to a reply textarea
+ *   LindaFeedback.classificationOverride(button, ctx) — fires classification_overridden
  *
  * Events buffer in memory and flush every 5s OR on `pagehide` / `beforeunload`.
  */
 (function () {
   'use strict';
 
-  const API_BASE = (window.CALLSIGHT_API_BASE || '/api/v1').replace(/\/$/, '');
+  const API_BASE = (window.LINDA_API_BASE || '/api/v1').replace(/\/$/, '');
   const FLUSH_INTERVAL_MS = 5000;
   const SESSION_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
 
@@ -20,7 +20,7 @@
   let lastFlush = 0;
 
   function _apiKey() {
-    return window.CALLSIGHT_API_KEY || localStorage.getItem('callsight_api_key') || '';
+    return window.LINDA_API_KEY || localStorage.getItem('linda_api_key') || '';
   }
 
   function _flush(reason) {
@@ -244,7 +244,7 @@
   }
 
   // Public API
-  window.CallSightFeedback = {
+  window.LindaFeedback = {
     emit,
     thumbsWidget,
     ratingWidget,

@@ -773,9 +773,9 @@ function InviteModal({
 
     const mailtoHref = created
         ? `mailto:${encodeURIComponent(created.email)}` +
-          `?subject=${encodeURIComponent("Your CallSight account")}` +
+          `?subject=${encodeURIComponent("Your LINDA account")}` +
           `&body=${encodeURIComponent(
-              `An account has been created for you on CallSight.\n\n` +
+              `An account has been created for you on LINDA.\n\n` +
                   `Sign in at this app's URL using:\n` +
                   `Email: ${created.email}\n` +
                   `Temporary password: ${created.password}\n\n` +

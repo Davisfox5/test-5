@@ -9,7 +9,7 @@
 (function () {
     const AUTO_FADE_MS = 30_000;
     const MAX_VISIBLE_CARDS = 5;
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
 
     function escapeHtml(s) {
         return String(s || "").replace(/[&<>"']/g, (c) => ({
@@ -97,7 +97,7 @@
             this.historyCount = document.getElementById(historyCountId);
 
             this.contactId = null;
-            this.apiToken = window.__CALLSIGHT_API_TOKEN__ || null;
+            this.apiToken = window.__LINDA_API_TOKEN__ || null;
 
             // chunk_id -> { element, timerId }
             this._active = new Map();
@@ -308,8 +308,8 @@
         if (window.kbCards) return;
         const container = document.getElementById("liveKbAnswers");
         if (!container) return;  // live-call view not present
-        const token = localStorage.getItem("callsight-api-key");
-        if (token) window.__CALLSIGHT_API_TOKEN__ = token;
+        const token = localStorage.getItem("linda-api-key");
+        if (token) window.__LINDA_API_TOKEN__ = token;
         window.kbCards = new KbCardController();
     }
 

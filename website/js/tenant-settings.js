@@ -11,7 +11,7 @@
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
     const DEBOUNCE_MS = 500;
 
     function $(id) { return document.getElementById(id); }
@@ -27,11 +27,11 @@
             this.panel = $("tenantSettingsPanel");
             if (!this.panel) return;
 
-            this.apiToken = localStorage.getItem("callsight-api-key");
+            this.apiToken = localStorage.getItem("linda-api-key");
             this.settings = null;
             this._saveTimer = null;
 
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "preferences") this.load();
             });
 

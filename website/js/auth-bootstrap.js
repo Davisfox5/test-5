@@ -15,15 +15,15 @@
  *     The login overlay opens on demand via `window.lindaAuth.showLogin()`
  *     or when an ?api_key= query param is present.
  *
- * Compatibility: we keep the existing `callsight-api-key` localStorage
+ * Compatibility: we keep the existing `linda-api-key` localStorage
  * slot so legacy controllers (kb-cards, customer-brief, tenant-settings,
  * onboarding) read the session JWT from the same place without any
  * changes on their side.
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
-    const TOKEN_KEY = "callsight-api-key";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
+    const TOKEN_KEY = "linda-api-key";
 
     function getStoredToken() {
         return localStorage.getItem(TOKEN_KEY);
@@ -79,7 +79,7 @@
     }
 
     function applyIdentity(me) {
-        window.callsightAuth = me;
+        window.lindaAuth = me;
         if (!me) {
             document.body.removeAttribute("data-user-role");
             return;
@@ -87,7 +87,7 @@
         document.body.setAttribute("data-user-role", me.role || "agent");
         // Tell existing modules which key to use (already the same slot,
         // but some controllers read this explicit global).
-        window.__CALLSIGHT_API_TOKEN__ = getStoredToken();
+        window.__LINDA_API_TOKEN__ = getStoredToken();
     }
 
     async function tryLogin(email, password) {

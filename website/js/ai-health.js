@@ -1,4 +1,4 @@
-/* CallSight AI-health dashboard widget — Tier 2 + Tier 3 transparency.
+/* LINDA AI-health dashboard widget — Tier 2 + Tier 3 transparency.
  *
  * Renders a small AI health card into any element with id="cs-ai-health-card"
  * by polling /api/v1/analytics/ai-health every 60s.  Also renders a "Pending
@@ -7,11 +7,11 @@
 (function () {
   'use strict';
 
-  const API_BASE = (window.CALLSIGHT_API_BASE || '/api/v1').replace(/\/$/, '');
+  const API_BASE = (window.LINDA_API_BASE || '/api/v1').replace(/\/$/, '');
   const POLL_INTERVAL_MS = 60_000;
 
   function _apiKey() {
-    return window.CALLSIGHT_API_KEY || localStorage.getItem('callsight_api_key') || '';
+    return window.LINDA_API_KEY || localStorage.getItem('linda_api_key') || '';
   }
 
   function _fmtPct(value, fractionDigits) {
@@ -121,5 +121,5 @@
     setInterval(refreshAll, POLL_INTERVAL_MS);
   });
 
-  window.CallSightAiHealth = { refreshAll };
+  window.LindaAiHealth = { refreshAll };
 })();
