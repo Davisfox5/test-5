@@ -72,7 +72,7 @@ From `backend/app/services/*.py` and `requirements.txt`:
 | Knowledge-base RAG | `knowledge_base.py` (api) + Qdrant | Qdrant vectors + Anthropic embeddings (negligible per-seat) |
 | Transcript search | `search_service.py` | Managed Elasticsearch cluster |
 | Tenant insights rollups | `tenant_insights_service.py` | Claude Haiku batch nightly |
-| Snippet extraction, script tracking | `snippet_service.py`, `script_tracker.py` | CPU only |
+| Snippet extraction | `snippet_service.py` | CPU only |
 | Audio storage | `backend/app/services/` (S3) | S3 Standard → Glacier lifecycle |
 | Realtime WS, notifications, webhooks | `websocket.py`, `notification_service.py`, `webhook_dispatcher.py` | ALB hours, Redis pub/sub, egress |
 | Platform base | `db.py`, `main.py`, `auth.py` | Postgres (Neon/RDS), Redis, FastAPI compute |
