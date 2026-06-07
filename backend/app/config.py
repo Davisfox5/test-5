@@ -184,9 +184,6 @@ class Settings(BaseSettings):
     # ── Encryption key for OAuth tokens at rest ──────────
     TOKEN_ENCRYPTION_KEY: str = ""  # 32-byte Fernet key
 
-    # ── Embeddings (optional — enables Qdrant RAG) ────────
-    VOYAGE_API_KEY: str = ""
-
     # ── Email push notifications ──────────────────────────
     # Base URL the OAuth providers can reach to POST inbound
     # notifications.  Needs to be an https URL in production.

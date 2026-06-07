@@ -82,10 +82,9 @@ async def export_tenant(
     )
 
     counts: Dict[str, int] = {}
-    for table_name, rows in _iter_tenant_tables(tenant_id):
+    for table_name, _rows in _iter_tenant_tables(tenant_id):
         if table_name in _EXPORT_SKIP_TABLES:
             continue
-        stream_fn = rows  # unused, keeps mypy happy
         table_count = 0
         async for row_dict in _stream_table_rows(db, table_name, tenant_id):
             yield _ndjson({"_table": table_name, "row": row_dict})

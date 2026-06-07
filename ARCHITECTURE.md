@@ -1,5 +1,17 @@
 # LINDA — Call Transcription & AI Insights Platform
 
+> ⚠️ **OUTDATED — this document describes an early planned architecture, not the shipped system.**
+> It is kept for historical context on intent. Do **not** trust its module paths, endpoints, or
+> tech-stack rows; verify against the code before relying on anything here. Known divergences from
+> the current codebase:
+> - **Frontend:** described as React + Vite SPA → actually **Next.js** (`apps/app/`).
+> - **Task queue:** described as Redis Streams / ARQ → actually **Celery + Redis** (`backend/app/tasks.py`).
+> - **Call API:** described as `/api/v1/calls/*` → actually **`/interactions/*`** (`backend/app/api/interactions.py`).
+> - **Models:** described as split `models/<concern>.py` files → actually a single **`backend/app/models.py`**; the `Call` table is now **`Interaction`**.
+> - **Non-existent paths:** `middleware/`, `call_ingest.py`, `storage.py`, and `workers/*.py` referenced below do not exist.
+>
+> Ground truth: registered routers in `backend/app/main.py`, the schema in `backend/app/models.py`, and the scheduled jobs in `backend/app/tasks.py`.
+
 ## Architecture & Implementation Plan
 
 ### Product Vision

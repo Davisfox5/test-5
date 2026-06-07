@@ -72,7 +72,7 @@ export function CustomerLogo({
     );
 }
 
-export function ScoreCard({
+function ScoreCard({
     label,
     value,
     accentText,
@@ -104,7 +104,7 @@ export function ScoreCard({
     );
 }
 
-export function deriveScoreVisuals(c: CustomerDetail) {
+function deriveScoreVisuals(c: CustomerDetail) {
     const sent = sentimentLabel(c.sentiment_score);
     const churnPct =
         c.churn_risk != null
@@ -229,7 +229,7 @@ export function ContactsCard({ c }: { c: CustomerDetail }) {
     );
 }
 
-export function ContactRow({ c }: { c: CustomerContactOut }) {
+function ContactRow({ c }: { c: CustomerContactOut }) {
     const initials = (c.name || c.email || "?")
         .split(/\s+/)
         .filter(Boolean)
@@ -262,7 +262,7 @@ export function ContactRow({ c }: { c: CustomerContactOut }) {
     );
 }
 
-export function RoleChip({
+function RoleChip({
     role,
     confidence,
 }: {
