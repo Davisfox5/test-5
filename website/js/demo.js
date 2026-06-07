@@ -833,7 +833,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // they can refetch their data.
         try {
             window.dispatchEvent(
-                new CustomEvent('callsight:viewChanged', { detail: { view: viewId } })
+                new CustomEvent('linda:viewChanged', { detail: { view: viewId } })
             );
         } catch (e) { /* older browsers: ignore */ }
     };
