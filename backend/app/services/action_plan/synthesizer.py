@@ -1361,7 +1361,7 @@ async def _seed_slots_from_interaction(
 
             if value is not None:
                 slot["filled_value"] = value
-                slot["filled_at"] = datetime.utcnow().isoformat()
+                slot["filled_at"] = datetime.now(timezone.utc).isoformat()
                 slot["filled_by_source"] = "interaction_seed"
                 seeded += 1
                 changed = True
@@ -1407,7 +1407,7 @@ async def render_single_step_artifact(
             if key in slot_overrides and slot.get("filled_value") is None:
                 copy = dict(slot)
                 copy["filled_value"] = slot_overrides[key]
-                copy["filled_at"] = datetime.utcnow().isoformat()
+                copy["filled_at"] = datetime.now(timezone.utc).isoformat()
                 copy["filled_by_source"] = "rep_override"
                 new_slots.append(copy)
             else:

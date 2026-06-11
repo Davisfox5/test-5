@@ -79,13 +79,18 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequestContextMiddleware)
 
 # ── CORS ──────────────────────────────────────────────────
+# Explicit method/header lists instead of "*": with allow_credentials=True
+# a wildcard reflects whatever the preflight asks for, which silently
+# whitelists any future custom header. The SPA sends Authorization +
+# Content-Type; X-Request-Id / X-Tenant-Id feed RequestContextMiddleware.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id", "X-Tenant-Id"],
     expose_headers=["X-Request-Id"],
+    max_age=3600,
 )
 
 # ── API Routers ───────────────────────────────────────────
@@ -149,6 +154,7 @@ app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analy
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
 from fastapi import Depends as _Depends  # noqa: E402
 from backend.app.auth import require_role as _require_role  # noqa: E402
+from backend.app.auth import require_scope_for_writes as _require_scope_for_writes  # noqa: E402
 
 app.include_router(action_items_router, prefix=settings.API_V1_PREFIX, tags=["action-items"])
 app.include_router(action_plans_router, prefix=settings.API_V1_PREFIX, tags=["action-plans"])
@@ -169,12 +175,17 @@ app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["eval
 app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])
 app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
 
-# Every /admin/* endpoint requires an admin principal.
+# Every /admin/* endpoint requires an admin principal. API keys resolve to
+# a synthetic admin role, so role alone doesn't honor a key's scope list —
+# mutating admin calls additionally require the settings:write scope.
 app.include_router(
     admin_router,
     prefix=settings.API_V1_PREFIX,
     tags=["admin"],
-    dependencies=[_Depends(_require_role("admin"))],
+    dependencies=[
+        _Depends(_require_role("admin")),
+        _Depends(_require_scope_for_writes("settings:write")),
+    ],
 )
 # Motion-assignment admin endpoints (CSV import, tenant default motion).
 # Routes carry their own ``require_role("admin")`` dependency so we don't

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid as _uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
@@ -259,7 +259,7 @@ def _promote_for_tenant(session: Session, tenant: Tenant) -> int:
     analysis_pool: List[Dict[str, Any]] = list(pool.get("analysis", []))
 
     # Find candidates: high quality_score AND at least one done action_item.
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     rows = (
         session.query(
             Interaction.id,
@@ -299,7 +299,7 @@ def _promote_for_tenant(session: Session, tenant: Tenant) -> int:
                 "interaction_id": iid,
                 "summary": (insights or {}).get("summary", "")[:500],
                 "action_items": (insights or {}).get("action_items", [])[:5],
-                "promoted_at": datetime.utcnow().isoformat(),
+                "promoted_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         promoted += 1

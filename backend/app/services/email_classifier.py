@@ -184,7 +184,7 @@ class EmailClassifier:
             f"Cc: {', '.join(email.cc_addresses)}\n"
             f"Subject: {email.subject or '(no subject)'}\n"
             f"Headers-of-interest: "
-            f"{json.dumps({k: v for k, v in email.headers.items() if k.lower() in {'list-id','auto-submitted','precedence','x-mailer','return-path'}})}\n\n"
+            f"{json.dumps({k: v for k, v in email.headers.items() if k.lower() in {'list-id','auto-submitted','precedence','x-mailer','return-path'}}, sort_keys=True)}\n\n"
             f"Body preview:\n{email.body_preview[:2000]}"
         )
         if tenant_context_block:

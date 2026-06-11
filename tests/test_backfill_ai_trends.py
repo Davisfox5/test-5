@@ -1,10 +1,10 @@
-"""Tests for helpers in ``backend.backfill_ai_trends``."""
+"""Tests for helpers in ``backend.scripts.backfill_ai_trends``."""
 
 import pytest
 
 
 def test_bucket_to_float_maps_signals_to_midpoints():
-    from backend.backfill_ai_trends import _bucket_to_float
+    from backend.scripts.backfill_ai_trends import _bucket_to_float
 
     assert _bucket_to_float("high") == 0.85
     assert _bucket_to_float("medium") == 0.55
@@ -13,14 +13,14 @@ def test_bucket_to_float_maps_signals_to_midpoints():
 
 
 def test_bucket_to_float_is_case_insensitive():
-    from backend.backfill_ai_trends import _bucket_to_float
+    from backend.scripts.backfill_ai_trends import _bucket_to_float
 
     assert _bucket_to_float("HIGH") == 0.85
     assert _bucket_to_float("High") == 0.85
 
 
 def test_bucket_to_float_returns_none_for_missing_or_unknown():
-    from backend.backfill_ai_trends import _bucket_to_float
+    from backend.scripts.backfill_ai_trends import _bucket_to_float
 
     assert _bucket_to_float(None) is None
     assert _bucket_to_float("") is None
@@ -29,7 +29,7 @@ def test_bucket_to_float_returns_none_for_missing_or_unknown():
 
 def test_numeric_signals_pass_skips_insights_already_populated():
     """If both numeric fields are present we don't overwrite them."""
-    from backend.backfill_ai_trends import _bucket_to_float
+    from backend.scripts.backfill_ai_trends import _bucket_to_float
 
     # Representative example — the pass only infers when a numeric value
     # is missing; this helper confirms the precondition holds.

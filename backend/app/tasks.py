@@ -3175,7 +3175,7 @@ def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
     from backend.app.models import Interaction, InteractionFeatures
     from datetime import timedelta
 
-    cutoff = datetime.utcnow() - timedelta(days=90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
     rows = (
         session.query(InteractionFeatures.deterministic)
         .join(Interaction, Interaction.id == InteractionFeatures.interaction_id)
@@ -3224,7 +3224,7 @@ def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
             "customer_intensity": len(customer_db),
             "agent_pitch_std": len(agent_pitch_std),
         },
-        "computed_at": datetime.utcnow().isoformat(),
+        "computed_at": datetime.now(timezone.utc).isoformat(),
     }
     tenant.paralinguistic_baselines = baselines
     session.commit()
@@ -3774,6 +3774,10 @@ def crm_sync_tenant(tenant_id: str, provider: str) -> Dict[str, Any]:
             summary = await sync_crm_for_tenant(
                 db, uuid.UUID(tenant_id), provider
             )
+            # sync_crm_for_tenant only flushes; without a commit the
+            # session rollback on close discards every upserted row and
+            # the CrmSyncLog itself.
+            await db.commit()
             return {
                 "provider": summary.provider,
                 "status": summary.status,
@@ -3817,6 +3821,10 @@ def crm_sync_daily() -> Dict[str, Any]:
             for tenant_id, provider in pairs:
                 try:
                     summary = await sync_crm_for_tenant(db, tenant_id, provider)
+                    # Commit per tenant: persists this sync's rows (the
+                    # service only flushes) and keeps one tenant's failure
+                    # from rolling back every tenant synced after it.
+                    await db.commit()
                     results.append(
                         {
                             "tenant_id": str(tenant_id),
@@ -3832,6 +3840,10 @@ def crm_sync_daily() -> Dict[str, Any]:
                         tenant_id,
                         provider,
                     )
+                    # Reset the failed transaction so the next tenant's
+                    # sync doesn't error with "transaction has been rolled
+                    # back" on the shared session.
+                    await db.rollback()
                     results.append(
                         {
                             "tenant_id": str(tenant_id),

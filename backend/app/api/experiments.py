@@ -10,7 +10,7 @@ Used by the platform-team admin tool to:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -152,12 +152,12 @@ async def transition_variant(
                 PromptVariant.status == "active",
                 PromptVariant.id != variant.id,
             )
-            .values(status="retired", retired_at=datetime.utcnow())
+            .values(status="retired", retired_at=datetime.now(timezone.utc))
         )
 
     variant.status = body.status
     if body.status == "retired":
-        variant.retired_at = datetime.utcnow()
+        variant.retired_at = datetime.now(timezone.utc)
     bust_cache()
     return VariantOut.model_validate(variant, from_attributes=True)
 
@@ -237,6 +237,6 @@ async def conclude_experiment(
         raise HTTPException(status_code=404, detail="Experiment not found")
     exp.status = "concluded"
     exp.conclusion = conclusion
-    exp.end_date = datetime.utcnow()
+    exp.end_date = datetime.now(timezone.utc)
     exp.decided_by = decided_by
     return ExperimentOut.model_validate(exp, from_attributes=True)

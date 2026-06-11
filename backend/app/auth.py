@@ -875,6 +875,38 @@ def require_scope(scope: str) -> Callable[..., AuthPrincipal]:
     return _dep
 
 
+def require_scope_for_writes(scope: str) -> Callable[..., AuthPrincipal]:
+    """Like :func:`require_scope`, but only enforced on mutating methods.
+
+    Intended for router-level use on route groups whose GETs should stay
+    readable by any key of the tenant while POST/PUT/PATCH/DELETE require
+    an explicit write scope. Without this, an API key created with a
+    deliberately narrow scope list (e.g. ``["analytics:read"]``) could
+    still hit admin write endpoints, because API-key principals resolve
+    to ``role="admin"`` and ``require_role`` alone doesn't consult scopes.
+    """
+    if scope not in API_KEY_SCOPES:
+        raise ValueError(f"require_scope_for_writes: unknown scope {scope!r}")
+
+    async def _dep(
+        request: Request,
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return principal
+        if principal.source != "api_key":
+            return principal
+        if principal.has_scope(scope):
+            return principal
+        raise HTTPException(
+            status_code=403,
+            detail=f"missing scope: {scope}",
+        )
+
+    _dep.__name__ = f"require_scope_for_writes_{scope.replace(':', '_')}"
+    return _dep
+
+
 # Clerk stub removed. Native session JWTs + per-tenant API keys cover
 # every auth path we need. ``User.clerk_user_id`` is still on the model
 # for future Clerk integration, but nothing consumes it today.

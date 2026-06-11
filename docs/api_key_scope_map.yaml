@@ -73,6 +73,13 @@ scopes:
   crm:sync:
     - POST   /api/v1/crm/sync/{provider}
 
+  # Router-level gate (main.py): every mutating /admin/* route requires
+  # settings:write for API-key callers. API keys resolve to a synthetic
+  # admin role, so without this gate a read-only key could still hit
+  # admin write surfaces.
+  settings:write:
+    - "POST/PUT/PATCH/DELETE /api/v1/admin/* (router-level)"
+
   onboarding:write:
     - POST   /api/v1/onboarding/sessions
     - POST   /api/v1/onboarding/sessions/{session_id}/reply

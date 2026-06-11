@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -188,7 +188,7 @@ async def freeze_reference_set(
         raise HTTPException(status_code=404, detail="Reference set not found")
     if rs.frozen_at is not None:
         raise HTTPException(status_code=409, detail="Already frozen")
-    rs.frozen_at = datetime.utcnow()
+    rs.frozen_at = datetime.now(timezone.utc)
     return ReferenceSetOut(
         id=rs.id,
         tenant_id=rs.tenant_id,

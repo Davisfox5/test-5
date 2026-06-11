@@ -15,7 +15,7 @@ import difflib
 import json
 import logging
 import uuid as _uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -78,7 +78,7 @@ def emit_event(
         "insight_dimension": insight_dimension or "",
         "session_id": str(session_id) if session_id else "",
         "payload": json.dumps(payload or {}),
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
     }
     try:
         r.xadd(STREAM_KEY, body, maxlen=100_000, approximate=True)

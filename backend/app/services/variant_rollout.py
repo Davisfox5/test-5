@@ -16,7 +16,7 @@ always a human gate — no auto-promotion of new variants without sign-off.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy import func
@@ -85,7 +85,7 @@ def evaluate_active_experiments(session: Session) -> Dict[str, Any]:
             # Mark experiment ready for human review; set the treatment
             # variant to the same status (Gate 2 promotes it explicitly).
             exp.status = "ready_for_review"
-            exp.end_date = datetime.utcnow()
+            exp.end_date = datetime.now(timezone.utc)
             exp.result_summary = {**result, "winner": "treatment"}
             exp.conclusion = (
                 f"Treatment {exp.treatment_variant_id} beats control "
@@ -99,7 +99,7 @@ def evaluate_active_experiments(session: Session) -> Dict[str, Any]:
             declared += 1
         else:
             exp.status = "concluded"
-            exp.end_date = datetime.utcnow()
+            exp.end_date = datetime.now(timezone.utc)
             exp.result_summary = {**result, "winner": "control"}
             exp.conclusion = (
                 f"Treatment did not beat control (delta {delta:+.4f}).  "
@@ -110,7 +110,7 @@ def evaluate_active_experiments(session: Session) -> Dict[str, Any]:
             ).first()
             if tv is not None:
                 tv.status = "retired"
-                tv.retired_at = datetime.utcnow()
+                tv.retired_at = datetime.now(timezone.utc)
             inconclusive += 1
 
     if declared or inconclusive:

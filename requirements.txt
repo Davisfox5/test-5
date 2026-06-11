@@ -66,7 +66,9 @@ qdrant-client>=1.9                # Knowledge base RAG
 elasticsearch[async]>=8           # Transcript search across all interactions
 
 # === Auth ===
-clerk-backend-api>=1              # Managed auth (transitional)
+# Clerk JWTs are verified directly against the JWKS endpoint via
+# python-jose (see auth.py) — the clerk-backend-api SDK is not imported
+# anywhere and was removed from this list.
 python-jose[cryptography]>=3.3   # JWT validation
 bcrypt>=4                         # Password hashing for per-user login
 email-validator>=2                # Pydantic EmailStr validator

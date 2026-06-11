@@ -10,7 +10,7 @@ The stored JSONB has five top-level sections: ``sentiment``, ``topics``,
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -317,7 +317,7 @@ def rollup_all_tenants_weekly(
     from backend.app.models import Tenant
 
     if as_of is None:
-        as_of = datetime.utcnow()
+        as_of = datetime.now(timezone.utc)
 
     period_end = as_of.date()
     period_start = period_end - timedelta(days=7)

@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -744,7 +744,7 @@ async def ingest_external_document(
         doc.source_url = body.source_url or doc.source_url
         if body.tags is not None:
             doc.tags = list(body.tags)
-        doc.last_synced_at = datetime.utcnow()
+        doc.last_synced_at = datetime.now(timezone.utc)
 
     try:
         chunks = await ingest_document(db, doc)

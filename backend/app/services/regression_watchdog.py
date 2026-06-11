@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid as _uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from sqlalchemy import and_, func, or_
@@ -45,7 +45,7 @@ def _avg_score_for_variant(
 
 
 def check_all_active_rollouts(session: Session) -> Dict[str, Any]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     last_24h = now - timedelta(hours=24)
     last_7d_start = now - timedelta(days=7)
     last_7d_end = now - timedelta(hours=24)

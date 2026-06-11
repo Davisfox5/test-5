@@ -11,7 +11,7 @@ each variant's engagement rate from ``campaign_events``, and writes an
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 from sqlalchemy import func
@@ -97,8 +97,8 @@ def decide_active_campaigns(session: Session) -> Dict[str, Any]:
                 type="campaign_variant",
                 status="concluded",
                 hypothesis=f"Find the best-performing variant for campaign '{name}'.",
-                start_date=min(s.started_at for s in siblings if s.started_at) or datetime.utcnow(),
-                end_date=max(s.ended_at for s in siblings if s.ended_at) or datetime.utcnow(),
+                start_date=min(s.started_at for s in siblings if s.started_at) or datetime.now(timezone.utc),
+                end_date=max(s.ended_at for s in siblings if s.ended_at) or datetime.now(timezone.utc),
                 result_summary=result,
                 conclusion=(
                     f"Variant '{winner[0]}' had the highest engagement rate "

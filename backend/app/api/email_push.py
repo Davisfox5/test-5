@@ -24,6 +24,7 @@ provider-specific shared secrets so unknown callers are rejected.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import logging
 import uuid
@@ -111,7 +112,7 @@ async def gmail_push(
     """
     _enforce_rate(request, "gmail-push", _GMAIL_RATE)
     expected = _settings.GMAIL_PUSH_TOKEN
-    if expected and token != expected:
+    if expected and not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Bad push token")
 
     if envelope.message.data is None:
@@ -188,7 +189,9 @@ async def graph_webhook(
     queued = 0
 
     for n in notifications:
-        if expected_state and n.get("clientState") != expected_state:
+        if expected_state and not hmac.compare_digest(
+            str(n.get("clientState") or ""), expected_state
+        ):
             logger.warning("Graph notification rejected: clientState mismatch")
             continue
         resource_data = n.get("resourceData") or {}

@@ -15,7 +15,7 @@ afterward.
 - `docs/` — architecture, business plan, pricing models, scoring spec
 - `backend/scripts/seed_{cs,it,sales}.py` (data blobs) + `backend/seed.py`
   (runner) — demo data
-- `backend/analyze_seed.py` — re-runs the real AI pipeline over seeded
+- `backend/scripts/analyze_seed.py` — re-runs the real AI pipeline over seeded
   interactions to refresh insights
 
 ## Running
