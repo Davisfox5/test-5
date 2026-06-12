@@ -35,12 +35,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import (
-    AuthPrincipal,
-    get_current_principal,
     get_current_tenant,
     require_role,
 )

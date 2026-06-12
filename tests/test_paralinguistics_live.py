@@ -13,10 +13,8 @@ Focus on the parts we can cover without parselmouth installed:
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 
 from backend.app.services.live_coaching_features import (
-    CoachingAlert,
     ParalinguisticScanner,
 )
 from backend.app.services.paralinguistics import ParalinguisticFeatures

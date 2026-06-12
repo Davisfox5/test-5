@@ -208,3 +208,127 @@ with per-integration ownership blocks, production deploys gated behind
 manual `workflow_dispatch`, cheap liveness vs. deep readiness probe
 split, fly.toml cost tuning (auto-stop, worker concurrency, SIPREC VM
 disabled while unused).
+
+---
+
+## 3. Implementation pass — 2026-06-12
+
+Every item in Section 2 was subsequently implemented, corrected, or
+explicitly closed. Statuses:
+
+### 3.1 Security (§2.1)
+
+- **DB TLS verification — DONE.** `db.py` now verifies the server cert
+  against the system CA bundle (asyncpg path), and the Celery sync engine
+  uses `sslmode=verify-full` + the Debian CA bundle (libpq doesn't read
+  the system store by default). Explicit `DATABASE_SSL_NO_VERIFY` escape
+  hatch restores the old encrypted-but-unverified behaviour if a runtime
+  image ever lacks CA certs. The Docker image installs `ca-certificates`
+  in both stages, so default deployments verify cleanly.
+- **Pub/Sub OIDC — DONE.** Optional Google-signed OIDC verification on
+  the Gmail push endpoint (`GMAIL_PUSH_OIDC_AUDIENCE` +
+  `GMAIL_PUSH_OIDC_SERVICE_ACCOUNT`), JWKS cached 1h, fail-closed, on
+  top of the existing `?token=` shared secret.
+- **Clerk key — DONE.** Audit note added in `apps/app/fly.toml`
+  (test-key-only; prod key must come from CI).
+
+### 3.2 LLM cost-efficiency (§2.2)
+
+- **Batches API — DONE (both targets).**
+  - *LLM judge:* new `run_pending_judgements_batch` in `llm_judge.py` +
+    periodic `llm_judge_batch` Celery task (every 30 min, `batch` queue).
+    Sweeps analyzed-but-unjudged interactions across all three surfaces
+    (15-min settle filter, 7-day window, NOT-EXISTS on
+    `insight_quality_scores`) and submits ONE Batches API job at the 50%
+    discount. Outstanding batch id parked in Redis so a timeout/crash
+    resumes the same batch instead of re-paying. Sequential fallback when
+    the API is unavailable. Per-interaction enqueue retained behind
+    `LLM_BATCH_OFFLINE_JOBS=False`.
+  - *Tenant brief refiner:* `refine_all_batched` submits the weekly
+    all-tenant sweep as one batch; single-tenant admin refreshes stay
+    synchronous. Note: the router's `submit_batch` was NOT reused — its
+    tier map routes QUALITY_REVIEW to Opus, which would have tripled the
+    judge's cost; the judge stays pinned to Haiku.
+- **Cache-aware retry — DONE.** The analysis truncation retry now checks
+  `usage.cache_read_input_tokens`; a miss increments the new
+  `LLM_RETRY_CACHE_MISSES` metric and logs, so double-paid retries are
+  visible. (The retry already doubled — not reduced — the budget; the
+  original description was corrected.)
+- **KB orchestrator gate — DONE.** Oversized-doc threshold lowered
+  50K → 40K chars; new `KB_ORCHESTRATOR_PARSE_OUTCOMES` counter records
+  ok/oversized/api_error/bad_json by size bucket.
+- **Embedding content-hash skip — ALREADY IMPLEMENTED (finding
+  retracted).** Both ingest paths (`kb/ingest.py:57` and
+  `kb/orchestrator.py` `ingest_document_orchestrated`) already skip
+  re-embedding when `content_hash` matches and `embedded_at` is set. No
+  change needed.
+- **Model IDs via settings — DONE.** `CLAUDE_{HAIKU,SONNET,OPUS}_MODEL`
+  settings + `llm_client.model_for_tier()`; all ~24 hardcoded model
+  strings across 21 files now resolve through it (historic alembic/seed
+  defaults intentionally untouched).
+
+### 3.3 Correctness / operations (§2.3)
+
+- **Celery `max_retries` — NON-ISSUE (finding retracted).** Celery tasks
+  don't retry unless they call `self.retry`/set `autoretry_for`; every
+  task that calls `self.retry` already sets `max_retries`. The originally
+  named tasks never retry at all.
+- **Warmup logging — DONE.** pyannote/speechbrain warmup failures now log
+  at WARNING.
+- **Stripe status code — DONE.** Outbound Stripe API errors map 4xx→400
+  (permanent, don't retry) and 5xx→503 (transient) instead of blanket 502.
+- **Writeback metrics — DONE.** Failure counters now label the phase
+  (note vs activity) that actually failed.
+
+**New critical bugs found and fixed during this pass** (same
+missing-commit family as §1.1, found by sweeping every
+`async_session()` block in tasks.py — plus two found by the new lint
+gate):
+
+1. **Webhook emission rolled back** — `emit_event` only flushes; the
+   two Celery-side emitters (customer-lifecycle events, interaction
+   analyzed/outcome events) never committed, so every tenant webhook
+   triggered from the pipeline silently vanished (the pre-enqueued
+   `webhook_deliver` task then found "missing"). Commits added.
+2. **Webhook delivery bookkeeping rolled back** — `webhook_deliver`
+   never committed `deliver_one`'s status/attempt/circuit-breaker
+   mutations; a retry sweep would have re-POSTed already-delivered
+   events. Commit added.
+3. **KB tenant-context rebuilds rolled back** — `rebuild_tenant_context`
+   (full + incremental) and `rebuild_customer_brief` never committed the
+   builders' writes. Commits added.
+4. **Weekly refiner + infer-from-sources rolled back** — neither task
+   committed; playbook updates and `TenantBriefSuggestion` rows were
+   lost weekly. Per-tenant commit + rollback-on-error added.
+5. **Live features crash (lint-caught)** — `websocket.py`'s
+   `on_transcript` closure assigned `finals_since_features_emit` /
+   `last_features_emit_at` without `nonlocal`, so the first final
+   transcript raised `UnboundLocalError` and the live feature-snapshot
+   path never worked. Fixed.
+6. **`text_segmenter` telemetry NameError (lint-caught)** —
+   `record_llm_completion` was called without being imported; every
+   segmenter call would have crashed after the (paid) LLM response.
+   Import added. Two annotation-only NameErrors (`Dict`/`List`) fixed in
+   `audio_storage.py` / `prompt_variant_service.py`.
+
+### 3.4 CI/CD & repo (§2.4)
+
+- **CI lint + type-check — DONE.** New `lint` job: ruff with correctness
+  rules (`E9,F63,F7,F82,F401`, alembic excluded) + SPA `tsc --noEmit`.
+  `build` now requires it. 171 unused imports cleaned to make F401 green.
+- **Vulnerability scanning — DONE.** New `security_audit` job:
+  `pip-audit` (with `CVE-2025-3000` — torch, no fix published —
+  explicitly ignored so *new* CVEs still fail) and `npm audit
+  --audit-level=high` (the 3 known moderates are unfixable transitives
+  bundled inside Next.js).
+- **SPA lockfile — ADDED.** `apps/app/package-lock.json` was never
+  committed; deploys were non-reproducible and `npm ci` impossible. Now
+  committed and used by CI caching.
+- **Scripts documented — DONE.** `scripts/README.md` covers the three
+  operational scripts; `docs/sessions/` moved to `docs/archive/sessions/`.
+- **Playwright declared — DONE.** New `requirements-dev.txt` (pytest,
+  ruff, pip-audit, playwright) with install instructions.
+
+**Validation:** full suite after the entire pass: **1268 passed,
+7 skipped, 0 failed**; ruff correctness gate clean; SPA `tsc --noEmit`
+clean; workflow YAML validated.

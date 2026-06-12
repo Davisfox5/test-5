@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import Response
 
-from backend.app.auth import AuthPrincipal, get_current_principal, require_role
+from backend.app.auth import AuthPrincipal, require_role
 from backend.app.config import get_settings
 from backend.app.db import async_session, get_db
 from backend.app.models import Integration, LiveSession, Tenant

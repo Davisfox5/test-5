@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -156,7 +155,7 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
 
 
 def test_propose_action_item_creates_pending_proposal():
-    from backend.app.services.linda_agent import dispatch_tool, WriteProposal
+    from backend.app.services.linda_agent import dispatch_tool
 
     session = _FakeSession()
     ctx = _ctx(session)

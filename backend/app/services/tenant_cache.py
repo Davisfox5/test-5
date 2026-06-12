@@ -28,7 +28,6 @@ from datetime import datetime
 from threading import RLock
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 

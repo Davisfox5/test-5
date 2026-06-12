@@ -28,7 +28,7 @@ import struct
 import time
 import wave
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 from backend.app.services.audio_codecs import pcm16_to_mono, resample_pcm16
 from backend.app.services.live_coaching_features import (

@@ -8,7 +8,6 @@ that ships real answers to agents on live calls.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from types import SimpleNamespace
 

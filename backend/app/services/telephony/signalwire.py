@@ -18,7 +18,6 @@ Twilio ones work as-is; duplicating them would just create drift.
 
 from __future__ import annotations
 
-from typing import Optional
 
 
 def signalwire_rest_base(space_url: str) -> str:

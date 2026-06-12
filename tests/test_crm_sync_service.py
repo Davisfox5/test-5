@@ -8,8 +8,7 @@ upserts so we can assert idempotency and summary counts.
 from __future__ import annotations
 
 import uuid
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
 import pytest

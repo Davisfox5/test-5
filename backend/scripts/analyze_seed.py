@@ -32,7 +32,7 @@ import sys
 import time
 import traceback
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import psycopg2
 import psycopg2.extras

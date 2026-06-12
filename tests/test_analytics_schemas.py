@@ -7,7 +7,6 @@ types, required vs optional) stays stable so the frontend code in
 
 import uuid
 
-import pytest
 
 
 def test_business_health_accepts_full_payload():

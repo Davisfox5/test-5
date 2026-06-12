@@ -1,7 +1,6 @@
 """Tests for the audio storage service — local-filesystem backend path."""
 
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 
 import pytest

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
-from backend.app.api.telephony import TwilioCreds, _twilio_creds
+from backend.app.api.telephony import _twilio_creds
 from backend.app.services.token_crypto import encrypt_token
 
 

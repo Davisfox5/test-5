@@ -1938,7 +1938,7 @@ async def resolved_for_step(
     rep sees the synthesizer's suggestion; the SPA can render a "search
     KB" CTA. Same for participants without an email match.
     """
-    from sqlalchemy import or_ as _or, func as _func
+    from sqlalchemy import func as _func
     from backend.app.models import KBDocument
     from backend.app.services.meeting_scheduler.participant_resolver import (
         resolve_participants,

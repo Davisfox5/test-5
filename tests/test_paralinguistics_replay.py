@@ -28,7 +28,6 @@ from backend.app.services.live_coaching_features import (
 from backend.app.services.paralinguistics_replay import (
     ExpectedAlert,
     ReplayReport,
-    ValidationResult,
     replay_pcm_into_window,
     validate_against_expected,
 )

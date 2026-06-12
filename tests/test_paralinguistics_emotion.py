@@ -8,7 +8,6 @@ round-tripping a real model.
 
 from __future__ import annotations
 
-import pytest
 
 from backend.app.services.paralinguistics_emotion import (
     ArousalResult,

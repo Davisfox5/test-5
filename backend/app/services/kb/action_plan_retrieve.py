@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import Integration, KBChunk, KBDocument
+from backend.app.models import Integration, KBChunk
 from backend.app.services.kb.embedder import VoyageEmbedder, VoyageEmbedderError
 from backend.app.services.kb.vector_store import (
     SearchHit,

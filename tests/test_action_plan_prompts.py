@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import string
 
 import pytest
@@ -18,7 +17,6 @@ from backend.app.services.action_plan.prompts import (
 from backend.app.services.kb.orchestrator_prompts import (
     ORCHESTRATOR_PROMPT_VERSION,
     ORCHESTRATOR_SYSTEM_PROMPT,
-    ORCHESTRATOR_USER_TEMPLATE,
     format_orchestrator_system,
     format_orchestrator_user,
 )

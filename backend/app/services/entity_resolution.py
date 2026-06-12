@@ -34,15 +34,16 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.app.models import Contact, Customer, CustomerOwner, Interaction
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +454,7 @@ async def _extract(
 
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_for_tier("haiku"),
             max_tokens=1500,
             system=[
                 {

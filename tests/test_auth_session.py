@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException, Request

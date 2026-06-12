@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from celery import Celery
@@ -155,6 +155,9 @@ celery_app.conf.update(
         "vocabulary_digest_weekly": {"queue": "batch"},
         "tenant_brief_refiner_weekly": {"queue": "batch"},
         "infer_from_sources_weekly": {"queue": "batch"},
+        # Batched LLM-judge sweep — holds a worker while polling the
+        # Batches API (minutes), so keep it off the realtime lanes.
+        "llm_judge_batch": {"queue": "batch"},
         # Background embed of a single support case — non-realtime but
         # not a giant nightly sweep either. Default queue keeps it off
         # the priority lane while still draining quickly.
@@ -308,6 +311,15 @@ celery_app.conf.update(
             "task": "tenant_brief_refiner_weekly",
             "schedule": crontab(minute=45, hour=1, day_of_week=1),
         },
+        # Batched LLM-judge sweep: every 30 minutes, gather analyzed-but-
+        # unjudged interactions (15-min settle filter inside) and submit
+        # one Message Batches API job — 50% cheaper than the per-
+        # interaction synchronous judges it replaces. No-op when there's
+        # nothing pending or LLM_BATCH_OFFLINE_JOBS=False.
+        "llm-judge-batch": {
+            "task": "llm_judge_batch",
+            "schedule": crontab(minute="*/30"),
+        },
         "infer-from-sources-weekly": {
             "task": "infer_from_sources_weekly",
             "schedule": crontab(minute=15, hour=2, day_of_week=1),
@@ -398,7 +410,10 @@ def _on_worker_start(**_kwargs: Any) -> None:
         if _get_diarization_pipeline() is not None:
             logger.info("pyannote diarization pipeline preloaded")
     except Exception:
-        logger.debug("pyannote warmup failed (non-fatal)", exc_info=True)
+        # WARNING, not DEBUG: a failed warmup means every diarization
+        # falls back to a degraded path — operators need to see that
+        # without flipping DEBUG on in prod.
+        logger.warning("pyannote warmup failed (non-fatal)", exc_info=True)
 
     try:
         from backend.app.services.paralinguistics_emotion import (
@@ -408,7 +423,9 @@ def _on_worker_start(**_kwargs: Any) -> None:
         if prefetch_emotion_classifier():
             logger.info("speechbrain emotion classifier preloaded")
     except Exception:
-        logger.debug("speechbrain warmup failed (non-fatal)", exc_info=True)
+        # WARNING for the same reason as the pyannote warmup above —
+        # silent degradation of every emotion extraction otherwise.
+        logger.warning("speechbrain warmup failed (non-fatal)", exc_info=True)
 
 
 @task_prerun.connect
@@ -554,7 +571,18 @@ _sync_connect_args: Dict[str, Any] = {
 }
 if "ssl=" in _sync_db_url or "sslmode=" in _sync_db_url:
     _sync_db_url = _sync_db_url.split("?")[0]
-    _sync_connect_args["sslmode"] = "require"
+    # ``verify-full`` checks the cert chain AND hostname (``require``
+    # encrypts but authenticates nothing — MITM-able). libpq doesn't
+    # consult the system trust store by default, so point sslrootcert
+    # at the Debian CA bundle the Docker image ships. Fall back to
+    # ``require`` only when no bundle is present (bare local dev) or
+    # the operator set the explicit escape hatch.
+    _ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+    if not settings.DATABASE_SSL_NO_VERIFY and os.path.exists(_ca_bundle):
+        _sync_connect_args["sslmode"] = "verify-full"
+        _sync_connect_args["sslrootcert"] = _ca_bundle
+    else:
+        _sync_connect_args["sslmode"] = "require"
 
 _sync_engine = create_engine(
     _sync_db_url,
@@ -1253,6 +1281,10 @@ def _run_pipeline_impl(
                                 ev["webhook_event"],
                                 {k: v for k, v in ev.items() if k != "webhook_event"},
                             )
+                        # emit_event only flushes; without a commit the
+                        # delivery rows vanish on close and the already-
+                        # enqueued webhook_deliver tasks find nothing.
+                        await db.commit()
 
                 try:
                     _loop.run(_emit_lifecycle())
@@ -2058,16 +2090,21 @@ def _run_pipeline_impl(
     logger.info("Pipeline complete for interaction %s", interaction_id)
 
     # ── Step 18: Schedule LLM-judge evaluation (Layer 2) ─────────────
-    # 15-min delay so the interaction settles in DB and (for replies) any
-    # follow-on edit-distance event has been written.
-    try:
-        evaluate_analysis.apply_async(args=[interaction_id], countdown=900)
-        if interaction.channel == "email":
-            evaluate_classification.apply_async(args=[interaction_id], countdown=900)
-            if interaction.direction == "outbound":
-                evaluate_reply.apply_async(args=[interaction_id], countdown=900)
-    except Exception:
-        logger.exception("Failed to enqueue evaluator tasks (non-fatal)")
+    # Default path: the periodic ``llm_judge_batch`` task sweeps up every
+    # settled-but-unjudged interaction and submits ONE Message Batches API
+    # job (50% token discount; judging is not latency-sensitive). The
+    # legacy per-interaction enqueue (15-min countdown so the interaction
+    # settles and any edit-distance event lands) remains behind the
+    # LLM_BATCH_OFFLINE_JOBS=False escape hatch.
+    if not settings.LLM_BATCH_OFFLINE_JOBS:
+        try:
+            evaluate_analysis.apply_async(args=[interaction_id], countdown=900)
+            if interaction.channel == "email":
+                evaluate_classification.apply_async(args=[interaction_id], countdown=900)
+                if interaction.direction == "outbound":
+                    evaluate_reply.apply_async(args=[interaction_id], countdown=900)
+        except Exception:
+            logger.exception("Failed to enqueue evaluator tasks (non-fatal)")
 
 
 def _enqueue_delta_report(
@@ -2161,6 +2198,9 @@ def _emit_webhooks_for_interaction(
                         "outcome_confidence": outcome_confidence,
                     },
                 )
+            # emit_event only flushes — commit or the delivery rows
+            # roll back and the webhooks never fire.
+            await db.commit()
 
     try:
         asyncio.run(_runner())
@@ -3464,6 +3504,27 @@ def evaluate_reply(self, interaction_id: str) -> Dict[str, Any]:
         session.close()
 
 
+@celery_app.task(name="llm_judge_batch", max_retries=0, time_limit=1800)
+def llm_judge_batch() -> Dict[str, Any]:
+    """Periodic sweep: judge pending interactions via the Batches API.
+
+    No retries — the sweep is idempotent and reruns on its own schedule;
+    an outstanding batch id parked in Redis is resumed (never
+    re-submitted) by the next run. Hard 30-min time limit matches the
+    poll ceiling inside ``run_pending_judgements_batch``.
+    """
+    if not settings.LLM_BATCH_OFFLINE_JOBS:
+        return {"status": "disabled", "submitted": 0, "persisted": 0}
+
+    from backend.app.services.llm_judge import run_pending_judgements_batch
+
+    session = _get_sync_session()
+    try:
+        return run_pending_judgements_batch(session)
+    finally:
+        session.close()
+
+
 @celery_app.task(name="refresh_few_shot_pools")
 def refresh_few_shot_pools() -> Dict[str, Any]:
     """Promote high-quality interactions into each tenant's few-shot pool."""
@@ -3608,6 +3669,10 @@ def rebuild_tenant_context(tenant_id: str, full: bool = False) -> Dict[str, Any]
         async with async_session() as db:
             if full:
                 brief = await builder.rebuild_all(db, tid)
+                # The builder writes tenant.tenant_context but never
+                # commits (API callers rely on get_db's commit) — commit
+                # here or the rebuild silently rolls back.
+                await db.commit()
                 return {"tenant_id": tenant_id, "mode": "full", "brief_keys": list(brief.keys())}
 
             # Incremental: pick up the most recently updated doc for this
@@ -3623,6 +3688,7 @@ def rebuild_tenant_context(tenant_id: str, full: bool = False) -> Dict[str, Any]
             if row is None:
                 return {"tenant_id": tenant_id, "mode": "incremental", "skipped": "no_docs"}
             brief = await builder.merge_document(db, tid, row)
+            await db.commit()
             return {"tenant_id": tenant_id, "mode": "incremental", "brief_keys": list(brief.keys())}
 
     return asyncio.run(_runner())
@@ -3643,6 +3709,9 @@ def rebuild_customer_brief(tenant_id: str, customer_id: str) -> Dict[str, Any]:
         builder = CustomerBriefBuilder()
         async with async_session() as db:
             brief = await builder.build(db, uuid.UUID(tenant_id), cid)
+            # build() writes customer.customer_brief + webhook delivery
+            # rows but never commits — commit or the rebuild rolls back.
+            await db.commit()
             return {
                 "customer_id": customer_id,
                 "status": brief.get("current_status"),
@@ -3672,12 +3741,25 @@ def tenant_brief_refiner_weekly(tenant_id: Optional[str] = None) -> Dict[str, An
                 tids = [uuid.UUID(str(r[0])) for r in rows.all()]
 
             results: List[Dict[str, Any]] = []
+            # All-tenant weekly sweeps go through the Batches API (50%
+            # token discount; nobody is waiting on the result). Single-
+            # tenant runs (admin-triggered refresh) stay synchronous so
+            # the admin sees the new playbook right away.
+            if settings.LLM_BATCH_OFFLINE_JOBS and len(tids) > 1:
+                results = await refiner.refine_all_batched(db, tids)
+                await db.commit()
+                return {"tenants_processed": len(results), "results": results}
+
             for tid in tids:
                 try:
                     pb = await refiner.refine(db, tid)
+                    # refine() only mutates the session — commit per
+                    # tenant or the whole sweep rolls back on close.
+                    await db.commit()
                     results.append({"tenant_id": str(tid), "sample_size": pb.get("sample_size")})
                 except Exception:
                     logger.exception("TenantBriefRefiner failed for tenant %s", tid)
+                    await db.rollback()
                     results.append({"tenant_id": str(tid), "error": True})
         return {"tenants_processed": len(results), "results": results}
 
@@ -3709,6 +3791,10 @@ def infer_from_sources_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]
             for tid in tids:
                 try:
                     new_rows = await agent.run(db, tid)
+                    # agent.run only flushes its suggestion + webhook
+                    # rows; commit per tenant (and rollback on failure
+                    # so one bad tenant doesn't poison the session).
+                    await db.commit()
                     results.append(
                         {
                             "tenant_id": str(tid),
@@ -3719,6 +3805,7 @@ def infer_from_sources_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]
                     logger.exception(
                         "InferFromSources failed for tenant %s", tid
                     )
+                    await db.rollback()
                     results.append({"tenant_id": str(tid), "error": True})
             return {"tenants_processed": len(results), "results": results}
 
@@ -4078,7 +4165,13 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
 
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
-            return await deliver_one(db, uuid.UUID(delivery_id))
+            result = await deliver_one(db, uuid.UUID(delivery_id))
+            # deliver_one mutates the delivery row (status, attempts,
+            # circuit-breaker flips) but never commits — without this the
+            # bookkeeping rolls back and a retry sweep would re-POST
+            # already-delivered events.
+            await db.commit()
+            return result
 
     return asyncio.run(_runner())
 

@@ -32,7 +32,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import anthropic
 from sqlalchemy import select
@@ -47,11 +47,12 @@ from backend.app.models import (
     TenantBriefSuggestion,
 )
 from backend.app.services.kb.context_builder import _validate_brief
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_for_tier("haiku")
 _WINDOW_DAYS = 30
 _MAX_INTERACTION_BLOCKS = 20
 

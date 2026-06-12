@@ -32,7 +32,6 @@ from backend.app.db import async_session
 from backend.app.models import (
     ActionPlan,
     ActionStep,
-    Contact,
     Customer,
     Interaction,
     StepArtifact,

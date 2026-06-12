@@ -40,6 +40,13 @@ class Settings(BaseSettings):
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str
+    # Escape hatch: set True only if the runtime image lacks a CA bundle
+    # and you accept encrypted-but-unauthenticated DB connections (the
+    # pre-2026-06 behaviour). Default verifies the server certificate —
+    # Neon presents a publicly-trusted cert and the Docker image ships
+    # ca-certificates, so verification should always succeed in our
+    # deployments.
+    DATABASE_SSL_NO_VERIFY: bool = False
 
     # ── Redis (ElastiCache) ──────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -56,6 +63,17 @@ class Settings(BaseSettings):
 
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
+    # Canonical model ID per tier. Centralized so a model upgrade is a
+    # config change instead of a 20-file sweep; services resolve these
+    # via ``backend.app.services.llm_client.model_for_tier``.
+    CLAUDE_HAIKU_MODEL: str = "claude-haiku-4-5-20251001"
+    CLAUDE_SONNET_MODEL: str = "claude-sonnet-4-6"
+    CLAUDE_OPUS_MODEL: str = "claude-opus-4-7"
+    # Route non-latency-sensitive LLM work (LLM-judge evaluations, the
+    # weekly tenant-brief refiner) through the Anthropic Message Batches
+    # API — identical results at a 50% token discount. Set False to fall
+    # back to the old one-synchronous-call-per-item behaviour.
+    LLM_BATCH_OFFLINE_JOBS: bool = True
 
     # ── Speech-to-Text (Deepgram) ────────────────────────
     DEEPGRAM_API_KEY: str = ""
@@ -196,6 +214,15 @@ class Settings(BaseSettings):
     # subscription (passed as ?token=... on the push URL so we can
     # drop any untrusted caller fast).
     GMAIL_PUSH_TOKEN: str = ""
+    # Optional, stronger Pub/Sub authentication: when set, the push
+    # endpoint additionally requires a Google-signed OIDC token in the
+    # Authorization header with this exact audience (configure the
+    # push subscription with "Enable authentication" and set the
+    # audience to the push URL). Unlike the ?token= secret, the OIDC
+    # token never appears in access logs and can't be replayed after
+    # expiry. The expected service-account email may be pinned too.
+    GMAIL_PUSH_OIDC_AUDIENCE: str = ""
+    GMAIL_PUSH_OIDC_SERVICE_ACCOUNT: str = ""
     # Shared "clientState" string Microsoft Graph echoes back to prove
     # the subscription owner is us.
     GRAPH_CLIENT_STATE: str = ""

@@ -15,14 +15,18 @@ from backend.app.services.kb.context_builder import format_brief_for_prompt
 from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
 )
-from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
+from backend.app.services.llm_client import (
+    compute_max_tokens,
+    get_async_anthropic,
+    model_for_tier,
+)
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
 
 MODELS = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku": model_for_tier("haiku"),
+    "sonnet": model_for_tier("sonnet"),
 }
 
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.
@@ -1221,6 +1225,23 @@ class AIAnalysisService:
                 _metrics.LLM_LATENCY.labels(
                     surface="analysis_retry", model=model
                 ).observe(time.perf_counter() - t1)
+                # Cache-awareness: the retry re-sends a byte-identical
+                # system prefix, so it should be a ~0.1x cache read of
+                # what attempt #1 just wrote. If it isn't, we silently
+                # double-paid the full input cost — surface that so a
+                # prefix-stability bug can't hide in the retry path.
+                retry_usage = getattr(response, "usage", None)
+                if retry_usage is not None and not getattr(
+                    retry_usage, "cache_read_input_tokens", 0
+                ):
+                    _metrics.LLM_RETRY_CACHE_MISSES.labels(
+                        surface="analysis_retry", model=model
+                    ).inc()
+                    logger.warning(
+                        "Analysis truncation retry missed the prompt cache "
+                        "(input_tokens=%s) — retry double-paid the prompt",
+                        getattr(retry_usage, "input_tokens", "?"),
+                    )
                 raw_text = response.content[0].text
                 stop_reason = response.stop_reason
                 budget = retry_budget

@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
-from backend.app.models import FeedbackEvent, Tenant
+from backend.app.models import FeedbackEvent
 
 logger = logging.getLogger(__name__)
 

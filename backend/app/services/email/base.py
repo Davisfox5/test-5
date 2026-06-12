@@ -7,7 +7,7 @@ available. Errors surface as ``EmailAuthError`` (re-authenticate) or
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Protocol, runtime_checkable
 
 

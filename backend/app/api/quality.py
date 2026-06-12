@@ -11,8 +11,7 @@ future admin dashboards can render against them.
 
 from __future__ import annotations
 
-import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -23,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import (
-    Contact,
     Interaction,
     InteractionFeatures,
     Tenant,

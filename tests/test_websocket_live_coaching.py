@@ -10,7 +10,6 @@ is a thin adapter and the interesting behaviour lives in the primitives
 plus the to_wire() contract the frontend will consume.
 """
 
-import pytest
 
 from backend.app.services.live_coaching_features import (
     CoachingAlert,

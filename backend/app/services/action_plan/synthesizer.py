@@ -33,12 +33,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import (
@@ -60,7 +59,6 @@ from backend.app.services.action_plan.external_context import (
     fetch_external_context,
 )
 from backend.app.services.action_plan.prompts import (
-    ACTION_PLAN_PROMPT_VERSION,
     CALL_A_SYSTEM_PROMPT,
     CALL_B_SYSTEM_PROMPT,
     CALL_C_PAYLOAD_SCHEMAS,
@@ -76,13 +74,14 @@ from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import (
     DOMAIN_OVERRIDE_CONFIDENCE_THRESHOLD,
 )
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
 _MODELS = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku": model_for_tier("haiku"),
+    "sonnet": model_for_tier("sonnet"),
 }
 
 

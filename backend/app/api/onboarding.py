@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import (
     AuthPrincipal,
-    get_current_principal,
     get_current_tenant,
     require_role,
     require_scope,

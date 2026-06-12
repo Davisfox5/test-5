@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import (
     AuthPrincipal,
-    get_current_principal,
     require_domain_agent,
 )
 from backend.app.db import get_db

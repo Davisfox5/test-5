@@ -26,7 +26,7 @@ import asyncio
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Response
 from sqlalchemy import text

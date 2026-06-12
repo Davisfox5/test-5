@@ -47,19 +47,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
     Commitment,
     Contact,
-    Customer,
     CustomerWarning,
     Interaction,
     User,
 )
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
@@ -544,7 +543,7 @@ async def _extract(
 
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_for_tier("haiku"),
             max_tokens=2000,
             system=[
                 {
@@ -664,7 +663,7 @@ async def _scan_done(
     )
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_for_tier("haiku"),
             max_tokens=800,
             system=[
                 {

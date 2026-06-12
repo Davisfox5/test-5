@@ -12,7 +12,7 @@ import asyncio
 import logging
 import random
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 

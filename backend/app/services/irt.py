@@ -31,7 +31,7 @@ import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

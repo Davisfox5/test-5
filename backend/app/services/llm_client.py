@@ -34,6 +34,21 @@ def get_anthropic() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 
+def model_for_tier(tier: str) -> str:
+    """Resolve a tier name ("haiku" | "sonnet" | "opus") to a model ID.
+
+    Single source of truth for model IDs (backed by ``Settings`` so an
+    upgrade is a config change). Unknown tiers fall back to sonnet,
+    mirroring ``compute_max_tokens``.
+    """
+    settings = get_settings()
+    return {
+        "haiku": settings.CLAUDE_HAIKU_MODEL,
+        "sonnet": settings.CLAUDE_SONNET_MODEL,
+        "opus": settings.CLAUDE_OPUS_MODEL,
+    }.get((tier or "sonnet").lower(), settings.CLAUDE_SONNET_MODEL)
+
+
 # ── Tiered max_tokens policy ──────────────────────────────────────────────
 #
 # Replaces the prior flat ``max_tokens=8192`` in ai_analysis with a budget

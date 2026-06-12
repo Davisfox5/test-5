@@ -27,8 +27,8 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from backend.app.services.embeddings import (
     EmbeddingService,

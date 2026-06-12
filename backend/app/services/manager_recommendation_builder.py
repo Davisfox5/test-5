@@ -32,15 +32,15 @@ from backend.app.models import (
 from backend.app.services.llm_client import get_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.services.plain_english import (
-    MANAGER_VOICE_RULES,
     manager_voice_rules_for,
     sanitize_manager_payload,
 )
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_for_tier("haiku")
 
 
 # Per-motion recommendation categories. Each builder pass runs once

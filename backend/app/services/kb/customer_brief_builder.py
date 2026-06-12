@@ -56,10 +56,11 @@ from backend.app.models import (
     CustomerOutcomeEvent,
     Interaction,
 )
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_for_tier("haiku")
 _MAX_INTERACTIONS = 40
 _MAX_SUMMARY_CHARS = 500
 

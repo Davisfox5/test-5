@@ -38,7 +38,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,11 +50,12 @@ from backend.app.services.kb.context_builder import (
     _empty_personal_touches,
     _validate_brief,
 )
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_for_tier("haiku")
 
 # Sections the interview is responsible for. The KB-derived and
 # learned/playbook sections are owned by other agents and are not touched

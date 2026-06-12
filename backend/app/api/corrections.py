@@ -19,10 +19,10 @@ shrinks as corrections come in.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,6 @@ from backend.app.models import (
     Interaction,
     Tenant,
 )
-from backend.app.services import score_engine
 
 router = APIRouter()
 

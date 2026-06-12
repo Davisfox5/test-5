@@ -17,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 
 
 # ── Item 4: Webhook secret encryption ───────────────────────────────

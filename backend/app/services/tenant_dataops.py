@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Tuple
 
-from sqlalchemy import delete, inspect, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import Base, Tenant

@@ -16,11 +16,9 @@ Five mechanisms:
 from __future__ import annotations
 
 import logging
-import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models import (

@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import (
     Interaction,
-    Tenant,
     TranscriptCorrection,
     WerMetric,
 )

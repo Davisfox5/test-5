@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid as _uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import anthropic
@@ -34,10 +36,11 @@ from backend.app.models import (
 )
 from backend.app.services.llm_client import get_anthropic
 from backend.app.services.triage_service import _strip_json_fences
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-JUDGE_MODEL = "claude-haiku-4-5-20251001"
+JUDGE_MODEL = model_for_tier("haiku")
 EVALUATOR_ID = JUDGE_MODEL
 
 
@@ -232,6 +235,79 @@ def _persist_scores(
     }
 
 
+# ── Per-surface user-content builders ────────────────────────────────────
+#
+# Shared by the synchronous per-interaction judges below AND the Batches
+# API path (run_pending_judgements_batch) so the two paths can never
+# drift on prompt content.
+
+
+def _build_analysis_content(interaction: Interaction) -> str:
+    transcript_str = "\n".join(
+        f"[{seg.get('time', '00:00')}] {seg.get('speaker', '?')}: {seg.get('text', '')}"
+        for seg in (interaction.transcript or [])
+    )[:24000]
+    return (
+        f"## Channel\n{interaction.channel}\n\n"
+        f"## AI Output (insights JSON)\n"
+        f"{json.dumps(interaction.insights, indent=2)[:12000]}\n\n"
+        f"## Source Transcript\n{transcript_str}"
+    )
+
+
+def _build_classification_content(session: Session, interaction: Interaction) -> str:
+    tenant = (
+        session.query(Tenant).filter(Tenant.id == interaction.tenant_id).first()
+    )
+    internal_domains = []
+    if tenant is not None:
+        internal_domains = (tenant.features_enabled or {}).get(
+            "email_internal_domains", []
+        )
+    return (
+        f"## Tenant internal domains\n{', '.join(internal_domains) or '(none configured)'}\n\n"
+        f"## Email metadata\n"
+        f"From: {interaction.from_address}\n"
+        f"To: {', '.join(interaction.to_addresses or [])}\n"
+        f"Subject: {interaction.subject or '(no subject)'}\n"
+        f"Body preview:\n{(interaction.raw_text or '')[:2000]}\n\n"
+        f"## Model verdict\n"
+        f"is_external (model decided to ingest as external): "
+        f"{not interaction.is_internal}\n"
+        f"classification: {interaction.classification}\n"
+        f"confidence: {interaction.classification_confidence}"
+    )
+
+
+def _build_reply_content(session: Session, interaction: Interaction) -> str:
+    body = interaction.raw_text or ""
+    # Most recent inbound message in the same thread, for context.
+    inbound = None
+    if interaction.conversation_id is not None:
+        inbound = (
+            session.query(Interaction)
+            .filter(
+                Interaction.conversation_id == interaction.conversation_id,
+                Interaction.direction == "inbound",
+            )
+            .order_by(Interaction.created_at.desc())
+            .first()
+        )
+    inbound_body = (inbound.raw_text if inbound else "")[:4000]
+
+    tenant = session.query(Tenant).filter(Tenant.id == interaction.tenant_id).first()
+    tone = "professional, concise, warm"
+    if tenant:
+        branding = tenant.branding_config or {}
+        tone = branding.get("email_tone") or branding.get("tone") or tone
+
+    return (
+        f"## Tenant tone\n{tone}\n\n"
+        f"## Inbound message\n{inbound_body}\n\n"
+        f"## Drafted reply\nSubject: {interaction.subject or ''}\n\n{body[:8000]}"
+    )
+
+
 # ── Analysis judge ───────────────────────────────────────────────────────
 
 
@@ -246,17 +322,7 @@ def evaluate_analysis(session: Session, interaction_id: str) -> Dict[str, Any]:
     if not interaction.insights:
         return {"status": "no_insights", "scores_written": 0, "composite": None}
 
-    transcript_str = "\n".join(
-        f"[{seg.get('time', '00:00')}] {seg.get('speaker', '?')}: {seg.get('text', '')}"
-        for seg in (interaction.transcript or [])
-    )[:24000]
-
-    user_content = (
-        f"## Channel\n{interaction.channel}\n\n"
-        f"## AI Output (insights JSON)\n"
-        f"{json.dumps(interaction.insights, indent=2)[:12000]}\n\n"
-        f"## Source Transcript\n{transcript_str}"
-    )
+    user_content = _build_analysis_content(interaction)
 
     scores = _call_judge(ANALYSIS_RUBRIC, user_content)
     if scores is None:
@@ -290,28 +356,7 @@ def evaluate_classification(session: Session, interaction_id: str) -> Dict[str, 
     if interaction.channel != "email":
         return {"status": "not_email", "scores_written": 0, "composite": None}
 
-    tenant = (
-        session.query(Tenant).filter(Tenant.id == interaction.tenant_id).first()
-    )
-    internal_domains = []
-    if tenant is not None:
-        internal_domains = (tenant.features_enabled or {}).get(
-            "email_internal_domains", []
-        )
-
-    user_content = (
-        f"## Tenant internal domains\n{', '.join(internal_domains) or '(none configured)'}\n\n"
-        f"## Email metadata\n"
-        f"From: {interaction.from_address}\n"
-        f"To: {', '.join(interaction.to_addresses or [])}\n"
-        f"Subject: {interaction.subject or '(no subject)'}\n"
-        f"Body preview:\n{(interaction.raw_text or '')[:2000]}\n\n"
-        f"## Model verdict\n"
-        f"is_external (model decided to ingest as external): "
-        f"{not interaction.is_internal}\n"
-        f"classification: {interaction.classification}\n"
-        f"confidence: {interaction.classification_confidence}"
-    )
+    user_content = _build_classification_content(session, interaction)
 
     scores = _call_judge(CLASSIFIER_RUBRIC, user_content)
     if scores is None:
@@ -346,31 +391,7 @@ def evaluate_reply(session: Session, interaction_id: str) -> Dict[str, Any]:
     if len(body.strip()) < 50:
         return {"status": "too_short", "scores_written": 0, "composite": None}
 
-    # Most recent inbound message in the same thread, for context.
-    inbound = None
-    if interaction.conversation_id is not None:
-        inbound = (
-            session.query(Interaction)
-            .filter(
-                Interaction.conversation_id == interaction.conversation_id,
-                Interaction.direction == "inbound",
-            )
-            .order_by(Interaction.created_at.desc())
-            .first()
-        )
-    inbound_body = (inbound.raw_text if inbound else "")[:4000]
-
-    tenant = session.query(Tenant).filter(Tenant.id == interaction.tenant_id).first()
-    tone = "professional, concise, warm"
-    if tenant:
-        branding = tenant.branding_config or {}
-        tone = branding.get("email_tone") or branding.get("tone") or tone
-
-    user_content = (
-        f"## Tenant tone\n{tone}\n\n"
-        f"## Inbound message\n{inbound_body}\n\n"
-        f"## Drafted reply\nSubject: {interaction.subject or ''}\n\n{body[:8000]}"
-    )
+    user_content = _build_reply_content(session, interaction)
 
     scores = _call_judge(REPLY_RUBRIC, user_content)
     if scores is None:
@@ -458,3 +479,305 @@ def _flag_if_needed(
             )
         except Exception:
             logger.exception("quality.alert webhook dispatch failed (non-fatal)")
+
+
+# ── Batched judging via the Message Batches API ──────────────────────────
+#
+# The judges are non-latency-sensitive (they run 15+ minutes after the
+# producer), which makes them a textbook fit for the Anthropic Message
+# Batches API: identical requests at a 50% token discount. Instead of one
+# synchronous call per interaction, a periodic task gathers every
+# interaction that still needs judging, submits one batch, polls until it
+# ends (typically minutes), and persists scores through the same
+# ``_persist_scores`` path as the synchronous judges.
+#
+# Crash/timeout safety: the outstanding batch id is parked in Redis. If a
+# poll times out or the worker dies, the next run resumes the SAME batch
+# instead of re-submitting (and re-paying for) the same work.
+
+_BATCH_REDIS_KEY = "llm_judge:outstanding_batch"
+_BATCH_SETTLE_MINUTES = 15  # match the old per-interaction countdown=900
+_BATCH_WINDOW_DAYS = 7      # don't backfill history forever
+_BATCH_MAX_TOKENS = 2048
+
+
+@dataclass
+class _JudgeWork:
+    custom_id: str
+    surface: str
+    rubric: str
+    user_content: str
+    weights: Dict[str, float]
+    interaction_id: _uuid.UUID
+
+
+def _batch_redis():
+    import redis as _redis
+
+    from backend.app.config import get_settings
+
+    return _redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+
+
+def collect_pending_judge_work(
+    session: Session, *, limit: int = 100
+) -> List[_JudgeWork]:
+    """Find interactions that still need judging, across all three surfaces."""
+    from sqlalchemy import and_, exists, func as sa_func
+
+    now = datetime.now(timezone.utc)
+    settle_cutoff = now - timedelta(minutes=_BATCH_SETTLE_MINUTES)
+    window_cutoff = now - timedelta(days=_BATCH_WINDOW_DAYS)
+
+    def _pending(surface: str, *extra_filters) -> List[Interaction]:
+        already_scored = exists().where(
+            and_(
+                InsightQualityScore.interaction_id == Interaction.id,
+                InsightQualityScore.surface == surface,
+            )
+        )
+        return (
+            session.query(Interaction)
+            .filter(
+                Interaction.insights.isnot(None),
+                Interaction.created_at >= window_cutoff,
+                Interaction.created_at <= settle_cutoff,
+                ~already_scored,
+                *extra_filters,
+            )
+            .order_by(Interaction.created_at.asc())
+            .limit(limit)
+            .all()
+        )
+
+    work: List[_JudgeWork] = []
+    for interaction in _pending("analysis"):
+        work.append(
+            _JudgeWork(
+                custom_id=f"analysis:{interaction.id}",
+                surface="analysis",
+                rubric=ANALYSIS_RUBRIC,
+                user_content=_build_analysis_content(interaction),
+                weights=_ANALYSIS_WEIGHTS,
+                interaction_id=interaction.id,
+            )
+        )
+    for interaction in _pending("email_classifier", Interaction.channel == "email"):
+        work.append(
+            _JudgeWork(
+                custom_id=f"email_classifier:{interaction.id}",
+                surface="email_classifier",
+                rubric=CLASSIFIER_RUBRIC,
+                user_content=_build_classification_content(session, interaction),
+                weights=_CLASSIFIER_WEIGHTS,
+                interaction_id=interaction.id,
+            )
+        )
+    for interaction in _pending(
+        "email_reply",
+        Interaction.channel == "email",
+        Interaction.direction == "outbound",
+        sa_func.length(sa_func.coalesce(Interaction.raw_text, "")) >= 50,
+    ):
+        work.append(
+            _JudgeWork(
+                custom_id=f"email_reply:{interaction.id}",
+                surface="email_reply",
+                rubric=REPLY_RUBRIC,
+                user_content=_build_reply_content(session, interaction),
+                weights=_REPLY_WEIGHTS,
+                interaction_id=interaction.id,
+            )
+        )
+    return work[:limit]
+
+
+def _persist_batch_entry(
+    session: Session, item: _JudgeWork, scores: Dict[str, Any]
+) -> Dict[str, Any]:
+    interaction = (
+        session.query(Interaction)
+        .filter(Interaction.id == item.interaction_id)
+        .first()
+    )
+    if interaction is None:
+        return {"status": "not_found", "scores_written": 0, "composite": None}
+
+    extra = None
+    if item.surface == "email_reply":
+        edit_score = _edit_distance_dimension(session, interaction.id)
+        extra = {"edit_distance_proxy": edit_score} if edit_score is not None else None
+
+    result = _persist_scores(
+        session,
+        tenant_id=interaction.tenant_id,
+        interaction_id=interaction.id,
+        conversation_id=interaction.conversation_id,
+        surface=item.surface,
+        weights=item.weights,
+        scores_payload=scores,
+        prompt_variant_id=interaction.prompt_variant_id,
+        extra=extra,
+    )
+    _flag_if_needed(session, interaction, result)
+    return result
+
+
+def _run_sequential_fallback(
+    session: Session, work: List[_JudgeWork]
+) -> Dict[str, Any]:
+    """Old behaviour, used only when the Batches API is unavailable."""
+    persisted = 0
+    for item in work:
+        scores = _call_judge(item.rubric, item.user_content)
+        if scores is None:
+            continue
+        _persist_batch_entry(session, item, scores)
+        persisted += 1
+    return {"status": "sequential_fallback", "submitted": len(work), "persisted": persisted}
+
+
+def run_pending_judgements_batch(
+    session: Session,
+    *,
+    limit: int = 100,
+    poll_interval_seconds: float = 30.0,
+    timeout_seconds: float = 1500.0,
+) -> Dict[str, Any]:
+    """Submit pending judge work as one Batches API job and persist results.
+
+    Returns a summary dict. Designed to be driven by a periodic Celery
+    task — see ``llm_judge_batch`` in tasks.py.
+    """
+    import time as _time
+
+    client = get_anthropic()
+    redis_client = _batch_redis()
+
+    # Resume an outstanding batch before submitting new work, so a prior
+    # timeout/crash never leads to double-submission.
+    outstanding = None
+    try:
+        outstanding = redis_client.get(_BATCH_REDIS_KEY)
+    except Exception:
+        logger.warning("Redis unavailable for judge-batch bookkeeping", exc_info=True)
+
+    work = collect_pending_judge_work(session, limit=limit)
+    if not work and not outstanding:
+        return {"status": "empty", "submitted": 0, "persisted": 0}
+
+    by_custom_id = {item.custom_id: item for item in work}
+
+    if outstanding:
+        batch_id = outstanding
+        logger.info("Resuming outstanding judge batch %s", batch_id)
+    else:
+        entries = [
+            {
+                "custom_id": item.custom_id,
+                "params": {
+                    "model": JUDGE_MODEL,
+                    "max_tokens": _BATCH_MAX_TOKENS,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": item.rubric,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [
+                        {"role": "user", "content": item.user_content}
+                    ],
+                },
+            }
+            for item in work
+        ]
+        try:
+            batch = client.messages.batches.create(requests=entries)
+            batch_id = batch.id
+        except (AttributeError, anthropic.APIError):
+            logger.warning(
+                "Batches API unavailable; judging sequentially at full price",
+                exc_info=True,
+            )
+            return _run_sequential_fallback(session, work)
+        try:
+            redis_client.set(_BATCH_REDIS_KEY, batch_id, ex=86400)
+        except Exception:
+            pass
+
+    elapsed = 0.0
+    while True:
+        try:
+            batch = client.messages.batches.retrieve(batch_id)
+        except anthropic.APIError:
+            logger.exception("Judge batch %s retrieve failed", batch_id)
+            return {"status": "retrieve_error", "batch_id": batch_id,
+                    "submitted": len(work), "persisted": 0}
+        status = getattr(batch, "processing_status", "") or ""
+        if status == "ended":
+            break
+        if elapsed >= timeout_seconds:
+            # Leave the Redis marker in place — the next run resumes.
+            logger.warning(
+                "Judge batch %s still %s after %.0fs; will resume next run",
+                batch_id, status, elapsed,
+            )
+            return {"status": "pending", "batch_id": batch_id,
+                    "submitted": len(work), "persisted": 0}
+        _time.sleep(poll_interval_seconds)
+        elapsed += poll_interval_seconds
+
+    persisted = 0
+    errored = 0
+    for entry in client.messages.batches.results(batch_id):
+        item = by_custom_id.get(entry.custom_id)
+        if item is None:
+            # Resumed batch from a previous process — rebuild the work
+            # item from the custom_id (surface:interaction_id).
+            try:
+                surface, raw_id = entry.custom_id.split(":", 1)
+                item = _JudgeWork(
+                    custom_id=entry.custom_id,
+                    surface=surface,
+                    rubric="",
+                    user_content="",
+                    weights={
+                        "analysis": _ANALYSIS_WEIGHTS,
+                        "email_classifier": _CLASSIFIER_WEIGHTS,
+                        "email_reply": _REPLY_WEIGHTS,
+                    }[surface],
+                    interaction_id=_uuid.UUID(raw_id),
+                )
+            except (ValueError, KeyError):
+                errored += 1
+                continue
+        if entry.result.type != "succeeded":
+            errored += 1
+            continue
+        try:
+            raw = entry.result.message.content[0].text
+            scores = json.loads(_strip_json_fences(raw))
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            logger.warning("Judge batch entry %s unparseable", entry.custom_id)
+            errored += 1
+            continue
+        _persist_batch_entry(session, item, scores)
+        persisted += 1
+
+    try:
+        redis_client.delete(_BATCH_REDIS_KEY)
+    except Exception:
+        pass
+
+    logger.info(
+        "Judge batch %s complete: %d persisted, %d errored",
+        batch_id, persisted, errored,
+    )
+    return {
+        "status": "ok",
+        "batch_id": batch_id,
+        "submitted": len(work),
+        "persisted": persisted,
+        "errored": errored,
+    }

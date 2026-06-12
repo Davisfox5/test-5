@@ -41,10 +41,11 @@ from backend.app.models import (
 )
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-SONNET = "claude-sonnet-4-6"
+SONNET = model_for_tier("sonnet")
 
 SYSTEM_PROMPT = (
     "You are drafting a reply email on behalf of a professional "

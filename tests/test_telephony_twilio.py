@@ -7,7 +7,6 @@ import base64
 import hashlib
 import hmac
 
-import pytest
 
 from backend.app.services.telephony.twilio import (
     build_voice_twiml,

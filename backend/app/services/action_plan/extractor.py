@@ -29,15 +29,16 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import ActionStep, Interaction, StepResponse
+from backend.app.models import ActionStep, StepResponse
 from backend.app.services.action_plan.prompts import CALL_D_SYSTEM_PROMPT
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
-_EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
+_EXTRACTION_MODEL = model_for_tier("haiku")
 _EXTRACTION_MAX_TOKENS = 2048
 
 

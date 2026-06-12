@@ -18,7 +18,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import psycopg2
 import psycopg2.extras

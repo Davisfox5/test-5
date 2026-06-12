@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Optional
 
 import redis.asyncio as aioredis
 

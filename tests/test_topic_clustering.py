@@ -6,7 +6,6 @@ across runs.
 
 import asyncio
 
-import pytest
 
 from backend.app.services.embeddings import EmbeddingService, HashEmbeddingProvider
 from backend.app.services.topic_clustering import (

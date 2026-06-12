@@ -1,6 +1,5 @@
 """Tests for helpers in ``backend.scripts.backfill_ai_trends``."""
 
-import pytest
 
 
 def test_bucket_to_float_maps_signals_to_midpoints():

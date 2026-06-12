@@ -20,7 +20,6 @@ successor) is responsible for serializing alerts to the client.
 
 from __future__ import annotations
 
-import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -33,7 +32,6 @@ from backend.app.services.feature_extractors import (
     _tokens,
 )
 from backend.app.services.weak_supervision import (
-    LFVote,
     lf_cancel_intent,
     lf_commitment_language,
 )

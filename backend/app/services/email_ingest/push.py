@@ -8,13 +8,12 @@ normalizes them through the same :func:`ingest_email` path.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
 import httpx
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from backend.app.models import EmailSyncCursor, Integration
 from backend.app.services.email_ingest.gmail import _normalize as _normalize_gmail
 from backend.app.services.email_ingest.graph import _normalize as _normalize_graph
 from backend.app.services.email_ingest.ingest import NormalizedEmail

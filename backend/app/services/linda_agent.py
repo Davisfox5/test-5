@@ -31,10 +31,11 @@ from backend.app.models import (
 )
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.search_service import SearchService
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-LINDA_MODEL = "claude-sonnet-4-6"
+LINDA_MODEL = model_for_tier("sonnet")
 MAX_TOKENS = 2048
 PROPOSAL_TTL = timedelta(hours=24)
 

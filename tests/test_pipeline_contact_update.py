@@ -5,7 +5,6 @@ wires per-interaction AI insights into contact-level trend fields.
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-import pytest
 
 from backend.app.tasks import (
     CONTACT_SENTIMENT_TREND_CAP,

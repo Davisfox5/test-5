@@ -35,6 +35,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,7 @@ def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
         # $1.25/M out — even a 10K-token transcript costs < $0.02 per
         # call to segment. Worth it to unblock downstream analysis.
         resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_for_tier("haiku"),
             max_tokens=8192,
             system=[
                 {
@@ -205,6 +206,8 @@ def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
             ],
             messages=[{"role": "user", "content": raw_text}],
         )
+        from backend.app.services.llm_telemetry import record_llm_completion
+
         record_llm_completion("text_segmenter", "haiku", 8192, resp)
         labeled = resp.content[0].text if resp.content else ""
     except Exception:

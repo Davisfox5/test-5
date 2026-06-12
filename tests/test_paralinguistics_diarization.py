@@ -9,12 +9,10 @@ segments the window would feed to it.
 
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
 
 import pytest
 
-from backend.app.services.paralinguistics import SpeakerAudioSegment
 from backend.app.services.paralinguistics_live import (
     DiarTurn,
     LiveParalinguisticWindow,

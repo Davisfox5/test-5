@@ -7,7 +7,7 @@ summarisation / coaching.  The raw transcript is always stored in the DB.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import List
 
 from backend.app.services.transcription import Segment
 

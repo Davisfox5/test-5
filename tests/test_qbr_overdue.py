@@ -39,7 +39,7 @@ def sync_session():
 
 @pytest.fixture
 def seeded(sync_session):
-    from backend.app.models import Customer, Tenant, User
+    from backend.app.models import Tenant, User
 
     tenant = Tenant(name="Acme", slug=f"acme-{uuid.uuid4().hex[:6]}")
     sync_session.add(tenant)

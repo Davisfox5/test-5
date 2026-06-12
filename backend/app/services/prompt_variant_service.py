@@ -28,14 +28,14 @@ import os
 import time
 import uuid as _uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
-from backend.app.models import PromptVariant, Tenant, TenantPromptConfig
+from backend.app.models import PromptVariant, Tenant
 
 logger = logging.getLogger(__name__)
 

@@ -34,10 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.models import KBDocument, Tenant
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_for_tier("haiku")
 _MAX_BRIEF_WORDS = 800
 _MAX_DOC_CHARS = 12_000  # truncate very long docs when feeding into the merge
 

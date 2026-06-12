@@ -87,14 +87,17 @@ async def _stripe_post(
         resp = await client.post(url, headers=headers, data=form)
     if resp.status_code >= 400:
         # Bubble Stripe's own error message up so the admin UI shows
-        # something actionable instead of a bare 500.
+        # something actionable instead of a bare 500. Status mapping:
+        # Stripe 4xx = our request was wrong (bad price id, invalid
+        # customer) — permanent, return 400 so clients don't retry;
+        # Stripe 5xx = Stripe is down — transient, return 503.
         try:
             err = resp.json().get("error", {})
             msg = err.get("message") or resp.text
         except Exception:
             msg = resp.text
         raise HTTPException(
-            status_code=502,
+            status_code=400 if resp.status_code < 500 else 503,
             detail=f"Stripe error: {msg}",
         )
     return resp.json()

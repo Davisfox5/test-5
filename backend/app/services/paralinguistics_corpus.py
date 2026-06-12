@@ -46,7 +46,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from backend.app.services.paralinguistics_replay import (
     ExpectedAlert,

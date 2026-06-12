@@ -15,14 +15,12 @@ Drives the :class:`AudiohookSession` with an in-memory transport
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections import deque
 from typing import Any, List, Optional
 
 import pytest
 
-from backend.app.services.telephony.audiohook.protocol import MediaFormat
 from backend.app.services.telephony.audiohook.server import (
     AudiohookSession,
     AudiohookSessionConfig,

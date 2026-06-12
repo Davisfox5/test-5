@@ -195,7 +195,12 @@ async def live_transcription(websocket: WebSocket, session_id: str):
             _self: Any, result: Any, **kwargs: Any
         ) -> None:
             """Handle incoming Deepgram transcript events."""
+            # All four counters are assigned below — without the nonlocal
+            # declaration Python treats them as locals of this closure,
+            # and the first final segment dies with UnboundLocalError
+            # before the features snapshot can ever emit.
             nonlocal last_coaching_time, words_since_coaching
+            nonlocal last_features_emit_at, finals_since_features_emit
 
             alt = result.channel.alternatives[0] if result.channel.alternatives else None
             if alt is None or not alt.transcript:

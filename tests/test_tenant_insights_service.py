@@ -8,7 +8,6 @@ JSON document shape without needing a real Postgres instance.
 from datetime import date
 from types import SimpleNamespace
 
-import pytest
 
 
 def _row(*values):

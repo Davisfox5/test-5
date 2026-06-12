@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.app.models import (

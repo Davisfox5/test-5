@@ -20,7 +20,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 
-from sqlalchemy import and_, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.models import (

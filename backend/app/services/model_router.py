@@ -26,9 +26,10 @@ import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import anthropic
+from backend.app.services.llm_client import model_for_tier
 
 
 logger = logging.getLogger(__name__)
@@ -43,12 +44,12 @@ class Tier(str, Enum):
     OPUS = "opus"
 
 
-# Canonical model IDs.  Keep in sync with ``ai_analysis.MODELS`` so the
-# pipeline can swap to routed calls without drift.
+# Canonical model IDs — resolved from Settings via llm_client.model_for_tier
+# so the whole pipeline upgrades models with a config change.
 MODEL_IDS: Dict[Tier, str] = {
-    Tier.HAIKU: "claude-haiku-4-5-20251001",
-    Tier.SONNET: "claude-sonnet-4-6",
-    Tier.OPUS: "claude-opus-4-7",
+    Tier.HAIKU: model_for_tier("haiku"),
+    Tier.SONNET: model_for_tier("sonnet"),
+    Tier.OPUS: model_for_tier("opus"),
 }
 
 

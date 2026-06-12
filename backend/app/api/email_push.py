@@ -27,8 +27,7 @@ import base64
 import hmac
 import json
 import logging
-import uuid
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
@@ -83,6 +82,72 @@ router = APIRouter()
 _settings = get_settings()
 
 
+# ── Google OIDC verification (optional, defense in depth) ─────────────
+#
+# When GMAIL_PUSH_OIDC_AUDIENCE is configured, Pub/Sub push deliveries
+# must carry a Google-signed OIDC JWT (Authorization: Bearer ...) whose
+# audience matches. Google's signing keys are fetched from the standard
+# JWKS endpoint and cached in-process for an hour.
+
+_GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+_GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+_JWKS_TTL_SECONDS = 3600
+_jwks_cache: dict = {"keys": None, "fetched_at": 0.0}
+
+
+async def _google_jwks() -> dict:
+    import time as _time
+
+    now = _time.monotonic()
+    if _jwks_cache["keys"] is None or now - _jwks_cache["fetched_at"] > _JWKS_TTL_SECONDS:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(_GOOGLE_JWKS_URL)
+            resp.raise_for_status()
+            _jwks_cache["keys"] = resp.json()
+            _jwks_cache["fetched_at"] = now
+    return _jwks_cache["keys"]
+
+
+async def _verify_pubsub_oidc(request: Request) -> None:
+    """Raise 401 unless the request carries a valid Google OIDC token.
+
+    No-op when GMAIL_PUSH_OIDC_AUDIENCE is unset (the ?token= shared
+    secret remains the baseline check either way).
+    """
+    audience = _settings.GMAIL_PUSH_OIDC_AUDIENCE
+    if not audience:
+        return
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing OIDC token")
+    bearer = auth_header[len("Bearer "):]
+
+    from jose import jwt
+
+    try:
+        jwks = await _google_jwks()
+        claims = jwt.decode(
+            bearer,
+            jwks,
+            algorithms=["RS256"],
+            audience=audience,
+        )
+    except Exception as exc:  # fail closed: bad sig, expired, JWKS fetch error
+        logger.warning("Pub/Sub OIDC verification failed: %s", exc)
+        raise HTTPException(status_code=401, detail="Bad OIDC token")
+
+    if claims.get("iss") not in _GOOGLE_ISSUERS:
+        raise HTTPException(status_code=401, detail="Bad OIDC issuer")
+    expected_sa = _settings.GMAIL_PUSH_OIDC_SERVICE_ACCOUNT
+    if expected_sa and not hmac.compare_digest(
+        str(claims.get("email") or ""), expected_sa
+    ):
+        raise HTTPException(status_code=401, detail="Bad OIDC service account")
+
+
 # ── Gmail Pub/Sub push ─────────────────────────────────
 
 
@@ -111,6 +176,7 @@ async def gmail_push(
     Celery task that diffs the Gmail history and ingests.
     """
     _enforce_rate(request, "gmail-push", _GMAIL_RATE)
+    await _verify_pubsub_oidc(request)
     expected = _settings.GMAIL_PUSH_TOKEN
     if expected and not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Bad push token")

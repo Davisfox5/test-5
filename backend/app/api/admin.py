@@ -1015,7 +1015,6 @@ async def list_audit_logs(
 
     Pagination is offset/limit. Newest first.
     """
-    from datetime import datetime as _dt  # local alias avoids shadowing
     from sqlalchemy import func as _func
 
     base_filters = [AuditLog.tenant_id == principal.tenant.id]

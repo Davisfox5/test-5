@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 

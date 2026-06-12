@@ -7,7 +7,6 @@ features and they're tested exhaustively because the orchestrator and
 score engine both depend on them being correct.
 """
 
-from typing import List
 
 import pytest
 

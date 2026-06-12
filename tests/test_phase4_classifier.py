@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import random
 
-import pytest
 
 from backend.app.services.phase4_classifier import (
     DEFAULT_LABEL_HORIZON_DAYS,

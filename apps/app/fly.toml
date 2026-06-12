@@ -21,6 +21,10 @@ primary_region = "iad"
   # rewrites() at build time, so the destination URL gets baked in. The
   # runtime [env] entry below is harmless but no longer load-bearing.
   [build.args]
+    # Publishable key — non-secret by design (Clerk pk_* keys are meant
+    # to ship to browsers). AUDIT NOTE: must stay a pk_test_* key for
+    # staging; if this app ever serves production, source the pk_live_*
+    # key from CI rather than committing it here.
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Z2xhZC1jaWNhZGEtMS5jbGVyay5hY2NvdW50cy5kZXYk"
     LINDA_BACKEND_URL = "https://linda-staging.fly.dev"
 

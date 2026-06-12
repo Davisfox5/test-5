@@ -14,11 +14,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from unittest.mock import patch
 
 import pytest
 
-from backend.app.services import scorecard_entitlement
 from backend.app.services.scorecard_entitlement import (
     EntitlementInfo,
     compute_entitlement,

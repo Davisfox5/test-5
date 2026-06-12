@@ -13,10 +13,11 @@ from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
 )
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-COACHING_MODEL = "claude-haiku-4-5-20251001"
+COACHING_MODEL = model_for_tier("haiku")
 
 COACHING_SYSTEM_PROMPT = (
     "You are a real-time call coaching assistant for a conversation intelligence "

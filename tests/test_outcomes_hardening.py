@@ -10,7 +10,6 @@ import hashlib
 import hmac
 import uuid
 
-import pytest
 
 from backend.app.api.outcomes import (
     OutcomeEvent,

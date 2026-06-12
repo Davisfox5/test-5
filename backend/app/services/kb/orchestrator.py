@@ -39,10 +39,10 @@ from backend.app.models import (
     KBDocument,
     KBIntegrationGap,
 )
+from backend.app.services import metrics as _metrics
 from backend.app.services.kb.chunker import approx_token_count, chunk_text
 from backend.app.services.kb.embedder import VoyageEmbedder, VoyageEmbedderError
 from backend.app.services.kb.orchestrator_prompts import (
-    ORCHESTRATOR_PROMPT_VERSION,
     format_orchestrator_system,
     format_orchestrator_user,
 )
@@ -53,18 +53,31 @@ from backend.app.services.kb.vector_store import (
 )
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
 
-_ORCHESTRATOR_MODEL = "claude-haiku-4-5-20251001"
+_ORCHESTRATOR_MODEL = model_for_tier("haiku")
 _ORCHESTRATOR_MAX_TOKENS = 8192
 # Documents longer than this fall through to plain chunking — one
 # orchestrator call can only see so much before quality + latency
-# degrade. ~50K chars ~ 12.5K tokens of input. Larger docs would
-# need a multi-pass parse which we'll add when a tenant actually has
-# them; today's KB sizes don't.
-_ORCHESTRATOR_MAX_CHARS = 50_000
+# degrade. Lowered from 50K → 40K (2026-06 audit): a failed parse on a
+# near-50K doc burns ~12.5K input tokens for nothing, and parse quality
+# on borderline docs was the least reliable. ~40K chars ~ 10K tokens.
+# Watch KB_ORCHESTRATOR_PARSE_OUTCOMES before moving this again —
+# multi-pass parsing is the real fix if large docs become common.
+_ORCHESTRATOR_MAX_CHARS = 40_000
+
+
+def _size_bucket(chars: int) -> str:
+    if chars <= 10_000:
+        return "<10k"
+    if chars <= 25_000:
+        return "10-25k"
+    if chars <= _ORCHESTRATOR_MAX_CHARS:
+        return "25-40k"
+    return ">40k"
 
 # Confidence below this lands as kind='context' regardless of the
 # model's pick (per the locked decision). The original confidence is
@@ -125,12 +138,16 @@ class DocumentOrchestrator:
         """
         if not doc.content or not doc.content.strip():
             return []
+        bucket = _size_bucket(len(doc.content))
         if len(doc.content) > _ORCHESTRATOR_MAX_CHARS:
             logger.info(
                 "Doc %s exceeds orchestrator max chars (%d > %d); will fall "
                 "back to plain chunking",
                 doc.id, len(doc.content), _ORCHESTRATOR_MAX_CHARS,
             )
+            _metrics.KB_ORCHESTRATOR_PARSE_OUTCOMES.labels(
+                outcome="oversized", size_bucket=bucket
+            ).inc()
             return []
 
         system_prompt = format_orchestrator_system(
@@ -163,6 +180,9 @@ class DocumentOrchestrator:
             logger.warning(
                 "Orchestrator API call failed for doc %s: %s", doc.id, exc,
             )
+            _metrics.KB_ORCHESTRATOR_PARSE_OUTCOMES.labels(
+                outcome="api_error", size_bucket=bucket
+            ).inc()
             return []
 
         try:
@@ -173,8 +193,14 @@ class DocumentOrchestrator:
                 "Orchestrator returned unparseable JSON for doc %s",
                 doc.id, exc_info=True,
             )
+            _metrics.KB_ORCHESTRATOR_PARSE_OUTCOMES.labels(
+                outcome="bad_json", size_bucket=bucket
+            ).inc()
             return []
 
+        _metrics.KB_ORCHESTRATOR_PARSE_OUTCOMES.labels(
+            outcome="ok", size_bucket=bucket
+        ).inc()
         return _normalize_blocks(data, total_chars=len(doc.content))
 
 

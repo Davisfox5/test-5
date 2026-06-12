@@ -150,7 +150,6 @@ def test_health_onboarding_status_buckets_apply(sync_session, seeded):
 
 def test_renewal_risk_score_higher_for_lower_health(sync_session, seeded):
     from backend.app.services.cs_account_health import (
-        compute_health_score,
         renewal_risk_score,
     )
 

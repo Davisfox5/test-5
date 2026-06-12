@@ -40,10 +40,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models import CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_for_tier("haiku")
 _MAX_SNIPPET_CHARS = 1200
 _MAX_WON_SAMPLES = 6
 _MAX_LOST_SAMPLES = 6
@@ -145,7 +146,8 @@ class TenantBriefRefiner:
         learned["last_learned_at"] = datetime.now(timezone.utc).isoformat()
         return await self._persist(db, tenant, learned)
 
-    async def _call_haiku(self, aggregates: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _build_user_message(aggregates: Dict[str, Any]) -> str:
         user_blocks: List[str] = []
         user_blocks.append(
             "## Win/loss counts by outcome_type\n"
@@ -165,7 +167,10 @@ class TenantBriefRefiner:
                 "## Sampled lost/at-risk calls\n"
                 + "\n---\n".join(aggregates["lost_snippets"])
             )
-        user_message = "\n\n".join(user_blocks) + "\n\nReturn the playbook JSON."
+        return "\n\n".join(user_blocks) + "\n\nReturn the playbook JSON."
+
+    async def _call_haiku(self, aggregates: Dict[str, Any]) -> Dict[str, Any]:
+        user_message = self._build_user_message(aggregates)
 
         try:
             resp = await self._client.messages.create(
@@ -188,6 +193,170 @@ class TenantBriefRefiner:
             return _empty_playbook()
 
         return _validate_playbook(data)
+
+    async def refine_all_batched(
+        self,
+        db: AsyncSession,
+        tenant_ids: List[uuid.UUID],
+        window_days: int = _DEFAULT_WINDOW_DAYS,
+        *,
+        poll_interval_seconds: float = 30.0,
+        timeout_seconds: float = 1200.0,
+    ) -> List[Dict[str, Any]]:
+        """Weekly all-tenants refine through the Message Batches API.
+
+        Gathers each tenant's aggregates (DB work, no LLM cost), persists
+        the empty playbook immediately for tenants below the sample-size
+        floor, and submits ONE batch for everyone else — same prompts as
+        :meth:`refine`, at the Batches API's 50% token discount. Falls
+        back to the per-tenant synchronous path if the batch surface is
+        unavailable.
+        """
+        import asyncio
+
+        results: List[Dict[str, Any]] = []
+        needs_llm: List[Dict[str, Any]] = []  # {tenant, aggregates, user_message}
+
+        for tid in tenant_ids:
+            try:
+                tenant = await db.get(Tenant, tid)
+                if tenant is None:
+                    results.append({"tenant_id": str(tid), "error": True})
+                    continue
+                since = datetime.now(timezone.utc) - timedelta(days=window_days)
+                interactions = list(
+                    (
+                        await db.execute(
+                            select(Interaction)
+                            .where(
+                                Interaction.tenant_id == tid,
+                                Interaction.created_at >= since,
+                                Interaction.outcome_type.is_not(None),
+                            )
+                            .order_by(Interaction.created_at.desc())
+                        )
+                    ).scalars().all()
+                )
+                events = list(
+                    (
+                        await db.execute(
+                            select(CustomerOutcomeEvent)
+                            .where(
+                                CustomerOutcomeEvent.tenant_id == tid,
+                                CustomerOutcomeEvent.detected_at >= since,
+                            )
+                            .order_by(CustomerOutcomeEvent.detected_at.desc())
+                        )
+                    ).scalars().all()
+                )
+                aggregates = _summarise_interactions(interactions, events)
+                sample = aggregates["wins"] + aggregates["losses"]
+                if sample < 3:
+                    playbook = _empty_playbook()
+                    playbook["sample_size"] = sample
+                    playbook["last_learned_at"] = datetime.now(timezone.utc).isoformat()
+                    await self._persist(db, tenant, playbook)
+                    results.append({"tenant_id": str(tid), "sample_size": sample})
+                else:
+                    needs_llm.append(
+                        {
+                            "tenant": tenant,
+                            "sample_size": sample,
+                            "user_message": self._build_user_message(aggregates),
+                            "aggregates": aggregates,
+                        }
+                    )
+            except Exception:
+                logger.exception("Refiner aggregate phase failed for tenant %s", tid)
+                results.append({"tenant_id": str(tid), "error": True})
+
+        if not needs_llm:
+            return results
+
+        entries = [
+            {
+                "custom_id": str(item["tenant"].id),
+                "params": {
+                    "model": _MODEL,
+                    "max_tokens": 1200,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": _SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [
+                        {"role": "user", "content": item["user_message"]}
+                    ],
+                },
+            }
+            for item in needs_llm
+        ]
+
+        try:
+            batch = await self._client.messages.batches.create(requests=entries)
+        except (AttributeError, anthropic.APIError):
+            logger.warning(
+                "Batches API unavailable; refining tenants sequentially",
+                exc_info=True,
+            )
+            for item in needs_llm:
+                learned = await self._call_haiku(item["aggregates"])
+                learned["sample_size"] = item["sample_size"]
+                learned["last_learned_at"] = datetime.now(timezone.utc).isoformat()
+                await self._persist(db, item["tenant"], learned)
+                results.append(
+                    {"tenant_id": str(item["tenant"].id), "sample_size": item["sample_size"]}
+                )
+            return results
+
+        elapsed = 0.0
+        while True:
+            polled = await self._client.messages.batches.retrieve(batch.id)
+            if getattr(polled, "processing_status", "") == "ended":
+                break
+            if elapsed >= timeout_seconds:
+                logger.warning(
+                    "Refiner batch %s not done after %.0fs; affected tenants "
+                    "keep their previous playbook until next cycle",
+                    batch.id, elapsed,
+                )
+                for item in needs_llm:
+                    results.append(
+                        {"tenant_id": str(item["tenant"].id), "error": True}
+                    )
+                return results
+            await asyncio.sleep(poll_interval_seconds)
+            elapsed += poll_interval_seconds
+
+        by_tenant = {str(item["tenant"].id): item for item in needs_llm}
+        async for entry in await self._client.messages.batches.results(batch.id):
+            item = by_tenant.pop(entry.custom_id, None)
+            if item is None:
+                continue
+            if entry.result.type == "succeeded":
+                try:
+                    raw = entry.result.message.content[0].text
+                    learned = _validate_playbook(json.loads(raw))
+                except (json.JSONDecodeError, IndexError, AttributeError, KeyError):
+                    logger.warning(
+                        "Refiner batch entry for tenant %s unparseable", entry.custom_id
+                    )
+                    learned = _empty_playbook()
+            else:
+                learned = _empty_playbook()
+            learned["sample_size"] = item["sample_size"]
+            learned["last_learned_at"] = datetime.now(timezone.utc).isoformat()
+            await self._persist(db, item["tenant"], learned)
+            results.append(
+                {"tenant_id": entry.custom_id, "sample_size": item["sample_size"]}
+            )
+
+        # Entries the batch never returned (shouldn't happen) — flag them.
+        for missing_id in by_tenant:
+            results.append({"tenant_id": missing_id, "error": True})
+        return results
 
     @staticmethod
     async def _persist(

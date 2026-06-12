@@ -21,7 +21,6 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-import pytest_asyncio
 
 from backend.app.api.admin import (
     TenantSettingsPatch,

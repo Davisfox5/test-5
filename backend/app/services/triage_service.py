@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_for_tier("haiku")
 
 # Bumped manually whenever ``TRIAGE_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.triage_prompt_version``.

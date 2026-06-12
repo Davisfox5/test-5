@@ -34,7 +34,6 @@ from backend.app.models import (
 from backend.app.services.notification_service import NotificationService
 from backend.app.services.notifications import (
     NotificationKind,
-    notification_channel,
     publish_notification,
 )
 from backend.app.services.token_crypto import decrypt_token

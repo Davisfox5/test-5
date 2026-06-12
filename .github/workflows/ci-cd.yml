@@ -17,6 +17,79 @@ on:
         default: "staging"
 
 jobs:
+  # ── Lint + type-check on every push + PR ──────────────────────
+  # Fast static gates that don't need the heavy ML dependency install.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Ruff (correctness rules)"
+        # Narrow, high-signal rule set: syntax errors, undefined names,
+        # broken f-strings, unused imports. Style rules are intentionally
+        # excluded — widen incrementally once the codebase is formatted.
+        # Alembic migration files are excluded — committed migrations
+        # stay byte-stable even when a lint rule would touch them.
+        run: |
+          pip install ruff
+          ruff check backend/ tests/ --select E9,F63,F7,F82,F401 --exclude backend/alembic
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/app/package-lock.json
+
+      - name: "SPA type-check"
+        working-directory: apps/app
+        run: |
+          npm ci
+          npm run typecheck
+
+  # ── Dependency vulnerability scan on every push + PR ──────────
+  security_audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "pip-audit"
+        # --ignore-vuln entries are KNOWN vulnerabilities with no fixed
+        # release yet (re-check each one when bumping deps):
+        #   CVE-2025-3000 — torch 2.12.0, no fix version published.
+        # New vulnerabilities still fail the build.
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --ignore-vuln CVE-2025-3000
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/app/package-lock.json
+
+      - name: "npm audit (SPA)"
+        working-directory: apps/app
+        # high+ fails the build; the currently-known moderates are
+        # unfixable transitives (postcss bundled inside next, no fix
+        # available) and stay visible in the log without blocking.
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+
   # ── Tests run on every push + PR ──────────────────────────────
   test:
     runs-on: ubuntu-latest
@@ -67,7 +140,7 @@ jobs:
   # public contributors run CI without infra access.
   build:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    needs: test
+    needs: [test, lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read

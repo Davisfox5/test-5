@@ -5,7 +5,6 @@ values.  Ranges and monotonicity checks keep the tests robust to
 rounding choices in the implementation.
 """
 
-import math
 
 import pytest
 

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import pytest
 
 from backend.app.services.meeting_scheduler.base import (
     MeetingParticipant,

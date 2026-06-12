@@ -1,6 +1,5 @@
 """Tests for the labeling functions and label model."""
 
-import pytest
 
 from backend.app.services.weak_supervision import (
     ABSTAIN,

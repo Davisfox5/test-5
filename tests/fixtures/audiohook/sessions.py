@@ -14,7 +14,7 @@ expected list — see ``tests/test_audiohook_server.py``.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 
 SESSION_ID = "00000000-0000-0000-0000-000000000abc"

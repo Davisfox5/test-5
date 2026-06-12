@@ -21,20 +21,19 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import ActionStep, Interaction
 from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
+from backend.app.services.llm_client import model_for_tier
 
 logger = logging.getLogger(__name__)
 
-_SONNET = "claude-sonnet-4-6"
+_SONNET = model_for_tier("sonnet")
 
 
 _SYSTEM_PROMPT = (

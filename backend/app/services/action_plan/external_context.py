@@ -17,7 +17,6 @@ The result block is what gets interpolated into Call A/B's
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -27,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import CrmDealRecord, Customer, Integration
+from backend.app.models import CrmDealRecord, Integration
 
 logger = logging.getLogger(__name__)
 

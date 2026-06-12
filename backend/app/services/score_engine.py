@@ -28,7 +28,7 @@ phases without changing the contract.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from backend.app.services.stats import (

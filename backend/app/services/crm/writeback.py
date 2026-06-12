@@ -100,6 +100,11 @@ async def write_back_interaction(
 
     from backend.app.services.metrics import CRM_WRITEBACK_OUTCOMES
 
+    # Tracks which write-back kind was in flight when an exception
+    # escaped, so the failure metric below is labeled with the operation
+    # that actually failed instead of always blaming "note".
+    phase = "note"
+
     try:
         if features.get(WRITE_BACK_NOTE_FLAG):
             try:
@@ -124,6 +129,7 @@ async def write_back_interaction(
                 ).inc()
 
         if features.get(WRITE_BACK_ACTIVITY_FLAG):
+            phase = "activity"
             try:
                 items = await _open_action_items(db, interaction_id)
                 activity_ids: List[str] = []
@@ -155,13 +161,13 @@ async def write_back_interaction(
         summary["status"] = "auth_failed"
         summary["error"] = str(exc)
         CRM_WRITEBACK_OUTCOMES.labels(
-            provider=provider, kind="note", status="auth"
+            provider=provider, kind=phase, status="auth"
         ).inc()
     except CrmError as exc:
         summary["status"] = "error"
         summary["error"] = str(exc)
         CRM_WRITEBACK_OUTCOMES.labels(
-            provider=provider, kind="note", status="error"
+            provider=provider, kind=phase, status="error"
         ).inc()
     except Exception:
         logger.exception(

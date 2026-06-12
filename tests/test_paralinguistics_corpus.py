@@ -8,7 +8,6 @@ import struct
 import wave
 from pathlib import Path
 
-import pytest
 
 from backend.app.services.paralinguistics_corpus import (
     CorpusReport,

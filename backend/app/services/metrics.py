@@ -212,6 +212,24 @@ LLM_CACHE_CREATION_TOKENS = Counter(
     ["call_site", "tier"],
 )
 
+KB_ORCHESTRATOR_PARSE_OUTCOMES = Counter(
+    "linda_kb_orchestrator_parse_outcomes_total",
+    "Per-document KB orchestrator parse outcomes, bucketed by document "
+    "size. A high bad_json/api_error rate in the top bucket means we're "
+    "burning ~10K input tokens per failure for nothing — lower the "
+    "oversized-doc gate if that shows up.",
+    ["outcome", "size_bucket"],
+)
+
+LLM_RETRY_CACHE_MISSES = Counter(
+    "linda_llm_retry_cache_misses_total",
+    "Truncation retries that re-paid the full prompt instead of reading "
+    "the cache the first attempt wrote. A sustained non-zero rate means "
+    "the retry path is double-billing input tokens — check for prefix "
+    "instability (varying system blocks) or sub-minimum cacheable size.",
+    ["surface", "model"],
+)
+
 LLM_TRUNCATIONS = Counter(
     "linda_llm_truncations_total",
     "Completions that hit stop_reason='max_tokens'. Watch this alongside "

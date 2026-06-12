@@ -16,7 +16,6 @@ import pytest
 from backend.app.services.paralinguistic_baseline import (
     FEATURE_RENDER_ORDER,
     MIN_SPEAKER_UTTERANCES,
-    NotableTag,
     SpeakerBaseline,
     UtteranceFeatures,
     Z_NOTABILITY,

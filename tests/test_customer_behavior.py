@@ -6,7 +6,6 @@ import pytest
 
 from backend.app.services.customer_behavior import (
     BehaviorRadar,
-    ChangeReadiness,
     DEFAULT_WEIGHTS,
     _saturating,
     compute_behavior_radar,
