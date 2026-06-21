@@ -16,4 +16,14 @@ if [ -d /data ]; then
     chown -R linda:linda /data
 fi
 
+# Prometheus multiprocess dir. Every uvicorn worker / celery prefork child
+# records metrics into its own file here; the /metrics endpoint aggregates
+# them. Must exist and be writable by `linda` BEFORE the app imports
+# prometheus_client (it reads PROMETHEUS_MULTIPROC_DIR at metric-creation
+# time). Wipe on boot so a prior run's dead-pid files don't linger.
+PROM_DIR="${PROMETHEUS_MULTIPROC_DIR:-/tmp/prometheus_multiproc}"
+rm -rf "$PROM_DIR"
+mkdir -p "$PROM_DIR"
+chown -R linda:linda "$PROM_DIR"
+
 exec gosu linda "$@"

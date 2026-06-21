@@ -36,6 +36,10 @@ primary_region = "iad"
   # sys.path doesn't include CWD; this makes backend.app.* importable.
   # Mirrors the ENV in the Dockerfile (belt-and-braces).
   PYTHONPATH = "/home/linda/app"
+  # Aggregate metrics across the api's 2 uvicorn workers and celery's
+  # prefork children. The dir is created + wiped on boot by
+  # docker-entrypoint.sh. See backend/app/services/metrics.py.
+  PROMETHEUS_MULTIPROC_DIR = "/tmp/prometheus_multiproc"
 
 [processes]
   # `--proxy-headers --forwarded-allow-ips=*` makes uvicorn honor Fly's
@@ -130,6 +134,15 @@ primary_region = "iad"
     grace_period = "60s"
     method = "GET"
     path = "/api/v1/health"
+
+# Fly's managed Prometheus scrapes every machine in the app on this
+# port/path. The api serves /metrics via FastAPI on 8000; the worker and
+# beat machines (no FastAPI) serve it via prometheus_client's HTTP server
+# started in backend/app/tasks.py (worker_init / beat_init), also on 8000
+# — a free port on those machines. Without this block nothing is collected.
+[[metrics]]
+  port = 8000
+  path = "/metrics"
 
 [[vm]]
   size = "shared-cpu-1x"

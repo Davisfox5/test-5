@@ -131,6 +131,26 @@ Deployed on **Fly.io**. `fly.toml` `[processes]` defines three roles off one ima
 (`apps/app`) and the static `website/` deploy as their own Fly apps. CI deploys the backend
 and the SPA together — keep both wired in the deploy workflow.
 
+## 6. Observability
+
+Custom app metrics (named `linda_*`) are defined in `backend/app/services/metrics.py`
+and exposed at `GET /metrics` in Prometheus format:
+
+- The **api** process serves `/metrics` via FastAPI on port 8000.
+- The **worker** and **beat** processes don't run FastAPI, so they start a small
+  prometheus_client HTTP server (also port 8000, a free port on their machines) from
+  the `worker_init` / `beat_init` hooks in `tasks.py`.
+- Because the api runs 2 uvicorn workers and celery runs prefork children, metrics use
+  **prometheus_client multiprocess mode**: `PROMETHEUS_MULTIPROC_DIR` (set in `fly.toml`,
+  created by `docker-entrypoint.sh`) collects per-process files that `/metrics` aggregates.
+- The `[[metrics]]` block in `fly.toml` is what makes Fly's managed Prometheus scrape every
+  machine. **Without it, none of these metrics are collected** — so if you add metrics,
+  confirm that block still covers the process that emits them.
+
+`prometheus_client` is an optional dependency: if it's absent every metric call is a no-op,
+so the app still runs (handy for local dev). Sentry (optional, `observability.py`) handles
+error monitoring.
+
 ---
 
 *Historical note: this platform was previously branded **CallSight**; it is now **LINDA**.
