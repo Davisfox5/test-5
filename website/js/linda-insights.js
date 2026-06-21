@@ -10,7 +10,7 @@
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
     const ONBOARDING_SECTIONS = [
         { key: "goals",             label: "Goals" },
         { key: "kpis",              label: "KPIs" },
@@ -48,10 +48,10 @@
             this.view = $("linda-insights");
             if (!this.view) return;
 
-            this.apiToken = localStorage.getItem("callsight-api-key");
+            this.apiToken = localStorage.getItem("linda-api-key");
             this._wireButtons();
 
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "linda-insights") this.refresh();
             });
         }

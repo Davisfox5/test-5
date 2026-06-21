@@ -12,7 +12,7 @@
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
     const SECTIONS = [
         { key: "goals",            label: "Goals" },
         { key: "kpis",             label: "KPIs" },
@@ -34,11 +34,11 @@
             this.view = $("onboarding");
             if (!this.view) return;
 
-            this.apiToken = localStorage.getItem("callsight-api-key");
+            this.apiToken = localStorage.getItem("linda-api-key");
             this.sessionId = null;
             this.state = null;  // { history, answers, completed_sections, next_section, done }
 
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "onboarding") this.onViewOpened();
             });
 

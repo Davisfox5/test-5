@@ -1,6 +1,6 @@
-# CallSight AI — Pricing Models (v1 Draft)
+# LINDA — Pricing Models (v1 Draft)
 
-Two per-seat pricing models for CallSight AI, tiered by **feature set** (not usage).
+Two per-seat pricing models for LINDA, tiered by **feature set** (not usage).
 Both models assume a **5,000 audio-minute/seat/month cap**, billed monthly with annual-
 commit discounts. Ranges below are **low / high**; pick a point inside the band based
 on segment, sales motion, and channel margin requirements.
@@ -182,9 +182,9 @@ embed-model benchmark.
 
 ### 3.2 Feature-parity mapping
 
-For each CallSight tier, the closest-parity competitor SKU and its price:
+For each LINDA tier, the closest-parity competitor SKU and its price:
 
-| CallSight tier | Closest competitor parity | Their price | Our positioning |
+| LINDA tier | Closest competitor parity | Their price | Our positioning |
 |---|---|---|---|
 | Starter | Dubber Pro (recording + light AI) | ~$19/seat/mo | Match or slightly undercut |
 | Professional | Xima Essentials–Pro / 8x8 X4 | $44–$68/seat/mo | Match mid-band |
@@ -446,7 +446,7 @@ should steer to the next tier at that point).
 | Add-on | Price | Available on | What it unlocks |
 |---|---|---|---|
 | **SSO / SAML / SCIM** | $99/mo flat | Pro, Business | Okta, Azure AD, Google; user auto-provisioning |
-| **Custom Domain + Branded UI** | $49/mo flat | Pro, Business | your-brand.callsight.ai or your own domain |
+| **Custom Domain + Branded UI** | $49/mo flat | Pro, Business | your-brand.linda.ai or your own domain |
 | **Bring-Your-Own AI Key** | $49/mo flat | Pro, Business | Route AI spend through your Anthropic / Bedrock account |
 | **Custom Scorecard Authoring** | $149/mo flat | Pro, Business | Self-serve builder for custom QA rubrics |
 | **Dedicated Success Manager** | $499/mo flat | Pro, Business | Named CSM, monthly sync, platform reviews |
@@ -467,9 +467,9 @@ should steer to the next tier at that point).
 
 ## 9. White-Label / Channel Partner Program
 
-**Strategic context:** The majority of CallSight revenue is expected to come
+**Strategic context:** The majority of LINDA revenue is expected to come
 through white-label distribution — partners like Reinvent Telecom and competing
-master agents / UCaaS distributors who resell CallSight under their own brand
+master agents / UCaaS distributors who resell LINDA under their own brand
 as part of their own product catalog. This program is a first-class SKU, not
 an afterthought.
 
@@ -481,9 +481,9 @@ service expectations.
 
 | Partner tier | Qualification | Wholesale discount off list | Deal-reg bonus | MDF | Tier 2/3 support |
 |---|---|---|---|---|---|
-| **Authorized Reseller** | 50–250 seats active, $25K+ ARR committed | **35% off list** | +5% on registered deals | — | CallSight handles |
-| **Premier Partner** | 250–1,000 seats active, $150K+ ARR committed | **45% off list** | +5% on registered deals | 2% of quarterly revenue | CallSight handles Tier 3 only |
-| **Elite Distributor** | 1,000+ seats active, $500K+ ARR committed | **55% off list** (up to **60%** with 2-yr commit) | +7% on registered deals | 4% of quarterly revenue | Partner handles Tier 1–2; CallSight Tier 3 |
+| **Authorized Reseller** | 50–250 seats active, $25K+ ARR committed | **35% off list** | +5% on registered deals | — | LINDA handles |
+| **Premier Partner** | 250–1,000 seats active, $150K+ ARR committed | **45% off list** | +5% on registered deals | 2% of quarterly revenue | LINDA handles Tier 3 only |
+| **Elite Distributor** | 1,000+ seats active, $500K+ ARR committed | **55% off list** (up to **60%** with 2-yr commit) | +7% on registered deals | 4% of quarterly revenue | Partner handles Tier 1–2; LINDA Tier 3 |
 
 Partner discounts apply to the **list-price band the end customer qualifies
 for** (1–10 / 11–25 / 25+). Partner sets end-customer price; wholesale COGS to
@@ -506,26 +506,26 @@ and Xima on end-customer pricing.
 
 Three packaging choices; partner picks one at onboarding and can upgrade.
 
-| Packaging | Branding | Partner handles | CallSight handles | Fee |
+| Packaging | Branding | Partner handles | LINDA handles | Fee |
 |---|---|---|---|---|
-| **Co-branded ("Powered by CallSight")** | Partner logo + "Powered by CallSight" footer | Sales, Tier 1 support, billing | Platform, Tier 2/3, security, uptime | $0 (included at Premier+) |
-| **Standard White-Label** | Partner brand only; CallSight invisible to end customer | Sales, Tier 1 support, billing, first-line CS | Platform, Tier 3, security, uptime | $199/mo platform fee (Authorized Reseller); included for Premier+ |
+| **Co-branded ("Powered by LINDA")** | Partner logo + "Powered by LINDA" footer | Sales, Tier 1 support, billing | Platform, Tier 2/3, security, uptime | $0 (included at Premier+) |
+| **Standard White-Label** | Partner brand only; LINDA invisible to end customer | Sales, Tier 1 support, billing, first-line CS | Platform, Tier 3, security, uptime | $199/mo platform fee (Authorized Reseller); included for Premier+ |
 | **Full White-Label + Custom Domain** | Partner brand on partner-owned domain; fully private-labeled | Sales, Tier 1–2, billing, CS, onboarding | Platform, Tier 3, security, uptime, AI models | $499/mo platform fee + $99/mo per custom domain (included for Elite) |
 
 ### 9.4 Partner economics worked example
 
 Reinvent Telecom onboards as **Elite Distributor** (1,000+ seats, 2-year commit,
-60% wholesale discount). They deploy CallSight to a 50-seat end customer on
+60% wholesale discount). They deploy LINDA to a 50-seat end customer on
 Business tier, 11–25 seat band ($159 list):
 
 - End customer pays Reinvent: $159/seat/mo
-- Reinvent pays CallSight: $159 × (1 − 0.60) = **$63.60/seat/mo wholesale**
+- Reinvent pays LINDA: $159 × (1 − 0.60) = **$63.60/seat/mo wholesale**
 - Reinvent gross margin: **$95.40/seat/mo (60%)** → $57,240/yr on this one
   account
-- CallSight recurring revenue: **$38,160/yr** from this single Reinvent
+- LINDA recurring revenue: **$38,160/yr** from this single Reinvent
   subagent sale
 - Across 10 such deployments, one Elite partner drives **~$381K ARR** to
-  CallSight with minimal direct-sales cost.
+  LINDA with minimal direct-sales cost.
 
 ### 9.5 Deal registration
 
@@ -534,7 +534,7 @@ Business tier, 11–25 seat band ($159 list):
 - Registered deals protected for 90 days, renewable once.
 - Deal-reg bonus (5–7% additional discount) applies for the life of the
   contract on registered deals.
-- Conflict policy: partner-first. If CallSight direct can't show earlier
+- Conflict policy: partner-first. If LINDA direct can't show earlier
   documented activity, the partner wins the deal.
 
 ### 9.6 Onboarding and enablement
@@ -544,7 +544,7 @@ Business tier, 11–25 seat band ($159 list):
 | Partner portal (deal reg, reporting, billing) | All tiers | Self-serve |
 | Product certification (2 engineers, 4 hrs) | All tiers | Required before first sale |
 | Sales enablement kit (decks, battlecards, ROI tool) | All tiers | Refreshed regularly |
-| Co-selling sales assist | Premier+ | CallSight AE joins partner calls |
+| Co-selling sales assist | Premier+ | LINDA AE joins partner calls |
 | Business-review cadence | Premier+ | Pipeline, forecast, roadmap preview |
 | Roadmap input | Elite | Partner feature requests enter product planning |
 | Co-marketing campaigns | Premier+ | MDF-funded |
@@ -556,9 +556,9 @@ Business tier, 11–25 seat band ($159 list):
 - Ramp against the committed ARR schedule set at contract signature
 - At least 2 certified engineers per 100 partner-deployed seats
 - Tier-1 support per the packaging option selected
-- No cross-selling to CallSight direct-list customers without coordination
+- No cross-selling to LINDA direct-list customers without coordination
 
-**CallSight commits to:**
+**LINDA commits to:**
 - Named partner manager (Premier+) / shared pool (Authorized Reseller)
 - Wholesale pricing locked for term of contract
 - 90-day notice on any material price or feature change
@@ -571,7 +571,7 @@ First wave targets a small number of Elite Distributors (Reinvent Telecom
 included), a broader set of Premier Partners, and an open Authorized Reseller
 program for any qualified UCaaS / MSP. Elite partners are expected to drive the
 bulk of revenue; Authorized Resellers expand logo count and market coverage.
-**Ramp timing and partner-signing cadence are the CallSight team's call — the
+**Ramp timing and partner-signing cadence are the LINDA team's call — the
 program structure itself is ready whenever you decide to open it.**
 
 ---

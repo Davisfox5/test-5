@@ -1,7 +1,7 @@
 /* Admin-surfaces controller.
  *
  * Four UI pieces in one controller because they share a lifecycle
- * (fetch on view change, admin-only, reuse `callsight-api-key` token):
+ * (fetch on view change, admin-only, reuse `linda-api-key` token):
  *
  *   - Seat reconciliation banner (on LINDA Insights) + modal (global).
  *   - Billing card (tier picker + Stripe customer-id link) in Preferences.
@@ -13,12 +13,12 @@
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
 
     function $(id) { return document.getElementById(id); }
-    function apiToken() { return localStorage.getItem("callsight-api-key"); }
+    function apiToken() { return localStorage.getItem("linda-api-key"); }
     function isAdmin() {
-        const me = window.callsightAuth;
+        const me = window.lindaAuth;
         return !!me && me.role === "admin";
     }
     function headers() {
@@ -50,7 +50,7 @@
                 if (ev.target === this.overlay) this.closeModal();
             });
 
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "linda-insights") this.refresh();
             });
         }
@@ -217,7 +217,7 @@
             if (this.applyBtn) this.applyBtn.addEventListener("click", () => this.applyTier());
             if (this.linkBtn) this.linkBtn.addEventListener("click", () => this.linkStripe());
 
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "preferences") this.refresh();
             });
         }
@@ -394,7 +394,7 @@
             // has an ``interactionId`` we can send for. demo.js exposes the
             // current interaction id via ``window.currentInteractionId``; we
             // fall back to hidden if absent.
-            window.addEventListener("callsight:viewChanged", (ev) => {
+            window.addEventListener("linda:viewChanged", (ev) => {
                 if (ev.detail && ev.detail.view === "interaction-detail") {
                     this.btn.hidden = !window.currentInteractionId;
                 }

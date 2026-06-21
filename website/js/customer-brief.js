@@ -18,7 +18,7 @@
  */
 
 (function () {
-    const API_BASE = window.__CALLSIGHT_API_BASE__ || "/api/v1";
+    const API_BASE = window.__LINDA_API_BASE__ || "/api/v1";
     const ALERT_FADE_MS = 45_000;
     const MAX_SENTIMENT_POINTS = 40;
 
@@ -133,7 +133,7 @@
             this.card = $("liveCustomerBrief");
             if (!this.card) return;
 
-            this.apiToken = localStorage.getItem("callsight-api-key");
+            this.apiToken = localStorage.getItem("linda-api-key");
             this.contactId = null;
             this.customerId = null;
             this.brief = null;
