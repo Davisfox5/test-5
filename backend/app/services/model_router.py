@@ -51,6 +51,20 @@ MODEL_IDS: Dict[Tier, str] = {
     Tier.OPUS: "claude-opus-4-7",
 }
 
+# Models that removed the sampling knobs (``temperature`` / ``top_p`` /
+# ``top_k``): Opus 4.7+ and Fable 5 reject them with a 400
+# ("`temperature` is deprecated for this model"). Sonnet 4.6 / Haiku 4.5
+# still accept them. We omit ``temperature`` from the request for any model
+# in this set rather than downgrade the tier — behavior is steered via the
+# prompt instead. Add new no-sampling model IDs here as we adopt them.
+_NO_SAMPLING_PARAM_MODELS: frozenset[str] = frozenset(
+    {
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-fable-5",
+    }
+)
+
 
 class TaskType(str, Enum):
     TRIAGE = "triage"                         # always Haiku
@@ -201,14 +215,18 @@ class ModelRouter:
         tier = self.select_tier(req)
         model = MODEL_IDS[tier]
         system_payload = _build_system_payload(req.system_blocks)
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": req.max_tokens,
+            "system": system_payload,
+            "messages": [{"role": "user", "content": req.user_message}],
+        }
+        # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models
+        # that still accept sampling params.
+        if model not in _NO_SAMPLING_PARAM_MODELS:
+            create_kwargs["temperature"] = req.temperature
         try:
-            resp = await self._client.messages.create(
-                model=model,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-                system=system_payload,
-                messages=[{"role": "user", "content": req.user_message}],
-            )
+            resp = await self._client.messages.create(**create_kwargs)
         except anthropic.APIError as exc:
             logger.error("Anthropic API error (%s): %s", tier, exc)
             raise
@@ -244,15 +262,19 @@ class ModelRouter:
         entries = []
         for i, r in enumerate(requests):
             tier = self.select_tier(r)
+            model_id = MODEL_IDS[tier]
+            params: Dict[str, Any] = {
+                "model": model_id,
+                "max_tokens": r.max_tokens,
+                "system": _build_system_payload(r.system_blocks),
+                "messages": [{"role": "user", "content": r.user_message}],
+            }
+            # ``temperature`` 400s on Opus 4.7+/Fable 5 (same as the live path).
+            if model_id not in _NO_SAMPLING_PARAM_MODELS:
+                params["temperature"] = r.temperature
             entries.append({
                 "custom_id": str(r.metadata.get("custom_id", i)),
-                "params": {
-                    "model": MODEL_IDS[tier],
-                    "max_tokens": r.max_tokens,
-                    "temperature": r.temperature,
-                    "system": _build_system_payload(r.system_blocks),
-                    "messages": [{"role": "user", "content": r.user_message}],
-                },
+                "params": params,
             })
 
         # Defensive: not all Anthropic SDK versions expose
