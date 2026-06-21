@@ -12,11 +12,19 @@ import logging
 import os
 import uuid
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_failure, task_prerun, task_postrun, worker_process_init
+from celery.signals import (
+    beat_init,
+    task_failure,
+    task_postrun,
+    task_prerun,
+    worker_init,
+    worker_process_init,
+    worker_process_shutdown,
+)
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -366,6 +374,42 @@ celery_app.conf.update(
 # ── Worker lifecycle hooks ───────────────────────────────────────────────
 
 
+def _start_process_metrics_server() -> None:
+    """Expose /metrics on this machine so Fly's Prometheus can scrape the
+    celery worker / beat (neither runs the FastAPI app, so they'd otherwise
+    have no metrics endpoint). Fires once in the main process — the prefork
+    children record into PROMETHEUS_MULTIPROC_DIR and this server aggregates
+    them. Failures must never block the worker from starting."""
+    try:
+        from backend.app.services.metrics import start_metrics_server
+
+        start_metrics_server(int(os.environ.get("METRICS_PORT", "8000")))
+    except Exception:  # pragma: no cover - telemetry must not crash the worker
+        logger.warning("metrics: failed to start worker metrics server", exc_info=True)
+
+
+@worker_init.connect
+def _on_worker_init(**_kwargs: Any) -> None:
+    _start_process_metrics_server()
+
+
+@beat_init.connect
+def _on_beat_init(**_kwargs: Any) -> None:
+    _start_process_metrics_server()
+
+
+@worker_process_shutdown.connect
+def _on_worker_child_exit(pid: Optional[int] = None, **_kwargs: Any) -> None:
+    """Keep multiprocess gauges accurate as celery recycles prefork children."""
+    try:
+        from backend.app.services.metrics import mark_process_dead
+
+        if pid is not None:
+            mark_process_dead(pid)
+    except Exception:  # pragma: no cover
+        pass
+
+
 @worker_process_init.connect
 def _on_worker_start(**_kwargs: Any) -> None:
     """Warm up heavy models so the first task doesn't pay a cold-start tax.
@@ -631,6 +675,36 @@ class _TaskEventLoop:
     def run(self, coro):
         assert self._loop is not None, "_TaskEventLoop used outside of `with`"
         return self._loop.run_until_complete(coro)
+
+
+def _run_async(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Run a coroutine from a sync Celery task body on a fresh event loop.
+
+    Disposes the shared async engine's pool *first* so the asyncpg
+    connections opened inside bind to THIS invocation's loop. The
+    module-level engine in ``backend.app.db`` is created once per worker
+    process and its pool retains connections bound to whatever loop first
+    used them; a later ``asyncio.run`` opens a new loop, and reusing a
+    stale-loop connection raises "RuntimeError: Event loop is closed" or
+    "got Future attached to a different loop" — the failure mode behind
+    several daily beat tasks (tenant_export_to_s3, trial_expiry_daily,
+    crm_sync_daily, vector_health_daily, …) in Sentry. Disposing is a
+    no-op on an empty pool and ~5ms otherwise. This is the same
+    dispose-first pattern documented inline in ``_run_pipeline``'s
+    plan-synthesis block; ``_run_async`` makes it the default for every
+    ``asyncio.run`` task body so the bug can't recur.
+
+    ``coro_factory`` is the ``async def _runner`` itself (passed
+    uncalled), so the coroutine is created inside the new loop.
+    """
+
+    async def _wrapped() -> Any:
+        from backend.app.db import engine as _async_engine
+
+        await _async_engine.dispose()
+        return await coro_factory()
+
+    return asyncio.run(_wrapped())
 
 
 # Keep Contact.sentiment_trend bounded so the JSONB column doesn't grow
@@ -2163,7 +2237,7 @@ def _emit_webhooks_for_interaction(
                 )
 
     try:
-        asyncio.run(_runner())
+        _run_async(_runner)
     except Exception:
         logger.exception(
             "Webhook emission failed for interaction %s", interaction_id
@@ -2677,7 +2751,11 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
     otherwise the task no-ops.
     """
     from backend.app.models import EmailSyncCursor, Integration
-    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.poller import (
+        IntegrationAuthError,
+        _mark_needs_reauth,
+        _refresh_if_expired_sync,
+    )
     from backend.app.services.email_ingest.push import (
         subscribe_graph_mailbox,
         watch_gmail,
@@ -2705,11 +2783,24 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
             .all()
         )
         for integ in integrations:
+            # Already flagged dead → don't re-hit the token endpoint.
+            if (integ.provider_config or {}).get("needs_reauth"):
+                skipped += 1
+                continue
             try:
                 access_token = _refresh_if_expired_sync(session, integ)
+            except IntegrationAuthError as exc:
+                # Non-retryable auth failure: WARNING (not ERROR) so it
+                # doesn't flood Sentry, and flag for re-auth.
+                logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
+                session.rollback()
+                _mark_needs_reauth(session, integ)
+                skipped += 1
+                continue
             except Exception:
                 failed += 1
                 logger.exception("Refresh failed for integration %s", integ.id)
+                session.rollback()
                 continue
 
             cursor = (
@@ -3625,7 +3716,7 @@ def rebuild_tenant_context(tenant_id: str, full: bool = False) -> Dict[str, Any]
             brief = await builder.merge_document(db, tid, row)
             return {"tenant_id": tenant_id, "mode": "incremental", "brief_keys": list(brief.keys())}
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="rebuild_customer_brief")
@@ -3649,7 +3740,7 @@ def rebuild_customer_brief(tenant_id: str, customer_id: str) -> Dict[str, Any]:
                 "source_interaction_count": brief.get("source_interaction_count"),
             }
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="tenant_brief_refiner_weekly")
@@ -3681,7 +3772,7 @@ def tenant_brief_refiner_weekly(tenant_id: Optional[str] = None) -> Dict[str, An
                     results.append({"tenant_id": str(tid), "error": True})
         return {"tenants_processed": len(results), "results": results}
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="infer_from_sources_weekly")
@@ -3722,7 +3813,7 @@ def infer_from_sources_weekly(tenant_id: Optional[str] = None) -> Dict[str, Any]
                     results.append({"tenant_id": str(tid), "error": True})
             return {"tenants_processed": len(results), "results": results}
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="vector_health_daily")
@@ -3739,7 +3830,7 @@ def vector_health_daily() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_vector_health_check(db)
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="crm_writeback", max_retries=2)
@@ -3760,7 +3851,7 @@ def crm_writeback(interaction_id: str) -> Dict[str, Any]:
             await db.commit()
             return summary
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="crm_sync_tenant")
@@ -3783,7 +3874,7 @@ def crm_sync_tenant(tenant_id: str, provider: str) -> Dict[str, Any]:
                 "error": summary.error,
             }
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="crm_sync_daily")
@@ -3841,7 +3932,7 @@ def crm_sync_daily() -> Dict[str, Any]:
                     )
         return {"runs": results, "count": len(results)}
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="tenant_export_to_s3", max_retries=1)
@@ -3905,7 +3996,7 @@ def tenant_export_to_s3(
             "exported_at": timestamp,
         }
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="tenant_backup_all_tenants")
@@ -4020,7 +4111,7 @@ def tenant_restore_from_s3(s3_key: str) -> Dict[str, Any]:
             await db.commit()
         return {"s3_key": s3_key, "restored": per_table_counts}
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="sync_knowledge_base")
@@ -4049,7 +4140,7 @@ def sync_knowledge_base(tenant_id: str, source_type: str) -> Dict[str, Any]:
                 "error": summary.error,
             }
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="webhook_deliver")
@@ -4068,7 +4159,7 @@ def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
         async with async_session() as db:
             return await deliver_one(db, uuid.UUID(delivery_id))
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 # Celery queues we sample for backpressure. Default queue is ``celery``;
@@ -4123,7 +4214,7 @@ def event_retention_sweep() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_event_retention_sweep(db)
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 @celery_app.task(name="trial_expiry_daily")
@@ -4228,7 +4319,7 @@ def trial_expiry_daily() -> Dict[str, Any]:
             await db.commit()
         return emitted
 
-    return asyncio.run(_runner())
+    return _run_async(_runner)
 
 
 # ──────────────────────────────────────────────────────────
@@ -4302,7 +4393,7 @@ def action_plan_match_inbound_email(
             return str(step.id)
 
     try:
-        return asyncio.run(_runner())
+        return _run_async(_runner)
     except Exception:  # noqa: BLE001 - never let matching kill the task
         logger.exception(
             "action_plan_match_inbound_email failed for interaction %s "
@@ -4331,7 +4422,7 @@ def action_plan_run_due_regenerations(self) -> int:
             return count
 
     try:
-        return asyncio.run(_runner())
+        return _run_async(_runner)
     except Exception:
         logger.exception("action_plan_run_due_regenerations failed (non-fatal)")
         return 0

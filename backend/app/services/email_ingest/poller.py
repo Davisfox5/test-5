@@ -24,6 +24,38 @@ from backend.app.services.token_crypto import decrypt_token, encrypt_token
 logger = logging.getLogger(__name__)
 
 
+class IntegrationAuthError(Exception):
+    """The integration's OAuth credentials are no longer usable.
+
+    Raised for non-retryable auth failures — a revoked/expired refresh
+    token (Google ``invalid_grant`` / Microsoft ``invalid_grant``), a
+    missing refresh token, or a client-config problem. Callers handle
+    this by flagging the integration for re-auth and skipping it, rather
+    than letting it surface as an unhandled error on every poll (which
+    floods Sentry every 15 minutes for a credential a retry can't fix).
+    """
+
+
+def _mark_needs_reauth(session: Session, integration: Integration) -> None:
+    """Flag an integration so future polls skip it until it's re-authed.
+
+    Stored in the freeform ``provider_config`` JSONB (reassigned, not
+    mutated in place, so SQLAlchemy detects the change). Committed on its
+    own so the flag survives even when surrounding work is rolled back.
+    """
+    try:
+        integration.provider_config = {
+            **(integration.provider_config or {}),
+            "needs_reauth": True,
+        }
+        session.commit()
+    except Exception:  # noqa: BLE001 — flagging is best-effort
+        logger.debug(
+            "Could not flag integration %s for re-auth", integration.id, exc_info=True
+        )
+        session.rollback()
+
+
 def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
     """Return a valid access token, refreshing via provider API if needed.
 
@@ -38,7 +70,7 @@ def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
 
     refresh = decrypt_token(integration.refresh_token)
     if not refresh:
-        raise RuntimeError(
+        raise IntegrationAuthError(
             f"Integration {integration.id} expired and has no refresh token"
         )
 
@@ -58,6 +90,20 @@ def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
             },
             timeout=10,
         )
+        if 400 <= resp.status_code < 500:
+            # 4xx from the token endpoint is almost always invalid_grant
+            # (refresh token revoked/expired) or a client-config error —
+            # not retryable. Surface as an auth error rather than a raw
+            # HTTPError that floods Sentry every poll. 5xx is transient,
+            # so let it bubble (and retry next cycle).
+            try:
+                err_detail = resp.json().get("error", "")
+            except Exception:  # noqa: BLE001
+                err_detail = resp.text[:200]
+            raise IntegrationAuthError(
+                f"Google token refresh failed for integration "
+                f"{integration.id}: {resp.status_code} {err_detail}"
+            )
         resp.raise_for_status()
         j = resp.json()
         new_access = j["access_token"]
@@ -74,14 +120,24 @@ def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
             authority="https://login.microsoftonline.com/common",
             client_credential=s.MICROSOFT_CLIENT_SECRET,
         )
+        # NOTE: do NOT pass reserved scopes (``offline_access``, ``openid``,
+        # ``profile``) here — MSAL rejects them with
+        # "You cannot use any scope value that is reserved" and adds
+        # offline_access itself for refresh-token grants.
         result = app.acquire_token_by_refresh_token(
             refresh,
             scopes=[
                 "Mail.Send", "Mail.Read", "Calendars.ReadWrite",
-                "Contacts.Read", "offline_access",
+                "Contacts.Read",
             ],
         )
         if "error" in result:
+            err = result.get("error")
+            if err in {"invalid_grant", "interaction_required", "invalid_client"}:
+                raise IntegrationAuthError(
+                    f"Microsoft refresh failed for integration "
+                    f"{integration.id}: {err}"
+                )
             raise RuntimeError(f"Microsoft refresh failed: {result['error']}")
         new_access = result["access_token"]
         new_refresh = result.get("refresh_token")
@@ -205,8 +261,16 @@ def poll_all(session: Session) -> dict:
         "emails_ingested": 0,
         "polled_providers": providers,
         "skipped_healthy_push": 0,
+        "skipped_needs_reauth": 0,
+        "needs_reauth": 0,
     }
     for integ in integrations:
+        # Skip integrations already flagged for re-auth — their refresh
+        # token is dead and retrying just re-hits the token endpoint
+        # (and re-floods logs) every cycle until a human reconnects.
+        if (integ.provider_config or {}).get("needs_reauth"):
+            summary["skipped_needs_reauth"] += 1
+            continue
         cursor = cursors_by_integration.get(integ.id)
         # Skip if this integration's push subscription is still healthy.
         # ``force_all`` is the smoke-test escape hatch — when set we ignore
@@ -218,6 +282,15 @@ def poll_all(session: Session) -> dict:
                 continue
         try:
             count = poll_integration(session, integ)
+        except IntegrationAuthError as exc:
+            # Expected, non-retryable: log at WARNING (not ERROR, so the
+            # Sentry logging integration doesn't turn it into an event)
+            # and flag the integration so we stop polling it.
+            logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
+            session.rollback()
+            _mark_needs_reauth(session, integ)
+            summary["needs_reauth"] += 1
+            continue
         except Exception:
             logger.exception("Poll failed for integration %s", integ.id)
             session.rollback()
