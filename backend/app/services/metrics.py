@@ -11,6 +11,7 @@ Mount the ``/metrics`` endpoint via :func:`metrics_handler` from
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,13 @@ class _NoopMetric:
 try:
     from prometheus_client import (
         CONTENT_TYPE_LATEST,
+        CollectorRegistry,
         Counter,
         Gauge,
         Histogram,
         generate_latest,
+        multiprocess,
+        start_http_server,
     )
 
     _ENABLED = True
@@ -104,12 +108,14 @@ ACTIVE_AB_TESTS = Gauge(
     "linda_active_ab_tests",
     "Number of running A/B prompt experiments.",
     ["surface"],
+    multiprocess_mode="max",
 )
 
 WER_GAUGE = Gauge(
     "linda_asr_wer_7d",
     "Trailing-7-day word error rate per (tenant, engine, channel).",
     ["tenant", "engine", "channel"],
+    multiprocess_mode="max",
 )
 
 RAG_RETRIEVAL_LATENCY = Histogram(
@@ -180,6 +186,7 @@ CELERY_QUEUE_DEPTH = Gauge(
     "linda_celery_queue_depth",
     "Redis LIST length for each celery queue — sampled periodically.",
     ["queue"],
+    multiprocess_mode="max",
 )
 
 
@@ -252,6 +259,7 @@ LIVE_SESSIONS = Gauge(
     "linda_live_sessions_active",
     "Concurrent live telephony sessions by provider.",
     ["provider"],  # twilio|signalwire|telnyx
+    multiprocess_mode="livesum",
 )
 
 LIVE_DEEPGRAM_WS_CONNECTS = Counter(
@@ -271,8 +279,53 @@ LIVE_PARALINGUISTIC_SNAPSHOTS = Counter(
 
 
 def metrics_handler() -> tuple[bytes, str]:
-    """Return ``(payload, content_type)`` for a /metrics endpoint."""
+    """Return ``(payload, content_type)`` for a /metrics endpoint.
+
+    In production ``PROMETHEUS_MULTIPROC_DIR`` is set because the api runs 2
+    uvicorn workers and celery runs prefork children — each process records
+    into its own files. Aggregate them all into one view here; otherwise
+    (local/dev, single process) serve this process's registry directly.
+    """
+    if _ENABLED and os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry), CONTENT_TYPE_LATEST
     return generate_latest(), CONTENT_TYPE_LATEST
+
+
+def start_metrics_server(port: int = 8000) -> None:
+    """Expose ``/metrics`` over HTTP for processes that don't run the FastAPI
+    app (celery worker / beat). No-op when prometheus_client is unavailable.
+
+    Binds ``0.0.0.0:<port>`` so Fly's metrics scraper can reach it on the
+    machine's private network. Each process group runs on its own Fly
+    machine, so reusing the api's port here is safe — there's no collision.
+    Call once per process from a celery ``worker_init`` / ``beat_init`` hook.
+    """
+    if not _ENABLED:
+        return
+    try:
+        if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+            registry = CollectorRegistry()
+            multiprocess.MultiProcessCollector(registry)
+            start_http_server(port, registry=registry)
+        else:
+            start_http_server(port)
+        logger.info("metrics: exposing /metrics on :%d", port)
+    except OSError as exc:
+        # Already bound (e.g. double-connected signal) — log and move on
+        # rather than crashing the worker over telemetry.
+        logger.warning("metrics: could not bind :%d (%s)", port, exc)
+
+
+def mark_process_dead(pid: int) -> None:
+    """Drop a dead prefork child's gauge contributions (live* modes).
+
+    No-op outside multiprocess mode. Keeps ``livesum`` gauges accurate as
+    celery recycles worker children.
+    """
+    if _ENABLED and pid is not None and os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        multiprocess.mark_process_dead(pid)
 
 
 def is_enabled() -> bool:
