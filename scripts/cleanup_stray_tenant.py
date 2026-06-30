@@ -2,11 +2,15 @@
 """Find (and optionally hard-delete) a stray tenant by a user's email.
 
 Background: the SPA's ``POST /trial/signup`` mints a sandbox Tenant + admin
-User on signup, with NO allowlist/invite gating. A test login (e.g.
-davison@flexonline.net into linda-staging-app) therefore leaves a real
-sandbox tenant behind. This script locates that tenant and, only when
-explicitly confirmed, deletes it via the same ``hard_delete_tenant`` service
-the GDPR endpoint uses (single transaction, cascades child rows).
+User on signup, with NO allowlist/invite gating. A throwaway test login can
+therefore leave a real sandbox tenant behind. This script locates such a
+tenant and, only when explicitly confirmed, deletes it via the same
+``hard_delete_tenant`` service the GDPR endpoint uses (single transaction,
+cascades child rows).
+
+DO NOT delete davison@flexonline.net — that is the owner's own comped
+full-access account, not a stray tenant. See COMPED_ACCOUNT_EMAILS in
+backend/app/services/entitlements.py.
 
 SAFE BY DEFAULT — dry-run unless ``--execute`` is passed, and ``--execute``
 additionally requires ``--tenant-id`` and a ``--confirm-name`` that exactly
@@ -114,6 +118,20 @@ async def run(args: argparse.Namespace) -> int:
         if target is None:
             print(f"ERROR: tenant {target_id} is not linked to {args.email!r}. "
                   "Refusing to delete a tenant outside the matched set.")
+            return 2
+
+        # Hard guard: never delete a comped account (the owner's own app).
+        from backend.app.services.entitlements import COMPED_ACCOUNT_EMAILS
+
+        comped_here = [
+            u.email for u, t in matches
+            if t.id == target_id
+            and (u.email or "").strip().lower() in COMPED_ACCOUNT_EMAILS
+        ]
+        if comped_here:
+            print(f"REFUSING: tenant {target_id} has comped user(s) {comped_here} "
+                  "— this is an authorized free-access account, not a stray tenant. "
+                  "See backend/app/services/entitlements.py.")
             return 2
         if target.name != args.confirm_name:
             print(f"ERROR: --confirm-name {args.confirm_name!r} != tenants.name "

@@ -21,6 +21,7 @@ from fastapi import Depends, HTTPException
 
 from backend.app.auth import get_current_tenant
 from backend.app.models import Tenant
+from backend.app.services.entitlements import COMP_TIER, tenant_is_comped
 
 
 PLAN_TIERS = ("sandbox", "starter", "growth", "enterprise")
@@ -193,6 +194,10 @@ def get_tier(key: Optional[str]) -> TierSpec:
 
 
 def limits_for(tenant: Tenant) -> TierSpec:
+    # Comped accounts are treated as top-tier everywhere limits are read —
+    # all features, strongest model, no seat/usage caps.
+    if tenant_is_comped(tenant):
+        return get_tier(COMP_TIER)
     return get_tier(getattr(tenant, "plan_tier", None))
 
 
@@ -250,6 +255,9 @@ def trial_is_active(tenant: Tenant) -> bool:
 
 
 def trial_is_expired(tenant: Tenant) -> bool:
+    # Comped accounts never count as trial-expired.
+    if tenant_is_comped(tenant):
+        return False
     return (
         tenant.plan_tier == "sandbox"
         and tenant.trial_ends_at is not None
@@ -273,6 +281,8 @@ def require_feature(flag: str):
     """
 
     async def _guard(tenant: Tenant = Depends(get_current_tenant)) -> Tenant:
+        if tenant_is_comped(tenant):
+            return tenant
         limits = limits_for(tenant)
         if not bool(limits.features.get(flag, False)):
             raise HTTPException(
@@ -313,7 +323,11 @@ async def require_active_subscription(
     * the tenant is on a paid tier (``starter``/``growth``/``enterprise``)
       with no ``stripe_subscription_id`` linked — i.e., a paid plan
       that lost its subscription (cancelled, never wired up).
+
+    Comped accounts bypass this gate entirely (full free access).
     """
+    if tenant_is_comped(tenant):
+        return tenant
     if trial_is_expired(tenant):
         raise HTTPException(
             status_code=402,

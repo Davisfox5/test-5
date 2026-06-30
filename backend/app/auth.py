@@ -70,7 +70,7 @@ import bcrypt
 import httpx
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -708,11 +708,47 @@ async def get_current_principal(
     if principal is None:
         raise HTTPException(status_code=401, detail="Missing or invalid credentials")
 
+    # Comped-account detection (the owner's own app — full free access).
+    # Resolved once here and stamped on the tenant so the sync plan helpers
+    # never do I/O. Free for human logins (email already loaded); one indexed
+    # lookup for api-key calls, which carry no user.
+    from backend.app.services.entitlements import (
+        email_is_comped,
+        mark_tenant_comped,
+    )
+
+    comped = False
+    if principal.user is not None:
+        comped = email_is_comped(getattr(principal.user, "email", None))
+    elif principal.source == "api_key":
+        comped = await _tenant_has_comped_user(db, principal.tenant.id)
+    mark_tenant_comped(principal.tenant, comped)
+
     bind_context(
         tenant_id=str(principal.tenant.id),
         user_id=str(principal.user_id) if principal.user_id else None,
     )
     return principal
+
+
+async def _tenant_has_comped_user(db: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """Does this tenant contain a user on the comp allowlist? Used for
+    api-key principals, which carry no user of their own."""
+    from backend.app.services.entitlements import COMPED_ACCOUNT_EMAILS
+
+    if not COMPED_ACCOUNT_EMAILS:
+        return False
+    row = (
+        await db.execute(
+            select(User.id)
+            .where(
+                User.tenant_id == tenant_id,
+                func.lower(User.email).in_(list(COMPED_ACCOUNT_EMAILS)),
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
 
 
 async def get_current_tenant(
