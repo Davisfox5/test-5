@@ -2262,6 +2262,46 @@ class EmailSyncCursor(Base):
     )
 
 
+class EmailBackfillJob(Base):
+    """One on-demand "import the last N days of mail" run for a connected
+    mailbox.  Drives the ``/email/backfill`` endpoints: the POST creates a
+    row + enqueues the worker, the GET polls these counters.
+
+    Forward ingestion (poller + push) is incremental; this gives a tenant
+    a way to pull history that predates the connect.  Each listed message
+    runs through the SAME ingest→analyze pipeline, deduped on
+    ``(tenant_id, provider_message_id)`` so re-running never double-counts.
+    """
+
+    __tablename__ = "email_backfill_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE")
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    # queued | running | done | error
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
+    fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ingested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # One in-flight (queued/running) job per tenant+provider is enforced in
+    # the API layer (it returns the existing job_id with 409); this index
+    # just keeps the "is one already running?" lookup cheap.
+    __table_args__ = (
+        Index("ix_email_backfill_jobs_tenant_provider", "tenant_id", "provider"),
+    )
+
+
 # ──────────────────────────────────────────────────────────
 # MARKETING CAMPAIGNS
 # ──────────────────────────────────────────────────────────

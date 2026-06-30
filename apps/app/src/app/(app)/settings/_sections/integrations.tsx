@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
     OAuthProvider,
     useOAuthStatus,
@@ -12,7 +13,13 @@ import {
     useCrmSyncLogs,
     useTriggerCrmSync,
 } from "@/lib/crm";
+import { useBackfillJob, useStartBackfill } from "@/lib/backfill";
+import { ApiError } from "@/lib/api";
 import { humanizeError } from "@/components/admin/section";
+
+// Mailbox providers that support a historical "Sync last 90 days"
+// backfill. Backend currently ships Google; Microsoft returns 501.
+const BACKFILL_PROVIDER_KEYS = new Set<string>(["google"]);
 
 interface ProviderSpec {
     key: OAuthProvider;
@@ -107,6 +114,7 @@ export function IntegrationsSection() {
             {PROVIDERS.map((p) => {
                 const conn = connected.get(p.key);
                 const showSync = p.isCrm && conn;
+                const showBackfill = !!conn && BACKFILL_PROVIDER_KEYS.has(p.key);
                 const providerLogs = (syncLogs ?? []).filter(
                     (log) => log.provider === p.key,
                 );
@@ -192,6 +200,10 @@ export function IntegrationsSection() {
                                 }
                             />
                         ) : null}
+
+                        {showBackfill ? (
+                            <MailboxBackfillCard provider={p.key} />
+                        ) : null}
                     </li>
                 );
             })}
@@ -206,6 +218,91 @@ export function IntegrationsSection() {
                 </p>
             ) : null}
         </ul>
+    );
+}
+
+/* ── Mailbox backfill card ──────────────────────────────────────────── */
+
+// "Sync last 90 days" — pulls historical mail through the same ingest
+// pipeline as live mail. Connecting a mailbox is forward-only, so this is
+// the only way to analyze conversations that predate the connect.
+function MailboxBackfillCard({ provider }: { provider: OAuthProvider }) {
+    const start = useStartBackfill();
+    const [jobId, setJobId] = useState<string | null>(null);
+    const [notice, setNotice] = useState<string | null>(null);
+    const { data: job } = useBackfillJob(jobId);
+
+    const inFlight =
+        start.isPending ||
+        job?.status === "queued" ||
+        job?.status === "running";
+
+    const handleSync = async () => {
+        setNotice(null);
+        try {
+            const res = await start.mutateAsync({ provider });
+            setJobId(res.job_id);
+        } catch (e) {
+            if (e instanceof ApiError && e.status === 409) {
+                // Another tab / the auto-backfill is already running.
+                setNotice("A sync is already running for this mailbox.");
+            } else {
+                setNotice(humanizeError(e));
+            }
+        }
+    };
+
+    let statusLine: string | null = null;
+    if (inFlight) {
+        statusLine = `Syncing… ${job?.ingested ?? 0} imported`;
+    } else if (job?.status === "done") {
+        statusLine = `Imported ${job.ingested} message${
+            job.ingested === 1 ? "" : "s"
+        }${job.skipped ? ` · ${job.skipped} already synced` : ""}.`;
+    } else if (job?.status === "error") {
+        statusLine = job.error
+            ? `Sync failed: ${job.error}`
+            : "Sync failed.";
+    }
+
+    return (
+        <div className="mt-3 rounded-md border border-border bg-bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 text-xs text-text-muted">
+                    <div className="text-text-main">Historical mail</div>
+                    <p className="mt-0.5">
+                        Import the last 90 days so past conversations are
+                        analyzed too.
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={handleSync}
+                    disabled={inFlight}
+                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                >
+                    {inFlight
+                        ? "Syncing…"
+                        : job?.status === "done"
+                          ? "Sync again"
+                          : "Sync last 90 days"}
+                </button>
+            </div>
+            {statusLine ? (
+                <p
+                    className={`mt-2 text-xs ${
+                        job?.status === "error"
+                            ? "text-accent-rose"
+                            : "text-text-muted"
+                    }`}
+                >
+                    {statusLine}
+                </p>
+            ) : null}
+            {notice ? (
+                <p className="mt-2 text-xs text-accent-amber">{notice}</p>
+            ) : null}
+        </div>
     );
 }
 

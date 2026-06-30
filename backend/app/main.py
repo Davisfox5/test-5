@@ -114,6 +114,7 @@ from backend.app.api.oauth import router as oauth_router  # noqa: E402
 from backend.app.api.conversations import router as conversations_router  # noqa: E402
 from backend.app.api.webhooks import router as webhooks_router  # noqa: E402
 from backend.app.api.email_push import router as email_push_router  # noqa: E402
+from backend.app.api.email_backfill import router as email_backfill_router  # noqa: E402
 from backend.app.api.feedback import router as feedback_router  # noqa: E402
 from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
 from backend.app.api.experiments import router as experiments_router  # noqa: E402
@@ -164,6 +165,7 @@ app.include_router(coaching_router, prefix=settings.API_V1_PREFIX, tags=["coachi
 app.include_router(oauth_router, prefix=settings.API_V1_PREFIX, tags=["oauth"])
 app.include_router(conversations_router, prefix=settings.API_V1_PREFIX, tags=["conversations"])
 app.include_router(email_push_router, prefix=settings.API_V1_PREFIX, tags=["email-push"])
+app.include_router(email_backfill_router, prefix=settings.API_V1_PREFIX, tags=["email-backfill"])
 app.include_router(feedback_router, prefix=settings.API_V1_PREFIX, tags=["feedback"])
 app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["evaluation"])
 app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])

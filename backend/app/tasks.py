@@ -2740,6 +2740,158 @@ def email_push_process_graph(
         session.close()
 
 
+@celery_app.task(name="email_backfill_run", bind=True, max_retries=0)
+def email_backfill_run(self, job_id: str) -> Dict[str, Any]:
+    """Import the last N days of mail for a connected mailbox.
+
+    Drives an :class:`EmailBackfillJob`: lists every message in the window,
+    skips ids already ingested (dedupe on ``provider_message_id``), and
+    runs the rest through the SAME ``ingest_email`` path as the poller /
+    push — so backfilled mail produces identical Interactions (sentiment,
+    action items, threading).  Counters are committed periodically so the
+    status endpoint shows live progress.
+
+    ``max_retries=0``: a half-finished retry would re-list from the top.
+    The dedupe makes that safe, but on a hard failure we'd rather mark the
+    job ``error`` with a message than silently churn quota.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime, timezone
+
+    from backend.app.models import (
+        EmailBackfillJob,
+        Integration,
+        Interaction,
+        Tenant,
+        User,
+    )
+    from backend.app.services.email_classifier import EmailClassifier
+    from backend.app.services.email_ingest import gmail as gmail_fetcher
+    from backend.app.services.email_ingest.ingest import ingest_email
+    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+
+    session = _get_sync_session()
+    job: Optional[EmailBackfillJob] = None
+    try:
+        job = (
+            session.query(EmailBackfillJob)
+            .filter(EmailBackfillJob.id == uuid.UUID(job_id))
+            .first()
+        )
+        if job is None:
+            return {"status": "job_missing"}
+
+        integration = (
+            session.query(Integration)
+            .filter(Integration.id == job.integration_id)
+            .first()
+        )
+        if integration is None:
+            job.status = "error"
+            job.error = "Connected mailbox no longer exists"
+            job.finished_at = datetime.now(timezone.utc)
+            session.commit()
+            return {"status": "integration_missing"}
+
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == job.tenant_id).first()
+        )
+        if tenant is None:
+            job.status = "error"
+            job.error = "Tenant not found"
+            job.finished_at = datetime.now(timezone.utc)
+            session.commit()
+            return {"status": "tenant_missing"}
+
+        user = (
+            session.query(User).filter(User.id == integration.user_id).first()
+            if integration.user_id
+            else None
+        )
+        agent_email = user.email if user else None
+
+        job.status = "running"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        access_token = _refresh_if_expired_sync(session, integration)
+        service = gmail_fetcher.build_service(access_token)
+        classifier = EmailClassifier()
+
+        fetched = 0
+        ingested = 0
+        skipped = 0
+
+        async def _run() -> None:
+            nonlocal fetched, ingested, skipped
+            for mid in gmail_fetcher.list_backfill_ids(service, job.window_days):
+                fetched += 1
+                # Dedupe BEFORE the get() call — re-running the button must
+                # not re-import or re-spend quota on messages we already have.
+                already = (
+                    session.query(Interaction.id)
+                    .filter(
+                        Interaction.tenant_id == tenant.id,
+                        Interaction.provider_message_id == mid,
+                    )
+                    .first()
+                )
+                if already is not None:
+                    skipped += 1
+                else:
+                    msg = gmail_fetcher.get_backfill_message(service, mid, agent_email)
+                    if await ingest_email(session, tenant, msg, classifier) is not None:
+                        ingested += 1
+                    # None == classifier filtered it (internal/low-confidence);
+                    # it created no Interaction, so it's neither ingested nor
+                    # a dedupe-skip.
+                # Flush progress periodically so the status poll moves.
+                if fetched % 50 == 0:
+                    job.fetched = fetched
+                    job.ingested = ingested
+                    job.skipped = skipped
+                    session.commit()
+
+        _asyncio.run(_run())
+
+        job.fetched = fetched
+        job.ingested = ingested
+        job.skipped = skipped
+        job.status = "done"
+        job.error = None
+        job.finished_at = datetime.now(timezone.utc)
+        session.commit()
+        return {
+            "status": "ok",
+            "fetched": fetched,
+            "ingested": ingested,
+            "skipped": skipped,
+        }
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Email backfill job %s failed", job_id)
+        # Best-effort: record the failure on the job row in a fresh txn.
+        try:
+            if job is not None:
+                job = (
+                    session.query(EmailBackfillJob)
+                    .filter(EmailBackfillJob.id == uuid.UUID(job_id))
+                    .first()
+                )
+                if job is not None:
+                    job.status = "error"
+                    job.error = str(exc)[:500]
+                    job.finished_at = datetime.now(timezone.utc)
+                    session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Failed to mark backfill job %s as error", job_id)
+        return {"status": "error", "error": str(exc)[:500]}
+    finally:
+        session.close()
+
+
 @celery_app.task(name="email_push_renew_subscriptions")
 def email_push_renew_subscriptions() -> Dict[str, Any]:
     """(Re-)register Gmail watches and Graph subscriptions.
