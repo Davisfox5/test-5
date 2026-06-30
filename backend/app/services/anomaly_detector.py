@@ -21,7 +21,7 @@ import logging
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -161,6 +161,70 @@ def resolve_stale(session: Session, *, dry_run: bool = False) -> int:
     return resolved
 
 
+# ── Shared windowed helpers (one query + Python day-bucketing) ──────────
+#
+# The detectors below compare a recent window against a per-day baseline
+# median. The baseline used to be built by issuing one COUNT query per day
+# (7 or 14 per detector, per tenant) — a textbook N+1 that Sentry flagged on
+# ``manager_anomaly_scan_all_tenants``. Instead we fetch the whole baseline
+# window in a single query and bucket the rows by day in Python.
+
+
+def _bucket_by_day(
+    timestamps: Iterable[datetime], baseline_start: datetime, num_days: int
+) -> List[int]:
+    """Count events per day bucket over ``num_days`` from ``baseline_start``.
+
+    Bucket ``i`` covers ``[baseline_start + i days, baseline_start + (i+1)
+    days)`` — identical windows to the old per-day loop, so the resulting
+    daily counts (and their median) are unchanged.
+    """
+    one_day = timedelta(days=1)
+    daily = [0] * num_days
+    for ts in timestamps:
+        idx = int((ts - baseline_start) // one_day)
+        if 0 <= idx < num_days:
+            daily[idx] += 1
+    return daily
+
+
+def _is_high_churn(insights: Any) -> bool:
+    """True when an interaction's insights carry a high churn-risk signal."""
+    if not isinstance(insights, dict):
+        return False
+    signal = insights.get("churn_risk_signal")
+    return isinstance(signal, str) and signal.lower() == "high"
+
+
+def _extract_topic_counts(insights: Any) -> Dict[str, int]:
+    """Per-topic mention counts from one interaction's insights.
+
+    Tolerates the two observed shapes in ``insights.topics``: a list of
+    strings, and a list of ``{name, mentions}`` dicts.
+    """
+    counts: Dict[str, int] = {}
+    if not isinstance(insights, dict):
+        return counts
+    topics = insights.get("topics")
+    if not isinstance(topics, list):
+        return counts
+    for entry in topics:
+        if isinstance(entry, str):
+            name, n = entry.strip().lower(), 1
+        elif isinstance(entry, dict):
+            raw = entry.get("name") or entry.get("topic")
+            if not isinstance(raw, str):
+                continue
+            name = raw.strip().lower()
+            n = int(entry.get("mentions") or entry.get("count") or 1)
+        else:
+            continue
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + n
+    return counts
+
+
 # ── Topic-spike detector ────────────────────────────────────────────────
 
 
@@ -193,16 +257,29 @@ def _detect_topic_spike(
     baseline_end = window
 
     recent_counts = _topic_counts(session, tenant.id, window, now)
-    baseline_counts = _topic_counts(session, tenant.id, baseline_start, baseline_end)
 
     # Baseline median is per-day: split the 7d span into 7 daily windows
     # and take the median count per topic. Median beats mean for noisy
-    # daily volumes.
+    # daily volumes. Fetched in ONE query and bucketed by day in Python
+    # (was 7 per-day queries — an N+1 on the 15-min scan).
+    one_day = timedelta(days=1)
+    daily_topic_counts: List[Dict[str, int]] = [dict() for _ in range(7)]
+    baseline_stmt = select(Interaction.insights, Interaction.created_at).where(
+        Interaction.tenant_id == tenant.id,
+        Interaction.created_at >= baseline_start,
+        Interaction.created_at < baseline_end,
+        sa.or_(Interaction.domain == "sales", Interaction.domain.is_(None)),
+    )
+    for insights, created_at in session.execute(baseline_stmt).all():
+        idx = int((created_at - baseline_start) // one_day)
+        if not 0 <= idx < 7:
+            continue
+        bucket = daily_topic_counts[idx]
+        for name, n in _extract_topic_counts(insights).items():
+            bucket[name] = bucket.get(name, 0) + n
+
     daily_baselines: Dict[str, List[int]] = {}
-    for day_start in (baseline_start + timedelta(days=i) for i in range(7)):
-        day_counts = _topic_counts(
-            session, tenant.id, day_start, day_start + timedelta(days=1)
-        )
+    for day_counts in daily_topic_counts:
         for topic, count in day_counts.items():
             daily_baselines.setdefault(topic, []).append(count)
         for topic in recent_counts:
@@ -270,24 +347,7 @@ def _topic_counts(
     )
     counts: Dict[str, int] = {}
     for (insights,) in session.execute(stmt).all():
-        if not isinstance(insights, dict):
-            continue
-        topics = insights.get("topics")
-        if not isinstance(topics, list):
-            continue
-        for entry in topics:
-            if isinstance(entry, str):
-                name, n = entry.strip().lower(), 1
-            elif isinstance(entry, dict):
-                raw = entry.get("name") or entry.get("topic")
-                if not isinstance(raw, str):
-                    continue
-                name = raw.strip().lower()
-                n = int(entry.get("mentions") or entry.get("count") or 1)
-            else:
-                continue
-            if not name:
-                continue
+        for name, n in _extract_topic_counts(insights).items():
             counts[name] = counts.get(name, 0) + n
     return counts
 
@@ -401,10 +461,21 @@ def _detect_churn_surge(
         return []
 
     baseline_start = now - timedelta(days=15)
-    daily_counts: List[int] = []
-    for i in range(14):
-        s = baseline_start + timedelta(days=i)
-        daily_counts.append(_high_churn_count(session, tenant.id, s, s + timedelta(days=1)))
+    # One query over the 14-day baseline, bucketed by day in Python
+    # (was 14 per-day COUNT queries — an N+1 on the 15-min scan).
+    baseline_rows = session.execute(
+        select(Interaction.insights, Interaction.created_at).where(
+            Interaction.tenant_id == tenant.id,
+            Interaction.created_at >= baseline_start,
+            Interaction.created_at < recent_start,
+            sa.or_(Interaction.domain == "sales", Interaction.domain.is_(None)),
+        )
+    ).all()
+    daily_counts = _bucket_by_day(
+        (ca for insights, ca in baseline_rows if _is_high_churn(insights)),
+        baseline_start,
+        14,
+    )
     median = statistics.median(daily_counts) if daily_counts else 0.0
     threshold = max(median * multiplier, 3.0)
     if current < threshold:
@@ -509,12 +580,21 @@ def _detect_renewal_risk_spike(
         return []
 
     baseline_start = now - timedelta(days=15)
-    daily_counts: List[int] = []
-    for i in range(14):
-        s = baseline_start + timedelta(days=i)
-        daily_counts.append(
-            _cs_high_risk_count(session, tenant.id, s, s + timedelta(days=1))
+    # One query over the 14-day baseline, bucketed by day in Python
+    # (was 14 per-day COUNT queries — an N+1 on the 15-min scan).
+    baseline_rows = session.execute(
+        select(Interaction.insights, Interaction.created_at).where(
+            Interaction.tenant_id == tenant.id,
+            Interaction.created_at >= baseline_start,
+            Interaction.created_at < recent_start,
+            Interaction.domain == "customer_service",
         )
+    ).all()
+    daily_counts = _bucket_by_day(
+        (ca for insights, ca in baseline_rows if _is_high_churn(insights)),
+        baseline_start,
+        14,
+    )
     median = statistics.median(daily_counts) if daily_counts else 0.0
     threshold = max(median * multiplier, 3.0)
     if current < threshold:
@@ -762,12 +842,19 @@ def _detect_escalation_surge(
     if current < 3:
         return []
     baseline_start = now - timedelta(days=15)
-    daily_counts: List[int] = []
-    for i in range(14):
-        s = baseline_start + timedelta(days=i)
-        daily_counts.append(
-            _support_escalation_count(session, tenant.id, s, s + timedelta(days=1))
+    # One query over the 14-day baseline, bucketed by day in Python
+    # (was 14 per-day COUNT queries — an N+1 on the 15-min scan).
+    escalated_at_rows = session.execute(
+        select(SupportCase.escalated_at).where(
+            SupportCase.tenant_id == tenant.id,
+            SupportCase.escalated_at.isnot(None),
+            SupportCase.escalated_at >= baseline_start,
+            SupportCase.escalated_at < recent_start,
         )
+    ).all()
+    daily_counts = _bucket_by_day(
+        (ts for (ts,) in escalated_at_rows), baseline_start, 14
+    )
     median = statistics.median(daily_counts) if daily_counts else 0.0
     threshold = max(median * multiplier, 3.0)
     if current < threshold:
