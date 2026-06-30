@@ -48,7 +48,7 @@ class Tier(str, Enum):
 MODEL_IDS: Dict[Tier, str] = {
     Tier.HAIKU: "claude-haiku-4-5-20251001",
     Tier.SONNET: "claude-sonnet-4-6",
-    Tier.OPUS: "claude-opus-4-7",
+    Tier.OPUS: "claude-opus-4-8",
 }
 
 # Models that removed the sampling knobs (``temperature`` / ``top_p`` /
