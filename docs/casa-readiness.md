@@ -70,7 +70,7 @@ where LINDA stands:
 | Dependency / known-CVE posture | ◻️ review | DAST is runtime, but labs often ask about dependency hygiene; `requirements.txt` pinned. |
 | Rate limiting / abuse controls | ✅ partial | Push webhooks rate-limited (`email_push.py`); confirm coverage on auth endpoints. |
 | Logging without sensitive data | ◻️ review | Confirm tokens / mail bodies are never logged (token_crypto logs warnings only, not values). |
-| Vuln disclosure / security contact | ◻️ add | Consider a `security@lindaai.net` contact / `/.well-known/security.txt`. |
+| Vuln disclosure / security contact | ✅ | `website/.well-known/security.txt` (RFC 9116) published with `security@lindaai.net`, served at `https://lindaai.net/.well-known/security.txt`. The mailbox must be live. |
 
 ✅ = in place · ◻️ = verify or add before the lab scan.
 

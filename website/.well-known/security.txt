@@ -1,0 +1,5 @@
+Contact: mailto:security@lindaai.net
+Expires: 2027-06-30T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://lindaai.net/.well-known/security.txt
+Policy: https://lindaai.net/privacy

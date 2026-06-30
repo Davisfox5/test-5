@@ -12,6 +12,12 @@ RUN rm -rf /usr/share/nginx/html/*
 COPY index.html demo.html /usr/share/nginx/html/
 COPY css/ /usr/share/nginx/html/css/
 COPY js/  /usr/share/nginx/html/js/
+# Legal pages + security.txt — keep this image in sync with the apex
+# (the backend serves website/ at lindaai.net; this app is the standalone
+# marketing surface and must serve the same stable URLs).
+COPY privacy/ /usr/share/nginx/html/privacy/
+COPY terms/ /usr/share/nginx/html/terms/
+COPY .well-known/ /usr/share/nginx/html/.well-known/
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
