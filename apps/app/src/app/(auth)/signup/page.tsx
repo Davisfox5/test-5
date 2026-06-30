@@ -136,7 +136,25 @@ export default function TrialSignupPage() {
                 </button>
                 {error && <p className="text-sm text-accent-rose">{error}</p>}
                 <p className="text-text-subtle text-xs">
-                    By continuing you agree to LINDA&apos;s terms and privacy policy.
+                    By continuing you agree to LINDA&apos;s{" "}
+                    <a
+                        href="https://lindaai.net/terms"
+                        target="_blank"
+                        rel="noopener"
+                        className="underline"
+                    >
+                        terms
+                    </a>{" "}
+                    and{" "}
+                    <a
+                        href="https://lindaai.net/privacy"
+                        target="_blank"
+                        rel="noopener"
+                        className="underline"
+                    >
+                        privacy policy
+                    </a>
+                    .
                 </p>
             </form>
         </main>
