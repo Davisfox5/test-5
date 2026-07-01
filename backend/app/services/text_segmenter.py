@@ -37,6 +37,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,27 +195,23 @@ def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
     )
 
     try:
-        client = anthropic.Anthropic(
-            api_key=api_key,
-            timeout=getattr(settings, "ANTHROPIC_TIMEOUT_SECONDS", 60),
-        )
         # Cap input + output to keep this cheap. Haiku at $0.25/M in +
         # $1.25/M out — even a 10K-token transcript costs < $0.02 per
-        # call to segment. Worth it to unblock downstream analysis.
-        resp = client.messages.create(
-            model=model_catalog.HAIKU,
-            max_tokens=8192,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": raw_text}],
+        # call to segment. Worth it to unblock downstream analysis. The
+        # per-call timeout is preserved via the router's timeout passthrough.
+        resp = get_router().invoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=raw_text,
+                system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+                max_tokens=8192,
+                temperature=0.0,
+                call_site="text_segmenter",
+                timeout=getattr(settings, "ANTHROPIC_TIMEOUT_SECONDS", 60),
+            )
         )
-        record_llm_completion("text_segmenter", "haiku", 8192, resp)
-        labeled = resp.content[0].text if resp.content else ""
+        labeled = resp.text
     except Exception:
         logger.exception("LLM speaker-tagging failed; falling back")
         return []

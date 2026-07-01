@@ -264,9 +264,13 @@ async def regenerate_follow_up_draft(
     from backend.app.services.ai_analysis import (
         ANALYSIS_SYSTEM_PROMPT_TERSE,
     )
-    from backend.app.services.llm_client import (
-        compute_max_tokens,
-        get_async_anthropic,
+    from backend.app.services.llm_client import compute_max_tokens
+    from backend.app.services.model_router import (
+        CacheableBlock,
+        LLMRequest,
+        TaskType,
+        Tier,
+        get_router,
     )
 
     # Tiny focused prompt. The full ANALYSIS_SYSTEM_PROMPT_TERSE carries
@@ -290,21 +294,19 @@ async def regenerate_follow_up_draft(
         "Write the follow-up email now. Subject + body only, as JSON."
     )
 
-    client = get_async_anthropic()
     budget = compute_max_tokens("sonnet", input_tokens=len(user_content) // 4)
-    response = await client.messages.create(
-        model=model_catalog.SONNET,
-        max_tokens=budget,
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_content}],
+    response = await get_router().ainvoke(
+        LLMRequest(
+            task_type=TaskType.GENERIC,
+            forced_tier=Tier.SONNET,
+            user_message=user_content,
+            system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+            max_tokens=budget,
+            temperature=0.3,
+            call_site="followup_email",
+        )
     )
-    raw_text = response.content[0].text
+    raw_text = response.text
 
     import json as _json
     from backend.app.services.ai_analysis import (
