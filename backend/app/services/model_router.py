@@ -56,12 +56,6 @@ MODEL_IDS: Dict[Tier, str] = {
     Tier.OPUS: model_catalog.OPUS,
 }
 
-# Models that removed the sampling knobs (``temperature`` / ``top_p`` /
-# ``top_k``): Opus 4.7+ and Fable 5 reject them with a 400. Centralized in
-# ``model_catalog`` so the temperature guard has one owner.
-_NO_SAMPLING_PARAM_MODELS = model_catalog.NO_SAMPLING_PARAM_MODELS
-
-
 class TaskType(str, Enum):
     GENERIC = "generic"                       # tier chosen by forced_tier
     TRIAGE = "triage"                         # always Haiku
@@ -371,42 +365,75 @@ class ModelRouter:
 
     # ── Batch submission ──────────────────────────────────────────────
 
+    @staticmethod
+    def _custom_id_for(req: LLMRequest, index: int) -> str:
+        """Stable per-entry id: the caller's ``metadata['custom_id']`` when set,
+        else the position index. Reused verbatim across a failover round so
+        results merge back by id."""
+        return str(req.metadata.get("custom_id", index) if req.metadata else index)
+
+    def _batch_entry(self, req: LLMRequest, model: str, custom_id: str) -> Dict[str, Any]:
+        """Build one Batches API entry, sharing the live path's request shaping
+        (``_build_create_kwargs``) so batch calls inherit the same temperature
+        guard, Sonnet-5 thinking suppression, and tool passthrough. ``timeout``
+        is a client-side SDK option, not a wire param, so it's dropped here."""
+        params = self._build_create_kwargs(req, model)
+        params.pop("timeout", None)
+        params["model"] = model
+        return {"custom_id": custom_id, "params": params}
+
+    async def _create_batch(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> str:
+        """POST a batch with bounded transient retry. Raises ``AttributeError``
+        when the SDK lacks ``beta.messages.batches`` so the caller can fall
+        back to sequential live calls."""
+        from backend.app.services.llm_client import _is_transient
+
+        attempt = 0
+        while True:
+            try:
+                batch = await self._client.beta.messages.batches.create(requests=entries)  # type: ignore[attr-defined]
+                return batch.id
+            except AttributeError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified below
+                if _is_transient(exc) and attempt < 2:
+                    delay = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        "batch submit transient error (%s, attempt %d/2); retry in %.2fs",
+                        type(exc).__name__, attempt + 1, delay,
+                    )
+                    await _sleep(delay)
+                    attempt += 1
+                    continue
+                raise
+
     async def submit_batch(
         self,
         requests: List[LLMRequest],
     ) -> str:
         """Submit a list of non-interactive requests via the Messages
         Batches API.  Returns the Anthropic batch id; callers poll for
-        completion and fetch results separately.
+        completion and fetch results separately (or use :meth:`run_batch`
+        for the submit → poll → per-entry failover lifecycle in one call).
 
         Implementation note: the Batches API expects each entry to have
         a unique ``custom_id``; we use the metadata ``custom_id`` field
         or fall back to the position index.
         """
-        entries = []
-        for i, r in enumerate(requests):
-            tier = self.select_tier(r)
-            model_id = MODEL_IDS[tier]
-            params: Dict[str, Any] = {
-                "model": model_id,
-                "max_tokens": r.max_tokens,
-                "system": _build_system_payload(r.system_blocks),
-                "messages": [{"role": "user", "content": r.user_message}],
-            }
-            # ``temperature`` 400s on Opus 4.7+/Fable 5 (same as the live path).
-            if model_id not in _NO_SAMPLING_PARAM_MODELS:
-                params["temperature"] = r.temperature
-            entries.append({
-                "custom_id": str(r.metadata.get("custom_id", i)),
-                "params": params,
-            })
-
+        entries = [
+            self._batch_entry(r, MODEL_IDS[self.select_tier(r)], self._custom_id_for(r, i))
+            for i, r in enumerate(requests)
+        ]
         # Defensive: not all Anthropic SDK versions expose
         # ``beta.messages.batches``.  Fall back to sequential calls if
         # the batch surface is unavailable.
         try:
-            batch = await self._client.beta.messages.batches.create(requests=entries)  # type: ignore[attr-defined]
-            return batch.id
+            return await self._create_batch(entries)
         except AttributeError:
             logger.warning(
                 "Batches API unavailable in this SDK; falling back to sequential calls"
@@ -414,6 +441,115 @@ class ModelRouter:
             for r in requests:
                 await self.ainvoke(r)
             return "local-fallback"
+
+    async def run_batch(
+        self,
+        requests: List[LLMRequest],
+        *,
+        poll_interval_seconds: float = 30.0,
+        timeout_seconds: float = 1800.0,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Submit → poll → per-entry failover → merge, the batch-path analogue
+        of :meth:`ainvoke`'s retry+failover.
+
+        Returns ``{custom_id: {"text", "usage", "stop_reason"}}`` (plus an
+        ``"error"`` key on entries that stayed failed). Entries that come back
+        errored with a *retryable* reason (transient overload/timeout or a
+        model that was unavailable) are resubmitted **once** on the fallback
+        tier — one step down, never up — and successful retries overwrite the
+        errored result. Deterministic client errors are left as-is.
+
+        Falls back to sequential :meth:`ainvoke` (which has its own
+        retry+failover) when the SDK lacks the Batches surface, so the result
+        dict is populated either way.
+        """
+        # Remember the tier each id was submitted on so failover knows where to
+        # step down to.
+        plan = [
+            (self._custom_id_for(r, i), r, self.select_tier(r))
+            for i, r in enumerate(requests)
+        ]
+        entries = [self._batch_entry(r, MODEL_IDS[tier], cid) for cid, r, tier in plan]
+
+        try:
+            batch_id = await self._create_batch(entries)
+        except AttributeError:
+            logger.warning(
+                "Batches API unavailable in this SDK; run_batch falling back to sequential calls"
+            )
+            return await self._run_batch_sequential(plan)
+
+        results = await self.fetch_batch_results(
+            batch_id,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_seconds=timeout_seconds,
+        )
+
+        # Collect entries that errored retryably and have a lower tier to try.
+        from backend.app.services.llm_client import batch_error_is_retryable
+
+        retry_plan = []
+        for cid, r, tier in plan:
+            res = results.get(cid)
+            err = res.get("error") if res else None
+            if not err or not batch_error_is_retryable(err.get("type")):
+                continue
+            fb = model_catalog.failover_tier(tier.value)
+            if fb:
+                retry_plan.append((cid, r, Tier(fb)))
+
+        if not retry_plan:
+            return results
+
+        logger.warning(
+            "batch %s: %d/%d entries errored retryably; failover round on lower tier",
+            batch_id, len(retry_plan), len(plan),
+        )
+        retry_entries = [
+            self._batch_entry(r, MODEL_IDS[tier], cid) for cid, r, tier in retry_plan
+        ]
+        try:
+            retry_batch_id = await self._create_batch(retry_entries)
+            retry_results = await self.fetch_batch_results(
+                retry_batch_id,
+                poll_interval_seconds=poll_interval_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+        except AttributeError:
+            # SDK lost the surface between rounds (shouldn't happen); retry the
+            # failed subset sequentially rather than leaving them errored.
+            retry_results = await self._run_batch_sequential(retry_plan)
+
+        # Overwrite only entries whose retry actually succeeded; a still-errored
+        # retry keeps the original error so the caller sees the real failure.
+        for cid, _, _ in retry_plan:
+            rr = retry_results.get(cid)
+            if rr and not rr.get("error"):
+                results[cid] = rr
+        return results
+
+    async def _run_batch_sequential(
+        self, plan: List[Any]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fallback lifecycle when the Batches SDK surface is missing: run each
+        request through the live path (its own retry+failover) and shape the
+        results like ``fetch_batch_results``."""
+        results: Dict[str, Dict[str, Any]] = {}
+        for cid, r, tier in plan:
+            try:
+                resp = await self.ainvoke(r)
+                results[cid] = {
+                    "text": resp.text,
+                    "usage": resp.usage or {},
+                    "stop_reason": resp.stop_reason,
+                }
+            except Exception as exc:  # noqa: BLE001 — record, don't abort the batch
+                logger.warning("sequential batch entry %s failed: %s", cid, exc)
+                results[cid] = {
+                    "text": "", "usage": {}, "stop_reason": None,
+                    "error": {"type": type(exc).__name__},
+                }
+        return results
 
     async def fetch_batch_results(
         self, batch_id: str, *, poll_interval_seconds: float = 30.0,
@@ -465,13 +601,23 @@ class ModelRouter:
                     entry.get("result") if isinstance(entry, dict) else None
                 )
                 if result is None:
-                    results[custom_id] = {"text": "", "usage": {}, "stop_reason": None}
+                    results[custom_id] = {
+                        "text": "", "usage": {}, "stop_reason": None,
+                        "error": {"type": "unknown"},
+                    }
                     continue
                 rtype = getattr(result, "type", None) or (
                     result.get("type") if isinstance(result, dict) else None
                 )
                 if rtype != "succeeded":
-                    results[custom_id] = {"text": "", "usage": {}, "stop_reason": None}
+                    # Surface the error type so run_batch can decide whether the
+                    # entry is worth a failover round. ``errored`` carries a
+                    # nested ``error.type`` (``overloaded_error`` etc.);
+                    # ``canceled`` / ``expired`` use the result type itself.
+                    results[custom_id] = {
+                        "text": "", "usage": {}, "stop_reason": None,
+                        "error": {"type": _batch_error_type(result, rtype)},
+                    }
                     continue
                 message = getattr(result, "message", None) or (
                     result.get("message") if isinstance(result, dict) else None
@@ -503,6 +649,27 @@ class ModelRouter:
         except Exception:
             logger.exception("Failed to fetch batch results for %s", batch_id)
             return {}
+
+
+# ── Batch-result helpers ─────────────────────────────────────────────────
+
+
+def _batch_error_type(result: Any, rtype: Optional[str]) -> Optional[str]:
+    """Pull the failure reason off a non-succeeded batch result entry.
+
+    ``errored`` results carry a nested ``error.type`` (``overloaded_error``,
+    ``not_found_error``, …); ``canceled`` / ``expired`` have no nested error, so
+    the result type itself is the reason. Tolerates both SDK objects and raw
+    dicts (the results iterator shape varies across SDK versions)."""
+    if rtype == "errored":
+        error = getattr(result, "error", None) or (
+            result.get("error") if isinstance(result, dict) else None
+        )
+        if error is not None:
+            return getattr(error, "type", None) or (
+                error.get("type") if isinstance(error, dict) else None
+            )
+    return rtype
 
 
 # ── Prompt-cache helpers ─────────────────────────────────────────────────
