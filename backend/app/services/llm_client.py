@@ -81,6 +81,26 @@ def _is_model_unavailable(exc: Exception) -> bool:
     return getattr(exc, "status_code", None) in _UNAVAILABLE_STATUS
 
 
+# Per-entry Batches API error types (``result.error.type``) worth a second
+# attempt on a lower tier: transient overloads / timeouts, and a model that
+# came back unavailable (404). Deterministic client errors
+# (``invalid_request_error`` / ``authentication_error`` / ``permission_error``)
+# are the caller's bug — retrying them on another tier just burns tokens.
+# Mirrors the live-path split in ``_is_transient`` / ``_is_model_unavailable``.
+_RETRYABLE_BATCH_ERROR_TYPES = frozenset({
+    "overloaded_error",
+    "api_error",
+    "rate_limit_error",
+    "timeout_error",
+    "not_found_error",
+})
+
+
+def batch_error_is_retryable(error_type: Optional[str]) -> bool:
+    """True when a per-entry batch error should be retried on the fallback tier."""
+    return error_type in _RETRYABLE_BATCH_ERROR_TYPES
+
+
 async def acreate_with_failover(
     client: Any,
     *,
