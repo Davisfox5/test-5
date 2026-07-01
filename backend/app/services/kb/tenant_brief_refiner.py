@@ -39,9 +39,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,20 +176,18 @@ class TenantBriefRefiner:
         user_message = "\n\n".join(user_blocks) + "\n\nReturn the playbook JSON."
 
         try:
-            resp = await self._client.messages.create(
-                model=_MODEL,
-                max_tokens=1200,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_message}],
+            resp = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_message,
+                    system_blocks=[CacheableBlock(text=_SYSTEM_PROMPT, cache=True)],
+                    max_tokens=1200,
+                    temperature=0.0,
+                    call_site="kb_tenant_brief_refiner",
+                )
             )
-            record_llm_completion("kb_tenant_brief_refiner", "haiku", 1200, resp)
-            raw = resp.content[0].text
+            raw = resp.text
             data = json.loads(raw)
         except (anthropic.APIError, json.JSONDecodeError, IndexError, KeyError):
             logger.exception("TenantBriefRefiner Haiku call failed; returning empty")

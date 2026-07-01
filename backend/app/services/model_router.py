@@ -63,6 +63,7 @@ _NO_SAMPLING_PARAM_MODELS = model_catalog.NO_SAMPLING_PARAM_MODELS
 
 
 class TaskType(str, Enum):
+    GENERIC = "generic"                       # tier chosen by forced_tier
     TRIAGE = "triage"                         # always Haiku
     MAIN_ANALYSIS = "main_analysis"           # Haiku/Sonnet by complexity
     DELTA_REPORT = "delta_report"             # Sonnet, small output
@@ -107,6 +108,9 @@ class LLMRequest:
     # records the completion to ``llm_call_telemetry`` — one recording site for
     # every routed call, so observability is uniform without per-site wiring.
     call_site: Optional[str] = None
+    # Per-request timeout override (seconds), forwarded when set. Preserves
+    # call sites that built their own client with a custom timeout.
+    timeout: Optional[float] = None
     retry_count: int = 0
     # Why this retry is happening, when known. ``"max_tokens"`` and
     # ``"context_length"`` legitimately need a more capable model;
@@ -249,7 +253,7 @@ class ModelRouter:
             text=content,
             model=model,
             tier=tier,
-            stop_reason=resp.stop_reason,
+            stop_reason=getattr(resp, "stop_reason", None),
             usage=_usage_dict(resp),
             via_batch=False,
         )
@@ -266,6 +270,8 @@ class ModelRouter:
         }
         if req.tools:
             kwargs["tools"] = req.tools
+        if req.timeout is not None:
+            kwargs["timeout"] = req.timeout
         # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models that
         # still accept sampling params. Failover only ever steps DOWN a tier
         # (opus→sonnet→haiku) and the lower tiers accept temperature, so a
