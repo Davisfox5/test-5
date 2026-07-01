@@ -58,6 +58,18 @@ def tier_id_map() -> Dict[str, str]:
     }
 
 
+def tier_for_model(model_id: Optional[str]) -> Optional[str]:
+    """Reverse of :func:`model_for_tier`: given a resolved model id, return its
+    tier name, or ``None`` if it isn't one of the configured tier models. Used
+    to report the tier a request was *actually* served on after a failover."""
+    if not model_id:
+        return None
+    for tier in (HAIKU_TIER, SONNET_TIER, OPUS_TIER):
+        if model_for_tier(tier) == model_id:
+            return tier
+    return None
+
+
 # Convenience constants. Resolved at import time from settings; a version
 # change (env or config default) takes effect on the next process start,
 # which is also when a deploy happens — so this stays a deliberate change.

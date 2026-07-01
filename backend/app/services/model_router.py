@@ -242,11 +242,15 @@ class ModelRouter:
         except anthropic.APIError as exc:
             logger.error("Anthropic API error (%s): %s", tier, exc)
             raise
+        # The failover wrapper may have served the request on a cheaper tier;
+        # report the model AND tier the response actually came from so both the
+        # LLMResponse and the telemetry below stay accurate after a failover.
+        model = getattr(resp, "model", model) or model
+        served_tier = model_catalog.tier_for_model(model)
+        if served_tier is not None:
+            tier = Tier(served_tier)
         # One uniform telemetry recording site for every routed call.
         self._record(req, tier, resp)
-        # The failover wrapper may have served the request on a cheaper tier;
-        # report the model the response actually came from.
-        model = getattr(resp, "model", model) or model
 
         content = resp.content[0].text if resp.content else ""
         return LLMResponse(

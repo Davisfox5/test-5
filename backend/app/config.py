@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # Defaults are PINNED to the currently-shipping ids. We deliberately do
     # NOT auto-pull "latest": an env override is an explicit, reviewable act.
     ANTHROPIC_MODEL_HAIKU: str = "claude-haiku-4-5-20251001"
-    ANTHROPIC_MODEL_SONNET: str = "claude-sonnet-4-6"
+    ANTHROPIC_MODEL_SONNET: str = "claude-sonnet-5"
     ANTHROPIC_MODEL_OPUS: str = "claude-opus-4-8"
 
     # ── Speech-to-Text (Deepgram) ────────────────────────

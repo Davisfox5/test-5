@@ -23,9 +23,9 @@ from backend.app.services import model_catalog
 
 
 def test_tiers_resolve_to_pinned_defaults():
-    # Defaults must match what shipped before centralization (behavior-preserving).
+    # Pinned current-generation defaults (Sonnet bumped 4-6 -> 5).
     assert model_catalog.model_for_tier("haiku") == "claude-haiku-4-5-20251001"
-    assert model_catalog.model_for_tier("sonnet") == "claude-sonnet-4-6"
+    assert model_catalog.model_for_tier("sonnet") == "claude-sonnet-5"
     assert model_catalog.model_for_tier("opus") == "claude-opus-4-8"
 
 
@@ -45,9 +45,10 @@ def test_env_override_changes_resolution(monkeypatch):
     from backend.app.config import get_settings
 
     get_settings.cache_clear()
-    monkeypatch.setenv("ANTHROPIC_MODEL_SONNET", "claude-sonnet-5")
+    # Override to a value distinct from the pinned default to prove the env wins.
+    monkeypatch.setenv("ANTHROPIC_MODEL_SONNET", "claude-sonnet-4-6")
     try:
-        assert model_catalog.model_for_tier("sonnet") == "claude-sonnet-5"
+        assert model_catalog.model_for_tier("sonnet") == "claude-sonnet-4-6"
     finally:
         get_settings.cache_clear()
 
@@ -58,6 +59,13 @@ def test_no_sampling_param_set_is_centralized():
     assert "claude-fable-5" in model_catalog.NO_SAMPLING_PARAM_MODELS
     assert model_catalog.rejects_sampling_params("claude-opus-4-8") is True
     assert model_catalog.rejects_sampling_params("claude-haiku-4-5-20251001") is False
+
+
+def test_tier_for_model_reverse_maps():
+    assert model_catalog.tier_for_model(model_catalog.HAIKU) == "haiku"
+    assert model_catalog.tier_for_model(model_catalog.SONNET) == "sonnet"
+    assert model_catalog.tier_for_model(model_catalog.OPUS) == "opus"
+    assert model_catalog.tier_for_model("some-unknown-model") is None
 
 
 def test_failover_tier_map_degrades_downward():

@@ -89,6 +89,22 @@ def test_ainvoke_passes_messages_and_tools_and_pins_model():
     assert resp.tier == Tier.SONNET
 
 
+def test_ainvoke_reconciles_tier_to_served_model():
+    # Simulate a failover: request Opus, response comes back served on Sonnet.
+    # LLMResponse.tier must reflect the model that actually served the request.
+    class _FailoverMessages:
+        async def create(self, **kwargs):
+            return _Resp(model=model_catalog.SONNET)
+
+    class _FailoverClient:
+        messages = _FailoverMessages()
+
+    r = _router_with(_FailoverClient())
+    resp = asyncio.run(r.ainvoke(_req(forced_tier=Tier.OPUS)))
+    assert resp.model == model_catalog.SONNET
+    assert resp.tier == Tier.SONNET
+
+
 def test_ainvoke_defaults_to_user_message_when_no_messages():
     client = _CapClient()
     r = _router_with(client)
