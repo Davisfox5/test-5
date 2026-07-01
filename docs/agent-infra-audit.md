@@ -128,3 +128,5 @@ Each with tests written first (red → green), including a **guard test** that g
 - [ ] Bump Sonnet `4-6 → 5` (B4) — user's call; now a one-line change.
 - [ ] Add `record_llm_completion` to the KB family / `text_segmenter` / `llm_judge` for uniform telemetry.
 - [ ] Update the DB default model string + a follow-up migration (`seed_sales.py:118`, initial-schema default) once the id policy is settled.
+- [ ] After an Opus→Sonnet failover, `LLMResponse.model` is accurate but `.tier` still reports the *selected* tier (`OPUS`). The load-bearing observability field (`model`) is correct; reconcile `.tier` to the served model if telemetry ever slices on tier.
+- [ ] Extend failover to the Batches path (`model_router.submit_batch`) — left out here because batch is non-interactive (retried out-of-band), so the live path was prioritized.
