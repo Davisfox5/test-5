@@ -115,7 +115,7 @@ CREATE TABLE ai_insights (
     id               UUID PRIMARY KEY,
     call_id          UUID REFERENCES calls(id) ON DELETE CASCADE,
     tenant_id        UUID REFERENCES tenants(id) ON DELETE CASCADE,
-    model            VARCHAR(100) DEFAULT 'claude-sonnet-4-6',
+    model            VARCHAR(100) DEFAULT 'claude-sonnet-5',
     summary          TEXT,
     sentiment_overall VARCHAR(20),
     sentiment_score  FLOAT,

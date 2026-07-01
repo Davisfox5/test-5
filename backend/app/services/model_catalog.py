@@ -58,6 +58,18 @@ def tier_id_map() -> Dict[str, str]:
     }
 
 
+def tier_for_model(model_id: Optional[str]) -> Optional[str]:
+    """Reverse of :func:`model_for_tier`: given a resolved model id, return its
+    tier name, or ``None`` if it isn't one of the configured tier models. Used
+    to report the tier a request was *actually* served on after a failover."""
+    if not model_id:
+        return None
+    for tier in (HAIKU_TIER, SONNET_TIER, OPUS_TIER):
+        if model_for_tier(tier) == model_id:
+            return tier
+    return None
+
+
 # Convenience constants. Resolved at import time from settings; a version
 # change (env or config default) takes effect on the next process start,
 # which is also when a deploy happens — so this stays a deliberate change.
@@ -77,6 +89,10 @@ NO_SAMPLING_PARAM_MODELS: FrozenSet[str] = frozenset(
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-fable-5",
+        # Sonnet 5 removed the sampling knobs too — a non-default temperature
+        # 400s. Without this entry every Sonnet call would error after the
+        # 4-6 -> 5 bump.
+        "claude-sonnet-5",
     }
 )
 
@@ -84,6 +100,22 @@ NO_SAMPLING_PARAM_MODELS: FrozenSet[str] = frozenset(
 def rejects_sampling_params(model_id: str) -> bool:
     """True if ``model_id`` 400s on sampling params (temperature/top_p/top_k)."""
     return model_id in NO_SAMPLING_PARAM_MODELS
+
+
+# ── Default-on adaptive thinking ──────────────────────────────────────────
+#
+# Sonnet 5 runs *adaptive thinking* whenever the ``thinking`` param is omitted
+# (Opus 4.7/4.8 default it OFF; Sonnet 4.6 had no thinking). Our runtime calls
+# don't want implicit thinking — it consumes part of ``max_tokens`` (risking
+# truncation on tight budgets like Ask Linda's) and adds latency — so the
+# router sends an explicit ``thinking={"type": "disabled"}`` for these models
+# unless a caller opts in. Add new default-on ids here as we adopt them.
+_THINKING_ON_BY_DEFAULT: FrozenSet[str] = frozenset({"claude-sonnet-5"})
+
+
+def thinking_on_by_default(model_id: str) -> bool:
+    """True if ``model_id`` runs adaptive thinking when ``thinking`` is omitted."""
+    return model_id in _THINKING_ON_BY_DEFAULT
 
 
 # ── Tier failover ─────────────────────────────────────────────────────────
