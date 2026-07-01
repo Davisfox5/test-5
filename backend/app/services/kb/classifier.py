@@ -28,10 +28,12 @@ import anthropic
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-_CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
+_CLASSIFIER_MODEL = model_catalog.HAIKU
 
 # Obvious question/request starters. Case-insensitive, word-boundary anchored.
 _QUESTION_RE = re.compile(

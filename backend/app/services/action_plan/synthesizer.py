@@ -72,6 +72,7 @@ from backend.app.services.kb.action_plan_retrieve import (
     RetrievedProcedure,
     RetrievedReference,
 )
+from backend.app.services import model_catalog
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import (
     DOMAIN_OVERRIDE_CONFIDENCE_THRESHOLD,
@@ -81,8 +82,8 @@ logger = logging.getLogger(__name__)
 
 
 _MODELS = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku": model_catalog.HAIKU,
+    "sonnet": model_catalog.SONNET,
 }
 
 

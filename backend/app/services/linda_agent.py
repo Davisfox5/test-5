@@ -32,11 +32,20 @@ from backend.app.models import (
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.search_service import SearchService
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-LINDA_MODEL = "claude-sonnet-4-6"
+LINDA_MODEL = model_catalog.SONNET
 MAX_TOKENS = 2048
 PROPOSAL_TTL = timedelta(hours=24)
+
+# Pre-rot context threshold: the most recent N replayed messages we SEND to the
+# model each turn. Persistence is unbounded (full transcript stays in the DB);
+# this only bounds the working-context window so a long-lived conversation
+# doesn't grow context — and cost — every turn (context rot; §5 of the
+# knowledge base). 40 ≈ 20 user/assistant turns, well beyond a normal session.
+HISTORY_WINDOW_MESSAGES = 40
 
 # ── System prompt (static portion — cached) ───────────────────────────────
 
@@ -388,6 +397,40 @@ async def dispatch_tool(
 # ── Orchestration / streaming ──────────────────────────────────────────────
 
 
+def _is_tool_result_content(content: Any) -> bool:
+    """True if a message's content is a tool_result continuation (a list whose
+    blocks are tool_result). Such a message can't legally START a request."""
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
+
+
+def _window_history(
+    messages: List[Dict[str, Any]],
+    max_messages: int = HISTORY_WINDOW_MESSAGES,
+) -> List[Dict[str, Any]]:
+    """Keep the most-recent ``max_messages`` messages, but start the window on a
+    clean user turn.
+
+    Anthropic requires the first message to be a ``user`` turn and forbids a
+    dangling tool exchange at the head. So after taking the recency tail we drop
+    any leading assistant message (or tool_result continuation) until the window
+    begins with a genuine user turn. Order is preserved; the result is always a
+    suffix of the input.
+    """
+    if len(messages) <= max_messages:
+        return messages
+    window = messages[-max_messages:]
+    while window and (
+        window[0].get("role") != "user"
+        or _is_tool_result_content(window[0].get("content"))
+    ):
+        window.pop(0)
+    return window
+
+
 async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Dict[str, Any]]:
     """Replay prior messages in Anthropic message format."""
     rows = (
@@ -423,7 +466,10 @@ async def run_chat_turn(
     client = get_async_anthropic()
     system_blocks = build_system_blocks(ctx.tenant, ctx.user)
 
-    history = await _load_history(ctx.db, ctx.conversation_id)
+    # Window the replayed history to the pre-rot threshold before appending the
+    # current turn (the new user message is always kept). Persistence is
+    # untouched — only the working context we send to the model is bounded.
+    history = _window_history(await _load_history(ctx.db, ctx.conversation_id))
     history.append({"role": "user", "content": user_message})
 
     # Persist the incoming user message immediately so it's durable even if the stream fails

@@ -34,10 +34,12 @@ from backend.app.services.action_plan.prompts import CALL_D_SYSTEM_PROMPT
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-_EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
+_EXTRACTION_MODEL = model_catalog.HAIKU
 _EXTRACTION_MAX_TOKENS = 2048
 
 

@@ -52,6 +52,8 @@ from backend.app.services.email.gmail import GmailSender
 from backend.app.services.email.outlook import OutlookSender
 from backend.app.services.token_crypto import decrypt_token, encrypt_token
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -291,7 +293,7 @@ async def regenerate_follow_up_draft(
     client = get_async_anthropic()
     budget = compute_max_tokens("sonnet", input_tokens=len(user_content) // 4)
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model_catalog.SONNET,
         max_tokens=budget,
         system=[
             {

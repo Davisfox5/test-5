@@ -57,9 +57,11 @@ from backend.app.models import (
     Interaction,
 )
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_catalog.HAIKU
 _MAX_INTERACTIONS = 40
 _MAX_SUMMARY_CHARS = 500
 

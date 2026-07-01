@@ -61,6 +61,8 @@ from backend.app.models import (
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
@@ -544,7 +546,7 @@ async def _extract(
 
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_catalog.HAIKU,
             max_tokens=2000,
             system=[
                 {
@@ -664,7 +666,7 @@ async def _scan_done(
     )
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_catalog.HAIKU,
             max_tokens=800,
             system=[
                 {

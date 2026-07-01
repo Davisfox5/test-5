@@ -41,9 +41,11 @@ from backend.app.models import CustomerOutcomeEvent, Interaction, Tenant
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_catalog.HAIKU
 _MAX_SNIPPET_CHARS = 1200
 _MAX_WON_SAMPLES = 6
 _MAX_LOST_SAMPLES = 6

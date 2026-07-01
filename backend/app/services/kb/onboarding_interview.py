@@ -51,10 +51,12 @@ from backend.app.services.kb.context_builder import (
     _validate_brief,
 )
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_catalog.HAIKU
 
 # Sections the interview is responsible for. The KB-derived and
 # learned/playbook sections are owned by other agents and are not touched

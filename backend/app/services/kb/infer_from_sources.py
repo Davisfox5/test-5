@@ -48,10 +48,12 @@ from backend.app.models import (
 )
 from backend.app.services.kb.context_builder import _validate_brief
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_catalog.HAIKU
 _WINDOW_DAYS = 30
 _MAX_INTERACTION_BLOCKS = 20
 

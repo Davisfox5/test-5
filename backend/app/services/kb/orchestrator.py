@@ -54,10 +54,12 @@ from backend.app.services.kb.vector_store import (
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-_ORCHESTRATOR_MODEL = "claude-haiku-4-5-20251001"
+_ORCHESTRATOR_MODEL = model_catalog.HAIKU
 _ORCHESTRATOR_MAX_TOKENS = 8192
 # Documents longer than this fall through to plain chunking — one
 # orchestrator call can only see so much before quality + latency

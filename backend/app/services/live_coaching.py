@@ -14,9 +14,11 @@ from backend.app.services.kb.customer_brief_builder import (
 )
 from backend.app.services.llm_client import get_async_anthropic
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-COACHING_MODEL = "claude-haiku-4-5-20251001"
+COACHING_MODEL = model_catalog.HAIKU
 
 COACHING_SYSTEM_PROMPT = (
     "You are a real-time call coaching assistant for a conversation intelligence "

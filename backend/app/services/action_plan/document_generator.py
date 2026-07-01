@@ -32,9 +32,11 @@ from backend.app.models import ActionStep, Interaction
 from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
 from backend.app.services.llm_telemetry import record_llm_completion
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-_SONNET = "claude-sonnet-4-6"
+_SONNET = model_catalog.SONNET
 
 
 _SYSTEM_PROMPT = (

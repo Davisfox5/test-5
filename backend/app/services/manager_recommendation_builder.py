@@ -37,10 +37,12 @@ from backend.app.services.plain_english import (
     sanitize_manager_payload,
 )
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 
 # Per-motion recommendation categories. Each builder pass runs once
