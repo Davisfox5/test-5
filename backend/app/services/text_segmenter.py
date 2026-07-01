@@ -36,6 +36,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,7 +196,7 @@ def parse_via_llm(raw_text: str) -> List[ParsedTurn]:
         # $1.25/M out — even a 10K-token transcript costs < $0.02 per
         # call to segment. Worth it to unblock downstream analysis.
         resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model_catalog.HAIKU,
             max_tokens=8192,
             system=[
                 {

@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
 
+    # Model ids by tier — the SINGLE source of truth for which Claude
+    # version each tier resolves to (see services/model_catalog.py). Every
+    # runtime touchpoint resolves its model through the catalog, so bumping
+    # a version (or swapping a deprecated/suspended model) is a one-line
+    # change here or an env override — never a 25-file sweep.
+    #
+    # Defaults are PINNED to the currently-shipping ids. We deliberately do
+    # NOT auto-pull "latest": an env override is an explicit, reviewable act.
+    ANTHROPIC_MODEL_HAIKU: str = "claude-haiku-4-5-20251001"
+    ANTHROPIC_MODEL_SONNET: str = "claude-sonnet-4-6"
+    ANTHROPIC_MODEL_OPUS: str = "claude-opus-4-8"
+
     # ── Speech-to-Text (Deepgram) ────────────────────────
     DEEPGRAM_API_KEY: str = ""
     DEFAULT_TRANSCRIPTION_ENGINE: Literal["deepgram", "whisper"] = "deepgram"

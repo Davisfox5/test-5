@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import anthropic  # noqa: F401 — referenced in the ``except anthropic.APIError`` clause below
 
 from backend.app.services import metrics as _metrics
+from backend.app.services import model_catalog
 from backend.app.services.kb.context_builder import format_brief_for_prompt
 from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
@@ -20,9 +21,11 @@ from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
 
+# Resolved from the single source of truth (model_catalog). Kept as a dict
+# for the ``MODELS.get(tier, MODELS["sonnet"])`` call sites below.
 MODELS = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
+    "haiku": model_catalog.HAIKU,
+    "sonnet": model_catalog.SONNET,
 }
 
 # Bumped manually whenever ``ANALYSIS_SYSTEM_PROMPT`` changes materially.

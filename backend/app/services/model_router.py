@@ -30,6 +30,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import anthropic
 
+from backend.app.services import model_catalog
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,27 +45,20 @@ class Tier(str, Enum):
     OPUS = "opus"
 
 
-# Canonical model IDs.  Keep in sync with ``ai_analysis.MODELS`` so the
-# pipeline can swap to routed calls without drift.
+# Canonical model IDs — resolved from the single source of truth in
+# ``model_catalog`` (which reads env-overridable ids from config). Keeping
+# the enum-keyed dict shape here so existing callers (and tests) are
+# unchanged; the *values* now have exactly one owner.
 MODEL_IDS: Dict[Tier, str] = {
-    Tier.HAIKU: "claude-haiku-4-5-20251001",
-    Tier.SONNET: "claude-sonnet-4-6",
-    Tier.OPUS: "claude-opus-4-8",
+    Tier.HAIKU: model_catalog.HAIKU,
+    Tier.SONNET: model_catalog.SONNET,
+    Tier.OPUS: model_catalog.OPUS,
 }
 
 # Models that removed the sampling knobs (``temperature`` / ``top_p`` /
-# ``top_k``): Opus 4.7+ and Fable 5 reject them with a 400
-# ("`temperature` is deprecated for this model"). Sonnet 4.6 / Haiku 4.5
-# still accept them. We omit ``temperature`` from the request for any model
-# in this set rather than downgrade the tier — behavior is steered via the
-# prompt instead. Add new no-sampling model IDs here as we adopt them.
-_NO_SAMPLING_PARAM_MODELS: frozenset[str] = frozenset(
-    {
-        "claude-opus-4-7",
-        "claude-opus-4-8",
-        "claude-fable-5",
-    }
-)
+# ``top_k``): Opus 4.7+ and Fable 5 reject them with a 400. Centralized in
+# ``model_catalog`` so the temperature guard has one owner.
+_NO_SAMPLING_PARAM_MODELS = model_catalog.NO_SAMPLING_PARAM_MODELS
 
 
 class TaskType(str, Enum):
@@ -212,24 +207,34 @@ class ModelRouter:
 
     async def ainvoke(self, req: LLMRequest) -> LLMResponse:
         """Async path — used by live FastAPI handlers."""
+        from backend.app.services.llm_client import acreate_with_failover
+
         tier = self.select_tier(req)
         model = MODEL_IDS[tier]
         system_payload = _build_system_payload(req.system_blocks)
         create_kwargs: Dict[str, Any] = {
-            "model": model,
             "max_tokens": req.max_tokens,
             "system": system_payload,
             "messages": [{"role": "user", "content": req.user_message}],
         }
         # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models
-        # that still accept sampling params.
-        if model not in _NO_SAMPLING_PARAM_MODELS:
+        # that still accept sampling params. Failover only ever steps DOWN a
+        # tier (opus→sonnet→haiku), and the lower tiers accept temperature, so
+        # a stripped-temperature request stays valid after failover.
+        if not model_catalog.rejects_sampling_params(model):
             create_kwargs["temperature"] = req.temperature
+        # Bounded transient retries + one model failover to the cheaper tier.
+        fallback = model_catalog.failover_model(tier.value)
         try:
-            resp = await self._client.messages.create(**create_kwargs)
+            resp = await acreate_with_failover(
+                self._client, model=model, fallback_model=fallback, **create_kwargs
+            )
         except anthropic.APIError as exc:
             logger.error("Anthropic API error (%s): %s", tier, exc)
             raise
+        # The failover wrapper may have served the request on a cheaper tier;
+        # report the model the response actually came from.
+        model = getattr(resp, "model", model) or model
 
         content = resp.content[0].text if resp.content else ""
         return LLMResponse(

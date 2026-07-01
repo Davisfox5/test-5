@@ -33,9 +33,11 @@ from backend.app.services import metrics as _metrics
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 # Anything at or above this confidence gets accepted as external.
 EXTERNAL_CONFIDENCE_THRESHOLD = 0.8

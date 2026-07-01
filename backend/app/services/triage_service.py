@@ -10,9 +10,11 @@ import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
 
+from backend.app.services import model_catalog
+
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 # Bumped manually whenever ``TRIAGE_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.triage_prompt_version``.
