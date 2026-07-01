@@ -15,6 +15,13 @@ from backend.app.services.kb.customer_brief_builder import (
 from backend.app.services.llm_client import get_async_anthropic
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +147,22 @@ class LiveCoachingService:
         )
 
         try:
-            response = await self.client.messages.create(
-                model=COACHING_MODEL,
-                max_tokens=300,
-                system=system_blocks,
-                messages=[{"role": "user", "content": user_message}],
+            response = await ModelRouter(self.client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_message,
+                    system_blocks=[
+                        CacheableBlock(text=b["text"], cache=("cache_control" in b))
+                        for b in system_blocks
+                    ],
+                    max_tokens=300,
+                    temperature=0.0,
+                    call_site="live_coaching",
+                )
             )
 
-            raw_text = response.content[0].text
+            raw_text = response.text
             result = json.loads(raw_text)
 
             # Validate expected keys exist.

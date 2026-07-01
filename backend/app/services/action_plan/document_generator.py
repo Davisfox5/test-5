@@ -29,10 +29,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import ActionStep, Interaction
-from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
+from backend.app.services.llm_client import compute_max_tokens
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +184,6 @@ async def generate_document_for_step(
         "fences or include any meta-commentary."
     )
 
-    client = get_async_anthropic()
     max_tokens = compute_max_tokens(
         "sonnet",
         input_tokens=len(user_message) // 4,
@@ -187,26 +192,20 @@ async def generate_document_for_step(
         call_site="action_plan_document_generator",
     )
     started = time.monotonic()
-    response = await client.messages.create(
-        model=_SONNET,
-        max_tokens=max_tokens,
-        system=[
-            {
-                "type": "text",
-                "text": _SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_message}],
+    response = await get_router().ainvoke(
+        LLMRequest(
+            task_type=TaskType.GENERIC,
+            forced_tier=Tier.SONNET,
+            user_message=user_message,
+            system_blocks=[CacheableBlock(text=_SYSTEM_PROMPT, cache=True)],
+            max_tokens=max_tokens,
+            temperature=0.3,
+            call_site="action_plan_document_generator",
+        )
     )
-    record_llm_completion("action_plan_document_generator", "sonnet", max_tokens, response)
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
-    body = ""
-    for block in getattr(response, "content", []) or []:
-        if getattr(block, "type", None) == "text":
-            body += getattr(block, "text", "") or ""
-    body = body.strip()
+    body = (response.text or "").strip()
     if body.startswith("```"):
         # Defensive: strip a fenced wrapper if the model emitted one.
         body = body.split("\n", 1)[1] if "\n" in body else ""

@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -62,6 +63,7 @@ _NO_SAMPLING_PARAM_MODELS = model_catalog.NO_SAMPLING_PARAM_MODELS
 
 
 class TaskType(str, Enum):
+    GENERIC = "generic"                       # tier chosen by forced_tier
     TRIAGE = "triage"                         # always Haiku
     MAIN_ANALYSIS = "main_analysis"           # Haiku/Sonnet by complexity
     DELTA_REPORT = "delta_report"             # Sonnet, small output
@@ -93,6 +95,22 @@ class LLMRequest:
     complexity_score: float = 0.5
     transcript_tokens: int = 0
     tenant_tier: str = "standard"            # "standard" | "enterprise"
+    # Explicit tier pin. When set, ``select_tier`` returns it verbatim — this is
+    # how a migrated call site keeps the exact model choice it used to hardcode,
+    # instead of inventing a TaskType for every one of them.
+    forced_tier: Optional[Tier] = None
+    # Full message list (multi-turn / tool-use history). When set it is used
+    # verbatim; otherwise the router sends ``[{"role":"user", user_message}]``.
+    messages: Optional[List[Dict[str, Any]]] = None
+    # Anthropic tool definitions, forwarded when present (tool-use surfaces).
+    tools: Optional[List[Dict[str, Any]]] = None
+    # Stable telemetry key (e.g. ``"kb_classifier"``). When set, the router
+    # records the completion to ``llm_call_telemetry`` — one recording site for
+    # every routed call, so observability is uniform without per-site wiring.
+    call_site: Optional[str] = None
+    # Per-request timeout override (seconds), forwarded when set. Preserves
+    # call sites that built their own client with a custom timeout.
+    timeout: Optional[float] = None
     retry_count: int = 0
     # Why this retry is happening, when known. ``"max_tokens"`` and
     # ``"context_length"`` legitimately need a more capable model;
@@ -147,6 +165,9 @@ class ModelRouter:
 
     def select_tier(self, req: LLMRequest) -> Tier:
         """Pick the cheapest model that satisfies the task's contract."""
+        # An explicit pin wins over task-based selection.
+        if req.forced_tier is not None:
+            return req.forced_tier
         t = req.task_type
 
         # Orchestrator + quality review always use Opus.
@@ -211,18 +232,7 @@ class ModelRouter:
 
         tier = self.select_tier(req)
         model = MODEL_IDS[tier]
-        system_payload = _build_system_payload(req.system_blocks)
-        create_kwargs: Dict[str, Any] = {
-            "max_tokens": req.max_tokens,
-            "system": system_payload,
-            "messages": [{"role": "user", "content": req.user_message}],
-        }
-        # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models
-        # that still accept sampling params. Failover only ever steps DOWN a
-        # tier (opus→sonnet→haiku), and the lower tiers accept temperature, so
-        # a stripped-temperature request stays valid after failover.
-        if not model_catalog.rejects_sampling_params(model):
-            create_kwargs["temperature"] = req.temperature
+        create_kwargs = self._build_create_kwargs(req, model)
         # Bounded transient retries + one model failover to the cheaper tier.
         fallback = model_catalog.failover_model(tier.value)
         try:
@@ -232,6 +242,8 @@ class ModelRouter:
         except anthropic.APIError as exc:
             logger.error("Anthropic API error (%s): %s", tier, exc)
             raise
+        # One uniform telemetry recording site for every routed call.
+        self._record(req, tier, resp)
         # The failover wrapper may have served the request on a cheaper tier;
         # report the model the response actually came from.
         model = getattr(resp, "model", model) or model
@@ -241,14 +253,106 @@ class ModelRouter:
             text=content,
             model=model,
             tier=tier,
-            stop_reason=resp.stop_reason,
+            stop_reason=getattr(resp, "stop_reason", None),
             usage=_usage_dict(resp),
             via_batch=False,
         )
 
+    # ── Request shaping / telemetry helpers ───────────────────────────────
+
+    def _build_create_kwargs(self, req: LLMRequest, model: str) -> Dict[str, Any]:
+        """Assemble ``messages.create`` kwargs shared by the sync and stream
+        paths (model is passed separately by the failover wrapper / stream)."""
+        kwargs: Dict[str, Any] = {
+            "max_tokens": req.max_tokens,
+            "system": _build_system_payload(req.system_blocks),
+            "messages": req.messages or [{"role": "user", "content": req.user_message}],
+        }
+        if req.tools:
+            kwargs["tools"] = req.tools
+        if req.timeout is not None:
+            kwargs["timeout"] = req.timeout
+        # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models that
+        # still accept sampling params. Failover only ever steps DOWN a tier
+        # (opus→sonnet→haiku) and the lower tiers accept temperature, so a
+        # stripped-temperature request stays valid after failover.
+        if not model_catalog.rejects_sampling_params(model):
+            kwargs["temperature"] = req.temperature
+        return kwargs
+
+    def _record(self, req: LLMRequest, tier: Tier, resp: Any) -> None:
+        """Fire-and-forget completion telemetry, keyed on ``req.call_site``."""
+        if not req.call_site:
+            return
+        try:
+            from backend.app.services import llm_telemetry
+
+            llm_telemetry.record_llm_completion(
+                req.call_site, tier.value, req.max_tokens, resp,
+                tenant_id=req.metadata.get("tenant_id") if req.metadata else None,
+            )
+        except Exception:  # pragma: no cover — telemetry must never break a call
+            logger.debug("router telemetry record failed", exc_info=True)
+
     def invoke(self, req: LLMRequest) -> LLMResponse:
         """Sync path — used inside Celery tasks."""
         return asyncio.run(self.ainvoke(req))
+
+    # ── Streaming invocation (tool-use surfaces) ──────────────────────────
+
+    @asynccontextmanager
+    async def astream(self, req: LLMRequest):
+        """Async-context-manager wrapper over ``client.messages.stream`` that
+        routes model selection (and cache/tool/temperature shaping) through the
+        router, so streaming tool-use surfaces (Ask Linda) no longer hardcode a
+        model. The caller keeps its own tool-dispatch loop::
+
+            async with router.astream(req) as stream:
+                async for event in stream:
+                    ...
+                final = await stream.get_final_message()
+
+        Failover is applied to the stream *open* only (a model that's
+        unavailable / a transient blip at connect time steps down one tier).
+        Mid-stream errors are the caller's to handle — retrying a partially
+        emitted stream isn't safe — so exceptions raised while the caller
+        iterates propagate untouched.
+        """
+        from backend.app.services.llm_client import (
+            _is_model_unavailable,
+            _is_transient,
+        )
+
+        tier = self.select_tier(req)
+        primary = MODEL_IDS[tier]
+        fallback = model_catalog.failover_model(tier.value)
+        candidates = [primary] + ([fallback] if fallback else [])
+
+        stream = None
+        cm = None
+        for idx, candidate in enumerate(candidates):
+            cm = self._client.messages.stream(
+                model=candidate, **self._build_create_kwargs(req, candidate)
+            )
+            try:
+                # Enter separately from the yield so ONLY open failures trigger
+                # failover — caller-side iteration errors must not.
+                stream = await cm.__aenter__()
+                break
+            except Exception as exc:  # noqa: BLE001 — classified below
+                is_last = idx == len(candidates) - 1
+                if not is_last and (_is_model_unavailable(exc) or _is_transient(exc)):
+                    logger.warning(
+                        "stream open failed on %s (%s); failover to %s",
+                        candidate, type(exc).__name__, candidates[idx + 1],
+                    )
+                    continue
+                raise
+        try:
+            yield stream
+        finally:
+            if cm is not None:
+                await cm.__aexit__(None, None, None)
 
     # ── Batch submission ──────────────────────────────────────────────
 

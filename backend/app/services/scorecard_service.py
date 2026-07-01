@@ -20,10 +20,16 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.services.triage_service import _strip_json_fences
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,21 +123,19 @@ class ScorecardService:
         )
 
         try:
-            response = await self._client.messages.create(
-                model=HAIKU_MODEL,
-                max_tokens=2048,
-                system=[
-                    {
-                        "type": "text",
-                        "text": SCORECARD_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_content}],
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_content,
+                    system_blocks=[CacheableBlock(text=SCORECARD_SYSTEM_PROMPT, cache=True)],
+                    max_tokens=2048,
+                    temperature=0.0,
+                    call_site="scorecard_single",
+                )
             )
-            record_llm_completion("scorecard_single", "haiku", 2048, response)
 
-            raw_text = response.content[0].text
+            raw_text = response.text
             result: Dict[str, Any] = json.loads(_strip_json_fences(raw_text))
 
             # Validate / recompute total_score for consistency.
@@ -215,24 +219,20 @@ class ScorecardService:
 
         batched_max_tokens = min(8192, 1024 + 512 * len(templates))
         try:
-            response = await self._client.messages.create(
-                model=HAIKU_MODEL,
-                # Scales with template count — each template produces a few
-                # hundred tokens. Cap so we don't blow past sensible limits.
-                max_tokens=batched_max_tokens,
-                system=[
-                    {
-                        "type": "text",
-                        "text": SCORECARD_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_content}],
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_content,
+                    system_blocks=[CacheableBlock(text=SCORECARD_SYSTEM_PROMPT, cache=True)],
+                    # Scales with template count — each template produces a few
+                    # hundred tokens. Cap so we don't blow past sensible limits.
+                    max_tokens=batched_max_tokens,
+                    temperature=0.0,
+                    call_site="scorecard_batched",
+                )
             )
-            record_llm_completion(
-                "scorecard_batched", "haiku", batched_max_tokens, response
-            )
-            raw_text = response.content[0].text
+            raw_text = response.text
             parsed = json.loads(_strip_json_fences(raw_text))
         except (json.JSONDecodeError, anthropic.APIError) as exc:
             logger.warning(

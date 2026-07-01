@@ -124,9 +124,9 @@ Each with tests written first (red → green), including a **guard test** that g
 **Committed (Layer B, Phase 4):** project subagents + `CLAUDE.md` dev-routing section.
 
 **Deferred (recommendations, not committed — risk/ownership):**
-- [ ] Migrate the ~24 direct-call touchpoints to actually route through `ModelRouter` (larger refactor; per-site prompt/telemetry differences). Centralizing ids first de-risks this.
+- [x] **DONE (follow-up PR).** Migrate the ~24 direct-call touchpoints through `ModelRouter`. Every runtime `messages.create`/`stream` now routes through the router (`ainvoke`/`invoke`/`astream`), so all touchpoints inherit tier-pinning, transient-retry + failover, and uniform telemetry. The router gained `forced_tier`, `messages`/`tools`/`timeout` passthrough, an `astream` streaming path, and folded-in `record_llm_completion`. Temperature was set per task (0.0 structured, ~0.3 prose, 0.7 Linda chat). **This subsumes the telemetry item below.**
+- [x] **DONE (via the migration).** Uniform `record_llm_completion` — the router now records every routed call via `call_site`; the KB family / `text_segmenter` / `llm_judge` are covered.
 - [ ] Bump Sonnet `4-6 → 5` (B4) — user's call; now a one-line change.
-- [ ] Add `record_llm_completion` to the KB family / `text_segmenter` / `llm_judge` for uniform telemetry.
 - [ ] Update the DB default model string + a follow-up migration (`seed_sales.py:118`, initial-schema default) once the id policy is settled.
 - [ ] After an Opus→Sonnet failover, `LLMResponse.model` is accurate but `.tier` still reports the *selected* tier (`OPUS`). The load-bearing observability field (`model`) is correct; reconcile `.tier` to the served model if telemetry ever slices on tier.
 - [ ] Extend failover to the Batches path (`model_router.submit_batch`) — left out here because batch is non-interactive (retried out-of-band), so the live path was prioritized.

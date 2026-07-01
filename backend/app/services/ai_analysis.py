@@ -17,6 +17,13 @@ from backend.app.services.kb.customer_brief_builder import (
     format_customer_brief_for_prompt,
 )
 from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    ModelRouter,
+    TaskType,
+    Tier,
+)
 from backend.app.services.triage_service import _strip_json_fences
 
 logger = logging.getLogger(__name__)
@@ -1181,19 +1188,35 @@ class AIAnalysisService:
             explicit_override=max_tokens_override,
         )
 
+        # Route through ModelRouter (bound to this service's client so injected
+        # test clients still flow). Convert the pre-built cache blocks and pin
+        # the tier the caller chose. temperature=0.0: structured analysis JSON
+        # wants determinism (previously ran at the API default of 1.0).
+        router = ModelRouter(self._client)
+        req_blocks = [
+            CacheableBlock(text=b["text"], cache=("cache_control" in b))
+            for b in system_blocks
+        ]
+        forced_tier = Tier(tier) if tier in ("haiku", "sonnet", "opus") else Tier.SONNET
+
         try:
             t0 = time.perf_counter()
-            response = await self._client.messages.create(
-                model=model,
-                max_tokens=budget,
-                system=system_blocks,
-                messages=[{"role": "user", "content": user_content}],
+            response = await router.ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=forced_tier,
+                    user_message=user_content,
+                    system_blocks=req_blocks,
+                    max_tokens=budget,
+                    temperature=0.0,
+                    call_site="ai_analysis",
+                )
             )
             _metrics.LLM_LATENCY.labels(surface="analysis", model=model).observe(
                 time.perf_counter() - t0
             )
 
-            raw_text = response.content[0].text
+            raw_text = response.text
             stop_reason = response.stop_reason
 
             # Retry-on-truncation: when stop_reason='max_tokens' and the
@@ -1215,16 +1238,21 @@ class AIAnalysisService:
                     budget, retry_budget,
                 )
                 t1 = time.perf_counter()
-                response = await self._client.messages.create(
-                    model=model,
-                    max_tokens=retry_budget,
-                    system=system_blocks,
-                    messages=[{"role": "user", "content": user_content}],
+                response = await router.ainvoke(
+                    LLMRequest(
+                        task_type=TaskType.GENERIC,
+                        forced_tier=forced_tier,
+                        user_message=user_content,
+                        system_blocks=req_blocks,
+                        max_tokens=retry_budget,
+                        temperature=0.0,
+                        call_site="ai_analysis",
+                    )
                 )
                 _metrics.LLM_LATENCY.labels(
                     surface="analysis_retry", model=model
                 ).observe(time.perf_counter() - t1)
-                raw_text = response.content[0].text
+                raw_text = response.text
                 stop_reason = response.stop_reason
                 budget = retry_budget
                 retried = True

@@ -30,6 +30,13 @@ from backend.app.models import (
     WriteProposal,
 )
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    ModelRouter,
+    TaskType,
+    Tier,
+)
 from backend.app.services.search_service import SearchService
 
 from backend.app.services import model_catalog
@@ -464,7 +471,13 @@ async def run_chat_turn(
       {"type": "error", "message": str}
     """
     client = get_async_anthropic()
+    router = ModelRouter(client)
     system_blocks = build_system_blocks(ctx.tenant, ctx.user)
+    # Cacheable system blocks for the router (same content, same cache flags).
+    req_system = [
+        CacheableBlock(text=b["text"], cache=("cache_control" in b))
+        for b in system_blocks
+    ]
 
     # Window the replayed history to the pre-rot threshold before appending the
     # current turn (the new user message is always kept). Persistence is
@@ -490,12 +503,22 @@ async def run_chat_turn(
         assistant_text_parts: List[str] = []
         final_content: List[Dict[str, Any]] = []
 
-        async with client.messages.stream(
-            model=LINDA_MODEL,
-            max_tokens=MAX_TOKENS,
-            system=system_blocks,
-            tools=TOOLS,
-            messages=history,
+        # Route the streaming tool-use call through the router (model
+        # selection + open-time failover); the tool-dispatch loop below is
+        # unchanged. temperature=0.7: warm but coherent enough for reliable
+        # tool-argument construction (chat previously ran at the default 1.0).
+        async with router.astream(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.SONNET,
+                user_message="",
+                messages=history,
+                tools=TOOLS,
+                system_blocks=req_system,
+                max_tokens=MAX_TOKENS,
+                temperature=0.7,
+                call_site="linda_chat",
+            )
         ) as stream:
             async for event in stream:
                 if event.type == "content_block_delta" and event.delta.type == "text_delta":

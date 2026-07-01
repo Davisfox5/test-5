@@ -74,6 +74,14 @@ from backend.app.services.kb.action_plan_retrieve import (
 )
 from backend.app.services import model_catalog
 from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    ModelRouter,
+    TaskType,
+    Tier,
+    get_router,
+)
 from backend.app.services.triage_service import (
     DOMAIN_OVERRIDE_CONFIDENCE_THRESHOLD,
 )
@@ -915,21 +923,18 @@ class ActionPlanSynthesizer:
         last_error: Optional[str] = None
         for attempt_idx, (tier, prompt) in enumerate(attempts):
             try:
-                response = await self._client.messages.create(
-                    model=_MODELS.get(tier, _MODELS["sonnet"]),
-                    max_tokens=max_tokens,
-                    system=[
-                        {
-                            "type": "text",
-                            "text": prompt,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                    messages=[
-                        {"role": "user", "content": user_content}
-                    ],
+                response = await ModelRouter(self._client).ainvoke(
+                    LLMRequest(
+                        task_type=TaskType.GENERIC,
+                        forced_tier=Tier(tier) if tier in ("haiku", "sonnet", "opus") else Tier.SONNET,
+                        user_message=user_content,
+                        system_blocks=[CacheableBlock(text=prompt, cache=True)],
+                        max_tokens=max_tokens,
+                        temperature=0.0,
+                        call_site="action_plan_synthesizer",
+                    )
                 )
-                raw_text = response.content[0].text
+                raw_text = response.text
                 from backend.app.services.triage_service import _strip_json_fences
                 data = json.loads(_strip_json_fences(raw_text))
                 return data
@@ -1454,21 +1459,22 @@ async def render_single_step_artifact(
         "per the schema in the system prompt."
     )
 
-    client = get_async_anthropic()
     is_endpoint = step.role_in_plan == "customer_endpoint"
     tier = "sonnet" if is_endpoint else "haiku"
     max_tokens = 4000 if is_endpoint else 2500
     try:
-        response = await client.messages.create(
-            model=_MODELS[tier],
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
+        response = await get_router().ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier(tier),
+                user_message=user_content,
+                system_blocks=[CacheableBlock(text=system_prompt, cache=False)],
+                max_tokens=max_tokens,
+                temperature=0.0,
+                call_site="action_plan_call_c",
+            )
         )
-        body_text = ""
-        for block in getattr(response, "content", []) or []:
-            if getattr(block, "type", None) == "text":
-                body_text += getattr(block, "text", "") or ""
+        body_text = response.text
         from backend.app.services.triage_service import _strip_json_fences
         payload = json.loads(_strip_json_fences(body_text.strip()))
     except Exception as exc:  # noqa: BLE001

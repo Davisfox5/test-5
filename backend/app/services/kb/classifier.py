@@ -26,9 +26,15 @@ from typing import Optional
 import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,26 +107,34 @@ async def classify(
 
 async def _haiku_classify(text: str) -> ClassifierResult:
     try:
-        client = get_async_anthropic()
-        resp = await client.messages.create(
-            model=_CLASSIFIER_MODEL,
-            max_tokens=120,
-            system=(
-                "You classify a single caller turn from a sales/support call.\n"
-                "Decide whether the caller is implicitly asking for information "
-                "the agent could answer from a knowledge base.\n"
-                "Respond with JSON only, no prose:\n"
-                '{"is_question": bool, "query": "...", "urgency": "high|normal"}\n'
-                "- If yes, set query to a concise restatement of what they want "
-                "answered (<=15 words).\n"
-                "- urgency=high if they sound blocked, urgency=normal otherwise."
-            ),
-            messages=[{"role": "user", "content": text}],
-        )
         # No cache_control here — the inline prompt is well under the
         # 1024-token minimum cacheable block, so it would be a silent no-op.
-        record_llm_completion("kb_classifier", "haiku", 120, resp)
-        raw = resp.content[0].text
+        resp = await get_router().ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=text,
+                system_blocks=[
+                    CacheableBlock(
+                        text=(
+                            "You classify a single caller turn from a sales/support call.\n"
+                            "Decide whether the caller is implicitly asking for information "
+                            "the agent could answer from a knowledge base.\n"
+                            "Respond with JSON only, no prose:\n"
+                            '{"is_question": bool, "query": "...", "urgency": "high|normal"}\n'
+                            "- If yes, set query to a concise restatement of what they want "
+                            "answered (<=15 words).\n"
+                            "- urgency=high if they sound blocked, urgency=normal otherwise."
+                        ),
+                        cache=False,
+                    )
+                ],
+                max_tokens=120,
+                temperature=0.0,
+                call_site="kb_classifier",
+            )
+        )
+        raw = resp.text
         data = json.loads(raw)
         return ClassifierResult(
             bool(data.get("is_question", False)),

@@ -55,6 +55,13 @@ from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,20 +153,19 @@ class DocumentOrchestrator:
         )
 
         try:
-            response = await self._client.messages.create(
-                model=_ORCHESTRATOR_MODEL,
-                max_tokens=_ORCHESTRATOR_MAX_TOKENS,
-                # The system prompt is constant per tenant — cache it so
-                # backfill of N documents only pays for the prompt
-                # tokens once per tenant within the 5-min cache window.
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_content}],
+            # The system prompt is constant per tenant — cache it so
+            # backfill of N documents only pays for the prompt
+            # tokens once per tenant within the 5-min cache window.
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_content,
+                    system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+                    max_tokens=_ORCHESTRATOR_MAX_TOKENS,
+                    temperature=0.0,
+                    call_site="kb_orchestrator",
+                )
             )
         except anthropic.APIError as exc:
             logger.warning(
@@ -168,7 +174,7 @@ class DocumentOrchestrator:
             return []
 
         try:
-            raw = response.content[0].text
+            raw = response.text
             data = json.loads(_strip_json_fences(raw))
         except (json.JSONDecodeError, IndexError, KeyError, AttributeError):
             logger.warning(
