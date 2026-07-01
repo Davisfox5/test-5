@@ -113,6 +113,36 @@ def test_ainvoke_defaults_to_user_message_when_no_messages():
     assert "tools" not in client.messages.last_kwargs
 
 
+def test_sonnet5_request_omits_temperature_and_suppresses_thinking():
+    # Sonnet 5 rejects sampling params AND defaults adaptive thinking on. The
+    # router must NOT send temperature (would 400) and must explicitly disable
+    # thinking (would otherwise eat into max_tokens) — unless the caller opts in.
+    client = _CapClient()
+    r = _router_with(client)
+    asyncio.run(r.ainvoke(_req(forced_tier=Tier.SONNET, temperature=0.0)))
+    kw = client.messages.last_kwargs
+    assert kw["model"] == model_catalog.SONNET  # claude-sonnet-5
+    assert "temperature" not in kw
+    assert kw["thinking"] == {"type": "disabled"}
+
+
+def test_haiku_request_keeps_temperature_and_no_thinking():
+    client = _CapClient()
+    r = _router_with(client)
+    asyncio.run(r.ainvoke(_req(forced_tier=Tier.HAIKU, temperature=0.0)))
+    kw = client.messages.last_kwargs
+    assert kw["temperature"] == 0.0
+    assert "thinking" not in kw
+
+
+def test_thinking_opt_in_passes_through():
+    # A caller can still opt a Sonnet-5 touchpoint into adaptive thinking.
+    client = _CapClient()
+    r = _router_with(client)
+    asyncio.run(r.ainvoke(_req(forced_tier=Tier.SONNET, thinking={"type": "adaptive"})))
+    assert client.messages.last_kwargs["thinking"] == {"type": "adaptive"}
+
+
 def test_ainvoke_records_telemetry_when_call_site_set(monkeypatch):
     captured = []
     monkeypatch.setattr(

@@ -104,6 +104,10 @@ class LLMRequest:
     messages: Optional[List[Dict[str, Any]]] = None
     # Anthropic tool definitions, forwarded when present (tool-use surfaces).
     tools: Optional[List[Dict[str, Any]]] = None
+    # Explicit thinking config (e.g. ``{"type": "adaptive"}``). When set it is
+    # forwarded verbatim. When unset, the router suppresses thinking on models
+    # that default it on (Sonnet 5) — see ``_build_create_kwargs``.
+    thinking: Optional[Dict[str, Any]] = None
     # Stable telemetry key (e.g. ``"kb_classifier"``). When set, the router
     # records the completion to ``llm_call_telemetry`` — one recording site for
     # every routed call, so observability is uniform without per-site wiring.
@@ -276,6 +280,13 @@ class ModelRouter:
             kwargs["tools"] = req.tools
         if req.timeout is not None:
             kwargs["timeout"] = req.timeout
+        # Thinking: honor an explicit opt-in; otherwise disable it on models
+        # that default adaptive thinking on (Sonnet 5) so it doesn't eat into
+        # ``max_tokens`` or add latency — preserving prior no-thinking behavior.
+        if req.thinking is not None:
+            kwargs["thinking"] = req.thinking
+        elif model_catalog.thinking_on_by_default(model):
+            kwargs["thinking"] = {"type": "disabled"}
         # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models that
         # still accept sampling params. Failover only ever steps DOWN a tier
         # (opus→sonnet→haiku) and the lower tiers accept temperature, so a
