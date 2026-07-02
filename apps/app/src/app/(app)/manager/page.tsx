@@ -603,6 +603,26 @@ function RecommendationsCard({ domain }: { domain: Domain }) {
     );
 }
 
+const BRIEF_SECTION_LABEL: Record<string, string> = {
+    situation: "Where things stand",
+    why_now: "Why now",
+    play: "The play",
+    talking_points: "Talking points",
+    draft_message: "Draft message",
+    watch_out: "What to avoid",
+    evidence: "The evidence",
+    playbook: "Playbook",
+    commitments: "Open commitments",
+    success: "What success looks like",
+};
+
+function briefSectionLabel(kind: string): string {
+    const known = BRIEF_SECTION_LABEL[kind];
+    if (known) return known;
+    const words = kind.replace(/_/g, " ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function RecommendationRow({
     rec,
     onApply,
@@ -616,6 +636,7 @@ function RecommendationRow({
     applying: boolean;
     appliedArtifact: { type: string | null; id: string | null } | null;
 }) {
+    const [briefExpanded, setBriefExpanded] = useState(false);
     const evidence = rec.evidence as Record<string, unknown>;
     const callCount = (evidence?.call_count as number | undefined) ?? null;
     const customerCount = (evidence?.customer_count as number | undefined) ?? null;
@@ -628,8 +649,50 @@ function RecommendationRow({
                         {CATEGORY_LABEL[rec.category] || rec.category}
                     </div>
                     <p className="text-sm font-medium text-text">{rec.title}</p>
-                    {rec.rationale && (
-                        <p className="text-xs text-text-muted">{rec.rationale}</p>
+                    {rec.brief ? (
+                        <>
+                            <p className="text-xs text-text-muted">
+                                {rec.brief.headline}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setBriefExpanded((v) => !v)}
+                                className="text-xs text-primary hover:underline"
+                            >
+                                {briefExpanded ? "Hide brief" : "Full brief"}
+                            </button>
+                            {briefExpanded && (
+                                <div className="mt-2 space-y-3 rounded border border-border bg-bg-card-hover p-3">
+                                    {rec.brief.sections.map((section, i) => (
+                                        <div key={i}>
+                                            <p className="text-xs font-bold text-text">
+                                                {section.title ||
+                                                    briefSectionLabel(section.kind)}
+                                            </p>
+                                            {section.body && (
+                                                <p className="mt-1 whitespace-pre-line text-xs text-text-muted">
+                                                    {section.body}
+                                                </p>
+                                            )}
+                                            {section.items &&
+                                                section.items.length > 0 && (
+                                                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-text-muted">
+                                                        {section.items.map(
+                                                            (item, j) => (
+                                                                <li key={j}>{item}</li>
+                                                            )
+                                                        )}
+                                                    </ul>
+                                                )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        rec.rationale && (
+                            <p className="text-xs text-text-muted">{rec.rationale}</p>
+                        )
                     )}
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-text-subtle">
                         {callCount !== null && <Chip>{callCount} calls</Chip>}

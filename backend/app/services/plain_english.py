@@ -120,6 +120,34 @@ _MANAGER_VOICE_RULES_BY_DOMAIN: Dict[str, str] = {
 }
 
 
+def longform_voice_rules_for(domain: Optional[str]) -> str:
+    """Voice rules for long-form manager-facing prose (briefs).
+
+    Same discipline as ``manager_voice_rules_for`` (no jargon, no
+    em-dashes, cite evidence, banned phrases) but drops the
+    one-short-sentence cap: briefs earn their length from the evidence,
+    they aren't clipboard notes. Rule 3 is swapped rather than the block
+    duplicated so the two surfaces can't drift apart.
+    """
+    base = manager_voice_rules_for(domain)
+    base = base.replace(
+        "Voice is clipboard notes: clean, specific, evidence-cited.",
+        "Voice is a working brief for a colleague: clean, specific, "
+        "evidence-cited.",
+    )
+    base = base.replace(
+        "Get in, make the point, get out.",
+        "Make every sentence earn its place.",
+    )
+    return base.replace(
+        "3. One short sentence per item. Hard caps below. Respect them.\n",
+        "3. Full sentences and short paragraphs are fine. Be exactly as "
+        "long as the evidence deserves, never longer: every sentence must "
+        "either change what the reader does or explain why now. No "
+        "padding, no restating the obvious.\n",
+    )
+
+
 def manager_voice_rules_for(domain: Optional[str]) -> str:
     """Return the manager-facing voice-rules block for ``domain``.
 

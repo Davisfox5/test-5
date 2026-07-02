@@ -69,6 +69,23 @@ export type RecommendationCategory =
     // AI cross-customer trend detector
     | "address_recurring_issue";
 
+// Dynamic per-section content composed onto a customer-targeted
+// recommendation. ``kind`` is one of a known set (situation, why_now,
+// play, talking_points, draft_message, watch_out, evidence, playbook,
+// commitments, success) but new kinds may appear over time — rendering
+// must stay generic and never switch per-kind for layout.
+export interface BriefSection {
+    kind: string;
+    title: string;
+    body?: string;
+    items?: string[];
+}
+
+export interface RecommendationBrief {
+    headline: string;
+    sections: BriefSection[];
+}
+
 export interface ManagerRecommendation {
     id: string;
     category: RecommendationCategory;
@@ -83,6 +100,8 @@ export interface ManagerRecommendation {
     applied_artifact_id: string | null;
     expires_at: string;
     created_at: string;
+    brief: RecommendationBrief | null;
+    enriched_at: string | null;
 }
 
 export interface AlertConfig {

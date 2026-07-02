@@ -287,10 +287,10 @@ def test_persist_inserts_and_dedupes_within_window(sync_session, seeded):
         target={"customer_id": str(cust.id)},
     )
     first = persist_candidates(sync_session, seeded.id, [cand])
-    assert first == 1
+    assert len(first) == 1
     # Re-run same candidate — should dedup.
     second = persist_candidates(sync_session, seeded.id, [cand])
-    assert second == 0
+    assert len(second) == 0
     rows = (
         sync_session.execute(
             select(ManagerRecommendation).where(
@@ -301,8 +301,14 @@ def test_persist_inserts_and_dedupes_within_window(sync_session, seeded):
     assert len(rows) == 1
 
 
-def test_run_for_tenant_returns_per_detector_counts(sync_session, seeded):
+def test_run_for_tenant_returns_per_detector_counts(sync_session, seeded, monkeypatch):
     from backend.app.services.cohort_recommendations import run_for_tenant
+
+    queued = []
+    monkeypatch.setattr(
+        "backend.app.services.recommendation_enrichment.queue_enrichment_for",
+        lambda rows: queued.append(rows),
+    )
 
     out = run_for_tenant(sync_session, seeded)
     # No customers => no candidates from any detector.
@@ -312,3 +318,26 @@ def test_run_for_tenant_returns_per_detector_counts(sync_session, seeded):
         "repeat_support_churn_risk": 0,
         "inserted": 0,
     }
+    # No rows inserted => the enrichment queue is never touched.
+    assert queued == []
+
+
+def test_run_for_tenant_queues_enrichment_for_inserted_rows(
+    sync_session, seeded, monkeypatch
+):
+    from backend.app.services.cohort_recommendations import run_for_tenant
+
+    cust = _make_customer(sync_session, seeded, renewal_in_days=20)
+
+    queued = []
+    monkeypatch.setattr(
+        "backend.app.services.recommendation_enrichment.queue_enrichment_for",
+        lambda rows: queued.append(rows),
+    )
+
+    out = run_for_tenant(sync_session, seeded)
+    assert out["inserted"] == 1
+    assert len(queued) == 1
+    queued_rows = queued[0]
+    assert len(queued_rows) == 1
+    assert queued_rows[0].target.get("customer_id") == str(cust.id)

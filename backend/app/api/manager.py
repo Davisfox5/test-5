@@ -84,6 +84,11 @@ class RecommendationOut(BaseModel):
     category: str
     title: str
     rationale: Optional[str]
+    # Composed account brief from the enrichment pass:
+    # {"headline": str, "sections": [{"kind", "title", "body"?, "items"?}]}.
+    # None until enrichment runs (rationale is the fallback text).
+    brief: Optional[Dict[str, Any]] = None
+    enriched_at: Optional[datetime] = None
     evidence: Dict[str, Any]
     target: Dict[str, Any]
     score: float
@@ -386,6 +391,8 @@ async def list_recommendations(
             category=r.category,
             title=r.title,
             rationale=r.rationale,
+            brief=r.brief,
+            enriched_at=r.enriched_at,
             evidence=r.evidence or {},
             target=r.target or {},
             score=float(r.score or 0),

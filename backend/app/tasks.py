@@ -3075,6 +3075,32 @@ def cohort_recommendation_scan() -> Dict[str, Any]:
     return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
 
 
+@celery_app.task(
+    name="enrich_manager_recommendation",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def enrich_manager_recommendation(self, rec_id: str) -> Dict[str, Any]:
+    """Compose the account brief for one freshly inserted recommendation.
+
+    Enqueued by ``recommendation_enrichment.queue_enrichment_for`` right
+    after the cohort detectors / daily builder commit. Retries cover
+    worker-side blips; LLM-side failures are already absorbed inside
+    ``compose_brief`` (the recommendation keeps its deterministic
+    rationale, so there is nothing to retry).
+    """
+    from backend.app.services.recommendation_enrichment import enrich_by_id
+
+    try:
+        return _run_async(lambda: enrich_by_id(rec_id))
+    except Exception as exc:
+        logger.exception(
+            "Recommendation enrichment task failed for %s", rec_id
+        )
+        raise self.retry(exc=exc)
+
+
 @celery_app.task(name="qbr_overdue_scan")
 def qbr_overdue_scan() -> Dict[str, Any]:
     """Daily scan for QBR-overdue customers; fires the ``qbr_overdue``

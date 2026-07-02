@@ -2992,6 +2992,13 @@ class ManagerRecommendation(Base):
     )
     dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     dismiss_reason: Mapped[Optional[str]] = mapped_column(Text)
+    # Composed account brief written by the enrichment pass
+    # (``recommendation_enrichment``). NULL until enrichment runs (or when
+    # it fails / is disabled; ``rationale`` is the fallback). Shape:
+    # ``{"headline": str, "sections": [{"kind", "title", "body"?, "items"?}]}``
+    # where ``kind`` is one of ``recommendation_enrichment.SECTION_KINDS``.
+    brief: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    enriched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -346,13 +346,15 @@ def persist_candidates(
     session: Session,
     tenant_id: uuid.UUID,
     candidates: List[RecommendationCandidate],
-) -> int:
+) -> List[ManagerRecommendation]:
     """Insert candidates as ``ManagerRecommendation`` rows.
 
     Skips rows where an open or applied recommendation of the same
     (category, customer_id) already exists inside the dedup window.
+    Returns the inserted rows so the caller can queue the enrichment
+    pass once they're committed.
     """
-    inserted = 0
+    inserted: List[ManagerRecommendation] = []
     cutoff = datetime.now(timezone.utc) - timedelta(days=DEDUP_WINDOW_DAYS)
     expires_at = datetime.now(timezone.utc) + timedelta(days=14)
 
@@ -418,7 +420,7 @@ def persist_candidates(
             expires_at=expires_at,
         )
         session.add(row)
-        inserted += 1
+        inserted.append(row)
     if inserted:
         session.flush()
     return inserted
@@ -451,7 +453,13 @@ def run_for_tenant(session: Session, tenant: Tenant) -> Dict[str, int]:
         per_detector[name] = len(cands)
         all_candidates.extend(cands)
 
-    inserted = persist_candidates(session, tenant.id, all_candidates)
-    if inserted:
+    inserted_rows = persist_candidates(session, tenant.id, all_candidates)
+    if inserted_rows:
         session.commit()
-    return {**per_detector, "inserted": inserted}
+        # After commit, so the enrichment worker can see the rows.
+        from backend.app.services.recommendation_enrichment import (
+            queue_enrichment_for,
+        )
+
+        queue_enrichment_for(inserted_rows)
+    return {**per_detector, "inserted": len(inserted_rows)}

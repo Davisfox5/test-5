@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL_SONNET: str = "claude-sonnet-5"
     ANTHROPIC_MODEL_OPUS: str = "claude-opus-4-8"
 
+    # ── Recommendation enrichment ────────────────────────
+    # When True, every customer-targeted ManagerRecommendation gets a
+    # follow-up Sonnet pass that composes a situation-specific brief from
+    # the account's full context. One call per new recommendation (post
+    # dedup), so daily volume is small. Off = detector one-liners only.
+    RECOMMENDATION_ENRICHMENT_ENABLED: bool = True
+
     # ── Speech-to-Text (Deepgram) ────────────────────────
     DEEPGRAM_API_KEY: str = ""
     DEFAULT_TRANSCRIPTION_ENGINE: Literal["deepgram", "whisper"] = "deepgram"
