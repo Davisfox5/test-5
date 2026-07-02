@@ -157,6 +157,9 @@ celery_app.conf.update(
         "irt_fit_all_tenants": {"queue": "batch"},
         "churn_train_all_tenants": {"queue": "batch"},
         "outcomes_backfill_all_tenants": {"queue": "batch"},
+        # User-triggered but long-running (up to 2000 provider fetches) —
+        # keep it off the customer-facing priority lane.
+        "email_backfill_run": {"queue": "batch"},
         "refresh_few_shot_pools": {"queue": "batch"},
         "compute_wer_weekly": {"queue": "batch"},
         "discover_vocabulary_candidates": {"queue": "batch"},
@@ -2742,6 +2745,24 @@ def email_push_process_graph(
         session.rollback()
         logger.exception("Graph push task failed")
         raise self.retry(exc=exc, countdown=30)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="email_backfill_run", bind=True, max_retries=0)
+def email_backfill_run(self, job_id: str) -> Dict[str, Any]:
+    """Run one historical mailbox import (``EmailBackfillJob``).
+
+    Enqueued by ``POST /api/v1/email/backfill``. No Celery retries —
+    the service marks the job row ``error`` with a reason, and the
+    caller re-triggers explicitly (dedupe makes a re-run a cheap
+    catch-up over the already-imported prefix).
+    """
+    from backend.app.services.email_ingest.backfill import run_backfill
+
+    session = _get_sync_session()
+    try:
+        return run_backfill(session, job_id)
     finally:
         session.close()
 

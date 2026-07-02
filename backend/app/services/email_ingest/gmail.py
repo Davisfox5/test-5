@@ -11,11 +11,13 @@ from __future__ import annotations
 import base64
 import email.utils
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from backend.app.models import EmailSyncCursor, Integration
 from backend.app.services.email_ingest.ingest import (
@@ -248,3 +250,93 @@ def _recent_message_ids(service, limit: int) -> List[str]:
         )
         ids.extend(m["id"] for m in resp.get("messages", []))
     return ids
+
+
+# ── Historical backfill ─────────────────────────────────────────────
+#
+# Forward ingestion (fetch_recent / history-push) only sees mail that
+# arrives after connect.  Backfill pulls the last N days through the
+# SAME pipeline.  We expose the list/get steps separately so the worker
+# can dedupe on the message id BEFORE spending a get() call on messages
+# it already ingested.
+
+
+def build_service(access_token: str):
+    """Build a Gmail API client for backfill use."""
+    return build(
+        "gmail", "v1", credentials=_credentials(access_token), cache_discovery=False
+    )
+
+
+def _execute_with_backoff(request, max_attempts: int = 5):
+    """Run a Gmail API request, retrying transient rate-limit / 5xx errors.
+
+    Gmail signals per-user rate limits with 429 (and sometimes 403 with a
+    ``rateLimitExceeded`` reason).  We back off exponentially on those and
+    on 5xx, but let hard errors (404, real 403 permission failures, etc.)
+    surface immediately so the job fails fast with a useful message.
+    """
+    delay = 1.0
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return request.execute()
+        except HttpError as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            try:
+                status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            is_rate_limited_403 = status == 403 and "ratelimit" in str(exc).lower()
+            retriable = status in (429, 500, 502, 503, 504) or is_rate_limited_403
+            if not retriable or attempt == max_attempts:
+                raise
+            logger.warning(
+                "Gmail backfill request hit %s (attempt %s/%s); backing off %.1fs",
+                status,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+
+def backfill_query(days: int) -> str:
+    """Gmail search query for the backfill window.
+
+    ``newer_than:Nd`` bounds the window; excluding chats/spam/trash keeps
+    it to real mail.  No label filter means this spans both received and
+    sent (so sales outreach is captured, not just inbound)."""
+    return f"newer_than:{days}d -in:chats -in:spam -in:trash"
+
+
+def list_backfill_ids(service, days: int, page_size: int = 100) -> Iterable[str]:
+    """Yield every Gmail message id in the backfill window, paginating."""
+    query = backfill_query(days)
+    page_token: Optional[str] = None
+    while True:
+        resp = _execute_with_backoff(
+            service.users().messages().list(
+                userId="me",
+                q=query,
+                maxResults=page_size,
+                pageToken=page_token,
+            )
+        )
+        for msg in resp.get("messages", []):
+            yield msg["id"]
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+
+def get_backfill_message(
+    service, message_id: str, agent_email: Optional[str]
+) -> NormalizedEmail:
+    """Fetch + normalize a single message for backfill ingestion."""
+    raw = _execute_with_backoff(
+        service.users().messages().get(userId="me", id=message_id, format="full")
+    )
+    labels = set(raw.get("labelIds", []))
+    direction = "outbound" if "SENT" in labels else "inbound"
+    return _normalize(raw, agent_email, direction, service=service)
