@@ -58,8 +58,15 @@ from backend.app.models import (
     Interaction,
     User,
 )
-from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
+
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -521,7 +528,6 @@ async def detect_and_persist(
 async def _extract(
     *, insights: Dict[str, Any], compressed_transcript: str
 ) -> ExtractionPayload:
-    client = get_async_anthropic()
 
     user_block_parts: List[str] = []
     if insights.get("summary"):
@@ -543,27 +549,22 @@ async def _extract(
     user_block = "\n\n".join(user_block_parts)
 
     try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2000,
-            system=[
-                {
-                    "type": "text",
-                    "text": _PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_block}],
+        resp = await get_router().ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=user_block,
+                system_blocks=[CacheableBlock(text=_PROMPT, cache=True)],
+                max_tokens=2000,
+                temperature=0.0,
+                call_site="warnings_commitments_extract",
+            )
         )
     except Exception:
         logger.exception("warnings_commitments: Haiku call failed")
         return ExtractionPayload()
 
-    record_llm_completion("warnings_commitments_extract", "haiku", 2000, resp)
-
-    raw = "".join(
-        getattr(b, "text", "") for b in (resp.content or [])
-    ).strip()
+    raw = resp.text.strip()
     raw = _strip_md_fences(raw)
     try:
         parsed = json.loads(raw)
@@ -652,7 +653,6 @@ async def _scan_done(
 ) -> List[Tuple[uuid.UUID, str]]:
     if not open_commitments:
         return []
-    client = get_async_anthropic()
 
     listing = "\n".join(
         f"- id={c.id} text=\"{(c.text or '').strip()[:200]}\""
@@ -663,25 +663,22 @@ async def _scan_done(
         + "\n\nNew call transcript:\n" + new_compressed[:14_000]
     )
     try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=800,
-            system=[
-                {
-                    "type": "text",
-                    "text": _DONE_MATCH_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_block}],
+        resp = await get_router().ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=user_block,
+                system_blocks=[CacheableBlock(text=_DONE_MATCH_PROMPT, cache=True)],
+                max_tokens=800,
+                temperature=0.0,
+                call_site="warnings_commitments_done_match",
+            )
         )
     except Exception:
         logger.exception("warnings_commitments: done-match call failed")
         return []
 
-    record_llm_completion("warnings_commitments_done_match", "haiku", 800, resp)
-
-    raw = "".join(getattr(b, "text", "") for b in (resp.content or [])).strip()
+    raw = resp.text.strip()
     raw = _strip_md_fences(raw)
     try:
         parsed = json.loads(raw)

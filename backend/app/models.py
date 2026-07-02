@@ -1755,8 +1755,8 @@ class Integration(Base):
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
     provider: Mapped[str] = mapped_column(String, nullable=False)
-    access_token: Mapped[Optional[str]] = mapped_column(Text)  # AES-256 encrypted
-    refresh_token: Mapped[Optional[str]] = mapped_column(Text)  # AES-256 encrypted
+    access_token: Mapped[Optional[str]] = mapped_column(Text)  # Fernet (AES-128-CBC + HMAC) at rest
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text)  # Fernet (AES-128-CBC + HMAC) at rest
     scopes: Mapped[list] = mapped_column(JSONB, default=list)
     # Provider-specific config (Salesforce instance URL, HubSpot portal id,
     # custom property mappings, etc.). Freeform JSONB so each adapter can

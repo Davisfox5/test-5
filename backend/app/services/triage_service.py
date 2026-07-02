@@ -10,9 +10,18 @@ import anthropic
 
 from backend.app.services.llm_client import get_async_anthropic
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
+
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 # Bumped manually whenever ``TRIAGE_SYSTEM_PROMPT`` changes materially.
 # Persisted to ``interaction_features.triage_prompt_version``.
@@ -119,20 +128,19 @@ class TriageService:
             # Triage system prompt is constant across all calls; wrap it as
             # a cacheable system block so we hit Anthropic's prompt cache on
             # every triage after the first within the cache TTL window.
-            response = await self._client.messages.create(
-                model=HAIKU_MODEL,
-                max_tokens=512,
-                system=[
-                    {
-                        "type": "text",
-                        "text": TRIAGE_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_content}],
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_content,
+                    system_blocks=[CacheableBlock(text=TRIAGE_SYSTEM_PROMPT, cache=True)],
+                    max_tokens=512,
+                    temperature=0.0,
+                    call_site="triage",
+                )
             )
 
-            raw_text = response.content[0].text
+            raw_text = response.text
             result: Dict[str, Any] = json.loads(_strip_json_fences(raw_text))
 
             # Ensure required keys exist with sensible defaults.

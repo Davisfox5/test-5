@@ -29,18 +29,25 @@ from backend.app.models import (
     Tenant,
     User,
 )
-from backend.app.services.llm_client import get_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.services.plain_english import (
     MANAGER_VOICE_RULES,
     manager_voice_rules_for,
     sanitize_manager_payload,
 )
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
+
 logger = logging.getLogger(__name__)
 
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 
 # Per-motion recommendation categories. Each builder pass runs once
@@ -326,26 +333,18 @@ def _invoke_haiku(
     any failure. ``domain`` selects the per-motion system prompt so the
     voice rules and category whitelist match the run."""
     try:
-        client = get_anthropic()
-        resp = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=2048,
-            system=[
-                {
-                    "type": "text",
-                    "text": _system_prompt_for(domain),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            temperature=0.0,
-            messages=[{"role": "user", "content": json.dumps(prompt_body, default=str)}],
+        resp = get_router().invoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=json.dumps(prompt_body, default=str),
+                system_blocks=[CacheableBlock(text=_system_prompt_for(domain), cache=True)],
+                max_tokens=2048,
+                temperature=0.0,
+                call_site=f"manager_recommendations_{domain}",
+            )
         )
-        record_llm_completion(
-            f"manager_recommendations_{domain}", "haiku", 2048, resp
-        )
-        text = "".join(
-            block.text for block in resp.content if getattr(block, "type", None) == "text"
-        ).strip()
+        text = resp.text.strip()
         if not text:
             return []
         # Tolerate code-fence wrappers — the prompt forbids them but

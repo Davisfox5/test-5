@@ -12,12 +12,16 @@ explicit-override path for callers that know they need more.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import anthropic
 
 from backend.app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +36,130 @@ def get_anthropic() -> anthropic.Anthropic:
     """Return a process-wide synchronous Anthropic client (for Celery tasks)."""
     settings = get_settings()
     return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+
+# ── Transient-retry + model-failover wrapper ──────────────────────────────
+#
+# A single model call is a failure surface: a provider blip (429/5xx/timeout)
+# or a model that's been deprecated/suspended (404) should not turn into a
+# failed customer request when a cheaper tier could serve it. This wrapper is
+# the one place that resilience lives. Policy:
+#   * transient errors  → retry on the SAME model, exponential backoff, capped;
+#   * model-unavailable → fail over to a cheaper-tier model id once, no waste;
+#   * anything else (400/401/403/422) → re-raise (masking a real bug is worse).
+# Every retry/failover logs its reason so failovers are observable.
+
+# Real SDK types we treat as transient. Kept broad but conservative.
+_TRANSIENT_TYPES = (
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+    anthropic.InternalServerError,
+)
+_TRANSIENT_STATUS = {429, 500, 502, 503, 529}
+_UNAVAILABLE_STATUS = {404}
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, _TRANSIENT_TYPES):
+        return True
+    # Name/status fallbacks so the classifier is testable without constructing
+    # httpx-backed SDK exceptions, and robust across SDK versions.
+    if type(exc).__name__ in {
+        "RateLimitError", "APITimeoutError", "APIConnectionError",
+        "InternalServerError", "OverloadedError",
+    }:
+        return True
+    return getattr(exc, "status_code", None) in _TRANSIENT_STATUS
+
+
+def _is_model_unavailable(exc: Exception) -> bool:
+    if isinstance(exc, getattr(anthropic, "NotFoundError", ())):
+        return True
+    if type(exc).__name__ == "NotFoundError":
+        return True
+    return getattr(exc, "status_code", None) in _UNAVAILABLE_STATUS
+
+
+# Per-entry Batches API error types (``result.error.type``) worth a second
+# attempt on a lower tier: transient overloads / timeouts, and a model that
+# came back unavailable (404). Deterministic client errors
+# (``invalid_request_error`` / ``authentication_error`` / ``permission_error``)
+# are the caller's bug — retrying them on another tier just burns tokens.
+# Mirrors the live-path split in ``_is_transient`` / ``_is_model_unavailable``.
+_RETRYABLE_BATCH_ERROR_TYPES = frozenset({
+    "overloaded_error",
+    "api_error",
+    "rate_limit_error",
+    "timeout_error",
+    "not_found_error",
+})
+
+
+def batch_error_is_retryable(error_type: Optional[str]) -> bool:
+    """True when a per-entry batch error should be retried on the fallback tier."""
+    return error_type in _RETRYABLE_BATCH_ERROR_TYPES
+
+
+async def acreate_with_failover(
+    client: Any,
+    *,
+    model: str,
+    fallback_model: Optional[str] = None,
+    max_retries: int = 2,
+    base_delay: float = 0.5,
+    _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    **create_kwargs: Any,
+) -> Any:
+    """Call ``client.messages.create(model=..., **create_kwargs)`` with bounded
+    transient retries and a single model failover.
+
+    Args:
+        model: primary model id.
+        fallback_model: cheaper-tier model id to fail over to when the primary
+            is unavailable or exhausts its transient retries. ``None`` disables
+            failover (the last error re-raises).
+        max_retries: transient retries per model (so up to ``max_retries + 1``
+            attempts on each model). Non-transient errors never retry.
+        base_delay: exponential-backoff base (``base_delay * 2**attempt``).
+        _sleep: injectable sleep (tests pass a no-op).
+    """
+    active = model
+    used_fallback = False
+    attempt = 0
+    while True:
+        try:
+            return await client.messages.create(model=active, **create_kwargs)
+        except Exception as exc:  # noqa: BLE001 — classified below, re-raised if unknown
+            if _is_model_unavailable(exc):
+                if fallback_model and not used_fallback:
+                    logger.warning(
+                        "llm model %s unavailable (%s); failover to %s",
+                        active, type(exc).__name__, fallback_model,
+                    )
+                    active, used_fallback, attempt = fallback_model, True, 0
+                    continue
+                raise
+            if _is_transient(exc):
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "transient llm error on %s (attempt %d/%d): %s; retrying in %.2fs",
+                        active, attempt + 1, max_retries, type(exc).__name__, delay,
+                    )
+                    await _sleep(delay)
+                    attempt += 1
+                    continue
+                if fallback_model and not used_fallback:
+                    logger.warning(
+                        "llm %s exhausted %d transient retries (%s); failover to %s",
+                        active, max_retries, type(exc).__name__, fallback_model,
+                    )
+                    active, used_fallback, attempt = fallback_model, True, 0
+                    continue
+                raise
+            # Non-transient, not unavailable (400/401/403/422) — surface it.
+            raise
 
 
 # ── Tiered max_tokens policy ──────────────────────────────────────────────

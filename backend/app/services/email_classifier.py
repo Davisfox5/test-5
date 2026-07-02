@@ -33,9 +33,18 @@ from backend.app.services import metrics as _metrics
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
+
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = model_catalog.HAIKU
 
 # Anything at or above this confidence gets accepted as external.
 EXTERNAL_CONFIDENCE_THRESHOLD = 0.8
@@ -192,22 +201,21 @@ class EmailClassifier:
 
         try:
             t0 = time.perf_counter()
-            response = await self._client.messages.create(
-                model=HAIKU_MODEL,
-                max_tokens=256,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_content}],
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_content,
+                    system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+                    max_tokens=256,
+                    temperature=0.0,
+                    call_site="email_classifier",
+                )
             )
             _metrics.LLM_LATENCY.labels(
                 surface="email_classifier", model=HAIKU_MODEL
             ).observe(time.perf_counter() - t0)
-            raw = response.content[0].text
+            raw = response.text
             data: Dict[str, Any] = json.loads(_strip_json_fences(raw))
             is_external = bool(data.get("is_external", False))
             confidence = float(data.get("confidence", 0.0))

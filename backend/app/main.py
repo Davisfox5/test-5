@@ -271,5 +271,23 @@ def prometheus_metrics() -> Response:
     return Response(content=payload, media_type=content_type)
 
 
+# ── Legal pages (stable, redirect-free URLs) ─────────────
+# The static mount below would serve these as directory indexes, but a
+# bare ``/privacy`` 307-redirects to ``/privacy/``. Google's OAuth consent
+# screen advertises these exact URLs and expects a direct 200, so we pin
+# explicit handlers ahead of the catch-all mount.
+from fastapi.responses import FileResponse  # noqa: E402
+
+
+@app.get("/privacy", include_in_schema=False)
+def privacy_page() -> FileResponse:
+    return FileResponse("website/privacy/index.html")
+
+
+@app.get("/terms", include_in_schema=False)
+def terms_page() -> FileResponse:
+    return FileResponse("website/terms/index.html")
+
+
 # ── Static Files (minimal demo UI) ───────────────────────
 app.mount("/", StaticFiles(directory="website", html=True), name="website")

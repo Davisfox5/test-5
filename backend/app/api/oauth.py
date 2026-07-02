@@ -35,21 +35,27 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import AuthPrincipal, get_current_principal, get_current_tenant
 from backend.app.config import get_settings
 from backend.app.db import get_db
-from backend.app.models import Integration, Tenant
-from backend.app.services.token_crypto import encrypt_token
+from backend.app.models import (
+    Integration,
+    Interaction,
+    InteractionAttachment,
+    LiveSession,
+    Tenant,
+)
+from backend.app.services.token_crypto import decrypt_token, encrypt_token
 
 router = APIRouter()
 settings = get_settings()
@@ -395,6 +401,69 @@ def _spa_redirect(provider: str) -> RedirectResponse:
     return RedirectResponse(url=f"{base}/settings?integration_connected={provider}")
 
 
+def _allowed_return_to_origins() -> set:
+    """Origins permitted as OAuth post-connect ``return_to`` targets:
+    every ALLOWED_ORIGINS entry, the SPA_URL origin, and any explicit
+    OAUTH_RETURN_TO_ALLOWED_ORIGINS (for external consoles)."""
+    origins = set()
+    for o in (settings.ALLOWED_ORIGINS or []):
+        origins.add(o.rstrip("/"))
+    for o in (settings.OAUTH_RETURN_TO_ALLOWED_ORIGINS or []):
+        origins.add(o.rstrip("/"))
+    if settings.SPA_URL:
+        p = urlparse(settings.SPA_URL)
+        if p.scheme and p.netloc:
+            origins.add(f"{p.scheme}://{p.netloc}")
+    return origins
+
+
+def _validate_return_to(raw: Optional[str]) -> Optional[str]:
+    """Return ``raw`` if it's a safe, allowlisted absolute URL to redirect to
+    after a successful connect; otherwise ``None``.
+
+    Open-redirect guard: only absolute ``http(s)`` URLs whose origin is in the
+    allowlist are accepted. Relative paths and javascript:/data: URLs are
+    rejected. Plain ``http`` is allowed only for localhost in DEBUG so local
+    console development works.
+    """
+    if not raw:
+        return None
+    try:
+        p = urlparse(raw)
+    except ValueError:
+        return None
+    if not p.scheme or not p.netloc or p.scheme not in ("https", "http"):
+        return None
+    if p.scheme == "http":
+        host = p.hostname or ""
+        if not (settings.DEBUG and host in ("localhost", "127.0.0.1")):
+            return None
+    origin = f"{p.scheme}://{p.netloc}".rstrip("/")
+    if origin in _allowed_return_to_origins():
+        return raw
+    logger.warning("oauth return_to origin not allowlisted: %s", origin)
+    return None
+
+
+def _finish_connect(provider: str, state_payload: Dict[str, Any], *, default):
+    """Decide where the caller lands after a successful connect:
+
+    1. an allowlisted ``return_to`` (an external console that embedded our
+       OAuth and wants the user back in *their* app), else
+    2. for api-key-initiated flows, a plain JSON 200 — these callers aren't
+       LINDA SPA users, so we don't bounce them into the SPA, else
+    3. ``default()`` — the provider's existing behaviour (SPA redirect for
+       Google/Microsoft, a ``{"status": "connected"}`` body for CRMs).
+    """
+    rt = _validate_return_to(state_payload.get("return_to"))
+    if rt:
+        sep = "&" if "?" in rt else "?"
+        return RedirectResponse(url=f"{rt}{sep}integration_connected={provider}")
+    if state_payload.get("source") == "api_key":
+        return {"status": "connected", "provider": provider}
+    return default()
+
+
 def _expires_at_from_seconds(expires_in: Optional[int]) -> Optional[datetime]:
     if not expires_in:
         return None
@@ -488,6 +557,8 @@ async def _build_provider_authorize_url(
     *,
     region: Optional[str] = None,
     org_url: Optional[str] = None,
+    return_to: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> str:
     """Mint a state token + return the provider's hosted authorize URL.
 
@@ -513,6 +584,13 @@ async def _build_provider_authorize_url(
     }
     if user_id is not None:
         payload["user_id"] = str(user_id)
+    # Post-connect return target (external console) + how the flow was
+    # initiated — both consumed by the callback's _finish_connect.
+    validated_return_to = _validate_return_to(return_to)
+    if validated_return_to:
+        payload["return_to"] = validated_return_to
+    if source:
+        payload["source"] = source
     if provider == "zoho":
         payload["region"] = (region or "us").strip().lower()
     pkce_spec = OAUTH_PROVIDERS.get(provider, {})
@@ -803,6 +881,16 @@ async def oauth_ticket(
             "(https://<org>.crm.dynamics.com)"
         ),
     ),
+    return_to: Optional[str] = Query(
+        None,
+        description=(
+            "Absolute URL to send the user to after a successful connect. "
+            "Must be on an allowlisted origin (the SPA, an ALLOWED_ORIGINS "
+            "entry, or an OAUTH_RETURN_TO_ALLOWED_ORIGINS entry). For "
+            "external consoles that embed LINDA's OAuth and want the user "
+            "returned to their own app instead of LINDA's SPA."
+        ),
+    ),
 ):
     """Mint a one-shot authorize URL for the SPA to redirect to.
 
@@ -825,6 +913,8 @@ async def oauth_ticket(
         user_id=principal.user_id,
         region=region,
         org_url=org_url,
+        return_to=return_to,
+        source=principal.source,
     )
     return OAuthTicketResponse(authorize_url=auth_url)
 
@@ -836,6 +926,13 @@ async def oauth_authorize(
     tenant: Tenant = Depends(get_current_tenant),
     region: Optional[str] = Query(None),
     org_url: Optional[str] = Query(None),
+    return_to: Optional[str] = Query(
+        None,
+        description=(
+            "Absolute, allowlisted URL to return to after connect (see "
+            "POST /ticket). Honored here too for API-key/tooling callers."
+        ),
+    ),
 ):
     """Generate an OAuth authorization URL and redirect the user.
 
@@ -855,6 +952,7 @@ async def oauth_authorize(
             user_id=None,
             region=region,
             org_url=org_url,
+            return_to=return_to,
         )
         return RedirectResponse(url=auth_url)
 
@@ -865,14 +963,15 @@ async def oauth_authorize(
     # carrying the tenant id, so the callback knows who to attribute. We
     # also stash the redirect_uri so the callback compares the rebuilt URL
     # against the one we authorized — defends against host-header injection.
-    await _stash_state(
-        state,
-        {
-            "tenant_id": str(tenant.id),
-            "provider": provider,
-            "redirect_uri": redirect_uri,
-        },
-    )
+    inline_payload: Dict[str, Any] = {
+        "tenant_id": str(tenant.id),
+        "provider": provider,
+        "redirect_uri": redirect_uri,
+    }
+    validated_return_to = _validate_return_to(return_to)
+    if validated_return_to:
+        inline_payload["return_to"] = validated_return_to
+    await _stash_state(state, inline_payload)
 
     if provider == "google":
         from google_auth_oauthlib.flow import Flow
@@ -895,6 +994,13 @@ async def oauth_authorize(
             state=state,
             prompt="consent",
         )
+        # google-auth-oauthlib stashes a PKCE verifier on the Flow during
+        # authorization_url(); persist it like the /ticket path does so the
+        # callback can complete the exchange.
+        verifier = getattr(flow, "code_verifier", None)
+        if verifier:
+            inline_payload["google_pkce_verifier"] = verifier
+            await _stash_state(state, inline_payload)
         return RedirectResponse(url=auth_url)
 
     if provider == "microsoft":
@@ -1008,7 +1114,9 @@ async def oauth_callback(
             scopes=list(creds.scopes) if creds.scopes else GOOGLE_SCOPES,
             expires_at=creds.expiry,
         )
-        return _spa_redirect(provider)
+        return _finish_connect(
+            provider, state_payload, default=lambda: _spa_redirect(provider)
+        )
 
     if provider == "microsoft":
         import msal
@@ -1041,7 +1149,9 @@ async def oauth_callback(
             scopes=granted_scopes,
             expires_at=_expires_at_from_seconds(result.get("expires_in")),
         )
-        return _spa_redirect(provider)
+        return _finish_connect(
+            provider, state_payload, default=lambda: _spa_redirect(provider)
+        )
 
     # ── Generic CRM exchange ──────────────────────────────
     spec = OAUTH_PROVIDERS[provider]
@@ -1128,7 +1238,11 @@ async def oauth_callback(
         expires_at=_expires_at_from_seconds(body.get("expires_in")),
         provider_config=provider_config,
     )
-    return {"status": "connected", "provider": provider}
+    return _finish_connect(
+        provider,
+        state_payload,
+        default=lambda: {"status": "connected", "provider": provider},
+    )
 
 
 @router.get("/oauth/status", response_model=IntegrationStatusResponse)
@@ -1149,13 +1263,105 @@ async def oauth_status(
     )
 
 
+GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+
+# OAuth provider -> the ``Interaction.source`` value its ingested mail is
+# tagged with. Disconnecting a mailbox must purge the mail we already
+# ingested from it (Google Limited Use / GDPR erase-on-disconnect).
+_EMAIL_SOURCE_FOR_PROVIDER = {"google": "gmail", "microsoft": "microsoft"}
+
+
+async def _revoke_google_token(token: Optional[str]) -> None:
+    """Best-effort upstream revocation at Google's revoke endpoint.
+
+    Revoking the refresh token invalidates derived access tokens too. A
+    token that is already expired/invalid returns 400 — fine, the grant is
+    gone either way. Network failures are logged, never raised: the local
+    disconnect must still succeed.
+    """
+    if not token:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                GOOGLE_REVOKE_URL,
+                data={"token": token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if resp.status_code not in (200, 400):
+            logger.warning(
+                "Google token revocation returned %s (continuing)",
+                resp.status_code,
+            )
+    except Exception:
+        logger.exception("Google token revocation request failed (continuing)")
+
+
+async def _purge_ingested_email(
+    db: AsyncSession, *, tenant_id: uuid.UUID, provider: str
+) -> int:
+    """Delete every email ``Interaction`` (and its attachments) this tenant
+    ingested from ``provider``. Returns the count removed.
+
+    Disconnecting a mailbox is a deletion request under Google's Limited Use
+    policy — the stored copy of the user's mail must go, not just the token.
+    Attachment bytes in object storage are deleted best-effort; the dependent
+    DB rows cascade from the ``Interaction`` via FK ON DELETE.
+    """
+    source = _EMAIL_SOURCE_FOR_PROVIDER.get(provider)
+    if source is None:
+        return 0
+    ids = (
+        await db.execute(
+            select(Interaction.id).where(
+                Interaction.tenant_id == tenant_id,
+                Interaction.channel == "email",
+                Interaction.source == source,
+            )
+        )
+    ).scalars().all()
+    if not ids:
+        return 0
+
+    # Purge attachment bytes from object storage before the rows go.
+    s3_keys = (
+        await db.execute(
+            select(InteractionAttachment.s3_key).where(
+                InteractionAttachment.interaction_id.in_(ids),
+                InteractionAttachment.s3_key.is_not(None),
+            )
+        )
+    ).scalars().all()
+    if s3_keys:
+        from backend.app.services.attachment_store import get_store
+
+        store = get_store()
+        for key in s3_keys:
+            try:
+                store.delete(key)
+            except Exception:
+                logger.exception("Attachment purge failed for key %s", key)
+
+    # ``live_sessions`` is the one child FK to interactions without an ON
+    # DELETE rule (voice-only in practice, but a stray ref would RESTRICT the
+    # delete). Null it defensively; every other child cascades / sets null.
+    await db.execute(
+        update(LiveSession)
+        .where(LiveSession.interaction_id.in_(ids))
+        .values(interaction_id=None)
+    )
+    await db.execute(delete(Interaction).where(Interaction.id.in_(ids)))
+    return len(ids)
+
+
 @router.post("/oauth/{provider}/revoke", status_code=204)
 async def oauth_revoke(
     provider: str,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Delete the integration record for a provider."""
+    """Disconnect a provider: revoke the grant upstream, delete the stored
+    tokens, and purge any mail we ingested from it."""
     _validate_provider(provider)
     stmt = select(Integration).where(
         Integration.tenant_id == tenant.id,
@@ -1167,8 +1373,40 @@ async def oauth_revoke(
         raise HTTPException(
             status_code=404, detail=f"No {provider} integration found"
         )
+
+    # 1. Revoke the grant at the provider so the token can't be reused.
+    #    Microsoft has no equivalent token-revoke endpoint — revocation
+    #    there is user/admin-driven (documented in the compliance writeup).
+    if provider == "google":
+        token = decrypt_token(integration.refresh_token) or decrypt_token(
+            integration.access_token
+        )
+        await _revoke_google_token(token)
+
+    # 2. Delete the stored tokens.
     await db.delete(integration)
     await db.flush()
+
+    # 3. Purge mail ingested from this mailbox (Limited Use: delete on
+    #    disconnect). Best-effort — a purge failure must not strand the
+    #    disconnect, but we surface it loudly.
+    try:
+        purged = await _purge_ingested_email(
+            db, tenant_id=tenant.id, provider=provider
+        )
+        if purged:
+            logger.info(
+                "oauth_revoke purged %d ingested email interaction(s) for "
+                "tenant=%s provider=%s",
+                purged, tenant.id, provider,
+            )
+    except Exception:
+        logger.exception(
+            "oauth_revoke: ingested-email purge failed for tenant=%s "
+            "provider=%s (tokens already removed)",
+            tenant.id, provider,
+        )
+
     # Locked: when an integration is removed, any previously-actionable
     # procedures that depended on it become gated again. Re-evaluate
     # synchronously so the admin sees the gap report update immediately.

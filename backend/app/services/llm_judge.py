@@ -32,12 +32,20 @@ from backend.app.models import (
     Interaction,
     Tenant,
 )
-from backend.app.services.llm_client import get_anthropic
 from backend.app.services.triage_service import _strip_json_fences
+
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
-JUDGE_MODEL = "claude-haiku-4-5-20251001"
+JUDGE_MODEL = model_catalog.HAIKU
 EVALUATOR_ID = JUDGE_MODEL
 
 
@@ -152,19 +160,19 @@ _REPLY_WEIGHTS = {
 
 def _call_judge(rubric: str, user_content: str) -> Optional[Dict[str, Any]]:
     """Run the judge synchronously.  Returns parsed scores dict or None."""
-    client = get_anthropic()
     try:
-        response = client.messages.create(
-            model=JUDGE_MODEL,
-            max_tokens=2048,
-            system=[{
-                "type": "text",
-                "text": rubric,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user_content}],
+        response = get_router().invoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=user_content,
+                system_blocks=[CacheableBlock(text=rubric, cache=True)],
+                max_tokens=2048,
+                temperature=0.0,
+                call_site="llm_judge",
+            )
         )
-        raw = response.content[0].text
+        raw = response.text
         return json.loads(_strip_json_fences(raw))
     except (anthropic.APIError, json.JSONDecodeError, IndexError) as exc:
         logger.exception("Judge call failed: %s", exc)

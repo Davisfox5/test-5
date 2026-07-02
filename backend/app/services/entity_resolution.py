@@ -41,8 +41,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.app.models import Contact, Customer, CustomerOwner, Interaction
-from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
+
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    get_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -436,7 +443,6 @@ async def _extract(
     own_org_name: Optional[str],
 ) -> ExtractionResult:
     """Call Haiku with the focused extraction prompt."""
-    client = get_async_anthropic()
 
     user_block_parts: List[str] = []
     if own_org_name:
@@ -452,27 +458,22 @@ async def _extract(
     user_block = "\n\n".join(user_block_parts)
 
     try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
-            system=[
-                {
-                    "type": "text",
-                    "text": _EXTRACTION_SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_block}],
+        resp = await get_router().ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.HAIKU,
+                user_message=user_block,
+                system_blocks=[CacheableBlock(text=_EXTRACTION_SYSTEM_PROMPT, cache=True)],
+                max_tokens=1500,
+                temperature=0.0,
+                call_site="entity_resolution",
+            )
         )
     except Exception:
         logger.exception("entity_resolution: Haiku call failed")
         return ExtractionResult()
 
-    record_llm_completion("entity_resolution", "haiku", 1500, resp)
-
-    text = "".join(
-        getattr(block, "text", "") for block in (resp.content or [])
-    ).strip()
+    text = resp.text.strip()
     text = _strip_md_fences(text)
 
     try:

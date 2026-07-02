@@ -34,10 +34,19 @@ from backend.app.services.action_plan.prompts import CALL_D_SYSTEM_PROMPT
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    ModelRouter,
+    TaskType,
+    Tier,
+)
+
 logger = logging.getLogger(__name__)
 
 
-_EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
+_EXTRACTION_MODEL = model_catalog.HAIKU
 _EXTRACTION_MAX_TOKENS = 2048
 
 
@@ -237,31 +246,24 @@ class ResponseExtractor:
             source_content=source_content[:8000],
         )
         try:
-            response = await self._client.messages.create(
-                model=_EXTRACTION_MODEL,
-                max_tokens=_EXTRACTION_MAX_TOKENS,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        # The system prompt varies per step (step title +
-                        # intent + schema embedded), so caching has limited
-                        # hit-rate; we mark ephemeral anyway in case a
-                        # batch of notes for the same step lands together.
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Extract the slot values now per the schema "
-                            "in the system prompt. Return ONLY JSON."
-                        ),
-                    }
-                ],
+            # System prompt varies per step (title + intent + schema), so cache
+            # hit-rate is limited; we mark ephemeral anyway in case a batch of
+            # notes for the same step lands together.
+            response = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=(
+                        "Extract the slot values now per the schema "
+                        "in the system prompt. Return ONLY JSON."
+                    ),
+                    system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+                    max_tokens=_EXTRACTION_MAX_TOKENS,
+                    temperature=0.0,
+                    call_site="action_plan_extractor",
+                )
             )
-            raw_text = response.content[0].text
+            raw_text = response.text
             data = json.loads(_strip_json_fences(raw_text))
         except (
             anthropic.APIError,

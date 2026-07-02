@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # back into the app after a successful provider connect. Falls back
     # to the first allowed origin when unset (so staging "just works").
     SPA_URL: str = ""
+    # Extra origins allowed as OAuth post-connect ``return_to`` targets —
+    # for external consoles that embed LINDA's OAuth and want the user
+    # bounced back to THEIR app, not LINDA's SPA. The SPA_URL origin and
+    # every ALLOWED_ORIGINS entry are always permitted; this adds origins
+    # that don't otherwise need CORS. e.g.
+    # ``OAUTH_RETURN_TO_ALLOWED_ORIGINS=["https://console.example.com"]``.
+    OAUTH_RETURN_TO_ALLOWED_ORIGINS: list[str] = []
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str
@@ -56,6 +63,18 @@ class Settings(BaseSettings):
 
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
+
+    # Model ids by tier — the SINGLE source of truth for which Claude
+    # version each tier resolves to (see services/model_catalog.py). Every
+    # runtime touchpoint resolves its model through the catalog, so bumping
+    # a version (or swapping a deprecated/suspended model) is a one-line
+    # change here or an env override — never a 25-file sweep.
+    #
+    # Defaults are PINNED to the currently-shipping ids. We deliberately do
+    # NOT auto-pull "latest": an env override is an explicit, reviewable act.
+    ANTHROPIC_MODEL_HAIKU: str = "claude-haiku-4-5-20251001"
+    ANTHROPIC_MODEL_SONNET: str = "claude-sonnet-5"
+    ANTHROPIC_MODEL_OPUS: str = "claude-opus-4-8"
 
     # ── Speech-to-Text (Deepgram) ────────────────────────
     DEEPGRAM_API_KEY: str = ""

@@ -42,9 +42,18 @@ from backend.app.models import (
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    ModelRouter,
+    TaskType,
+    Tier,
+)
+
 logger = logging.getLogger(__name__)
 
-SONNET = "claude-sonnet-4-6"
+SONNET = model_catalog.SONNET
 
 SYSTEM_PROMPT = (
     "You are drafting a reply email on behalf of a professional "
@@ -362,20 +371,21 @@ class ReplyDrafter:
         user_content = "\n\n".join(sections)
 
         t0 = time.perf_counter()
-        response = await self._client.messages.create(
-            model=SONNET,
-            max_tokens=2048,
-            system=[{
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user_content}],
+        response = await ModelRouter(self._client).ainvoke(
+            LLMRequest(
+                task_type=TaskType.GENERIC,
+                forced_tier=Tier.SONNET,
+                user_message=user_content,
+                system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
+                max_tokens=2048,
+                temperature=0.3,
+                call_site="email_reply",
+            )
         )
         _metrics.LLM_LATENCY.labels(surface="email_reply", model=SONNET).observe(
             time.perf_counter() - t0
         )
-        raw = response.content[0].text
+        raw = response.text
         try:
             data: Dict[str, Any] = json.loads(_strip_json_fences(raw))
         except json.JSONDecodeError:

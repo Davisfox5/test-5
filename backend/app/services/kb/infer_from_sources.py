@@ -39,7 +39,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.llm_client import get_async_anthropic
-from backend.app.services.llm_telemetry import record_llm_completion
 from backend.app.models import (
     CustomerOutcomeEvent,
     Interaction,
@@ -48,10 +47,19 @@ from backend.app.models import (
 )
 from backend.app.services.kb.context_builder import _validate_brief
 
+from backend.app.services import model_catalog
+from backend.app.services.model_router import (
+    CacheableBlock,
+    LLMRequest,
+    TaskType,
+    Tier,
+    ModelRouter,
+)
+
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = model_catalog.HAIKU
 _WINDOW_DAYS = 30
 _MAX_INTERACTION_BLOCKS = 20
 
@@ -259,20 +267,18 @@ class InferFromSources:
             + "\n\nReturn suggestions JSON."
         )
         try:
-            resp = await self._client.messages.create(
-                model=_MODEL,
-                max_tokens=1400,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_message}],
+            resp = await ModelRouter(self._client).ainvoke(
+                LLMRequest(
+                    task_type=TaskType.GENERIC,
+                    forced_tier=Tier.HAIKU,
+                    user_message=user_message,
+                    system_blocks=[CacheableBlock(text=_SYSTEM_PROMPT, cache=True)],
+                    max_tokens=1400,
+                    temperature=0.0,
+                    call_site="kb_infer_from_sources",
+                )
             )
-            record_llm_completion("kb_infer_from_sources", "haiku", 1400, resp)
-            raw = resp.content[0].text
+            raw = resp.text
             data = json.loads(raw)
         except (anthropic.APIError, json.JSONDecodeError, IndexError, KeyError):
             logger.exception("InferFromSources Haiku call failed")

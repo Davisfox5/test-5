@@ -99,6 +99,23 @@ class AttachmentStore:
             logger.exception("S3 get failed for key %s", s3_key)
             return None
 
+    def delete(self, s3_key: str) -> bool:
+        """Delete one object. Returns True on success (or when there is
+        nothing to do). Used to purge stored mail attachments when a user
+        disconnects a mailbox — see the OAuth revoke path."""
+        if not s3_key:
+            return True
+        if not self.available:
+            return False
+        try:
+            self._client_lazy().delete_object(
+                Bucket=self._settings.AWS_S3_BUCKET, Key=s3_key
+            )
+            return True
+        except Exception:
+            logger.exception("S3 delete failed for key %s", s3_key)
+            return False
+
     def presigned_url(self, s3_key: str, expires_in: int = 600) -> Optional[str]:
         if not self.available or not s3_key:
             return None
