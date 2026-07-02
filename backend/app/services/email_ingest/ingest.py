@@ -38,8 +38,13 @@ from backend.app.models import (
 )
 from backend.app.services.attachment_store import get_store
 from backend.app.services.email_classifier import (
+    SYSTEM_PROMPT as _CLASSIFIER_FALLBACK_PROMPT,
     EmailClassifier,
     EmailForClassification,
+)
+from backend.app.services.prompt_variant_service import (
+    merge_variant_insight,
+    select_variant_sync,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,6 +219,19 @@ async def ingest_email(
 
     classifier = classifier or EmailClassifier()
 
+    # Prompt-variant routing (A/B) — same selection API the analysis path
+    # uses (tasks.py), just the sync flavor since ingest runs off a sync
+    # Celery-worker session. Recorded on the Interaction below (once we
+    # know we're keeping this email) so the LLM judge can attribute its
+    # score to the right bucket instead of always writing
+    # prompt_variant_id=None for this surface.
+    variant = select_variant_sync(
+        session,
+        tenant,
+        surface="email_classifier",
+        fallback_template=_CLASSIFIER_FALLBACK_PROMPT,
+    )
+
     verdict = await classifier.classify(
         EmailForClassification(
             subject=email.subject,
@@ -223,7 +241,8 @@ async def ingest_email(
             body_preview=email.body_text,
             headers=email.headers,
             tenant_domains=_tenant_domains(tenant),
-        )
+        ),
+        system_prompt_override=variant.prompt_template,
     )
 
     if not verdict.is_external:
@@ -300,6 +319,7 @@ async def ingest_email(
         classification=verdict.classification,
         classification_confidence=verdict.confidence,
         status="processing",
+        insights=merge_variant_insight(None, "email_classifier", variant.variant_id),
     )
     session.add(interaction)
     session.flush()

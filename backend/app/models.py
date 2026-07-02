@@ -2344,9 +2344,12 @@ class FeedbackEvent(Base):
 class FeedbackDailyRollup(Base):
     """Daily per-(surface, event_type) count of feedback_events.
 
-    Populated by the retention sweep before raw feedback_events rows are
-    dropped. Calibration / winner-selection read these counts when the
-    raw table window (180d) isn't long enough.
+    Populated by the retention sweep (``event_retention.sweep_feedback_events``)
+    before raw feedback_events rows older than the retention window are
+    dropped. Read by ``feedback_service.feedback_volume_by_day``
+    (``GET /feedback/volume``), which unions these rows with live
+    feedback_events counts so volume-over-time charts keep working past
+    the raw retention horizon.
     """
 
     __tablename__ = "feedback_daily_rollup"

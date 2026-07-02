@@ -15,13 +15,15 @@ import difflib
 import json
 import logging
 import uuid as _uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
-from backend.app.models import FeedbackEvent, Tenant
+from backend.app.models import FeedbackDailyRollup, FeedbackEvent, Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +293,58 @@ def _draft_key(user_id: Any, conversation_id: Any) -> str:
     return f"reply_draft:{user_id or 'anon'}:{conversation_id}"
 
 
+def cache_draft_variant(
+    user_id: Any, conversation_id: Any, variant_id: Optional[str]
+) -> None:
+    """Store the ``email_reply`` prompt-variant id alongside the draft body.
+
+    ``send_reply`` runs in a separate request from ``draft_reply`` and only
+    has the (maybe-edited) sent body to work with, so we cache the variant
+    id here the same way ``cache_draft_body`` caches the body — send-reply
+    reads it back to attribute the outbound Interaction's
+    ``insights["prompt_variants"]`` to the variant that actually produced
+    the draft.
+    """
+    if not variant_id:
+        return
+    r = _redis()
+    if r is None:
+        return
+    try:
+        r.setex(
+            _draft_variant_key(user_id, conversation_id),
+            DRAFT_CACHE_TTL_SECONDS,
+            variant_id,
+        )
+    except Exception:
+        logger.exception("Reply draft variant cache write failed (non-fatal)")
+
+
+def fetch_cached_draft_variant(user_id: Any, conversation_id: Any) -> Optional[str]:
+    r = _redis()
+    if r is None:
+        return None
+    try:
+        return r.get(_draft_variant_key(user_id, conversation_id))
+    except Exception:
+        logger.exception("Reply draft variant cache read failed (non-fatal)")
+        return None
+
+
+def clear_cached_draft_variant(user_id: Any, conversation_id: Any) -> None:
+    r = _redis()
+    if r is None:
+        return
+    try:
+        r.delete(_draft_variant_key(user_id, conversation_id))
+    except Exception:
+        pass
+
+
+def _draft_variant_key(user_id: Any, conversation_id: Any) -> str:
+    return f"reply_draft_variant:{user_id or 'anon'}:{conversation_id}"
+
+
 # ── Diff helpers (used by reply edit-distance) ───────────────────────────
 
 
@@ -331,3 +385,82 @@ def classify_reply_change(original: str, updated: str) -> Tuple[str, Dict[str, A
         return "reply_edited_before_send", summary
     summary["edit_size"] = "large"
     return "reply_edited_before_send", summary
+
+
+# ── Volume over time (live + rollup union) ────────────────────────────────
+
+# Comfortably covers the default raw-retention window
+# (``event_retention.FEEDBACK_EVENT_RAW_RETENTION_DAYS`` == 365) plus
+# headroom for a per-tenant override, while still bounding the query.
+_MAX_VOLUME_DAYS = 3650
+
+
+async def feedback_volume_by_day(
+    db: AsyncSession, tenant_id: Any, days: int = 400
+) -> List[Dict[str, Any]]:
+    """Daily feedback-event counts for a tenant, per (surface, event_type).
+
+    Unions the live ``feedback_events`` table with ``feedback_daily_rollup``
+    — the aggregate the retention sweep writes (see
+    ``event_retention.sweep_feedback_events``) right before it deletes raw
+    rows older than the retention window. Without this union, a volume
+    chart falls off a cliff at the retention horizon even though the daily
+    counts are still on disk.
+
+    Live and rollup rows shouldn't normally overlap on the same
+    (day, surface, event_type) — the sweep deletes the raw rows it just
+    aggregated — but if a day does show up in both (e.g. the sweep is
+    mid-run), the rollup count wins as the settled aggregate.
+    """
+    days = max(1, min(days, _MAX_VOLUME_DAYS))
+    cutoff = date.today() - timedelta(days=days)
+
+    live_stmt = (
+        select(
+            func.date(FeedbackEvent.created_at).label("day"),
+            FeedbackEvent.surface,
+            FeedbackEvent.event_type,
+            func.count().label("count"),
+        )
+        .where(
+            FeedbackEvent.tenant_id == tenant_id,
+            FeedbackEvent.created_at >= cutoff,
+        )
+        .group_by(
+            func.date(FeedbackEvent.created_at),
+            FeedbackEvent.surface,
+            FeedbackEvent.event_type,
+        )
+    )
+    rollup_stmt = select(
+        FeedbackDailyRollup.day,
+        FeedbackDailyRollup.surface,
+        FeedbackDailyRollup.event_type,
+        FeedbackDailyRollup.count,
+    ).where(
+        FeedbackDailyRollup.tenant_id == tenant_id,
+        FeedbackDailyRollup.day >= cutoff,
+    )
+
+    live_rows = (await db.execute(live_stmt)).all()
+    rollup_rows = (await db.execute(rollup_stmt)).all()
+
+    # ``func.date(...)`` comes back as a native ``date`` on Postgres but as
+    # plain text on SQLite (used by the test suite) — normalize to an ISO
+    # string up front so the two sources merge/sort on a consistent key.
+    def _day_str(day: Any) -> str:
+        return day.isoformat() if hasattr(day, "isoformat") else str(day)
+
+    merged: Dict[Tuple[str, str, str], int] = {}
+    for day, surface, event_type, count in live_rows:
+        merged[(_day_str(day), surface, event_type)] = count
+    # Rollup wins on overlap — see docstring.
+    for day, surface, event_type, count in rollup_rows:
+        merged[(_day_str(day), surface, event_type)] = count
+
+    return [
+        {"day": day, "surface": surface, "event_type": event_type, "count": count}
+        for (day, surface, event_type), count in sorted(
+            merged.items(), key=lambda item: item[0]
+        )
+    ]

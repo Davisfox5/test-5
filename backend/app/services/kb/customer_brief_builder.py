@@ -51,6 +51,8 @@ from backend.app.services.llm_client import get_async_anthropic
 from backend.app.models import (
     Contact,
     Customer,
+    CustomerCommitment,
+    CustomerConcern,
     CustomerNote,
     CustomerOutcomeEvent,
     Interaction,
@@ -70,6 +72,10 @@ logger = logging.getLogger(__name__)
 _MODEL = model_catalog.HAIKU
 _MAX_INTERACTIONS = 40
 _MAX_SUMMARY_CHARS = 500
+# Cardinality caps for the relationship-memory sections: a noisy account
+# with hundreds of concern rows must not blow the evidence budget.
+_MAX_CONCERNS = 20
+_MAX_COMMITMENTS = 15
 
 
 _SYSTEM_PROMPT = (
@@ -110,6 +116,11 @@ _SYSTEM_PROMPT = (
     "signal, <0.4 only when you're making a stretch inference. Leave missing "
     "when the field is empty.\n"
     "- Weight agent notes heavily — they're explicit human observations.\n"
+    "- Weight tracked concerns heavily too — they're the account's "
+    "accumulated memory across every call, not just the recent window; "
+    "fold active ones into objections_raised / churn_signals and mention "
+    "unmet customer commitments in the timeline or overview when they "
+    "matter.\n"
     "- If a field has no evidence, use empty string or empty array.\n"
     "- Prefer recent signals over old ones when they conflict.\n"
     "- ``current_status`` decision guide: ``churning`` if a churned/at_risk "
@@ -200,7 +211,46 @@ class CustomerBriefBuilder:
             .all()
         )
 
-        evidence = _build_evidence(customer, contacts, interactions, events, notes)
+        # Relationship memory: the concern/commitment rows written after
+        # every analyzed interaction. Without these the dossier is blind
+        # to the account's accumulated memory — a repeated pricing concern
+        # never reaches the LLM.
+        concerns = list(
+            (
+                await db.execute(
+                    select(CustomerConcern)
+                    .where(
+                        CustomerConcern.tenant_id == tenant_id,
+                        CustomerConcern.customer_id == customer_id,
+                        CustomerConcern.status.in_(("active", "monitoring")),
+                    )
+                    .order_by(CustomerConcern.last_seen_at.desc())
+                    .limit(_MAX_CONCERNS)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        commitments = list(
+            (
+                await db.execute(
+                    select(CustomerCommitment)
+                    .where(
+                        CustomerCommitment.tenant_id == tenant_id,
+                        CustomerCommitment.customer_id == customer_id,
+                    )
+                    .order_by(CustomerCommitment.created_at.desc())
+                    .limit(_MAX_COMMITMENTS)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        evidence = _build_evidence(
+            customer, contacts, interactions, events, notes,
+            concerns=concerns, commitments=commitments,
+        )
 
         if not interactions and not events and not notes:
             brief = _empty_brief()
@@ -226,6 +276,19 @@ class CustomerBriefBuilder:
             + "\n---\n".join(evidence["interaction_blocks"])
             + "\n\n## Customer lifecycle events\n"
             + json.dumps(evidence["events"])
+            + (
+                "\n\n## Tracked concerns (relationship memory — recurring "
+                "worries this account has raised across calls)\n"
+                + json.dumps(evidence["concerns"])
+                if evidence.get("concerns")
+                else ""
+            )
+            + (
+                "\n\n## Commitments this customer made\n"
+                + json.dumps(evidence["commitments"])
+                if evidence.get("commitments")
+                else ""
+            )
             + (
                 f"\n\n## Agent notes on this customer\n{notes_block}"
                 if notes_block
@@ -304,8 +367,30 @@ def _build_evidence(
     interactions: List[Interaction],
     events: List[CustomerOutcomeEvent],
     notes: Optional[List["CustomerNote"]] = None,
+    concerns: Optional[List["CustomerConcern"]] = None,
+    commitments: Optional[List["CustomerCommitment"]] = None,
 ) -> Dict[str, Any]:
     return {
+        "concerns": [
+            {
+                "topic": c.topic,
+                "description": (c.description or "")[:300],
+                "severity": c.severity,
+                "status": c.status,
+                "first_seen_at": c.first_seen_at.isoformat() if c.first_seen_at else None,
+                "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
+                "mentions": len(c.evidence or []),
+            }
+            for c in (concerns or [])
+        ],
+        "commitments": [
+            {
+                "description": (cm.description or "")[:300],
+                "status": cm.status,
+                "due_date": cm.due_date.isoformat() if cm.due_date else None,
+            }
+            for cm in (commitments or [])
+        ],
         "customer": {
             "id": str(customer.id),
             "name": customer.name,

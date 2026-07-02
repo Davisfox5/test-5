@@ -230,9 +230,11 @@ class ModelRouter:
 
         tier = self.select_tier(req)
         model = MODEL_IDS[tier]
-        create_kwargs = self._build_create_kwargs(req, model)
         # Bounded transient retries + one model failover to the cheaper tier.
+        # kwargs are shared across the failover, so shape them for BOTH
+        # models (see the thinking note in ``_build_create_kwargs``).
         fallback = model_catalog.failover_model(tier.value)
+        create_kwargs = self._build_create_kwargs(req, model, fallback_model=fallback)
         try:
             resp = await acreate_with_failover(
                 self._client, model=model, fallback_model=fallback, **create_kwargs
@@ -262,9 +264,22 @@ class ModelRouter:
 
     # ── Request shaping / telemetry helpers ───────────────────────────────
 
-    def _build_create_kwargs(self, req: LLMRequest, model: str) -> Dict[str, Any]:
+    def _build_create_kwargs(
+        self,
+        req: LLMRequest,
+        model: str,
+        fallback_model: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Assemble ``messages.create`` kwargs shared by the sync and stream
-        paths (model is passed separately by the failover wrapper / stream)."""
+        paths (model is passed separately by the failover wrapper / stream).
+
+        ``fallback_model`` matters when the same kwargs are reused verbatim
+        across a failover (the ``ainvoke`` path): an Opus request needs no
+        thinking suppression, but if it fails over to Sonnet 5 the fallback
+        would silently run adaptive thinking — eating the ``max_tokens``
+        budget and adding latency.  So thinking is suppressed when EITHER
+        model in the failover chain defaults it on (``disabled`` is accepted
+        by every runtime model)."""
         kwargs: Dict[str, Any] = {
             "max_tokens": req.max_tokens,
             "system": _build_system_payload(req.system_blocks),
@@ -279,7 +294,11 @@ class ModelRouter:
         # ``max_tokens`` or add latency — preserving prior no-thinking behavior.
         if req.thinking is not None:
             kwargs["thinking"] = req.thinking
-        elif model_catalog.thinking_on_by_default(model):
+        elif any(
+            model_catalog.thinking_on_by_default(m)
+            for m in (model, fallback_model)
+            if m
+        ):
             kwargs["thinking"] = {"type": "disabled"}
         # ``temperature`` 400s on Opus 4.7+/Fable 5; only send it to models that
         # still accept sampling params. Failover only ever steps DOWN a tier

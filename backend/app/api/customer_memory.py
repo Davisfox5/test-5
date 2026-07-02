@@ -11,9 +11,10 @@ can read; only ``manager_domains`` holders + tenant admins can patch.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import date, datetime, timezone
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -44,6 +45,7 @@ router = APIRouter()
 class ConcernOut(BaseModel):
     id: uuid.UUID
     topic: str
+    display_topic: str
     description: Optional[str]
     status: str
     severity: str
@@ -88,6 +90,45 @@ class CommitmentPatchIn(BaseModel):
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
+# Concern topics come straight from the LLM classifier as snake_case
+# strings (e.g. ``api_rate_limit_concerns``) — fine for internal
+# filtering/analytics, but they leak jargon when shown to agents/managers.
+# This map swaps known technical terms for plain-language equivalents
+# before the string is sentence-cased in ``_display_topic``.
+_TOPIC_JARGON_MAP: Dict[str, str] = {
+    "api": "API",
+    "sso": "SSO",
+    "crm": "CRM",
+    "sla": "SLA",
+    "ui": "interface",
+    "ux": "experience",
+    "latency": "response time",
+    "rate limit": "usage limits",
+    "rate_limit": "usage limits",
+}
+
+
+def _display_topic(topic: str) -> str:
+    """Render a raw ``topic`` string as a plain-language phrase for the UI.
+
+    Underscores become spaces, known jargon terms are swapped via
+    ``_TOPIC_JARGON_MAP`` (matched before casing so e.g. ``api`` -> ``API``
+    isn't later lowercased), and the result is sentence-cased (only the
+    first letter capitalized). The raw ``topic`` field is left untouched
+    so existing API consumers aren't affected.
+    """
+    if not topic:
+        return topic
+    text = topic.replace("_", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    for term, replacement in _TOPIC_JARGON_MAP.items():
+        text = re.sub(rf"\b{re.escape(term)}\b", replacement, text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return text
+    return text[0].upper() + text[1:]
+
+
 def _can_patch(principal: AuthPrincipal) -> bool:
     return (
         principal.is_tenant_admin
@@ -109,6 +150,7 @@ def _concern_out(c: CustomerConcern) -> ConcernOut:
     return ConcernOut(
         id=c.id,
         topic=c.topic,
+        display_topic=_display_topic(c.topic),
         description=c.description,
         status=c.status,
         severity=c.severity,

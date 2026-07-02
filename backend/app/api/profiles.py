@@ -394,12 +394,20 @@ async def interaction_scores(
         (getattr(principal.tenant, "branding_config", {}) or {}).get("expert_mode_enabled")
     )
 
-    sentiment_result = score_engine.default_sentiment_scorer().score(
-        score_engine.flatten_features_for_sentiment(features)
-    )
-    churn_result = score_engine.default_churn_scorer().score(
-        score_engine.flatten_features_for_churn(features)
-    )
+    # Apply the weekly-fitted Platt calibration when a version passed the
+    # ECE gate — without this the weekly fit job is dead weight and users
+    # see raw composite totals.
+    from backend.app.services.calibration import active_calibration_async
+
+    sentiment_cal = await active_calibration_async(db, principal.tenant.id, "sentiment")
+    churn_cal = await active_calibration_async(db, principal.tenant.id, "churn_risk")
+
+    sentiment_result = score_engine.default_sentiment_scorer(
+        calibration=sentiment_cal
+    ).score(score_engine.flatten_features_for_sentiment(features))
+    churn_result = score_engine.default_churn_scorer(
+        calibration=churn_cal
+    ).score(score_engine.flatten_features_for_churn(features))
     health_inputs = {
         "sentiment_delta_vs_baseline": (features_row.deterministic or {}).get("sentiment_trajectory_slope"),
         "stakeholder_count": (features_row.deterministic or {}).get("stakeholder_count"),

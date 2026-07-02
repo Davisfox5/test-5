@@ -40,7 +40,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -310,6 +310,37 @@ def detect_repeat_support_churn_risk(
 
 # ── Persistence ───────────────────────────────────────────────────────
 
+# Effectiveness feedback needs at least this many decided (applied /
+# dismissed / expired) recommendations before it adjusts anything.
+MIN_DECIDED_FOR_FEEDBACK = 4
+# A category nobody has EVER applied after this many decisions stops
+# firing — the managers have voted with their clicks.
+SUPPRESS_AFTER_IGNORED = 8
+FEEDBACK_LOOKBACK_DAYS = 90
+
+
+def _category_follow_rate(
+    session: Session, tenant_id: uuid.UUID, category: str
+) -> Optional[Tuple[float, int]]:
+    """(applied fraction, decided count) for one category over the
+    feedback window, or None below the minimum sample."""
+    since = datetime.now(timezone.utc) - timedelta(days=FEEDBACK_LOOKBACK_DAYS)
+    rows = session.execute(
+        select(ManagerRecommendation.status, func.count(ManagerRecommendation.id))
+        .where(
+            ManagerRecommendation.tenant_id == tenant_id,
+            ManagerRecommendation.category == category,
+            ManagerRecommendation.created_at >= since,
+            ManagerRecommendation.status.in_(("applied", "dismissed", "expired")),
+        )
+        .group_by(ManagerRecommendation.status)
+    ).all()
+    counts = {status: int(n) for status, n in rows}
+    decided = sum(counts.values())
+    if decided < MIN_DECIDED_FOR_FEEDBACK:
+        return None
+    return counts.get("applied", 0) / decided, decided
+
 
 def persist_candidates(
     session: Session,
@@ -325,7 +356,33 @@ def persist_candidates(
     cutoff = datetime.now(timezone.utc) - timedelta(days=DEDUP_WINDOW_DAYS)
     expires_at = datetime.now(timezone.utc) + timedelta(days=14)
 
+    # Outcome feedback per category, computed once per run: how often did
+    # managers actually apply this kind of recommendation recently?
+    follow_rates: Dict[str, Optional[Tuple[float, int]]] = {}
     for c in candidates:
+        if c.category not in follow_rates:
+            follow_rates[c.category] = _category_follow_rate(
+                session, tenant_id, c.category
+            )
+
+    for c in candidates:
+        feedback = follow_rates.get(c.category)
+        if feedback is not None:
+            rate, decided = feedback
+            if rate == 0.0 and decided >= SUPPRESS_AFTER_IGNORED:
+                # Managers have ignored/dismissed every one of these —
+                # stop refilling the queue with them.
+                logger.info(
+                    "Suppressing %s recommendation for tenant %s — 0/%d applied",
+                    c.category,
+                    tenant_id,
+                    decided,
+                )
+                continue
+            # Rank by demonstrated usefulness: a category managers act on
+            # floats up, one they mostly dismiss sinks (0.5×–1.5×).
+            c.score = round(c.score * (0.5 + rate), 4)
+            c.evidence = {**(c.evidence or {}), "past_follow_rate": round(rate, 3)}
         # Dedup window: same (category, customer_id) within DEDUP_WINDOW_DAYS,
         # provided the prior recommendation is still active (open|applied).
         # Cohort-wide candidates with no customer_id dedup on category alone

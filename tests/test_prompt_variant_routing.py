@@ -24,6 +24,21 @@ def test_bucket_varies_by_surface() -> None:
     assert len(buckets) >= 2
 
 
+def test_merge_variant_insight_adds_surface_without_clobbering() -> None:
+    existing = {"summary": "call went well", "prompt_variants": {"analysis": "keep-me"}}
+    merged = svc.merge_variant_insight(existing, "email_reply", "v-123")
+
+    assert merged["summary"] == "call went well"
+    assert merged["prompt_variants"] == {"analysis": "keep-me", "email_reply": "v-123"}
+    # Original dict is untouched — callers reassign the result.
+    assert existing["prompt_variants"] == {"analysis": "keep-me"}
+
+
+def test_merge_variant_insight_noop_when_no_variant_id() -> None:
+    merged = svc.merge_variant_insight(None, "email_classifier", None)
+    assert merged == {}
+
+
 def test_bucket_distribution_uniform_at_scale() -> None:
     """Across 5,000 random tenants the bucket distribution should be ~uniform.
 

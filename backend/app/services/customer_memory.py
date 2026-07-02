@@ -14,11 +14,15 @@ Called once per interaction after the AI analysis pass writes
 This service handles persistence + lifecycle:
 
 * Concerns upsert per (customer, topic). A negative-sentiment mention
-  on a previously-resolved concern reopens it (status flips back to
-  ``active``); a positive-sentiment mention on an active concern
-  moves it to ``monitoring``. Severity follows the highest recent
-  reading. The ``evidence`` JSONB column accumulates a provenance
-  trail.
+  on a previously-resolved concern moves it to ``monitoring`` first
+  (preserving ``resolved_at`` as history); a second negative mention
+  escalates ``monitoring`` → ``active``, and only then is the old
+  resolution timestamp cleared. A positive-sentiment mention on an
+  active concern moves it to ``monitoring``. This two-step reopen
+  stops a single offhand remark from flip-flopping the state and
+  corrupting the resolution timeline. Severity follows the highest
+  recent reading. The ``evidence`` JSONB column accumulates a
+  provenance trail.
 * Commitments are append-only — they're discrete promises with
   their own due dates, not a state machine on the customer.
 
@@ -32,7 +36,7 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
@@ -86,6 +90,17 @@ def update_from_interaction(
     pipeline log carries the per-row evidence of what changed."""
     if interaction.customer_id is None:
         return {"concerns": 0, "commitments": 0}
+
+    # Concurrent analyses for the same customer (two calls finishing
+    # minutes apart) race on the same concern rows; serialize them per
+    # (tenant, customer) for the rest of this transaction. Postgres
+    # only — the SQLite test fixture runs single-writer anyway.
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"cust-mem:{interaction.tenant_id}:{interaction.customer_id}"},
+        )
 
     motion = interaction.domain if isinstance(interaction.domain, str) else None
     if motion not in _VALID_SOURCE_MOTION:
@@ -202,11 +217,19 @@ def _upsert_concerns(
                 existing.status = "monitoring"
                 existing.status_changed_at = now
         elif sentiment == "negative":
-            if existing.status in ("monitoring", "resolved", "dormant"):
+            if before_status in ("monitoring", "dormant"):
                 existing.status = "active"
                 existing.status_changed_at = now
-                if before_status == "resolved":
-                    existing.resolved_at = None
+                # Fully reactivated: the prior resolution (if any) is
+                # genuinely over, so the timestamp stops being history.
+                existing.resolved_at = None
+            elif before_status == "resolved":
+                # One mention after resolution watches, it doesn't
+                # reopen — ``resolved_at`` stays intact so the timeline
+                # survives an offhand remark. A second negative mention
+                # escalates via the branch above.
+                existing.status = "monitoring"
+                existing.status_changed_at = now
         # 'neutral' or 'mixed' don't move the status by themselves.
         ev = list(existing.evidence or [])
         ev.append(evidence_item)
