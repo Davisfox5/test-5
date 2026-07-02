@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
-def _headers(access_token: str) -> dict:
+def auth_headers(access_token: str) -> dict:
+    """Public API: standard Graph request headers for a mail fetch.
+
+    Used by the poller, push, and backfill paths.
+    """
     # Ask for HTML bodies so we can render them.  Strip to text for
     # the analysis pipeline via _strip_html_to_text.
     return {
@@ -54,12 +58,17 @@ def _strip_html_to_text(html: str) -> str:
     return "\n".join(line.strip() for line in cleaned.splitlines() if line.strip())
 
 
-def _normalize(
+def normalize_message(
     raw: dict,
     agent_email: Optional[str],
     direction: str,
     access_token: Optional[str] = None,
 ) -> NormalizedEmail:
+    """Public API: Graph message dict → :class:`NormalizedEmail`.
+
+    Shared by the poller, push, and backfill paths — treat the signature
+    as a cross-module contract.
+    """
     sender = (raw.get("from") or {}).get("emailAddress", {})
     to = [r["emailAddress"]["address"] for r in raw.get("toRecipients", []) if r.get("emailAddress")]
     cc = [r["emailAddress"]["address"] for r in raw.get("ccRecipients", []) if r.get("emailAddress")]
@@ -144,6 +153,12 @@ def _normalize(
     )
 
 
+# Backwards-compat aliases — these predate the helpers being promoted to
+# the module's public API; new callers should use the public names.
+_headers = auth_headers
+_normalize = normalize_message
+
+
 def _list_attachments(access_token: str, message_id: str) -> List[NormalizedAttachment]:
     """Enumerate attachment metadata without pulling bytes."""
     out: List[NormalizedAttachment] = []
@@ -184,7 +199,7 @@ def fetch_recent(
     max_messages: int = 50,
 ) -> Iterable[NormalizedEmail]:
     """Yield normalized emails from Inbox + SentItems."""
-    with httpx.Client(timeout=20, headers=_headers(access_token)) as client:
+    with httpx.Client(timeout=20, headers=auth_headers(access_token)) as client:
         for folder, direction in (("Inbox", "inbound"), ("SentItems", "outbound")):
             url = cursor.delta_link if (cursor and cursor.delta_link and folder == "Inbox") else (
                 f"{GRAPH_BASE}/me/mailFolders/{folder}/messages"
@@ -199,7 +214,7 @@ def fetch_recent(
                     break
                 data = resp.json()
                 for raw in data.get("value", []):
-                    yield _normalize(raw, agent_email, direction, access_token=access_token)
+                    yield normalize_message(raw, agent_email, direction, access_token=access_token)
                 # Stop after one page in the non-delta fast path.
                 next_link = data.get("@odata.nextLink")
                 delta_link = data.get("@odata.deltaLink")

@@ -91,6 +91,28 @@ class NormalizedEmail:
     attachment_fetcher: Optional[callable] = None  # type: ignore[assignment]
 
 
+@dataclass
+class IngestCaches:
+    """Per-job lookup caches for hot bulk paths (the email backfill).
+
+    :func:`ingest_email`'s contact/conversation upserts each cost a
+    SELECT per message; a bulk job importing a 50-message thread repeats
+    the identical lookups 50 times. A caller that processes many
+    messages for ONE tenant inside ONE session may pass an instance to
+    reuse the rows across messages.
+
+    Callers must ``clear()`` after any rollback — the cached instances
+    may reference rows the rollback discarded.
+    """
+
+    contacts: Dict[str, Contact] = field(default_factory=dict)  # key: address
+    conversations: Dict[str, Conversation] = field(default_factory=dict)  # key: thread_key
+
+    def clear(self) -> None:
+        self.contacts.clear()
+        self.conversations.clear()
+
+
 def _tenant_domains(tenant: Tenant) -> List[str]:
     """Pull internal-domain list out of tenant.features_enabled/metadata."""
     feats = tenant.features_enabled or {}
@@ -131,9 +153,16 @@ def _counterparty_address(email: NormalizedEmail) -> str:
     return email.to_addresses[0] if email.to_addresses else ""
 
 
-def _upsert_contact(session: Session, tenant_id: uuid.UUID, address: str) -> Optional[Contact]:
+def _upsert_contact(
+    session: Session,
+    tenant_id: uuid.UUID,
+    address: str,
+    cache: Optional[Dict[str, Contact]] = None,
+) -> Optional[Contact]:
     if not address:
         return None
+    if cache is not None and address in cache:
+        return cache[address]
     contact = (
         session.query(Contact)
         .filter(Contact.tenant_id == tenant_id, Contact.email == address)
@@ -143,6 +172,8 @@ def _upsert_contact(session: Session, tenant_id: uuid.UUID, address: str) -> Opt
         contact = Contact(tenant_id=tenant_id, email=address, name=address.split("@")[0])
         session.add(contact)
         session.flush()
+    if cache is not None:
+        cache[address] = contact
     return contact
 
 
@@ -154,15 +185,18 @@ def _upsert_conversation(
     classification: str,
     contact_id: Optional[uuid.UUID],
     received_at: Optional[datetime],
+    cache: Optional[Dict[str, Conversation]] = None,
 ) -> Conversation:
-    conv = (
-        session.query(Conversation)
-        .filter(
-            Conversation.tenant_id == tenant_id,
-            Conversation.thread_key == thread_key,
+    conv = cache.get(thread_key) if cache is not None else None
+    if conv is None:
+        conv = (
+            session.query(Conversation)
+            .filter(
+                Conversation.tenant_id == tenant_id,
+                Conversation.thread_key == thread_key,
+            )
+            .first()
         )
-        .first()
-    )
     if conv is None:
         conv = Conversation(
             tenant_id=tenant_id,
@@ -175,6 +209,8 @@ def _upsert_conversation(
         )
         session.add(conv)
         session.flush()
+    if cache is not None:
+        cache[thread_key] = conv
     # Always bump counters on every appended message.
     conv.message_count = (conv.message_count or 0) + 1
     conv.last_message_at = received_at or datetime.now(timezone.utc)
@@ -199,11 +235,15 @@ async def ingest_email(
     tenant: Tenant,
     email: NormalizedEmail,
     classifier: Optional[EmailClassifier] = None,
+    caches: Optional[IngestCaches] = None,
 ) -> Optional[uuid.UUID]:
     """Process a single email.  Returns the Interaction id, or None if filtered.
 
     Idempotent on ``provider_message_id`` + RFC-822 Message-ID so the
     poller can re-run a window without creating duplicates.
+
+    ``caches`` (optional) reuses contact/conversation lookups across
+    messages for bulk callers — see :class:`IngestCaches`.
     """
     # Dedupe — Gmail/Graph poll windows overlap.
     existing = (
@@ -253,7 +293,10 @@ async def ingest_email(
         return None
 
     counterparty = _counterparty_address(email)
-    contact = _upsert_contact(session, tenant.id, counterparty)
+    contact = _upsert_contact(
+        session, tenant.id, counterparty,
+        cache=caches.contacts if caches is not None else None,
+    )
     agent = _resolve_agent(session, tenant.id, email.agent_email)
 
     # Campaign attribution: if this is an inbound reply to a tracked
@@ -291,6 +334,7 @@ async def ingest_email(
         classification=verdict.classification,
         contact_id=contact.id if contact else None,
         received_at=email.received_at,
+        cache=caches.conversations if caches is not None else None,
     )
 
     interaction = Interaction(

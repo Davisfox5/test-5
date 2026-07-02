@@ -20,6 +20,7 @@ scopes:
     - POST   /api/v1/interactions
     - POST   /api/v1/interactions/upload
     - POST   /api/v1/interactions/ingest-recording
+    - POST   /api/v1/email/backfill
     - PATCH  /api/v1/interactions/{interaction_id}
     - DELETE /api/v1/interactions/{interaction_id}
 

@@ -15,8 +15,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from backend.app.models import EmailSyncCursor, Integration
-from backend.app.services.email_ingest.gmail import _normalize as _normalize_gmail
-from backend.app.services.email_ingest.graph import _normalize as _normalize_graph
+from backend.app.services.email_ingest.gmail import normalize_message as _normalize_gmail
+from backend.app.services.email_ingest.graph import normalize_message as _normalize_graph
 from backend.app.services.email_ingest.ingest import NormalizedEmail
 
 logger = logging.getLogger(__name__)
