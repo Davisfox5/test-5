@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from functools import lru_cache
 from typing import Any, Awaitable, Callable, Optional
 
@@ -24,11 +25,69 @@ from backend.app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+class _LoopLocalAsyncAnthropic:
+    """Proxy that resolves to a per-event-loop ``AsyncAnthropic``.
+
+    httpx binds pooled connections to the event loop that created them.
+    Celery sync task bodies call LLM code through ``asyncio.run`` (a fresh
+    loop per call), so a single process-wide async client would hand out
+    keep-alive connections bound to an already-closed loop — the same
+    "RuntimeError: Event loop is closed" class that ``_run_async`` in
+    ``tasks.py`` dispose-firsts away for the asyncpg pool.
+
+    Resolution happens per attribute access, i.e. at await time inside
+    whatever loop is running — not at service-constructor time — so the
+    many services that capture ``self._client = get_async_anthropic()``
+    in ``__init__`` (often before any loop exists) still get a client
+    owned by the loop that ultimately makes the request. Within one
+    long-lived loop (the FastAPI app, one ``asyncio.run`` body) the pool
+    stays hot exactly as before; clients for finished loops are dropped
+    when their loop is garbage-collected.
+    """
+
+    __slots__ = ("_by_loop", "_no_loop_client")
+
+    def __init__(self) -> None:
+        self._by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, anthropic.AsyncAnthropic]" = (
+            weakref.WeakKeyDictionary()
+        )
+        # Attribute reads outside any loop (e.g. introspection in sync
+        # code) get a real client; it never serves requests, because a
+        # request's attribute chain resolves inside the running loop.
+        self._no_loop_client: Optional[anthropic.AsyncAnthropic] = None
+
+    def _resolve(self) -> anthropic.AsyncAnthropic:
+        settings = get_settings()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._no_loop_client is None:
+                self._no_loop_client = anthropic.AsyncAnthropic(
+                    api_key=settings.ANTHROPIC_API_KEY
+                )
+            return self._no_loop_client
+        client = self._by_loop.get(loop)
+        if client is None:
+            client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+            self._by_loop[loop] = client
+        return client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:
+        return "<loop-local AsyncAnthropic proxy>"
+
+
 @lru_cache(maxsize=1)
 def get_async_anthropic() -> anthropic.AsyncAnthropic:
-    """Return a process-wide AsyncAnthropic client."""
-    settings = get_settings()
-    return anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    """Return the shared AsyncAnthropic client (loop-local under the hood).
+
+    The returned object is a ``_LoopLocalAsyncAnthropic`` proxy that is
+    API-compatible with ``anthropic.AsyncAnthropic``; see its docstring
+    for why the real client is scoped to the running event loop.
+    """
+    return _LoopLocalAsyncAnthropic()  # type: ignore[return-value]
 
 
 @lru_cache(maxsize=1)
