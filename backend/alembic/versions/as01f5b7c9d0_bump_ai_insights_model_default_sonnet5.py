@@ -1,10 +1,16 @@
 """bump ai_insights.model column default to claude-sonnet-5
 
-The ``ai_insights.model`` column carried a server_default of
-``claude-sonnet-4-6`` from the initial schema. The application writes the model
-explicitly on every insert, so this default is a fallback only — but we keep it
-current with the tier catalog (Sonnet bumped 4-6 -> 5) so a row inserted without
-an explicit model records the model we'd actually use.
+Correction (2026-07-02): ``ai_insights`` is a *legacy* table — the initial
+schema migration (``550a40162883``) drops it in ``upgrade()`` and only
+recreates it in ``downgrade()``, so no database at or past the initial schema
+has it. The audit note that motivated this bump cited the initial schema's
+``downgrade()`` section by mistake; the live schema has no model-default
+column to bump. The first deploy after this migration merged (once Fly
+billing unblocked deploys) failed its release command on staging with
+``relation "ai_insights" does not exist``, blocking every later revision in
+the chain. The ALTER is therefore guarded on table existence: on every
+current database this revision applies as a recorded no-op, keeping the
+migration chain intact without renumbering.
 
 Revision ID: as01f5b7c9d0
 Revises: ap_003_draft_state
@@ -20,7 +26,17 @@ branch_labels = None
 depends_on = None
 
 
+def _ai_insights_exists() -> bool:
+    bind = op.get_bind()
+    return (
+        bind.execute(sa.text("SELECT to_regclass('public.ai_insights')")).scalar()
+        is not None
+    )
+
+
 def upgrade() -> None:
+    if not _ai_insights_exists():
+        return
     op.alter_column(
         "ai_insights",
         "model",
@@ -31,6 +47,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _ai_insights_exists():
+        return
     op.alter_column(
         "ai_insights",
         "model",
