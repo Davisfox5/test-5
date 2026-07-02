@@ -225,3 +225,153 @@ def test_orchestrator_record_delta_writes_a_row():
         delta={"client_delta": {}},
     )
     session.add.assert_called_once()
+
+
+# ── run_daily via the Batches path ────────────────────────────────────────
+
+
+class _BatchStubRouter:
+    """Stub whose ``run_batch`` returns pre-baked ``{custom_id: result}``."""
+
+    def __init__(self, results=None, raise_on_submit=None):
+        self.captured_requests = None
+        self._results = results or {}
+        self._raise = raise_on_submit
+
+    async def run_batch(self, requests, **_kw):
+        self.captured_requests = requests
+        if self._raise is not None:
+            raise self._raise
+        return dict(self._results)
+
+
+class _DailySession:
+    """Fake session for run_daily: serves the tenant, the unconsumed deltas,
+    an empty profile history, and records the consumed-at update."""
+
+    def __init__(self, tenant, deltas):
+        self._tenant = tenant
+        self._deltas = deltas
+        self.added = []
+        self.consumed_update = None
+        self.committed = False
+
+    def get(self, _model, _pk):
+        return self._tenant
+
+    def add(self, row):
+        row.id = uuid.uuid4()
+        self.added.append(row)
+
+    def flush(self):
+        pass
+
+    def commit(self):
+        self.committed = True
+
+    def execute(self, stmt):
+        from sqlalchemy.sql.dml import Update
+
+        from backend.app.models import DeltaReport
+
+        if isinstance(stmt, Update):
+            self.consumed_update = stmt
+            return MagicMock()
+        entity = stmt.column_descriptions[0]["entity"]
+        m = MagicMock()
+        if entity is DeltaReport:
+            m.scalars.return_value.all.return_value = self._deltas
+        else:  # ProfileStore.latest — no prior profile version
+            m.scalar_one_or_none.return_value = None
+        return m
+
+
+def _delta_row(entity_id):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        interaction_id=uuid.uuid4(),
+        created_at=None,
+        delta={"client_delta": {"sentiment_shift": 0.1}},
+        scopes=[{"type": ENTITY_CLIENT, "id": str(entity_id)}],
+    )
+
+
+_GOOD_PAYLOAD = (
+    '{"summary": "s", "metrics": {}, "history_headline": "h",'
+    ' "top_factors": [], "confidence": 0.5}'
+)
+
+
+def _batch_ok(text=_GOOD_PAYLOAD):
+    return {"text": text, "usage": {}, "stop_reason": "end_turn"}
+
+
+def _batch_err(error_type):
+    return {"text": "", "usage": {}, "stop_reason": None,
+            "error": {"type": error_type}}
+
+
+def test_run_daily_submits_one_batch_and_consumes_on_success():
+    tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme",
+                             automation_level="suggest", canonical_glossary={})
+    e1, e2 = uuid.uuid4(), uuid.uuid4()
+    session = _DailySession(tenant, [_delta_row(e1), _delta_row(e2)])
+    router = _BatchStubRouter(results={
+        f"client:{e1}": _batch_ok(),
+        f"client:{e2}": _batch_ok(),
+    })
+    counts = Orchestrator(router=router).run_daily(session, tenant.id)
+
+    assert counts == {ENTITY_CLIENT: 2}
+    assert len(session.added) == 2                 # one profile version each
+    assert session.consumed_update is not None     # deltas marked consumed
+    assert session.committed
+    # All entity buckets went out as ONE batch, telemetry-keyed.
+    assert len(router.captured_requests) == 2
+    for req in router.captured_requests:
+        assert req.call_site == "orchestrator_daily"
+        assert req.metadata["custom_id"].startswith("client:")
+
+
+def test_run_daily_failed_entry_leaves_its_deltas_unconsumed():
+    tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme",
+                             automation_level="suggest", canonical_glossary={})
+    ok_id, bad_id = uuid.uuid4(), uuid.uuid4()
+    session = _DailySession(tenant, [_delta_row(ok_id), _delta_row(bad_id)])
+    router = _BatchStubRouter(results={
+        f"client:{ok_id}": _batch_ok(),
+        f"client:{bad_id}": _batch_err("overloaded_error"),
+    })
+    counts = Orchestrator(router=router).run_daily(session, tenant.id)
+
+    assert counts == {ENTITY_CLIENT: 1}
+    assert len(session.added) == 1                 # only the ok entity wrote
+    assert session.consumed_update is not None     # ok bucket still consumed
+
+
+def test_run_daily_submit_failure_consumes_nothing():
+    tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme",
+                             automation_level="suggest", canonical_glossary={})
+    session = _DailySession(tenant, [_delta_row(uuid.uuid4())])
+    router = _BatchStubRouter(raise_on_submit=RuntimeError("submit down"))
+    counts = Orchestrator(router=router).run_daily(session, tenant.id)
+
+    assert counts == {}
+    assert session.added == []
+    assert session.consumed_update is None         # everything retries next run
+    assert session.committed                       # commit is still a no-op close
+
+
+def test_run_daily_parse_failure_consumes_but_writes_nothing():
+    # Matches the sequential version: a malformed response is not retried —
+    # the deltas are consumed, but no profile version is written.
+    tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme",
+                             automation_level="suggest", canonical_glossary={})
+    eid = uuid.uuid4()
+    session = _DailySession(tenant, [_delta_row(eid)])
+    router = _BatchStubRouter(results={f"client:{eid}": _batch_ok("not json")})
+    counts = Orchestrator(router=router).run_daily(session, tenant.id)
+
+    assert counts == {ENTITY_CLIENT: 1}
+    assert session.added == []
+    assert session.consumed_update is not None

@@ -14,10 +14,11 @@ router enforces three cost/speed disciplines:
 3. **Batch API.**  ``submit_batch`` / ``run_batch`` wrap the Anthropic
    Messages Batches API (~50 % token discount, no sync rate-limit
    pressure) with the same tier-pinning, request shaping, and failover
-   as the live path.  No production task submits through it yet —
-   non-interactive work (tenant rollups, weekly reflection, backfill)
-   currently calls ``invoke``; moving it onto ``run_batch`` is an open
-   cost optimization.
+   as the live path.  The nightly tenant rollup
+   (``Orchestrator.run_daily``) submits through ``run_batch``; the other
+   non-interactive surfaces (weekly reflection, manager
+   recommendations, KB refiners) still call ``invoke``/``ainvoke`` and
+   remain open cost optimizations.
 
 The router is synchronous-async dual-capable; live endpoints call
 ``ainvoke`` while Celery workers call ``invoke``.

@@ -23,6 +23,7 @@ per tenant-day, not per-call, because we consolidate.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -322,6 +323,15 @@ class Orchestrator:
     ) -> Dict[str, int]:
         """Consolidate unconsumed deltas for one tenant into profile bumps.
 
+        All of a tenant's entity buckets go through **one Messages Batches
+        round-trip** (:meth:`ModelRouter.run_batch`): ~50 % token discount
+        and per-entry failover, instead of N sequential live Opus calls.
+        The cadence is nightly, so batch latency (typically minutes) is
+        irrelevant. Failure semantics per entity are unchanged from the
+        sequential version: an entry that fails (batch error, poll timeout,
+        or the submit itself) leaves its deltas unconsumed, so the next
+        nightly run picks them up again.
+
         Returns counts keyed by entity_type for observability.
         """
         from backend.app.models import DeltaReport, Tenant
@@ -350,25 +360,76 @@ class Orchestrator:
                 buckets.setdefault(key, []).append(d)
 
         store = ProfileStore(session)
-        counts: Dict[str, int] = {}
-        consumed_ids: List[uuid.UUID] = []
+
+        # Build phase — one request per entity bucket. custom_id is
+        # "{entity_type}:{entity_id}", unique because buckets are keyed on it.
+        # ``prior`` is captured alongside the request: the apply phase needs
+        # the same snapshot the prompt was built from.
+        jobs: Dict[str, Tuple[str, uuid.UUID, List[Any], Dict[str, Any]]] = {}
+        requests: List[LLMRequest] = []
         for (entity_type, entity_id), entity_deltas in buckets.items():
             try:
-                self._consolidate_one(
-                    session=session,
-                    store=store,
+                eid = uuid.UUID(entity_id)
+                ref = ProfileEntityRef(entity_type=entity_type, entity_id=eid)
+                prior = store.latest(ref) or {"profile": {}, "version": 0}
+                req = self._build_consolidation_request(
                     tenant=tenant,
                     entity_type=entity_type,
-                    entity_id=uuid.UUID(entity_id),
+                    entity_id=eid,
                     deltas=entity_deltas,
+                    prior=prior,
                 )
-                counts[entity_type] = counts.get(entity_type, 0) + 1
-                consumed_ids.extend(d.id for d in entity_deltas)
             except Exception:
                 logger.exception(
-                    "Daily consolidation failed for %s %s (tenant %s)",
+                    "Daily consolidation build failed for %s %s (tenant %s)",
                     entity_type, entity_id, tenant_id,
                 )
+                continue
+            jobs[req.metadata["custom_id"]] = (entity_type, eid, entity_deltas, prior)
+            requests.append(req)
+
+        counts: Dict[str, int] = {}
+        consumed_ids: List[uuid.UUID] = []
+        if requests:
+            try:
+                results = asyncio.run(self._router.run_batch(requests))
+            except Exception:
+                # Submit itself failed (non-transiently, past run_batch's own
+                # retries). Same containment as the old per-entity loop: log,
+                # consume nothing, let the next nightly run retry everything.
+                logger.exception(
+                    "Daily consolidation batch submit failed (tenant %s); "
+                    "deltas stay unconsumed", tenant_id,
+                )
+                results = {}
+
+            for cid, (entity_type, eid, entity_deltas, prior) in jobs.items():
+                res = results.get(cid) or {}
+                err = res.get("error") if res else {"type": "result_unavailable"}
+                if err:
+                    logger.warning(
+                        "Daily consolidation entry %s failed in batch (%s); "
+                        "deltas stay unconsumed for the next run",
+                        cid, err.get("type"),
+                    )
+                    continue
+                try:
+                    self._apply_consolidation(
+                        store=store,
+                        tenant=tenant,
+                        entity_type=entity_type,
+                        entity_id=eid,
+                        deltas=entity_deltas,
+                        prior=prior,
+                        response_text=res.get("text", ""),
+                    )
+                    counts[entity_type] = counts.get(entity_type, 0) + 1
+                    consumed_ids.extend(d.id for d in entity_deltas)
+                except Exception:
+                    logger.exception(
+                        "Daily consolidation apply failed for %s (tenant %s)",
+                        cid, tenant_id,
+                    )
 
         # Mark consumed in a single update.
         if consumed_ids:
@@ -381,20 +442,16 @@ class Orchestrator:
         session.commit()
         return counts
 
-    def _consolidate_one(
+    def _build_consolidation_request(
         self,
         *,
-        session: Session,
-        store: ProfileStore,
         tenant: Any,
         entity_type: str,
         entity_id: uuid.UUID,
         deltas: List[Any],
-    ) -> None:
-        """Consolidate one entity's deltas into a new profile version."""
-        ref = ProfileEntityRef(entity_type=entity_type, entity_id=entity_id)
-        prior = store.latest(ref) or {"profile": {}, "version": 0}
-
+        prior: Dict[str, Any],
+    ) -> LLMRequest:
+        """Build the consolidation request for one entity bucket."""
         prompt_body = {
             "entity_type": entity_type,
             "entity_id": str(entity_id),
@@ -416,7 +473,7 @@ class Orchestrator:
             ENTITY_MANAGER: TaskType.ORCH_MANAGER,
             ENTITY_BUSINESS: TaskType.ORCH_BUSINESS,
         }
-        req = LLMRequest(
+        return LLMRequest(
             task_type=task_type_map[entity_type],
             user_message=json.dumps(prompt_body),
             system_blocks=[
@@ -426,11 +483,32 @@ class Orchestrator:
             ],
             max_tokens=3072,
             temperature=0.0,
+            call_site="orchestrator_daily",
             metadata={"custom_id": f"{entity_type}:{entity_id}"},
         )
-        resp = self._router.invoke(req)
+
+    def _apply_consolidation(
+        self,
+        *,
+        store: ProfileStore,
+        tenant: Any,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        deltas: List[Any],
+        prior: Dict[str, Any],
+        response_text: str,
+    ) -> None:
+        """Parse one batch entry's response and append the profile version.
+
+        A JSON parse failure logs and returns normally (the deltas ARE
+        consumed — same as the sequential version, where a malformed
+        response was not retried either); only raised exceptions leave the
+        bucket's deltas unconsumed.
+        """
+        ref = ProfileEntityRef(entity_type=entity_type, entity_id=entity_id)
+        from backend.app.services.triage_service import _strip_json_fences
         try:
-            payload = resp.parse_json()
+            payload = json.loads(_strip_json_fences(response_text))
         except Exception:
             logger.exception(
                 "Orchestrator JSON parse failed for %s %s", entity_type, entity_id
