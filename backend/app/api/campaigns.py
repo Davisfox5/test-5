@@ -15,7 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -241,7 +241,7 @@ async def add_events(
             recipient_id=recipient.id if recipient else None,
             contact_id=recipient.contact_id if recipient else None,
             event_type=e.event_type,
-            occurred_at=e.occurred_at or datetime.utcnow(),
+            occurred_at=e.occurred_at or datetime.now(timezone.utc),
             metadata_=e.metadata or {},
         ))
         created += 1

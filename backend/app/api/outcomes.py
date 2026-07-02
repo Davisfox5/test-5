@@ -15,6 +15,10 @@ Hardened contract over the v1 endpoint:
 - **Semantic floors** — ``occurred_at`` cannot be > 1 day in the future;
   if an ``interaction_id`` is referenced it must belong to the caller's
   tenant or the event is dead-lettered.
+- **First-class ``customer_id`` (optional)** — validated against the
+  interaction's resolved customer; a mismatch is rejected (422 on the
+  single-event endpoint, dead-lettered ``customer_mismatch`` in batches)
+  and never silently mis-attributed.  Persisted on the ingestion row.
 - **Dead-letter log** — every dropped event is persisted to
   ``dropped_outcome_events`` with the failure reason so integrators can
   debug without losing data.
@@ -31,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +44,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from backend.app.auth import get_current_tenant
 from backend.app.db import get_db
 from backend.app.models import (
+    Contact,
+    Customer,
     DroppedOutcomeEvent,
+    Interaction,
     InteractionFeatures,
     OutcomeEventIngestion,
     Tenant,
@@ -80,6 +87,11 @@ class OutcomeEvent(BaseModel):
     ``event_id`` is strongly recommended: if present, idempotency is
     enforced per ``(tenant_id, event_id)``.  Without it, the caller is
     responsible for avoiding duplicates.
+
+    ``customer_id`` is optional first-class customer attribution.  When
+    present it is validated against the interaction's resolved customer
+    (mismatches are rejected, never silently mis-attributed) and
+    persisted on the ingestion row for per-customer aggregation.
     """
 
     interaction_id: uuid.UUID
@@ -88,6 +100,21 @@ class OutcomeEvent(BaseModel):
     occurred_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
     event_id: Optional[str] = Field(default=None, max_length=128)
+    customer_id: Optional[uuid.UUID] = None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _occurred_at_utc_aware(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Normalize naive input to UTC-aware.
+
+        A naive timestamp would (a) blow up the aware comparison in
+        ``_apply_events`` and (b) serialize without an offset, which
+        browsers then parse as LOCAL time. Callers sending naive values
+        mean UTC by convention.
+        """
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class OutcomeBatch(BaseModel):
@@ -151,18 +178,77 @@ def _to_jsonable(obj: Any) -> Dict[str, Any]:
 # ── Core apply ───────────────────────────────────────────────────────────
 
 
+async def _customer_claim_error(
+    db: AsyncSession, tenant_id: uuid.UUID, event: OutcomeEvent
+) -> Optional[str]:
+    """Validate an event's ``customer_id`` claim against the interaction.
+
+    Returns a dead-letter reason string when the claim is invalid, else
+    None.  A claim is invalid when the customer doesn't exist in the
+    tenant (``customer_not_found``) or the interaction resolves to a
+    different customer — directly or via its contact
+    (``customer_mismatch``).  An interaction with no resolved customer
+    accepts the claim: we can't disprove it, and rejecting would force
+    callers back to metadata smuggling.
+    """
+    customer = (
+        await db.execute(
+            select(Customer.id).where(
+                Customer.id == event.customer_id,
+                Customer.tenant_id == tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if customer is None:
+        return "customer_not_found"
+
+    row = (
+        await db.execute(
+            select(Interaction.customer_id, Interaction.contact_id).where(
+                Interaction.id == event.interaction_id,
+                Interaction.tenant_id == tenant_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return "interaction_not_found"
+    resolved_customer_id, contact_id = row
+
+    if resolved_customer_id is not None:
+        if resolved_customer_id != event.customer_id:
+            return "customer_mismatch"
+        return None
+    if contact_id is not None:
+        contact_customer_id = (
+            await db.execute(
+                select(Contact.customer_id).where(Contact.id == contact_id)
+            )
+        ).scalar_one_or_none()
+        if (
+            contact_customer_id is not None
+            and contact_customer_id != event.customer_id
+        ):
+            return "customer_mismatch"
+    return None
+
+
 async def _apply_events(
     db: AsyncSession,
     tenant_id: uuid.UUID,
     events: List[OutcomeEvent],
     headers_snapshot: Dict[str, str],
+    *,
+    strict_customer: bool = False,
 ) -> OutcomeAck:
     """Apply a batch of events.  Returns counts per outcome.
 
     For each event: validate semantic floors, check idempotency, update
     ``InteractionFeatures.proxy_outcomes``, record the ingestion row, or
-    dead-letter on any failure.  Never raises — callers always get a
-    meaningful count back.
+    dead-letter on any failure.  Callers always get a meaningful count
+    back — the only exception is ``strict_customer=True`` (single-event
+    endpoint), where a ``customer_id`` claim that fails validation
+    raises 422 after dead-lettering, instead of silently counting as
+    dropped inside a 202.
     """
     now = datetime.now(timezone.utc)
     future_limit = now + timedelta(days=1)
@@ -188,6 +274,22 @@ async def _apply_events(
             await _deadletter(db, tenant_id, "interaction_not_found", event, headers_snapshot)
             continue
 
+        # Optional first-class customer attribution — reject a claim that
+        # contradicts the interaction's resolved customer rather than
+        # silently mis-attributing the outcome.
+        if event.customer_id is not None:
+            claim_error = await _customer_claim_error(db, tenant_id, event)
+            if claim_error is not None:
+                dropped += 1
+                await _deadletter(db, tenant_id, claim_error, event, headers_snapshot)
+                if strict_customer:
+                    await db.commit()
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"customer_id rejected: {claim_error}",
+                    )
+                continue
+
         # Idempotency check.
         if event.event_id:
             existing_stmt = select(OutcomeEventIngestion).where(
@@ -208,6 +310,8 @@ async def _apply_events(
             "occurred_at": (event.occurred_at or now).isoformat(),
             "metadata": event.metadata or {},
         }
+        if event.customer_id is not None:
+            record["customer_id"] = str(event.customer_id)
         existing_value = outcomes.get(event.outcome_type)
         if existing_value is None:
             outcomes[event.outcome_type] = record
@@ -225,6 +329,7 @@ async def _apply_events(
             event_id=event.event_id or _autogen_event_id(event),
             outcome_type=event.outcome_type,
             interaction_id=event.interaction_id,
+            customer_id=event.customer_id,
             payload=event.model_dump(mode="json"),
         )
         db.add(ingestion)
@@ -269,7 +374,9 @@ async def ingest_outcome(
         await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad signature")
 
-    ack = await _apply_events(db, tenant.id, [payload], dict(request.headers))
+    ack = await _apply_events(
+        db, tenant.id, [payload], dict(request.headers), strict_customer=True
+    )
     await db.commit()
     return ack
 

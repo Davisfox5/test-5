@@ -2643,6 +2643,13 @@ class OutcomeEventIngestion(Base):
     interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("interactions.id", ondelete="SET NULL")
     )
+    # First-class customer attribution (optional, validated against the
+    # interaction's resolved customer at ingest) so calibration and
+    # reporting can aggregate per customer without joining through
+    # interactions.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

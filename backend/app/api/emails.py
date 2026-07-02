@@ -400,6 +400,14 @@ async def send_follow_up(
     updates it to ``sent`` or ``failed`` based on the provider response.
     This gives us a durable audit even if the provider HTTP call hangs
     or crashes the worker mid-flight.
+
+    Response contract (consumers depend on this — see
+    docs/flex-console-integration-hardening.md item 2): a 2xx response
+    always means the provider accepted the message (``status: "sent"``).
+    Provider failures are never 2xx: auth failures return 401, any other
+    provider failure returns 502 with the provider error as ``detail``.
+    The ``failed`` EmailSend row is committed before the error response
+    so the outbox audit survives the raised exception.
     """
     interaction = await db.get(Interaction, interaction_id)
     if interaction is None or interaction.tenant_id != principal.tenant.id:
@@ -482,6 +490,15 @@ async def send_follow_up(
 
     sender = _build_sender(integ, principal_email_hint=_principal_email(principal))
 
+    async def _fail(error: str, status_code: int, detail: str) -> None:
+        # Persist the failed row BEFORE raising — get_db rolls the session
+        # back when the HTTPException propagates, so without this commit
+        # the audit row (and the "failed" status) would silently vanish.
+        record.status = "failed"
+        record.error = error[:500]
+        await db.commit()
+        raise HTTPException(status_code=status_code, detail=detail)
+
     try:
         result = await sender.send(
             to=[body.to],
@@ -494,15 +511,17 @@ async def send_follow_up(
         record.provider_message_id = result.provider_message_id or result.message_id
         record.sent_at = datetime.now(timezone.utc)
     except EmailAuthError as exc:
-        record.status = "failed"
-        record.error = f"auth: {exc}"[:500]
-        await _close_sender(sender)
-        raise HTTPException(status_code=401, detail=str(exc))
+        await _fail(f"auth: {exc}", 401, str(exc))
     except EmailSendError as exc:
-        record.status = "failed"
-        record.error = str(exc)[:500]
-        await _close_sender(sender)
-        raise HTTPException(status_code=502, detail=str(exc))
+        await _fail(str(exc), 502, str(exc))
+    except Exception as exc:
+        # A sender bug or transport error outside the typed exceptions
+        # must still surface as a non-2xx with a persisted failed row —
+        # never as an opaque 500 that leaves the send in "pending".
+        logger.exception("send_follow_up: unexpected provider failure")
+        await _fail(
+            f"{type(exc).__name__}: {exc}", 502, "Email provider send failed"
+        )
     finally:
         await _close_sender(sender)
 

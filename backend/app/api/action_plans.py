@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1085,9 +1085,9 @@ async def record_sent(
 
     if step.state in {"ready", "blocked", "in_progress"}:
         step.state = new_state
-        step.started_at = step.started_at or datetime.utcnow()
+        step.started_at = step.started_at or datetime.now(timezone.utc)
         if new_state == "done":
-            step.completed_at = datetime.utcnow()
+            step.completed_at = datetime.now(timezone.utc)
             # Unblock downstream steps that depend on this one.
             engine = ActionPlanEngine()
             await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
@@ -1221,10 +1221,10 @@ async def schedule_meeting_for_step(
             step.state = "awaiting_response"
         else:
             step.state = "done"
-            step.completed_at = datetime.utcnow()
+            step.completed_at = datetime.now(timezone.utc)
             engine = ActionPlanEngine()
             await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
-        step.started_at = step.started_at or datetime.utcnow()
+        step.started_at = step.started_at or datetime.now(timezone.utc)
 
     await db.commit()
     _emit_event(
@@ -1399,7 +1399,7 @@ async def send_email_for_step(
         )
         record.status = "sent"
         record.provider_message_id = result.provider_message_id or result.message_id
-        record.sent_at = datetime.utcnow()
+        record.sent_at = datetime.now(timezone.utc)
     except EmailAuthError as exc:
         record.status = "failed"
         record.error = f"auth: {exc}"[:500]
@@ -1425,9 +1425,9 @@ async def send_email_for_step(
     new_state = "awaiting_response" if getattr(step, "awaits_response", False) else "done"
     if step.state in {"ready", "blocked", "in_progress"}:
         step.state = new_state
-        step.started_at = step.started_at or datetime.utcnow()
+        step.started_at = step.started_at or datetime.now(timezone.utc)
         if new_state == "done":
-            step.completed_at = datetime.utcnow()
+            step.completed_at = datetime.now(timezone.utc)
             engine = ActionPlanEngine()
             await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
 
@@ -1624,8 +1624,8 @@ async def commit_step(
 
     if success and step.state in {"ready", "blocked", "in_progress"}:
         step.state = "done"
-        step.started_at = step.started_at or datetime.utcnow()
-        step.completed_at = datetime.utcnow()
+        step.started_at = step.started_at or datetime.now(timezone.utc)
+        step.completed_at = datetime.now(timezone.utc)
         engine = ActionPlanEngine()
         await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
 
@@ -1689,9 +1689,9 @@ async def mark_step_sent(
     new_state = "awaiting_response" if getattr(step, "awaits_response", False) else "done"
     if step.state in {"ready", "blocked", "in_progress"}:
         step.state = new_state
-        step.started_at = step.started_at or datetime.utcnow()
+        step.started_at = step.started_at or datetime.now(timezone.utc)
         if new_state == "done":
-            step.completed_at = datetime.utcnow()
+            step.completed_at = datetime.now(timezone.utc)
             engine = ActionPlanEngine()
             await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
 

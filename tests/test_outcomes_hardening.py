@@ -90,3 +90,34 @@ def test_autogen_event_id_prefix_marks_inferred_origin():
         outcome_type="deal_won",
     )
     assert _autogen_event_id(ev).startswith("auto:")
+
+
+def test_outcome_event_accepts_optional_customer_id():
+    cust = uuid.uuid4()
+    ev = OutcomeEvent(
+        interaction_id=uuid.uuid4(),
+        outcome_type="deal_won",
+        customer_id=cust,
+    )
+    assert ev.customer_id == cust
+    # Still optional — omitted stays None (Flex's legacy payloads).
+    ev2 = OutcomeEvent(interaction_id=uuid.uuid4(), outcome_type="deal_won")
+    assert ev2.customer_id is None
+
+
+def test_outcome_event_normalizes_naive_occurred_at_to_utc():
+    from datetime import datetime, timezone
+
+    ev = OutcomeEvent(
+        interaction_id=uuid.uuid4(),
+        outcome_type="deal_won",
+        occurred_at=datetime(2026, 7, 1, 10, 0, 0),  # naive
+    )
+    assert ev.occurred_at.tzinfo is not None
+    assert ev.occurred_at.utcoffset().total_seconds() == 0
+    # Aware input passes through unchanged.
+    aware = datetime(2026, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+    ev2 = OutcomeEvent(
+        interaction_id=uuid.uuid4(), outcome_type="deal_won", occurred_at=aware
+    )
+    assert ev2.occurred_at == aware
