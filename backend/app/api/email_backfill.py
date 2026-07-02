@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -109,7 +109,11 @@ async def start_email_backfill(
 
     # One in-flight job per (tenant, provider): re-posting returns the
     # existing handle so double-clicks and impatient reloads don't stack
-    # duplicate provider sweeps.
+    # duplicate provider sweeps.  Jobs older than a day are treated as
+    # abandoned (worker killed before it could mark error) rather than
+    # wedging the mailbox's sync forever — dedupe makes an overlapping
+    # re-run safe.
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     in_flight = (
         await db.execute(
             select(EmailBackfillJob)
@@ -117,6 +121,7 @@ async def start_email_backfill(
                 EmailBackfillJob.tenant_id == tenant.id,
                 EmailBackfillJob.provider == body.provider,
                 EmailBackfillJob.status.in_(("queued", "running")),
+                EmailBackfillJob.created_at > stale_cutoff,
             )
             .order_by(EmailBackfillJob.created_at.desc())
         )
