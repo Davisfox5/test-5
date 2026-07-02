@@ -26,8 +26,12 @@ from backend.app.services.email_ingest.ingest import (
 logger = logging.getLogger(__name__)
 
 
-def _credentials(access_token: str) -> Credentials:
-    # Scopes are not required here — we only need the token for a single request.
+def build_credentials(access_token: str) -> Credentials:
+    """Public API: bare Credentials for a one-off Gmail service build.
+
+    Scopes are not required here — we only need the token for a single
+    request. Used by the poller, push, and backfill paths.
+    """
     return Credentials(token=access_token)
 
 
@@ -130,12 +134,17 @@ def _received_at(header_value: str) -> Optional[datetime]:
         return None
 
 
-def _normalize(
+def normalize_message(
     raw: dict,
     agent_email: Optional[str],
     direction: str,
     service=None,
 ) -> NormalizedEmail:
+    """Public API: full-format Gmail message dict → :class:`NormalizedEmail`.
+
+    Shared by the poller, push, and backfill paths — treat the signature
+    as a cross-module contract.
+    """
     headers = {h["name"]: h["value"] for h in raw.get("payload", {}).get("headers", [])}
     msg_id = headers.get("Message-ID") or headers.get("Message-Id") or raw.get("id", "")
     references = headers.get("References", "").split() if headers.get("References") else []
@@ -189,6 +198,12 @@ def _normalize(
     )
 
 
+# Backwards-compat aliases — these predate the helpers being promoted to
+# the module's public API; new callers should use the public names.
+_credentials = build_credentials
+_normalize = normalize_message
+
+
 def fetch_recent(
     integration: Integration,
     cursor: Optional[EmailSyncCursor],
@@ -197,7 +212,7 @@ def fetch_recent(
     max_messages: int = 50,
 ) -> Iterable[NormalizedEmail]:
     """Yield normalized emails newer than the cursor's historyId (if any)."""
-    service = build("gmail", "v1", credentials=_credentials(access_token), cache_discovery=False)
+    service = build("gmail", "v1", credentials=build_credentials(access_token), cache_discovery=False)
 
     if cursor and cursor.history_id:
         # Incremental — use history API.
@@ -224,7 +239,7 @@ def fetch_recent(
         raw = service.users().messages().get(userId="me", id=mid, format="full").execute()
         labels = set(raw.get("labelIds", []))
         direction = "outbound" if "SENT" in labels else "inbound"
-        yield _normalize(raw, agent_email, direction, service=service)
+        yield normalize_message(raw, agent_email, direction, service=service)
 
     # Always advance the historyId to the latest profile value to keep windows tight.
     if cursor is not None:

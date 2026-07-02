@@ -36,12 +36,16 @@ class IntegrationAuthError(Exception):
     """
 
 
-def _mark_needs_reauth(session: Session, integration: Integration) -> None:
+def mark_needs_reauth(session: Session, integration: Integration) -> None:
     """Flag an integration so future polls skip it until it's re-authed.
 
     Stored in the freeform ``provider_config`` JSONB (reassigned, not
     mutated in place, so SQLAlchemy detects the change). Committed on its
     own so the flag survives even when surrounding work is rolled back.
+
+    Public API: also used by the push (tasks.py) and backfill paths —
+    any consumer of :func:`refresh_if_expired_sync` should call this on
+    :class:`IntegrationAuthError` so the re-auth flag is set consistently.
     """
     try:
         integration.provider_config = {
@@ -56,12 +60,20 @@ def _mark_needs_reauth(session: Session, integration: Integration) -> None:
         session.rollback()
 
 
-def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
+def refresh_if_expired_sync(session: Session, integration: Integration) -> str:
     """Return a valid access token, refreshing via provider API if needed.
 
     Mirrors the async version in api/oauth.py but runs inside Celery's
     synchronous world.  Updates the Integration row in place; caller
-    commits.
+    commits — and should commit *promptly*: Microsoft can rotate the
+    refresh token during this call, so a later rollback that discards the
+    pending token attributes leaves the DB holding a dead refresh token.
+
+    Public API: consumed by the poller, the push path (tasks.py), and the
+    backfill service. Raises :class:`IntegrationAuthError` for
+    non-retryable credential failures; transient transport errors (5xx
+    from the token endpoint, network failures, unexpected MSAL errors)
+    bubble as their native exception types and callers must handle them.
     """
     token = decrypt_token(integration.access_token)
     now = datetime.now(timezone.utc)
@@ -150,6 +162,12 @@ def _refresh_if_expired_sync(session: Session, integration: Integration) -> str:
     return new_access
 
 
+# Backwards-compat aliases — these predate the helpers being promoted to
+# the module's public API; new callers should use the public names.
+_mark_needs_reauth = mark_needs_reauth
+_refresh_if_expired_sync = refresh_if_expired_sync
+
+
 def poll_integration(session: Session, integration: Integration) -> int:
     """Poll a single integration.  Returns the number of emails ingested."""
     tenant = session.query(Tenant).filter(Tenant.id == integration.tenant_id).first()
@@ -178,7 +196,7 @@ def poll_integration(session: Session, integration: Integration) -> int:
         session.add(cursor)
         session.flush()
 
-    access_token = _refresh_if_expired_sync(session, integration)
+    access_token = refresh_if_expired_sync(session, integration)
 
     if integration.provider == "google":
         stream = gmail_fetcher.fetch_recent(integration, cursor, access_token, agent_email)
@@ -288,7 +306,7 @@ def poll_all(session: Session) -> dict:
             # and flag the integration so we stop polling it.
             logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
             session.rollback()
-            _mark_needs_reauth(session, integ)
+            mark_needs_reauth(session, integ)
             summary["needs_reauth"] += 1
             continue
         except Exception:

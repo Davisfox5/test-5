@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models — every table in the LINDA schema."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, List, Optional
 
 from sqlalchemy import (
@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -763,6 +764,16 @@ class Interaction(Base):
         # composite makes that selective without a sequential scan once
         # CS and Support traffic shows up.
         Index("ix_interactions_tenant_domain", "tenant_id", "domain"),
+        # Email dedupe (ingest_email + backfill) probes by
+        # (tenant, provider_message_id) once per message — without this
+        # the lookup degrades to a filter over the tenant's whole
+        # interaction history. Not unique: legacy rows may already hold
+        # duplicates, and NULL is the norm for non-email channels.
+        Index(
+            "ix_interactions_tenant_provider_message_id",
+            "tenant_id",
+            "provider_message_id",
+        ),
         # Pin the domain vocabulary at the column level. NULL is
         # accepted for legacy rows the backfill may have missed (e.g.
         # interactions on a tenant whose ``default_domain`` was NULL,
@@ -2259,6 +2270,70 @@ class EmailSyncCursor(Base):
     # and the safety-net poll (skip integrations whose push is healthy).
     push_subscription_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True)
+    )
+
+
+# A 'running' EmailBackfillJob whose worker hasn't stamped heartbeat_at
+# within this window is presumed dead (crashed worker / lost task).
+# Lives here — not in the backfill service — because both the service
+# (worker takeover) and the API (supersede stale jobs) need it, and the
+# API must not import the service's provider-SDK dependency chain.
+EMAIL_BACKFILL_HEARTBEAT_STALE_AFTER = timedelta(minutes=15)
+
+
+class EmailBackfillJob(Base):
+    """One historical mailbox import ("sync last N days").
+
+    Connecting a mailbox only syncs forward (poller + push). A backfill
+    job pulls the trailing ``window_days`` of Inbox + Sent through the
+    same ingest→classify→analyze pipeline. The row doubles as the job
+    handle the API returns, so progress polling is a single SELECT.
+
+    Counters: ``fetched`` = messages listed from the provider,
+    ``ingested`` = new Interaction rows created, ``skipped`` =
+    provider-message-id duplicates already on file. Messages the
+    classifier filters as internal count toward ``fetched`` only.
+
+    Liveness: the worker stamps ``heartbeat_at`` at every checkpoint
+    commit. A ``running`` job with a stale heartbeat is treated as dead —
+    a redelivered task may take it over, and the start endpoint may
+    supersede it instead of returning it as in-flight.
+    """
+
+    __tablename__ = "email_backfill_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integrations.id", ondelete="CASCADE")
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # google | microsoft
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="queued"
+    )  # queued | running | done | error
+    fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ingested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # One live job per (tenant, provider), enforced at the schema
+        # level — the endpoint's SELECT-then-INSERT guard alone loses a
+        # race between two concurrent POSTs (same pattern as
+        # ``uq_uc_recording_jobs_provider_call`` on UcRecordingJob).
+        Index(
+            "uq_email_backfill_jobs_active",
+            "tenant_id",
+            "provider",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
 

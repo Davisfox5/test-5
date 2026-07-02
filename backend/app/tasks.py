@@ -157,6 +157,9 @@ celery_app.conf.update(
         "irt_fit_all_tenants": {"queue": "batch"},
         "churn_train_all_tenants": {"queue": "batch"},
         "outcomes_backfill_all_tenants": {"queue": "batch"},
+        # User-triggered but long-running (up to 2000 provider fetches) —
+        # keep it off the customer-facing priority lane.
+        "email_backfill_run": {"queue": "batch"},
         "refresh_few_shot_pools": {"queue": "batch"},
         "compute_wer_weekly": {"queue": "batch"},
         "discover_vocabulary_candidates": {"queue": "batch"},
@@ -2614,7 +2617,7 @@ def email_push_process_gmail(self, integration_id: str, new_history_id: str) -> 
     from backend.app.models import EmailSyncCursor, Integration, Tenant, User
     from backend.app.services.email_classifier import EmailClassifier
     from backend.app.services.email_ingest.ingest import ingest_email
-    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.poller import refresh_if_expired_sync
     from backend.app.services.email_ingest.push import fetch_gmail_since_history
 
     session = _get_sync_session()
@@ -2652,7 +2655,7 @@ def email_push_process_gmail(self, integration_id: str, new_history_id: str) -> 
             session.flush()
         start_history = cursor.history_id or new_history_id
 
-        access_token = _refresh_if_expired_sync(session, integration)
+        access_token = refresh_if_expired_sync(session, integration)
         classifier = EmailClassifier()
         ingested = 0
 
@@ -2690,7 +2693,7 @@ def email_push_process_graph(
     from backend.app.models import Integration, Tenant, User
     from backend.app.services.email_classifier import EmailClassifier
     from backend.app.services.email_ingest.ingest import ingest_email
-    from backend.app.services.email_ingest.poller import _refresh_if_expired_sync
+    from backend.app.services.email_ingest.poller import refresh_if_expired_sync
     from backend.app.services.email_ingest.push import fetch_graph_message
 
     session = _get_sync_session()
@@ -2713,7 +2716,7 @@ def email_push_process_graph(
         )
         agent_email = user.email if user else None
 
-        access_token = _refresh_if_expired_sync(session, integration)
+        access_token = refresh_if_expired_sync(session, integration)
 
         # Folder id hint from the notification is the fastest direction
         # signal; otherwise we infer from sender vs. agent email.
@@ -2746,6 +2749,51 @@ def email_push_process_graph(
         session.close()
 
 
+@celery_app.task(name="email_backfill_run", bind=True, max_retries=0)
+def email_backfill_run(self, job_id: str) -> Dict[str, Any]:
+    """Run one historical mailbox import (``EmailBackfillJob``).
+
+    Enqueued by ``POST /api/v1/email/backfill``. No Celery retries —
+    the service marks the job row ``error`` with a reason, and the
+    caller re-triggers explicitly (dedupe makes a re-run a cheap
+    catch-up over the already-imported prefix).
+
+    Backstop: if an exception ever escapes ``run_backfill`` anyway, the
+    job row is flipped to ``error`` here before re-raising — a job left
+    at ``running`` with no live worker would otherwise wedge the start
+    endpoint's in-flight guard for the tenant.
+    """
+    from backend.app.services.email_ingest.backfill import run_backfill
+
+    session = _get_sync_session()
+    try:
+        return run_backfill(session, job_id)
+    except Exception as exc:
+        try:
+            from datetime import datetime, timezone
+
+            from backend.app.models import EmailBackfillJob
+
+            session.rollback()
+            job = (
+                session.query(EmailBackfillJob)
+                .filter(EmailBackfillJob.id == uuid.UUID(str(job_id)))
+                .first()
+            )
+            if job is not None and job.status in ("queued", "running"):
+                job.status = "error"
+                job.error = f"Sync failed unexpectedly: {exc}"
+                job.finished_at = datetime.now(timezone.utc)
+                session.commit()
+        except Exception:  # noqa: BLE001 — backstop is best-effort
+            logger.exception(
+                "Could not mark backfill job %s as error after task failure", job_id
+            )
+        raise
+    finally:
+        session.close()
+
+
 @celery_app.task(name="email_push_renew_subscriptions")
 def email_push_renew_subscriptions() -> Dict[str, Any]:
     """(Re-)register Gmail watches and Graph subscriptions.
@@ -2759,8 +2807,8 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
     from backend.app.models import EmailSyncCursor, Integration
     from backend.app.services.email_ingest.poller import (
         IntegrationAuthError,
-        _mark_needs_reauth,
-        _refresh_if_expired_sync,
+        mark_needs_reauth,
+        refresh_if_expired_sync,
     )
     from backend.app.services.email_ingest.push import (
         subscribe_graph_mailbox,
@@ -2794,13 +2842,13 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
                 skipped += 1
                 continue
             try:
-                access_token = _refresh_if_expired_sync(session, integ)
+                access_token = refresh_if_expired_sync(session, integ)
             except IntegrationAuthError as exc:
                 # Non-retryable auth failure: WARNING (not ERROR) so it
                 # doesn't flood Sentry, and flag for re-auth.
                 logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
                 session.rollback()
-                _mark_needs_reauth(session, integ)
+                mark_needs_reauth(session, integ)
                 skipped += 1
                 continue
             except Exception:
