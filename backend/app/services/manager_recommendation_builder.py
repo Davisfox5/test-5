@@ -3,8 +3,10 @@
 Reads the freshest ``BusinessProfile`` plus open ``ManagerAlert`` rows
 for a tenant and asks Haiku to draft up to five ranked recommendations
 across four categories. Output passes through the plain-English
-sanitizer (em-dash strip, banned-phrase scrub, word-cap) and lands as
-``ManagerRecommendation`` rows ranked by ``score``.
+sanitizer (em-dash strip, banned-phrase scrub; titles word-capped,
+rationales deliberately not) and lands as ``ManagerRecommendation``
+rows ranked by ``score``. Customer-targeted rows then get the
+account-brief enrichment pass (``recommendation_enrichment``).
 
 Runs once a day at 04:30 UTC via Celery Beat, right after
 ``orchestrator-daily`` has refreshed the BusinessProfile. The page
@@ -106,8 +108,9 @@ def _system_prompt_for(domain: str) -> str:
         + "You produce a JSON array of up to 5 manager recommendations. Each "
         "item has keys: category (one of: "
         + _CATEGORY_LIST_BY_DOMAIN.get(domain, _CATEGORY_LIST_BY_DOMAIN["sales"])
-        + "), title (≤25 words, plain English), rationale (≤40 words, "
-        "evidence-cited), target (object: rep_user_id|customer_id|"
+        + "), title (≤25 words, plain English), rationale (evidence-cited; "
+        "as long as the evidence deserves and no longer, never padded), "
+        "target (object: rep_user_id|customer_id|"
         "script_phrase|campaign_topic|kb_article_topic depending on "
         "category, or empty), evidence (object: "
         "call_count|customer_count|dollar_estimate|sample_ids[] as "
@@ -206,9 +209,13 @@ def _build_for_tenant_domain(
         title = item.get("title") or ""
         if not isinstance(title, str) or not title.strip():
             continue
+        # Title stays capped (it's a UI heading); the rationale cap is
+        # gone deliberately. Length is governed by the prompt ("as long
+        # as the evidence deserves"), not a truncator that amputates
+        # mid-analysis.
         sanitize_manager_payload(
             item,
-            max_words_per_field={"title": 25, "rationale": 40},
+            max_words_per_field={"title": 25},
             default_max_words=None,
         )
         row = ManagerRecommendation(
@@ -226,6 +233,14 @@ def _build_for_tenant_domain(
         inserted.append(row)
     if inserted:
         session.commit()
+        # After commit, so the enrichment worker can see the rows.
+        # Customer-targeted rows get the full account-brief pass;
+        # tenant-level rows (coach_rep etc.) are skipped inside.
+        from backend.app.services.recommendation_enrichment import (
+            queue_enrichment_for,
+        )
+
+        queue_enrichment_for(inserted)
     return inserted
 
 
