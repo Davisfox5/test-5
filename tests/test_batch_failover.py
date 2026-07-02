@@ -242,6 +242,83 @@ def test_run_batch_model_unavailable_is_retryable():
     assert out["0"]["text"] == "recovered"
 
 
+# ── run_batch: missing results are surfaced, not dropped ──────────────────
+
+
+def test_run_batch_marks_missing_results_as_unavailable():
+    # Poll timeout / fetch failure yields no entry for a submitted id. The id
+    # must still appear in the result, errored — and must NOT trigger a
+    # failover round (the original batch may still be running server-side).
+    batches = _FakeBatches({0: {"0": _success("0", "a")}})   # "1" never arrives
+    r = _router_with(_BatchClient(batches))
+    out = asyncio.run(r.run_batch([_req(forced_tier=Tier.OPUS, metadata={"custom_id": "0"}),
+                                   _req(forced_tier=Tier.OPUS, metadata={"custom_id": "1"})]))
+    assert out["0"]["text"] == "a"
+    assert out["1"]["error"]["type"] == "result_unavailable"
+    assert len(batches.created_entries) == 1   # no resubmit for the missing id
+
+
+# ── run_batch: failover round is best-effort ──────────────────────────────
+
+
+def test_run_batch_returns_first_round_results_when_retry_submit_fails():
+    # The failover round's own submit blowing up must not discard the first
+    # round's (already paid-for) results.
+    class _SecondCreateFails(_FakeBatches):
+        async def create(self, *, requests):
+            if self.created_entries:
+                raise RuntimeError("boom")
+            return await super().create(requests=requests)
+
+    batches = _SecondCreateFails({
+        0: {"0": _success("0", "a"), "1": _errored("1", "overloaded_error")},
+    })
+    r = _router_with(_BatchClient(batches))
+    out = asyncio.run(r.run_batch([_req(forced_tier=Tier.OPUS, metadata={"custom_id": "0"}),
+                                   _req(forced_tier=Tier.OPUS, metadata={"custom_id": "1"})]))
+    assert out["0"]["text"] == "a"                          # kept
+    assert out["1"]["error"]["type"] == "overloaded_error"  # original error intact
+
+
+# ── run_batch: telemetry parity with the live path ────────────────────────
+
+
+def test_run_batch_records_telemetry_per_successful_entry(monkeypatch):
+    from backend.app.services import llm_telemetry
+
+    recorded = []
+    monkeypatch.setattr(
+        llm_telemetry, "record_llm_completion",
+        lambda call_site, tier, max_tokens, resp, tenant_id=None:
+            recorded.append((call_site, tier, resp)),
+    )
+    # "0" succeeds on opus; "1" fails over and succeeds on sonnet; "2" stays
+    # errored (deterministic) and must not be recorded.
+    batches = _FakeBatches({
+        0: {"0": _success("0", "a"), "1": _errored("1", "overloaded_error"),
+            "2": _errored("2", "invalid_request_error")},
+        1: {"1": _success("1", "recovered")},
+    })
+    r = _router_with(_BatchClient(batches))
+    reqs = [_req(forced_tier=Tier.OPUS, call_site="batch_site", metadata={"custom_id": str(i)})
+            for i in range(3)]
+    asyncio.run(r.run_batch(reqs))
+    assert [(cs, t) for cs, t, _ in recorded] == \
+        [("batch_site", "opus"), ("batch_site", "sonnet")]
+    # The recorded shim carries the served model so telemetry model slicing works.
+    assert recorded[1][2]["model"] == model_catalog.SONNET
+
+
+def test_run_batch_propagates_usage_from_dict_shaped_results():
+    # The results iterator yields plain dicts on some SDK versions; usage must
+    # survive extraction (_usage_dict getattr-only would drop it).
+    batches = _FakeBatches({0: {"0": _success("0", "a")}})
+    r = _router_with(_BatchClient(batches))
+    out = asyncio.run(r.run_batch([_req(forced_tier=Tier.SONNET)]))
+    assert out["0"]["usage"]["input_tokens"] == 1
+    assert out["0"]["usage"]["output_tokens"] == 1
+
+
 # ── run_batch: sequential fallback when the SDK lacks batches ──────────────
 
 

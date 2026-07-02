@@ -11,9 +11,13 @@ router enforces three cost/speed disciplines:
    block, and agent/client profile header is sent with
    ``cache_control: ephemeral`` so the second call within the cache
    window is charged only for the uncached tail.
-3. **Batch API.**  Non-interactive tasks (tenant rollups, weekly
-   reflection, backfill) submit through the Anthropic Messages Batches
-   API for ~50 % token discount and no sync rate-limit pressure.
+3. **Batch API.**  ``submit_batch`` / ``run_batch`` wrap the Anthropic
+   Messages Batches API (~50 % token discount, no sync rate-limit
+   pressure) with the same tier-pinning, request shaping, and failover
+   as the live path.  No production task submits through it yet —
+   non-interactive work (tenant rollups, weekly reflection, backfill)
+   currently calls ``invoke``; moving it onto ``run_batch`` is an open
+   cost optimization.
 
 The router is synchronous-async dual-capable; live endpoints call
 ``ainvoke`` while Celery workers call ``invoke``.
@@ -459,6 +463,20 @@ class ModelRouter:
         tier — one step down, never up — and successful retries overwrite the
         errored result. Deterministic client errors are left as-is.
 
+        Every submitted ``custom_id`` is present in the result. Entries whose
+        results never arrived (poll timeout, results-fetch failure) come back
+        with ``error type "result_unavailable"`` — NOT retried on a lower
+        tier, because the original batch may still be running server-side and
+        resubmitting would risk paying for both.
+
+        The failover round is best-effort: if its submit/poll itself fails,
+        the first round's results are returned as-is (errored entries intact)
+        rather than discarding work already paid for. Worst-case wall time is
+        therefore ~``2 × timeout_seconds`` (two full poll windows).
+
+        Successful entries are recorded to ``llm_call_telemetry`` (keyed on
+        each request's ``call_site``, same as the live path).
+
         Falls back to sequential :meth:`ainvoke` (which has its own
         retry+failover) when the SDK lacks the Batches surface, so the result
         dict is populated either way.
@@ -485,6 +503,23 @@ class ModelRouter:
             timeout_seconds=timeout_seconds,
         )
 
+        # Every submitted id must appear in the result. Ids the poll never
+        # produced (timeout / results-fetch failure) are surfaced as errored
+        # rather than silently dropped — and deliberately NOT classified
+        # retryable: the original batch may still be running server-side, so a
+        # resubmit could pay for the work twice.
+        missing = [cid for cid, _, _ in plan if cid not in results]
+        if missing:
+            logger.warning(
+                "batch %s: %d/%d entries have no result (poll timeout or fetch "
+                "failure); marking result_unavailable", batch_id, len(missing), len(plan),
+            )
+            for cid in missing:
+                results[cid] = {
+                    "text": "", "usage": {}, "stop_reason": None,
+                    "error": {"type": "result_unavailable"},
+                }
+
         # Collect entries that errored retryably and have a lower tier to try.
         from backend.app.services.llm_client import batch_error_is_retryable
 
@@ -492,7 +527,10 @@ class ModelRouter:
         for cid, r, tier in plan:
             res = results.get(cid)
             err = res.get("error") if res else None
-            if not err or not batch_error_is_retryable(err.get("type")):
+            if not err:
+                self._record_batch_entry(r, tier, res)
+                continue
+            if not batch_error_is_retryable(err.get("type")):
                 continue
             fb = model_catalog.failover_tier(tier.value)
             if fb:
@@ -508,6 +546,7 @@ class ModelRouter:
         retry_entries = [
             self._batch_entry(r, MODEL_IDS[tier], cid) for cid, r, tier in retry_plan
         ]
+        retry_self_recorded = False
         try:
             retry_batch_id = await self._create_batch(retry_entries)
             retry_results = await self.fetch_batch_results(
@@ -518,15 +557,40 @@ class ModelRouter:
         except AttributeError:
             # SDK lost the surface between rounds (shouldn't happen); retry the
             # failed subset sequentially rather than leaving them errored.
+            # ainvoke records its own telemetry, so skip the per-entry record.
             retry_results = await self._run_batch_sequential(retry_plan)
+            retry_self_recorded = True
+        except Exception:  # noqa: BLE001 — failover round is best-effort
+            # The retry round's own infrastructure failed. The first round's
+            # results are already paid for — return them (errored entries
+            # intact) instead of raising and discarding completed work.
+            logger.exception(
+                "batch %s: failover round submit/poll failed; returning "
+                "first-round results", batch_id,
+            )
+            return results
 
         # Overwrite only entries whose retry actually succeeded; a still-errored
         # retry keeps the original error so the caller sees the real failure.
-        for cid, _, _ in retry_plan:
+        for cid, r, tier in retry_plan:
             rr = retry_results.get(cid)
             if rr and not rr.get("error"):
                 results[cid] = rr
+                if not retry_self_recorded:
+                    self._record_batch_entry(r, tier, rr)
         return results
+
+    def _record_batch_entry(
+        self, req: LLMRequest, tier: Tier, res: Dict[str, Any]
+    ) -> None:
+        """Feed one successful batch entry through the router's uniform
+        telemetry site. Shaped like an SDK response so ``_record`` /
+        ``_extract_usage`` read it the same way as a live completion."""
+        self._record(req, tier, {
+            "model": MODEL_IDS[tier],
+            "usage": res.get("usage") or {},
+            "stop_reason": res.get("stop_reason"),
+        })
 
     async def _run_batch_sequential(
         self, plan: List[Any]
@@ -742,14 +806,24 @@ def client_profile_header(profile: Dict[str, Any]) -> CacheableBlock:
 
 
 def _usage_dict(resp: Any) -> Dict[str, int]:
+    """Extract token usage from an SDK object OR a raw dict — the Batches
+    results iterator yields plain dicts on some SDK versions."""
     usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
     if usage is None:
         return {}
+
+    def _u(field: str) -> int:
+        if isinstance(usage, dict):
+            return int(usage.get(field, 0) or 0)
+        return int(getattr(usage, field, 0) or 0)
+
     return {
-        "input_tokens": getattr(usage, "input_tokens", 0),
-        "output_tokens": getattr(usage, "output_tokens", 0),
-        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
-        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+        "input_tokens": _u("input_tokens"),
+        "output_tokens": _u("output_tokens"),
+        "cache_read_input_tokens": _u("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _u("cache_creation_input_tokens"),
     }
 
 
