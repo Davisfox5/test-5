@@ -17,6 +17,7 @@ QA scorecards, and live coaching. Sold to sales, customer-success, and support t
 > - **Scheduled work:** the `beat_schedule` dict in `backend/app/tasks.py`
 > - **Process model & deploy:** `fly.toml` (`[processes]`), `Dockerfile`
 > - **Tech stack / external services:** `requirements.txt`, `apps/app/package.json`
+> - **LLM infrastructure:** `backend/app/services/model_catalog.py` (model ids) and `model_router.py` (call path)
 >
 > When you touch any of those, re-read the relevant section below and fix it if it no longer matches.
 > A wrong architecture doc is worse than none — it sends future readers (human and AI) down dead ends.
@@ -112,14 +113,28 @@ what runs and when.**
 | **Qdrant** | Knowledge-base RAG vectors |
 | **Elasticsearch** | Full-text transcript search |
 | **S3** (optional) | Audio storage; falls back to a local dir (`$AUDIO_LOCAL_DIR`) when boto3/creds absent |
-| **Anthropic** | Claude (Haiku / Sonnet / Opus) for analysis, triage, coaching, judging |
+| **Anthropic** | Claude (Haiku / Sonnet / Opus) for analysis, triage, coaching, judging — see §5 |
 | **Deepgram** | Batch + streaming ASR and diarization |
 | **Presidio + spaCy** | PII detection / redaction |
 | **Stripe** | Billing / subscriptions / webhooks |
 | **Clerk** | Frontend authentication |
 | **Telephony** | SIPREC, UC providers (Zoom/Teams/Webex/RingCentral), Twilio/Telnyx, Genesys AudioHook |
 
-## 5. Process model & deployment
+## 5. LLM infrastructure
+
+All runtime Claude usage flows through four modules in `backend/app/services/`.
+The governing rules (from `CLAUDE.md`): runtime uses **Haiku / Sonnet / Opus only** —
+Fable (Mythos-class) is never called from app code — and no `claude-*` model id may
+be hardcoded outside the catalog (`tests/test_model_catalog.py` fails the build if one is).
+
+| Module | Role |
+|---|---|
+| `model_catalog.py` | **Single source of truth for model ids.** Resolves tier names (`haiku` / `sonnet` / `opus`) to ids from env-overridable settings, so a version bump or deprecated-model swap is a one-line change. Also owns per-model capability sets — ids that reject sampling params (Opus 4.7+, Sonnet 5, Fable) and ids that run adaptive thinking unless explicitly disabled (Sonnet 5) — and the failover map, which degrades **down** a tier (Opus→Sonnet→Haiku), never up. |
+| `model_router.py` | **Every runtime LLM call goes through `ModelRouter`** (`ainvoke` for live endpoints, `invoke` for Celery, `astream`, `run_batch`). Selects the tier from `task_type` / complexity / transcript size unless the caller pins `forced_tier`; Opus is reserved for orchestrator-level work over aggregated summaries and never sees raw transcripts in the live path. Applies prompt caching (`cache_control: ephemeral`) to system prompts and tenant-scoped blocks, and routes non-interactive work (rollups, weekly reflection, backfill) through the Anthropic Messages Batches API (~50% discount) with per-entry failover on retryable errors. |
+| `llm_client.py` | Anthropic client construction plus `acreate_with_failover`: transient errors (429/5xx/timeout) retry on the **same** model; model-unavailable (deprecated/suspended/404) fails over once to the next cheaper tier. Also `compute_max_tokens`, the project-wide `max_tokens` policy — tier-aware defaults scaling with input length under a per-tier ceiling. |
+| `llm_telemetry.py` | Records every completion's usage to `llm_call_telemetry`; a nightly task aggregates per (call_site, tier) into `llm_ceiling_recommendation`, and `compute_max_tokens` consults those learned ceilings before the static caps. Fire-and-forget: a telemetry failure never fails a customer call. |
+
+## 6. Process model & deployment
 
 Deployed on **Fly.io**. `fly.toml` `[processes]` defines three roles off one image:
 
@@ -131,7 +146,7 @@ Deployed on **Fly.io**. `fly.toml` `[processes]` defines three roles off one ima
 (`apps/app`) and the static `website/` deploy as their own Fly apps. CI deploys the backend
 and the SPA together — keep both wired in the deploy workflow.
 
-## 6. Observability
+## 7. Observability
 
 Custom app metrics (named `linda_*`) are defined in `backend/app/services/metrics.py`
 and exposed at `GET /metrics` in Prometheus format:
