@@ -9,7 +9,7 @@ reuses the existing ingest→analyze pipeline and dedupes on
 bookkeeping — no message content.
 
 Revision ID: eb90d1a2c3f4
-Revises: ap_003_draft_state
+Revises: as01f5b7c9d0
 Create Date: 2026-06-30
 
 """
@@ -23,7 +23,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "eb90d1a2c3f4"
-down_revision: Union[str, None] = "ap_003_draft_state"
+down_revision: Union[str, None] = "as01f5b7c9d0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -67,6 +67,10 @@ def upgrade() -> None:
             sa.DateTime(timezone=True),
             server_default=sa.func.now(),
             nullable=False,
+        ),
+        sa.CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'error')",
+            name="ck_email_backfill_jobs_status",
         ),
     )
     op.create_index(

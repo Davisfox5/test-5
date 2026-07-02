@@ -14,12 +14,10 @@ import {
     useTriggerCrmSync,
 } from "@/lib/crm";
 import { useBackfillJob, useStartBackfill } from "@/lib/backfill";
-import { ApiError } from "@/lib/api";
 import { humanizeError } from "@/components/admin/section";
 
-// Mailbox providers that support a historical "Sync last 90 days"
-// backfill. Backend currently ships Google; Microsoft returns 501.
-const BACKFILL_PROVIDER_KEYS = new Set<string>(["google"]);
+// Mailbox providers that support a historical "Sync last 90 days" backfill.
+const BACKFILL_PROVIDER_KEYS = new Set<string>(["google", "microsoft"]);
 
 interface ProviderSpec {
     key: OAuthProvider;
@@ -240,15 +238,12 @@ function MailboxBackfillCard({ provider }: { provider: OAuthProvider }) {
     const handleSync = async () => {
         setNotice(null);
         try {
+            // If a sync is already running (another tab, double-click), the
+            // API returns that job's handle — polling just resumes on it.
             const res = await start.mutateAsync({ provider });
             setJobId(res.job_id);
         } catch (e) {
-            if (e instanceof ApiError && e.status === 409) {
-                // Another tab / the auto-backfill is already running.
-                setNotice("A sync is already running for this mailbox.");
-            } else {
-                setNotice(humanizeError(e));
-            }
+            setNotice(humanizeError(e));
         }
     };
 
@@ -258,7 +253,9 @@ function MailboxBackfillCard({ provider }: { provider: OAuthProvider }) {
     } else if (job?.status === "done") {
         statusLine = `Imported ${job.ingested} message${
             job.ingested === 1 ? "" : "s"
-        }${job.skipped ? ` · ${job.skipped} already synced` : ""}.`;
+        }${job.skipped ? ` · ${job.skipped} already synced` : ""}.${
+            job.error ? ` ${job.error}` : ""
+        }`;
     } else if (job?.status === "error") {
         statusLine = job.error
             ? `Sync failed: ${job.error}`

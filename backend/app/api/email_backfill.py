@@ -1,136 +1,139 @@
-"""On-demand historical email backfill.
+"""Email backfill endpoints — historical mailbox import.
 
-Forward ingestion (poller + ``/email-push/gmail``) only captures mail
-that arrives after a mailbox is connected.  These endpoints let a tenant
-pull the last N days of history and run it through the SAME
-ingest→analyze pipeline, so backfilled mail produces identical
-Interactions (channel=email, sentiment, action items, threading).
+* ``POST /email/backfill`` — start a "sync the last N days" job for the
+  tenant's connected Gmail / Outlook integration. Returns a job handle
+  immediately; the ``email_backfill_run`` Celery task does the work on
+  the batch queue. Re-posting while a job is queued/running returns the
+  in-flight job instead of stacking a duplicate.
+* ``GET /email/backfill/{job_id}`` — poll progress (fetched / ingested /
+  skipped / status). Consumers poll every few seconds until ``done`` or
+  ``error``.
 
-The work runs in a Celery worker (``email_backfill_run``) — the POST
-returns 202 immediately.  Idempotency lives in the ingest layer
-(dedupe on ``(tenant_id, provider_message_id)``), so re-running the
-button never creates duplicate interactions.
-
-Auth: tenant-scoped.  Accepts the tenant API key via
-``Authorization: Bearer`` (or a session JWT) like the rest of the v1 API.
+Scope: ``interactions:write`` on the POST (it creates Interaction rows);
+the status GET is a plain authenticated read, matching the convention in
+``docs/api_key_scope_map.yaml``.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.auth import get_current_tenant
+from backend.app.auth import get_current_tenant, require_scope
 from backend.app.db import get_db
 from backend.app.models import EmailBackfillJob, Integration, Tenant
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Cap the window. The Gmail query uses ``newer_than:Nd``; 90 days is the
-# product default and the ceiling — a larger window is both a quota and a
-# cost concern (every new message fans out to the analysis pipeline).
-_MAX_WINDOW_DAYS = 90
-
-# Providers we can actually backfill today. Graph (Outlook) is a 501 until
-# the mirror lands — see the design note in the task spec.
-_SUPPORTED_PROVIDERS = {"google"}
+# LINDA-side ceiling on the import window. Provider list APIs get slow and
+# quota-hungry beyond this, and older threads add little signal.
+MAX_WINDOW_DAYS = 90
 
 
-class BackfillRequest(BaseModel):
-    provider: str = "google"
-    days: int = Field(default=_MAX_WINDOW_DAYS, ge=1)
+class BackfillStartRequest(BaseModel):
+    provider: Literal["google", "microsoft"] = "google"
+    days: int = Field(
+        90,
+        ge=1,
+        le=MAX_WINDOW_DAYS,
+        description=f"Trailing window to import, capped at {MAX_WINDOW_DAYS} days.",
+    )
 
 
 class BackfillStartResponse(BaseModel):
-    job_id: str
+    job_id: uuid.UUID
     status: str
     window_days: int
 
 
-class BackfillStatusResponse(BaseModel):
-    job_id: str
+class BackfillJobOut(BaseModel):
+    job_id: uuid.UUID
     provider: str
     status: str
     window_days: int
     fetched: int
     ingested: int
     skipped: int
-    error: Optional[str]
-    started_at: Optional[datetime]
-    finished_at: Optional[datetime]
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 @router.post(
     "/email/backfill",
-    status_code=202,
     response_model=BackfillStartResponse,
+    status_code=202,
+    dependencies=[Depends(require_scope("interactions:write"))],
 )
 async def start_email_backfill(
-    body: BackfillRequest,
+    body: BackfillStartRequest,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> BackfillStartResponse:
-    """Queue a historical backfill for the tenant's connected mailbox."""
-    provider = (body.provider or "google").strip().lower()
-    # Clamp to [1, 90]; pydantic already enforced >= 1.
-    window_days = min(int(body.days or _MAX_WINDOW_DAYS), _MAX_WINDOW_DAYS)
+    """Kick off a historical mailbox import for the connected mailbox.
 
+    400 when the tenant has no connected integration for ``provider`` —
+    connect the mailbox (OAuth) first.
+    """
     integration = (
         await db.execute(
-            select(Integration).where(
+            select(Integration)
+            .where(
                 Integration.tenant_id == tenant.id,
-                Integration.provider == provider,
+                Integration.provider == body.provider,
             )
+            .order_by(Integration.created_at.desc())
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if integration is None:
         raise HTTPException(
-            status_code=404,
-            detail=f"No connected '{provider}' mailbox for this tenant",
+            status_code=400,
+            detail=(
+                f"No connected {body.provider} mailbox — connect one via "
+                "OAuth before backfilling."
+            ),
         )
-
-    if provider not in _SUPPORTED_PROVIDERS:
-        # Microsoft Graph (Outlook) is connected but backfill isn't wired yet.
+    if (integration.provider_config or {}).get("needs_reauth"):
         raise HTTPException(
-            status_code=501,
-            detail=f"Historical backfill for '{provider}' is not yet supported",
+            status_code=400,
+            detail="Mailbox credentials expired — reconnect the mailbox, then retry.",
         )
 
-    # One in-flight job per tenant+provider. Return the existing one rather
-    # than fanning out duplicate imports against the same mailbox.
-    existing = (
+    # One in-flight job per (tenant, provider): re-posting returns the
+    # existing handle so double-clicks and impatient reloads don't stack
+    # duplicate provider sweeps.
+    in_flight = (
         await db.execute(
             select(EmailBackfillJob)
             .where(
                 EmailBackfillJob.tenant_id == tenant.id,
-                EmailBackfillJob.provider == provider,
+                EmailBackfillJob.provider == body.provider,
                 EmailBackfillJob.status.in_(("queued", "running")),
             )
             .order_by(EmailBackfillJob.created_at.desc())
         )
     ).scalars().first()
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "A backfill is already running for this mailbox",
-                "job_id": str(existing.id),
-                "status": existing.status,
-            },
+    if in_flight is not None:
+        return BackfillStartResponse(
+            job_id=in_flight.id,
+            status=in_flight.status,
+            window_days=in_flight.window_days,
         )
 
     job = EmailBackfillJob(
         tenant_id=tenant.id,
         integration_id=integration.id,
-        provider=provider,
+        provider=body.provider,
+        window_days=body.days,
         status="queued",
-        window_days=window_days,
     )
     db.add(job)
     await db.commit()
@@ -138,27 +141,32 @@ async def start_email_backfill(
 
     # Import here to avoid a circular import at module load (tasks pulls in
     # most of the service layer). Mirrors the email-push endpoint.
-    from backend.app.tasks import email_backfill_run
+    try:
+        from backend.app.tasks import email_backfill_run
 
-    email_backfill_run.delay(str(job.id))
+        email_backfill_run.delay(str(job.id))
+    except Exception:  # noqa: BLE001 — Celery down ≠ silently-stuck job
+        logger.exception("Could not enqueue email_backfill_run for job %s", job.id)
+        job.status = "error"
+        job.error = "Could not queue the sync job — try again shortly."
+        job.finished_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=503, detail="Sync queue unavailable — try again shortly."
+        )
 
     return BackfillStartResponse(
-        job_id=str(job.id),
-        status=job.status,
-        window_days=job.window_days,
+        job_id=job.id, status=job.status, window_days=job.window_days
     )
 
 
-@router.get(
-    "/email/backfill/{job_id}",
-    response_model=BackfillStatusResponse,
-)
+@router.get("/email/backfill/{job_id}", response_model=BackfillJobOut)
 async def get_email_backfill(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
-) -> BackfillStatusResponse:
-    """Poll a backfill job's status + counters (tenant-scoped)."""
+) -> BackfillJobOut:
+    """Progress of one backfill job (tenant-scoped)."""
     job = (
         await db.execute(
             select(EmailBackfillJob).where(
@@ -166,12 +174,11 @@ async def get_email_backfill(
                 EmailBackfillJob.tenant_id == tenant.id,
             )
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if job is None:
         raise HTTPException(status_code=404, detail="Backfill job not found")
-
-    return BackfillStatusResponse(
-        job_id=str(job.id),
+    return BackfillJobOut(
+        job_id=job.id,
         provider=job.provider,
         status=job.status,
         window_days=job.window_days,

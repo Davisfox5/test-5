@@ -2295,7 +2295,7 @@ class EmailBackfillJob(Base):
     )
 
     # One in-flight (queued/running) job per tenant+provider is enforced in
-    # the API layer (it returns the existing job_id with 409); this index
+    # the API layer (a re-POST returns the existing job's handle); this index
     # just keeps the "is one already running?" lookup cheap.
     __table_args__ = (
         Index("ix_email_backfill_jobs_tenant_provider", "tenant_id", "provider"),

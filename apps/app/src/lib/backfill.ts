@@ -25,9 +25,9 @@ export interface BackfillJob {
 }
 
 // Kick off a 90-day historical import for a connected mailbox. Returns
-// the job id the caller polls with useBackfillJob. A 409 (one already
-// running) surfaces as an ApiError whose detail carries the existing
-// job_id; callers can resume polling that instead of starting a new one.
+// the job id the caller polls with useBackfillJob. If a sync is already
+// queued/running for this mailbox, the API returns that job's handle
+// instead of starting a new one, so polling resumes on the in-flight job.
 export function useStartBackfill() {
     const api = useApi();
     return useMutation({
