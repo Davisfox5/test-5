@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List
 
 from sqlalchemy.orm import Session
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 CORRECTION_FREQ_HIGH = 3   # ≥ this many corrections of same word → high
 LOW_CONFIDENCE_CUTOFF = 0.85
+CORRECTION_LOOKBACK_DAYS = 30
 PROPER_NOUN_RE = re.compile(r"\b[A-Z][A-Za-z0-9]{2,}(?:\s+[A-Z][A-Za-z0-9]+)?\b")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
 
@@ -116,10 +118,13 @@ def _upsert_candidate(
 
 
 def _discover_for_tenant(session: Session, tenant: Tenant) -> int:
+    cutoff = datetime.utcnow() - timedelta(days=CORRECTION_LOOKBACK_DAYS)
+
     # 1. Corrections within last 30 days.
     corrections = (
         session.query(TranscriptCorrection)
         .filter(TranscriptCorrection.tenant_id == tenant.id)
+        .filter(TranscriptCorrection.created_at >= cutoff)
         .all()
     )
     correction_counts = _extract_corrected_terms(corrections)
@@ -127,10 +132,11 @@ def _discover_for_tenant(session: Session, tenant: Tenant) -> int:
         confidence = "high" if count >= CORRECTION_FREQ_HIGH else "medium"
         _upsert_candidate(session, tenant.id, term, "corrections", confidence, count)
 
-    # 2. Low-confidence proper nouns from interactions.
+    # 2. Low-confidence proper nouns from interactions within last 30 days.
     interactions = (
         session.query(Interaction)
         .filter(Interaction.tenant_id == tenant.id)
+        .filter(Interaction.created_at >= cutoff)
         .order_by(Interaction.created_at.desc())
         .limit(200)
         .all()

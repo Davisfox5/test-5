@@ -41,7 +41,12 @@ from backend.app.services.email import (
     OutboundAttachment,
     OutlookSender,
 )
+from backend.app.services.email_reply import SYSTEM_PROMPT as _REPLY_FALLBACK_PROMPT
 from backend.app.services.email_reply import ReplyDrafter
+from backend.app.services.prompt_variant_service import (
+    merge_variant_insight,
+    select_variant_async,
+)
 
 router = APIRouter()
 
@@ -323,14 +328,28 @@ async def draft_reply(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Prompt-variant routing (A/B) — same selection API the analysis path
+    # uses (tasks.py). ``db`` is already the request's AsyncSession, so we
+    # use the async selector here rather than the sync one ingest.py uses.
+    variant = await select_variant_async(
+        db, tenant, surface="email_reply", fallback_template=_REPLY_FALLBACK_PROMPT
+    )
+
     drafter = ReplyDrafter()
-    draft = await drafter.draft(db, tenant, conv, body.extra_instructions)
+    draft = await drafter.draft(
+        db, tenant, conv, body.extra_instructions,
+        system_prompt_override=variant.prompt_template,
+    )
 
     # Cache the drafted body so the send-reply endpoint can compute the
     # edit-distance signal (the only ground-truth dimension for the reply
     # judge).  Keyed by ("anon" + conv_id) when no user is supplied — the
     # demo flow doesn't always have a user context, but a tenant always does.
+    # The variant id rides along the same way — send-reply doesn't re-run
+    # variant selection, it just stamps whichever variant actually
+    # produced the draft the agent is (maybe-edited) sending.
     feedback_service.cache_draft_body("anon", str(conv_id), draft.body)
+    feedback_service.cache_draft_variant("anon", str(conv_id), variant.variant_id)
     feedback_service.emit_event(
         tenant_id=tenant.id,
         surface="email_reply",
@@ -461,6 +480,13 @@ async def send_reply(
     finally:
         await sender.close()
 
+    # The variant that produced the draft was cached at draft-reply time
+    # (keyed the same way as the draft body, for the same edit-distance
+    # window). It's possible to send a reply that was never drafted via
+    # this API (no cache hit) — in that case there's no variant to
+    # attribute and ``merge_variant_insight`` is a no-op.
+    cached_variant_id = feedback_service.fetch_cached_draft_variant("anon", str(conv_id))
+
     outbound = Interaction(
         tenant_id=tenant.id,
         agent_id=user.id if user else None,
@@ -485,6 +511,7 @@ async def send_reply(
         is_internal=False,
         classification=conv.classification,
         status="processing",
+        insights=merge_variant_insight(None, "email_reply", cached_variant_id),
     )
     db.add(outbound)
     await db.flush()
@@ -521,6 +548,7 @@ async def send_reply(
             payload=payload,
         )
         feedback_service.clear_cached_draft("anon", str(conv_id))
+        feedback_service.clear_cached_draft_variant("anon", str(conv_id))
 
     # Enqueue analysis so the agent's response gets scored by the pipeline.
     try:

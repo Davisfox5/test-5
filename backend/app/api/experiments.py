@@ -203,12 +203,58 @@ async def list_experiments(
     return [ExperimentOut.model_validate(r, from_attributes=True) for r in rows]
 
 
+async def _load_variant_or_422(db: AsyncSession, variant_id: uuid.UUID, field: str) -> PromptVariant:
+    variant = (
+        await db.execute(select(PromptVariant).where(PromptVariant.id == variant_id))
+    ).scalar_one_or_none()
+    if variant is None:
+        raise HTTPException(status_code=422, detail=f"{field}: variant {variant_id} not found")
+    return variant
+
+
 @router.post("/experiments", response_model=ExperimentOut, status_code=201)
 async def create_experiment(
     body: ExperimentCreate,
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
 ):
+    if body.control_variant_id is not None and body.treatment_variant_id is not None:
+        if body.control_variant_id == body.treatment_variant_id:
+            raise HTTPException(
+                status_code=422,
+                detail="control_variant_id and treatment_variant_id must be different variants",
+            )
+    control = treatment = None
+    if body.control_variant_id is not None:
+        control = await _load_variant_or_422(db, body.control_variant_id, "control_variant_id")
+    if body.treatment_variant_id is not None:
+        treatment = await _load_variant_or_422(db, body.treatment_variant_id, "treatment_variant_id")
+    if control is not None and treatment is not None:
+        if control.target_surface != treatment.target_surface:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "control and treatment variants target different surfaces: "
+                    f"{control.target_surface!r} vs {treatment.target_surface!r}"
+                ),
+            )
+        if control.target_tier != treatment.target_tier:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "control and treatment variants target different tiers: "
+                    f"{control.target_tier!r} vs {treatment.target_tier!r}"
+                ),
+            )
+        if control.target_channel != treatment.target_channel:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "control and treatment variants target different channels: "
+                    f"{control.target_channel!r} vs {treatment.target_channel!r}"
+                ),
+            )
+
     exp = Experiment(
         name=body.name,
         type=body.type,

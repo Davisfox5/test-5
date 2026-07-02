@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, desc, select, update
+from sqlalchemy import and_, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from backend.app.services.model_router import (
@@ -505,6 +505,8 @@ class Orchestrator:
             BusinessProfile,
             ClientProfile,
             DeltaReport,
+            InteractionFeatures,
+            InterventionEvent,
             ManagerProfile,
             Tenant,
         )
@@ -524,17 +526,45 @@ class Orchestrator:
             )
             return session.execute(stmt).scalars().all()
 
+        # The observed reality the system prompt promises: proxy-outcome
+        # counts (renewals, cancellations, replies, escalations, …) and
+        # intervention counts (action-item closures etc.) over the window.
+        # Without these the model is asked to find prediction-vs-reality
+        # divergence with no reality in the snapshot.
+        outcome_counts: Dict[str, int] = {}
+        for outcomes in session.execute(
+            select(InteractionFeatures.proxy_outcomes).where(
+                InteractionFeatures.tenant_id == tenant_id,
+                InteractionFeatures.created_at >= since,
+            )
+        ).scalars():
+            for key in (outcomes or {}):
+                outcome_counts[key] = outcome_counts.get(key, 0) + 1
+        intervention_counts: Dict[str, int] = {
+            str(kind): int(n)
+            for kind, n in session.execute(
+                select(InterventionEvent.kind, func.count(InterventionEvent.id))
+                .where(
+                    InterventionEvent.tenant_id == tenant_id,
+                    InterventionEvent.occurred_at >= since,
+                )
+                .group_by(InterventionEvent.kind)
+            ).all()
+        }
+
         snapshot = {
             "client_profiles": [self._abbrev_profile(p) for p in _recent(ClientProfile, "contact_id")],
             "agent_profiles": [self._abbrev_profile(p) for p in _recent(AgentProfile, "agent_id")],
             "manager_profiles": [self._abbrev_profile(p) for p in _recent(ManagerProfile, "manager_id")],
             "business_profiles": [self._abbrev_profile(p) for p in _recent(BusinessProfile, "business_tenant_id")],
+            "proxy_outcomes": outcome_counts,
+            "intervention_counts": intervention_counts,
             "delta_count": session.execute(
-                select(DeltaReport).where(
+                select(func.count(DeltaReport.id)).where(
                     DeltaReport.tenant_id == tenant_id,
                     DeltaReport.created_at >= since,
                 )
-            ).scalars().all().__len__(),
+            ).scalar() or 0,
         }
 
         req = LLMRequest(
@@ -553,7 +583,106 @@ class Orchestrator:
         except Exception:
             logger.exception("Weekly reflection JSON parse failed for tenant %s", tenant_id)
             return {}
+        # Apply the reflection instead of returning it into the void:
+        # coaching focus lands on the manager recommendation queue, drift
+        # + calibration findings go out on the quality webhook.
+        payload["applied"] = self._apply_weekly_reflection(session, tenant, payload)
         return payload
+
+    def _apply_weekly_reflection(
+        self,
+        session: Session,
+        tenant: Any,
+        payload: Dict[str, Any],
+    ) -> Dict[str, int]:
+        from backend.app.models import ManagerRecommendation
+
+        applied = {"coaching_recommendations": 0, "alerts_dispatched": 0}
+
+        # New coaching focus → manager recommendation queue (the surface
+        # managers already work from), deduped on title inside the same
+        # window recommendations live for.
+        category_by_domain = {
+            "sales": "coach_rep",
+            "cs": "coach_csm",
+            "support": "coach_support_agent",
+        }
+        domain = getattr(tenant, "default_domain", None) or "sales"
+        category = category_by_domain.get(domain, "coach_rep")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        focus_items = [
+            s.strip()
+            for s in (payload.get("new_coaching_focus") or [])
+            if isinstance(s, str) and s.strip()
+        ]
+        for focus in focus_items[:5]:
+            title = focus[:300]
+            existing = session.execute(
+                select(ManagerRecommendation.id).where(
+                    ManagerRecommendation.tenant_id == tenant.id,
+                    ManagerRecommendation.category == category,
+                    ManagerRecommendation.title == title,
+                    ManagerRecommendation.created_at >= cutoff,
+                )
+            ).first()
+            if existing is not None:
+                continue
+            session.add(
+                ManagerRecommendation(
+                    tenant_id=tenant.id,
+                    domain=domain,
+                    category=category,
+                    title=title,
+                    rationale=(
+                        "From this week's review of how the platform's "
+                        "predictions compared with what actually happened."
+                    ),
+                    evidence={"source": "weekly_reflection"},
+                    target={},
+                    score=float(payload.get("confidence") or 0.5),
+                    expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+                )
+            )
+            applied["coaching_recommendations"] += 1
+
+        # Drift + calibration findings are for operators, not managers —
+        # ship them on the quality webhook so someone actually sees them.
+        drift_alerts = payload.get("drift_alerts") or []
+        calibration_adjustments = payload.get("calibration_adjustments") or []
+        if drift_alerts or calibration_adjustments:
+            try:
+                from backend.app.services.webhook_dispatcher import dispatch_sync
+
+                dispatch_sync(
+                    session,
+                    tenant_id=tenant.id,
+                    event="quality.alert",
+                    payload={
+                        "event": "weekly_reflection",
+                        "tenant_id": str(tenant.id),
+                        "message": (
+                            f"This week's model-vs-reality review for "
+                            f"'{tenant.name}' flagged {len(drift_alerts)} drift "
+                            f"signal(s) and {len(calibration_adjustments)} "
+                            "calibration suggestion(s). Details attached."
+                        ),
+                        "drift_alerts": drift_alerts[:10],
+                        "calibration_adjustments": calibration_adjustments[:10],
+                        "confidence": payload.get("confidence"),
+                    },
+                )
+                applied["alerts_dispatched"] = len(drift_alerts) + len(
+                    calibration_adjustments
+                )
+            except Exception:
+                logger.exception(
+                    "Weekly reflection webhook failed for tenant %s (non-fatal)",
+                    tenant.id,
+                )
+
+        if applied["coaching_recommendations"]:
+            session.commit()
+        return applied
 
     # ── Helpers ───────────────────────────────────────────────────────
 

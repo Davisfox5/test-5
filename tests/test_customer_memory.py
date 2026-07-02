@@ -160,7 +160,11 @@ def test_positive_sentiment_moves_active_to_monitoring(sync_session, seeded):
     assert row.status == "monitoring"
 
 
-def test_negative_sentiment_reopens_resolved_concern(sync_session, seeded):
+def test_negative_after_resolved_watches_then_escalates(sync_session, seeded):
+    """Two-step reopen: the first negative mention on a resolved concern
+    moves it to ``monitoring`` and PRESERVES ``resolved_at`` (an offhand
+    remark must not corrupt the resolution timeline); a second negative
+    mention escalates to ``active`` and only then clears the timestamp."""
     from backend.app.models import CustomerConcern
     from backend.app.services.customer_memory import update_from_interaction
 
@@ -173,13 +177,26 @@ def test_negative_sentiment_reopens_resolved_concern(sync_session, seeded):
     )
     row = (sync_session.execute(select(CustomerConcern))).scalar_one()
     row.status = "resolved"
-    row.resolved_at = datetime.now(timezone.utc)
+    resolved_at = datetime.now(timezone.utc)
+    row.resolved_at = resolved_at
     sync_session.commit()
 
+    # First negative mention: watch, don't reopen.
     ix2 = _add_interaction(sync_session, tenant, cust)
     update_from_interaction(
         sync_session,
         ix2,
+        {"concerns_raised": [{"topic": "pricing", "sentiment": "negative"}]},
+    )
+    sync_session.refresh(row)
+    assert row.status == "monitoring"
+    assert row.resolved_at is not None
+
+    # Second negative mention: genuinely back — reactivate and clear.
+    ix3 = _add_interaction(sync_session, tenant, cust)
+    update_from_interaction(
+        sync_session,
+        ix3,
         {"concerns_raised": [{"topic": "pricing", "sentiment": "negative"}]},
     )
     sync_session.refresh(row)
@@ -325,3 +342,23 @@ def test_sweep_leaves_fresh_concerns_alone(sync_session, seeded):
     assert sweep_dormant_concerns(sync_session) == 0
     sync_session.refresh(row)
     assert row.status == "active"
+
+
+# ── _display_topic (API response humanization) ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    "topic, expected",
+    [
+        ("api_rate_limit_concerns", "API usage limits concerns"),
+        ("sso_configuration_help", "SSO configuration help"),
+        ("customer_onboarding_questions", "Customer onboarding questions"),
+        ("ux_latency_complaints", "Experience response time complaints"),
+        ("pricing", "Pricing"),
+        ("", ""),
+    ],
+)
+def test_display_topic(topic, expected):
+    from backend.app.api.customer_memory import _display_topic
+
+    assert _display_topic(topic) == expected

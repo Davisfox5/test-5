@@ -359,6 +359,12 @@ celery_app.conf.update(
             "task": "manager_anomaly_resolve",
             "schedule": crontab(minute=0, hour="*/6"),
         },
+        # Nightly: customer concerns not mentioned in 90 days go dormant
+        # so stale worries stop flooding briefs and token budgets.
+        "customer-memory-dormant-sweep": {
+            "task": "customer_memory_dormant_sweep",
+            "schedule": crontab(minute=20, hour=1),
+        },
         # Recompute the adaptive ``max_tokens`` ceiling per (call_site, tier)
         # from the rolling 14-day usage window. Daily, after the nightly
         # backup window settles. Requires at least 200 samples OR 14 days
@@ -4503,6 +4509,21 @@ def manager_anomaly_resolve() -> Dict[str, Any]:
     try:
         resolved = resolve_stale(session)
         return {"resolved": resolved}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="customer_memory_dormant_sweep")
+def customer_memory_dormant_sweep() -> Dict[str, Any]:
+    """Nightly: concerns not mentioned in 90 days transition to dormant
+    so stale worries stop crowding briefs (and their token budget)."""
+    from backend.app.services.customer_memory import sweep_dormant_concerns
+
+    session = _get_sync_session()
+    try:
+        transitioned = sweep_dormant_concerns(session)
+        session.commit()
+        return {"concerns_transitioned": transitioned}
     finally:
         session.close()
 

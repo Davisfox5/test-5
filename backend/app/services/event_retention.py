@@ -11,8 +11,11 @@ Two sweeps, both idempotent and safe to run daily:
 * ``feedback_events`` — aggregate rows older than
   ``FEEDBACK_EVENT_RAW_RETENTION_DAYS`` (default 365) into
   ``feedback_daily_rollup`` grouped by day/surface/event_type, then
-  delete the raw rows. The rollup survives indefinitely so calibration
-  still sees historical volume.
+  delete the raw rows. The rollup survives indefinitely; the read path is
+  ``feedback_service.feedback_volume_by_day`` (``GET /feedback/volume``),
+  which unions live ``feedback_events`` counts with the rollup so a
+  volume-over-time chart doesn't fall off a cliff at the retention
+  horizon.
 
 Per-tenant overrides
 --------------------

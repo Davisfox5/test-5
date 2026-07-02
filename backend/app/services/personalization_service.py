@@ -274,6 +274,20 @@ def _promote_for_tenant(session: Session, tenant: Tenant) -> int:
         .all()
     )
 
+    # Fetch which of the candidate interactions have at least one done
+    # action item in a single query, rather than one query per row below
+    # (was an N+1 — see feedback loop audit).
+    candidate_ids = [interaction_id for interaction_id, _insights in rows]
+    done_interaction_ids = {
+        row[0]
+        for row in session.query(ActionItem.interaction_id)
+        .filter(
+            ActionItem.interaction_id.in_(candidate_ids),
+            ActionItem.status.in_(("done", "completed")),
+        )
+        .all()
+    }
+
     promoted = 0
     for interaction_id, insights in rows:
         if promoted >= PROMOTION_DAILY_CAP:
@@ -282,15 +296,7 @@ def _promote_for_tenant(session: Session, tenant: Tenant) -> int:
         if _is_already_in_pool(analysis_pool, iid):
             continue
         # Confirm it has at least one done action item (cheap follow-up check).
-        has_done = (
-            session.query(ActionItem.id)
-            .filter(
-                ActionItem.interaction_id == interaction_id,
-                ActionItem.status.in_(("done", "completed")),
-            )
-            .first()
-            is not None
-        )
+        has_done = interaction_id in done_interaction_ids
         if not has_done:
             continue
         analysis_pool.insert(

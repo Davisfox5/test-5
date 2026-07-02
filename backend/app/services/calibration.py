@@ -25,7 +25,7 @@ import logging
 import random
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, desc, select, update
@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 MIN_CALIBRATION_SAMPLES = 50
 ECE_ALERT_THRESHOLD = 0.12
 HELDOUT_FRACTION = 0.2
+# Only fit on recent behavior — year-old outcomes describe a different
+# product and customer base, and the unbounded scan got slow anyway.
+CALIBRATION_LOOKBACK_DAYS = 180
+# Explicit user corrections are worth several implicit proxy outcomes:
+# each corrected item enters the fit this many times.
+CORRECTION_WEIGHT = 3
 
 
 # ── Scorer → outcome mapping ─────────────────────────────────────────────
@@ -50,12 +56,28 @@ HELDOUT_FRACTION = 0.2
 
 @dataclass
 class ScorerCalibrationConfig:
-    """How to extract (raw_score, outcome) pairs for one scorer."""
+    """How to extract (raw_score, outcome) pairs for one scorer.
+
+    ``composite`` names a live composite scorer whose *uncalibrated total*
+    is the raw score — this must match the domain that
+    :meth:`CompositeScorer.score` applies Platt to, otherwise the fitted
+    (A, B) are meaningless at serving time.  When ``composite`` is None
+    the raw score is read from ``raw_score_path`` in ``llm_structured``.
+
+    ``correction_key`` / thresholds turn :class:`CorrectionEvent` rows
+    into weighted soft-labels: a corrected value ≥ ``correction_positive_at``
+    counts as outcome 1, ≤ ``correction_negative_at`` as outcome 0, and
+    anything between is skipped as ambiguous.
+    """
 
     scorer_name: str
     raw_score_path: Sequence[str]  # dotted JSON path inside llm_structured
     outcome_keys_positive: Sequence[str]
     outcome_keys_negative: Sequence[str]
+    composite: Optional[str] = None  # 'sentiment' | 'churn_risk'
+    correction_key: Optional[str] = None
+    correction_positive_at: Optional[float] = None
+    correction_negative_at: Optional[float] = None
 
 
 DEFAULT_CALIBRATION_CONFIGS: List[ScorerCalibrationConfig] = [
@@ -64,12 +86,23 @@ DEFAULT_CALIBRATION_CONFIGS: List[ScorerCalibrationConfig] = [
         raw_score_path=("sentiment_score",),
         outcome_keys_positive=("customer_replied",),
         outcome_keys_negative=("customer_no_reply_72h", "customer_escalated"),
+        composite="sentiment",
+        # Thresholds mirror the corrections queue's positive/negative cut
+        # (sentiment_score is 0–10; ≥6.5 reads positive, ≤3.5 negative).
+        correction_key="sentiment_score",
+        correction_positive_at=6.5,
+        correction_negative_at=3.5,
     ),
     ScorerCalibrationConfig(
         scorer_name="churn_risk",
         raw_score_path=("churn_risk",),
         outcome_keys_positive=("contact_churned_30d", "deal_lost"),
         outcome_keys_negative=("contact_active_30d", "tenant_renewed"),
+        composite="churn_risk",
+        # churn_risk is 0–1; buckets mirror the corrections queue.
+        correction_key="churn_risk",
+        correction_positive_at=0.7,
+        correction_negative_at=0.3,
     ),
     ScorerCalibrationConfig(
         scorer_name="upsell",
@@ -113,27 +146,109 @@ def _extract_outcome(
     return None
 
 
+def _raw_score_for_row(
+    row: Any, config: ScorerCalibrationConfig
+) -> Optional[float]:
+    """Raw score for one InteractionFeatures row, in the domain the
+    scorer applies calibration to (composite total when configured,
+    otherwise the raw LLM field)."""
+    if config.composite is not None:
+        from backend.app.services import score_engine
+
+        feats = {
+            "deterministic": row.deterministic or {},
+            "llm_structured": row.llm_structured or {},
+        }
+        if config.composite == "sentiment":
+            return score_engine.default_sentiment_scorer().raw_total(
+                score_engine.flatten_features_for_sentiment(feats)
+            )
+        if config.composite == "churn_risk":
+            return score_engine.default_churn_scorer().raw_total(
+                score_engine.flatten_features_for_churn(feats)
+            )
+        return None
+    raw = _read_path(row.llm_structured or {}, config.raw_score_path)
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _correction_label(
+    correction: Dict[str, Any], config: ScorerCalibrationConfig
+) -> Optional[int]:
+    """Binary soft-label from a user correction, or None when ambiguous."""
+    if config.correction_key is None:
+        return None
+    value = correction.get(config.correction_key)
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if config.correction_positive_at is not None and value_f >= config.correction_positive_at:
+        return 1
+    if config.correction_negative_at is not None and value_f <= config.correction_negative_at:
+        return 0
+    return None
+
+
 def collect_pairs(
     session: Session,
     tenant_id: uuid.UUID,
     config: ScorerCalibrationConfig,
 ) -> List[Tuple[float, int]]:
-    """Return ``(raw_score, outcome_0_or_1)`` pairs for one scorer."""
-    from backend.app.models import InteractionFeatures
+    """Return ``(raw_score, outcome_0_or_1)`` pairs for one scorer.
 
+    Two sources, both windowed to :data:`CALIBRATION_LOOKBACK_DAYS`:
+
+    1. Proxy outcomes observed on interaction features.
+    2. Explicit user corrections (:class:`CorrectionEvent`), entered as
+       soft-labels at :data:`CORRECTION_WEIGHT`× weight — the correction's
+       value decides the label, the platform's own score stays the raw
+       input, so a "you scored this wrong" click pulls the curve toward
+       the user's judgment.
+    """
+    from backend.app.models import CorrectionEvent, InteractionFeatures
+
+    since = datetime.now(timezone.utc) - timedelta(days=CALIBRATION_LOOKBACK_DAYS)
     rows = session.execute(
         select(InteractionFeatures).where(
-            InteractionFeatures.tenant_id == tenant_id
+            InteractionFeatures.tenant_id == tenant_id,
+            InteractionFeatures.created_at >= since,
         )
     ).scalars().all()
+    features_by_interaction: Dict[Any, Any] = {r.interaction_id: r for r in rows}
+
     pairs: List[Tuple[float, int]] = []
+    corrected_interactions = set()
+
+    # Explicit corrections first (they also mask the proxy outcome for the
+    # same interaction — the human said the platform was wrong there).
+    if config.correction_key is not None:
+        corrections = session.execute(
+            select(CorrectionEvent).where(
+                CorrectionEvent.tenant_id == tenant_id,
+                CorrectionEvent.target_type == config.scorer_name,
+                CorrectionEvent.created_at >= since,
+            )
+        ).scalars().all()
+        for corr in corrections:
+            row = features_by_interaction.get(corr.interaction_id)
+            if row is None:
+                continue
+            raw_f = _raw_score_for_row(row, config)
+            label = _correction_label(corr.correction or {}, config)
+            if raw_f is None or label is None:
+                continue
+            corrected_interactions.add(corr.interaction_id)
+            pairs.extend([(raw_f, label)] * CORRECTION_WEIGHT)
+
     for row in rows:
-        raw = _read_path(row.llm_structured or {}, config.raw_score_path)
-        if raw is None:
+        if row.interaction_id in corrected_interactions:
             continue
-        try:
-            raw_f = float(raw)
-        except (TypeError, ValueError):
+        raw_f = _raw_score_for_row(row, config)
+        if raw_f is None:
             continue
         outcome = _extract_outcome(
             row.proxy_outcomes or {},
@@ -278,6 +393,31 @@ def active_calibration(
             .limit(1)
         )
         row = session.execute(stmt).scalar_one_or_none()
+        if row is not None:
+            return row.calibration
+    return None
+
+
+async def active_calibration_async(
+    db: Any,
+    tenant_id: uuid.UUID,
+    scorer_name: str,
+) -> Optional[Dict[str, float]]:
+    """Async twin of :func:`active_calibration` for FastAPI handlers."""
+    from backend.app.models import ScorerVersion
+
+    for tid in (tenant_id, None):
+        stmt = (
+            select(ScorerVersion)
+            .where(
+                ScorerVersion.scorer_name == scorer_name,
+                ScorerVersion.is_active.is_(True),
+                ScorerVersion.tenant_id.is_(tid) if tid is None else ScorerVersion.tenant_id == tid,
+            )
+            .order_by(desc(ScorerVersion.created_at))
+            .limit(1)
+        )
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if row is not None:
             return row.calibration
     return None

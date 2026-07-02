@@ -29,7 +29,7 @@ phases without changing the contract.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from backend.app.services.stats import (
     platt_scale_apply,
@@ -256,7 +256,9 @@ class CompositeScorer:
         self.intercept = intercept
         self.calibration = calibration or {}
 
-    def score(self, values: Dict[str, Optional[float]], top_k: int = 3) -> ScoreResult:
+    def _accumulate(
+        self, values: Dict[str, Optional[float]]
+    ) -> Tuple[float, int, List[Dict[str, Any]]]:
         contributions: List[Dict[str, Any]] = []
         total = self.intercept
         n_present = 0
@@ -276,6 +278,19 @@ class CompositeScorer:
                 "direction": wf.direction,
                 "recommendation": wf.recommendation,
             })
+        return total, n_present, contributions
+
+    def raw_total(self, values: Dict[str, Optional[float]]) -> Optional[float]:
+        """Uncalibrated composite total — the exact quantity Platt calibration
+        is applied to inside :meth:`score`.  Calibration *fitting* must use
+        this same domain or the fitted ``(A, B)`` are meaningless at apply
+        time.  Returns ``None`` when no inputs were present.
+        """
+        total, n_present, _ = self._accumulate(values)
+        return total if n_present else None
+
+    def score(self, values: Dict[str, Optional[float]], top_k: int = 3) -> ScoreResult:
+        total, n_present, contributions = self._accumulate(values)
 
         raw_score = max(0.0, min(100.0, total))
         calibrated = False
@@ -350,12 +365,15 @@ class CompositeScorer:
 # ── Default scorer configurations ────────────────────────────────────────
 
 
-def default_sentiment_scorer() -> CompositeScorer:
+def default_sentiment_scorer(
+    calibration: Optional[Dict[str, float]] = None,
+) -> CompositeScorer:
     """Sentiment scorer: combines LLM numeric + trajectory + close features."""
     return CompositeScorer(
         name="sentiment",
         version="v1",
         intercept=50.0,
+        calibration=calibration,
         features=[
             WeightedFeature("sentiment_score_llm", 4.0, 5.0, 2.0),
             WeightedFeature("sentiment_trajectory_slope", 3.0, 0.0, 0.3),
@@ -381,12 +399,15 @@ def default_sentiment_scorer() -> CompositeScorer:
     )
 
 
-def default_churn_scorer() -> CompositeScorer:
+def default_churn_scorer(
+    calibration: Optional[Dict[str, float]] = None,
+) -> CompositeScorer:
     """Churn-risk scorer: higher value = higher risk (scored 0–100)."""
     return CompositeScorer(
         name="churn_risk",
         version="v1",
         intercept=30.0,
+        calibration=calibration,
         features=[
             WeightedFeature("churn_risk_llm", 4.0, 0.4, 0.25),
             WeightedFeature("sustain_talk_count", 2.5, 1.0, 1.5),
@@ -414,12 +435,15 @@ def default_churn_scorer() -> CompositeScorer:
     )
 
 
-def default_health_scorer() -> CompositeScorer:
+def default_health_scorer(
+    calibration: Optional[Dict[str, float]] = None,
+) -> CompositeScorer:
     """Account health scorer: composite of sentiment, engagement, and follow-through."""
     return CompositeScorer(
         name="health_score",
         version="v1",
         intercept=50.0,
+        calibration=calibration,
         features=[
             WeightedFeature("sentiment_delta_vs_baseline", 3.0, 0.0, 1.0),
             WeightedFeature("action_item_completion_rate", 3.0, 0.7, 0.2),

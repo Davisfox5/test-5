@@ -32,6 +32,7 @@ from backend.app.models import (
     Interaction,
     Tenant,
 )
+from backend.app.services.prompt_variant_service import to_uuid as _variant_to_uuid
 from backend.app.services.triage_service import _strip_json_fences
 
 from backend.app.services import model_catalog
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 
 JUDGE_MODEL = model_catalog.HAIKU
 EVALUATOR_ID = JUDGE_MODEL
+
+# Bump this whenever any rubric text below (ANALYSIS_RUBRIC / CLASSIFIER_RUBRIC /
+# REPLY_RUBRIC) changes, so historical InsightQualityScore rows can be told
+# apart from rows scored under a different rubric.
+RUBRIC_VERSION = 1
 
 
 # ── Rubrics (system prompts for each judge) ──────────────────────────────
@@ -179,6 +185,17 @@ def _call_judge(rubric: str, user_content: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _tag_rubric_version(reasoning: Optional[str]) -> str:
+    """Fold ``RUBRIC_VERSION`` into the row's reasoning text.
+
+    ``InsightQualityScore`` has no JSON details column to hang this off of,
+    and this isn't worth an alembic migration — so the version rides along
+    in the one free-text field every row already writes.
+    """
+    tag = f"[rubric_v{RUBRIC_VERSION}]"
+    return f"{tag} {reasoning}" if reasoning else tag
+
+
 def _persist_scores(
     session: Session,
     *,
@@ -224,7 +241,9 @@ def _persist_scores(
             evaluator_id=EVALUATOR_ID,
             dimension=dim,
             score=score,
-            reasoning=(payload.get("reasoning") if isinstance(payload, dict) else None),
+            reasoning=_tag_rubric_version(
+                payload.get("reasoning") if isinstance(payload, dict) else None
+            ),
             prompt_variant_id=prompt_variant_id,
         )
         session.add(row)
@@ -238,6 +257,22 @@ def _persist_scores(
         "composite": composite,
         "flag_low_dimension": flag_low_dimension,
     }
+
+
+def _surface_variant_id(interaction: Interaction, surface: str) -> Optional[Any]:
+    """Resolve the variant id an ``InsightQualityScore`` row should carry.
+
+    Email interactions can hold a per-surface variant id under
+    ``insights["prompt_variants"][surface]`` (see
+    ``prompt_variant_service.merge_variant_insight`` — stamped at
+    classification/draft time by the email ingest + reply-draft paths).
+    Prefer that; fall back to ``interaction.prompt_variant_id``, the single
+    slot the ``analysis`` surface still uses, for interactions that predate
+    this attribution or never got a per-surface id recorded.
+    """
+    per_surface = (interaction.insights or {}).get("prompt_variants") or {}
+    resolved = _variant_to_uuid(per_surface.get(surface))
+    return resolved if resolved is not None else interaction.prompt_variant_id
 
 
 # ── Analysis judge ───────────────────────────────────────────────────────
@@ -314,7 +349,10 @@ def evaluate_classification(session: Session, interaction_id: str) -> Dict[str, 
         f"To: {', '.join(interaction.to_addresses or [])}\n"
         f"Subject: {interaction.subject or '(no subject)'}\n"
         f"Body preview:\n{(interaction.raw_text or '')[:2000]}\n\n"
-        f"## Model verdict\n"
+        "Form your own independent judgment of internal-vs-external and the "
+        "right category from the evidence above before reading the model's "
+        "verdict below.\n\n"
+        "## Model output to grade (read only after forming your own view):\n"
         f"is_external (model decided to ingest as external): "
         f"{not interaction.is_internal}\n"
         f"classification: {interaction.classification}\n"
@@ -333,7 +371,7 @@ def evaluate_classification(session: Session, interaction_id: str) -> Dict[str, 
         surface="email_classifier",
         weights=_CLASSIFIER_WEIGHTS,
         scores_payload=scores,
-        prompt_variant_id=interaction.prompt_variant_id,
+        prompt_variant_id=_surface_variant_id(interaction, "email_classifier"),
     )
     _flag_if_needed(session, interaction, result)
     return result
@@ -377,7 +415,10 @@ def evaluate_reply(session: Session, interaction_id: str) -> Dict[str, Any]:
     user_content = (
         f"## Tenant tone\n{tone}\n\n"
         f"## Inbound message\n{inbound_body}\n\n"
-        f"## Drafted reply\nSubject: {interaction.subject or ''}\n\n{body[:8000]}"
+        "Form your own independent judgment of what a good reply should say "
+        "before reading the model's drafted reply below.\n\n"
+        "## Model output to grade (read only after forming your own view):\n"
+        f"Subject: {interaction.subject or ''}\n\n{body[:8000]}"
     )
 
     scores = _call_judge(REPLY_RUBRIC, user_content)
@@ -397,7 +438,7 @@ def evaluate_reply(session: Session, interaction_id: str) -> Dict[str, Any]:
         surface="email_reply",
         weights=_REPLY_WEIGHTS,
         scores_payload=scores,
-        prompt_variant_id=interaction.prompt_variant_id,
+        prompt_variant_id=_surface_variant_id(interaction, "email_reply"),
         extra=extra,
     )
     _flag_if_needed(session, interaction, result)

@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import sqlalchemy as sa
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1092,6 +1092,38 @@ def _severity_from_pct_change(pct: float) -> str:
     return "low"
 
 
+# Dismissal feedback: when a manager keeps dismissing a kind of alert
+# without ever acknowledging one, the detector is telling them something
+# they don't find useful — stop re-firing the quiet ones.  Any
+# acknowledgment breaks the streak and restores full sensitivity.
+DISMISS_STREAK_SUPPRESS_LOW = 3
+DISMISS_STREAK_SUPPRESS_MEDIUM = 5
+
+
+def _dismissal_streak(session: Session, tenant_id, kind: str, domain) -> int:
+    """Consecutive user-dismissed alerts of this (kind, domain), newest
+    first.  Acknowledged alerts break the streak; auto-resolved alerts
+    (no user signal either way) are skipped."""
+    rows = session.execute(
+        select(ManagerAlert.acknowledged_at, ManagerAlert.dismissed_at)
+        .where(
+            ManagerAlert.tenant_id == tenant_id,
+            ManagerAlert.kind == kind,
+            ManagerAlert.domain == domain,
+        )
+        .order_by(desc(ManagerAlert.opened_at))
+        .limit(10)
+    ).all()
+    streak = 0
+    for acknowledged_at, dismissed_at in rows:
+        if acknowledged_at is not None:
+            break
+        if dismissed_at is not None:
+            streak += 1
+        # Auto-resolved / still-open rows: no user signal, keep scanning.
+    return streak
+
+
 def _insert_alert(
     session: Session, tenant_id, anomaly: DetectedAnomaly
 ) -> Optional[ManagerAlert]:
@@ -1111,6 +1143,22 @@ def _insert_alert(
     ).first()
     if existing is not None:
         return None
+    if anomaly.severity in ("low", "medium"):
+        streak = _dismissal_streak(session, tenant_id, anomaly.kind, anomaly.domain)
+        cutoff = (
+            DISMISS_STREAK_SUPPRESS_LOW
+            if anomaly.severity == "low"
+            else DISMISS_STREAK_SUPPRESS_MEDIUM
+        )
+        if streak >= cutoff:
+            logger.info(
+                "Suppressing %s/%s alert for tenant %s — %d consecutive dismissals",
+                anomaly.kind,
+                anomaly.severity,
+                tenant_id,
+                streak,
+            )
+            return None
     row = ManagerAlert(
         tenant_id=tenant_id,
         kind=anomaly.kind,

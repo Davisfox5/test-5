@@ -345,6 +345,15 @@ def platt_scale_fit(
     if not pairs:
         return (0.0, 0.0)
 
+    # Standardize the score axis before descending: raw inputs range from
+    # 0–1 probabilities to 0–100 composite totals, and a fixed learning
+    # rate diverges on the larger scales.  Fit on z-scores, then map the
+    # coefficients back so callers get (A, B) in the original domain.
+    mean_s = mean(s for s, _ in pairs)
+    var_s = mean((s - mean_s) ** 2 for s, _ in pairs)
+    std_s = math.sqrt(var_s) if var_s > 1e-12 else 1.0
+    scaled = [((s - mean_s) / std_s, y) for s, y in pairs]
+
     # Platt's trick: smooth labels to avoid log(0).
     n_pos = sum(y for _, y in pairs)
     n_neg = len(pairs) - n_pos
@@ -356,18 +365,43 @@ def platt_scale_fit(
     A, B = 0.0, 0.0
     for _ in range(n_iter):
         gA = gB = 0.0
-        for s, y in pairs:
+        for s, y in scaled:
             t = t_pos if y == 1 else t_neg
             z = max(-35.0, min(35.0, A * s + B))
             p = 1.0 / (1.0 + math.exp(-z))
             err = p - t  # dL/dz
             gA += err * s
             gB += err
-        gA /= len(pairs)
-        gB /= len(pairs)
+        gA /= len(scaled)
+        gB /= len(scaled)
         A -= lr * gA
         B -= lr * gB
-    return (A, B)
+    return (A / std_s, B - A * mean_s / std_s)
+
+
+def welch_t_test(
+    mean_a: float,
+    var_a: float,
+    n_a: int,
+    mean_b: float,
+    var_b: float,
+    n_b: int,
+) -> Tuple[float, float]:
+    """Welch's unequal-variance t-test from summary statistics.
+
+    Returns ``(t, p_two_sided)``.  Uses the normal approximation for the
+    p-value — accurate for the n ≥ 200 samples the rollout gate requires,
+    and avoids a t-distribution dependency.  Zero-variance inputs return
+    a degenerate ``(0.0, 1.0)`` so callers treat them as "no evidence".
+    """
+    if n_a < 2 or n_b < 2:
+        return (0.0, 1.0)
+    se_sq = var_a / n_a + var_b / n_b
+    if se_sq <= 1e-12:
+        return (0.0, 1.0)
+    t = (mean_a - mean_b) / math.sqrt(se_sq)
+    p = 2.0 * (1.0 - _normal_cdf(abs(t)))
+    return (t, max(0.0, min(1.0, p)))
 
 
 def platt_scale_apply(raw_score: float, A: float, B: float) -> float:

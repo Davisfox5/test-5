@@ -205,3 +205,20 @@ async def list_recent_feedback(
         }
         for r in rows
     ]
+
+
+@router.get("/feedback/volume")
+async def feedback_volume(
+    days: int = 400,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Daily feedback-event counts for this tenant, per (surface, event_type).
+
+    Spans both the live ``feedback_events`` table and the
+    ``feedback_daily_rollup`` history the retention sweep writes once raw
+    rows age out — see ``feedback_service.feedback_volume_by_day`` — so the
+    series doesn't fall off a cliff at the raw-retention horizon.
+    """
+    volume = await feedback_service.feedback_volume_by_day(db, tenant.id, days=days)
+    return {"days": days, "volume": volume}

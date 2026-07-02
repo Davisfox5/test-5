@@ -497,6 +497,39 @@ def to_uuid(maybe_id: Optional[str]) -> Optional[_uuid.UUID]:
         return None
 
 
+# ── Per-surface variant attribution on Interaction.insights ──────────────
+#
+# ``Interaction.prompt_variant_id`` is a single column — fine for the
+# ``analysis`` surface, which is the only variant an interaction ever gets.
+# Email interactions are different: an inbound message carries an
+# ``email_classifier`` variant, and a *separate* outbound reply Interaction
+# carries an ``email_reply`` variant (and, because the classifier judge
+# fires on every email interaction regardless of direction, a single row
+# can end up wanting both attributions recorded independently). We stamp
+# these into ``insights["prompt_variants"]`` instead of adding more
+# columns.
+
+
+def merge_variant_insight(
+    insights: Optional[Dict[str, Any]], surface: str, variant_id: Optional[str]
+) -> Dict[str, Any]:
+    """Merge ``{surface: variant_id}`` into ``insights["prompt_variants"]``.
+
+    Returns a new dict rather than mutating ``insights`` in place — assign
+    the result back to ``interaction.insights`` so SQLAlchemy's attribute
+    change-tracking picks it up on its own (whole-column reassignment,
+    same trick ``tasks.py`` uses for ``_plan_synthesis_diag``). No-op
+    (beyond a shallow copy) when ``variant_id`` is falsy, e.g. the
+    'fallback' status with no seeded variant row yet.
+    """
+    merged = dict(insights or {})
+    if variant_id:
+        variants = dict(merged.get("prompt_variants") or {})
+        variants[surface] = variant_id
+        merged["prompt_variants"] = variants
+    return merged
+
+
 # ── Seeding helper (idempotent) ──────────────────────────────────────────
 
 
