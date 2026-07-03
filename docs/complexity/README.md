@@ -22,7 +22,7 @@ and a sequenced set of increments we both agree on.
 | 2 | Soft-real-time media + live coaching under a latency budget | Real-time / concurrency | Dropped audio, misaligned diarization, stalled live coaching | ⚪ Not started |
 | 3 | Model-agnostic LLM infra: cost, quality & context-rot governance | LLM infrastructure | Model-deprecation blast radius, cost/quality drift, context rot | ⚪ Not started |
 | 4 | Multi-tenant isolation (89 tables) + mid-flight action-model migration | Data correctness & security | Cross-tenant leakage, non-atomic dual writes | ⚪ Not started |
-| 5 | Per-tenant ML + RAG under data scarcity and scale transitions | Statistical / retrieval | Cold-start models, embedding drift, manual scale-out | ⚪ Not started |
+| 5 | [Per-tenant ML + RAG under data scarcity (cold-start)](05-cold-start-ml-rag.md) | Statistical / retrieval | Cold-start models dark at launch; embedding drift & manual scale-out (deferred) | 🟡 Discussing |
 
 **Honorable mention (breadth, not depth):** the external-integration surface — bidirectional
 CRM sync conflict resolution, per-provider OAuth refresh, webhook idempotency. Tracked
