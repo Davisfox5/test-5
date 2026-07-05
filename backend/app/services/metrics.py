@@ -271,7 +271,13 @@ LIVE_DEEPGRAM_WS_CONNECTS = Counter(
 LIVE_PARALINGUISTIC_SNAPSHOTS = Counter(
     "linda_live_paralinguistic_snapshots_total",
     "Paralinguistic snapshots produced per live session, by outcome.",
-    ["status"],  # emitted|short_buffer|error
+    ["status"],  # emitted|short_buffer|error|overrun
+)
+
+LIVE_MEDIA_FRAMES_DROPPED = Counter(
+    "linda_live_media_frames_dropped_total",
+    "Audio frames dropped by the bounded media queue (overload), by provider.",
+    ["provider"],  # twilio|signalwire|telnyx|audiohook|siprec
 )
 
 
