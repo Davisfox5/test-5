@@ -61,6 +61,8 @@ class MediaStreamPump:
         provider: str = "twilio",
         queue_max_frames: int = DEFAULT_QUEUE_MAX_FRAMES,
         snapshot_deadline_sec: float = DEFAULT_SNAPSHOT_DEADLINE_SEC,
+        initial_audio_seconds: float = 0.0,
+        bytes_per_second: int = 8000,  # μ-law: 1 byte/sample at 8 kHz
     ) -> None:
         self._send_audio = send_audio
         self._window = window
@@ -70,8 +72,13 @@ class MediaStreamPump:
         self._queue: "asyncio.Queue" = asyncio.Queue(maxsize=queue_max_frames)
         self._snapshot_task: Optional["asyncio.Task"] = None
         self._closed = False
+        self._bytes_per_second = bytes_per_second
         self.frames_dropped = 0
         self.frames_offered = 0
+        # Cumulative audio position for the whole call, carried across
+        # reconnects — the grace-period resume path persists this on
+        # disconnect and seeds it on the next attach.
+        self.audio_seconds = initial_audio_seconds
 
     # ── Producer side (receive loop) ────────────────────────────────
 
@@ -84,6 +91,10 @@ class MediaStreamPump:
         if self._closed or not audio:
             return True
         self.frames_offered += 1
+        # Position advances for every frame the provider sent us, even
+        # ones the bounded queue later sheds — the stream's timeline
+        # moved regardless.
+        self.audio_seconds += len(audio) / float(self._bytes_per_second)
         try:
             self._queue.put_nowait(audio)
             return True

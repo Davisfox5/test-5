@@ -181,6 +181,7 @@ class LiveParalinguisticWindow:
         sample_rate: int = 8000,
         window_sec: float = 30.0,
         recompute_every_sec: float = 3.0,
+        start_offset: float = 0.0,
     ) -> None:
         self.sample_rate = sample_rate
         self.window_sec = window_sec
@@ -188,8 +189,11 @@ class LiveParalinguisticWindow:
         self._chunks: Deque[_Chunk] = deque()
         # Wall-clock anchor. We stamp chunks with call-relative offsets
         # (not wall time) so the buffer and Deepgram's event offsets
-        # share a coordinate system.
-        self._call_start = time.time()
+        # share a coordinate system. ``start_offset`` shifts the anchor
+        # backwards on a mid-call re-attach so the timeline continues
+        # where the previous connection left off instead of restarting
+        # at zero.
+        self._call_start = time.time() - start_offset
         self._last_snapshot_at: float = 0.0
         self._extractor = get_paralinguistic_extractor()
         # Flat list of diarization turns, sorted by start. Kept in
