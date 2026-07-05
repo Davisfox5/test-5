@@ -18,7 +18,7 @@ and a sequenced set of increments we both agree on.
 
 | # | Challenge | Class | Primary risk | Status |
 |---|-----------|-------|--------------|--------|
-| 1 | [Exactly-once correctness in the async LLM pipeline](01-pipeline-exactly-once.md) | Distributed-systems correctness | Double-charged LLM calls, orphaned interactions, crash-on-stale-loop | 🔵 In implementation |
+| 1 | [Exactly-once correctness in the async LLM pipeline](01-pipeline-exactly-once.md) | Distributed-systems correctness | Double-charged LLM calls, orphaned interactions, crash-on-stale-loop | ✅ Implemented (pending merge) |
 | 2 | Soft-real-time media + live coaching under a latency budget | Real-time / concurrency | Dropped audio, misaligned diarization, stalled live coaching | ⚪ Not started |
 | 3 | Model-agnostic LLM infra: cost, quality & context-rot governance | LLM infrastructure | Model-deprecation blast radius, cost/quality drift, context rot | ⚪ Not started |
 | 4 | [Multi-tenant isolation (89 tables) + mid-flight action-model migration](04-tenant-isolation-migration.md) | Data correctness & security | Cross-tenant leakage (213 manual filters, no backstop), non-atomic dual writes | 🟡 Discussing |

@@ -1,6 +1,6 @@
 # 01 — Exactly-once correctness in the async LLM pipeline
 
-**Status:** 🔵 In implementation (plan agreed 2026-07-05)
+**Status:** ✅ Implemented on `claude/pipeline-exactly-once` (2026-07-05) — pending review/merge
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
 
 ---
@@ -189,25 +189,44 @@ entry; §6.5 → stay on Celery, hand-rolled saga via the ledger).
 
 ## 8. Implementation increments
 
-Each increment: red tests first → implement → verify. Sequenced, no calendar assigned.
+Each increment: red tests first → implement → verify. All landed on
+`claude/pipeline-exactly-once` (2026-07-05).
 
-1. **Ledger foundation** — `InteractionStepRun` model + migration + claim/complete/fail
-   API (`services/pipeline_ledger.py`) + input-hash helper. Tests: claim uniqueness under
-   concurrency, lease expiry takeover, reuse on matching hash. ✅ blocks everything else.
-2. **3a analysis step** — wire claim → reuse-or-analyze → persist-after-pay into
-   `_run_pipeline_impl` step 9; drop the `len(summary) >= 40` guard. Tests: double-charge
-   concurrency test (two racers, exactly one paid call), retry-after-late-failure reuses
-   without re-paying, changed input re-analyzes.
-3. **Other paid steps** — transcription/segmentation persist-immediately; scorecards +
-   plan synthesis wrapped.
-4. **Idempotent re-derivation** — delete-then-insert for action items / scores /
-   snippets. Test: re-run produces no duplicates.
-5. **3b loop hygiene** — dispose at `_TaskEventLoop` entry; remove now-redundant inline
-   dispose in plan synthesis. Test: sync/async engine lifecycle across two sequential
-   task loops.
-6. **3c reconciliation** — orphan sweeper beat task over failed/absent resolution ledger
-   rows. Test: seeded orphan gets linked; already-claimed orphan is skipped.
-7. **3d orchestration** — non-blocking chords with callback-persisted aggregates;
-   per-tenant scan subtasks. Tests: dispatcher returns immediately with dispatch count;
-   aggregate reflects real per-tenant outcomes; scan subtask isolates its session.
-8. **Docs** — ARCHITECTURE.md §2.2 + this doc's status flip to 🔵/✅.
+1. ✅ **Ledger foundation** — `InteractionStepRun` model + `sr_001` migration +
+   claim/complete/fail API (`services/pipeline_ledger.py`) + input-hash helper.
+   Tests (`test_pipeline_step_ledger.py`): 8-thread claim race → exactly one winner;
+   lease-expiry takeover; failed-run retry; per-hash reuse.
+2. ✅ **3a analysis step** — `run_analysis_with_ledger` wired into step 9; the
+   `len(summary) >= 40` guard is gone. HELD defers the task (`StepHeldError` →
+   `self.retry`), REUSED strips transient error stamps, ACQUIRED commits output +
+   succeeded flip atomically. Tests (`test_pipeline_analysis_exactly_once.py`):
+   6 racing workers pay exactly once; retry-after-late-failure reuses; changed input
+   re-analyzes.
+3. ✅ **Other paid steps** — transcription + segmentation claim before paying and
+   persist the transcript with the succeeded flip (note: the voice path already
+   committed the transcript immediately — the claim closes the concurrent-duplicate
+   hole); scorecards claim + insert their rows at step 10 in the flip's commit
+   (step 15 removed); plan synthesis claims on the analysis hash.
+4. ✅ **Idempotent re-derivation** — steps 14/16 delete-then-insert machine rows;
+   manually created action items and library snippets survive. Test
+   (`test_pipeline_run_twice_idempotent.py`) runs the real `_run_pipeline` twice:
+   one paid call per step, zero duplicate rows.
+5. ✅ **3b loop hygiene** — `_TaskEventLoop.__enter__` disposes the shared async
+   engine once per task loop; inline dispose in plan synthesis removed;
+   `_emit_lifecycle` is now safe by construction. Tests
+   (`test_task_event_loop_engine.py`).
+6. ✅ **3c reconciliation** — step 12b is ledger-wrapped (failed vs succeeded rows
+   disambiguate "crashed" from "nobody to resolve");
+   `reconcile_orphan_interactions` beat task (hourly, batched, claim-based takeover)
+   heals failed-resolution orphans. Tests (`test_orphan_reconciliation.py`).
+7. ✅ **3d orchestration** — daily/weekly orchestrators return a dispatch receipt
+   instead of sync-waiting the chord; the callback logs the honest aggregate;
+   `support_trend_scan` / `cohort_recommendation_scan` fan out per-tenant subtasks
+   with their own sessions + loops. Tests (`test_orchestration_honesty.py`).
+8. ✅ **Docs** — this file + ARCHITECTURE.md §2.2.
+
+Residual (accepted, documented): the reuse guard's anomaly path (ledger says
+succeeded but payload missing) re-runs unprotected with a loud warning; scorecard
+input-hash keys on template *ids*, not criteria content, so a criteria edit alone
+doesn't re-score an already-scored interaction; raw `asyncio.run` sites outside
+`_TaskEventLoop`/`_run_async` remain a convention to watch in review.
