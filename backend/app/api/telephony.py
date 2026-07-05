@@ -228,10 +228,15 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
     # Deepgram live → diarization timeline → paralinguistic window.
     # We register the event handler before start() so the first
     # Results frame doesn't slip through. The SDK invokes handlers on
-    # its own thread, so we only call threadsafe mutators on the
-    # window (feed + update_diarization are plain lists/deques).
+    # its own thread; the window is single-writer (event loop only),
+    # so the handler marshals turns onto this loop instead of touching
+    # the window from the SDK thread.
     if live_para_window is not None:
-        _attach_deepgram_diarization(dg_connection, live_para_window)
+        import asyncio as _asyncio
+
+        _attach_deepgram_diarization(
+            dg_connection, live_para_window, loop=_asyncio.get_running_loop()
+        )
 
     try:
         await dg_connection.start(
@@ -314,24 +319,32 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
             logger.exception("Batch analysis dispatch failed for %s", session_id)
 
 
-def _attach_deepgram_diarization(dg_connection: Any, window: Any) -> None:
+def _attach_deepgram_diarization(
+    dg_connection: Any, window: Any, loop: Any = None
+) -> None:
     """Wire Deepgram's live ``Transcript`` events into the per-speaker
     diarization timeline of a :class:`LiveParalinguisticWindow`.
 
-    Runs on whatever thread the Deepgram SDK chose. We only touch
-    ``window.update_diarization``, which is list-based and safe to
-    call from any thread (GIL-protected mutation + no async side
-    effects). The audio feed and snapshot reads on the main task
-    thread don't race against it.
+    The SDK invokes the handler on whatever thread it chose; the window
+    is **single-writer** (all mutation on the event loop), so the
+    handler parses on the SDK thread and marshals the resulting turns
+    onto ``loop`` via ``call_soon_threadsafe``. If the loop is already
+    closed (call teardown racing a late transcript), the turns are
+    dropped — diarization is best-effort.
 
-    Silent on failures — diarization is best-effort; a parsing glitch
-    mustn't take down the audio ingest path.
+    Silent on failures — a parsing glitch mustn't take down the audio
+    ingest path.
     """
     try:
         from deepgram import LiveTranscriptionEvents  # type: ignore
+
+        transcript_event: Any = LiveTranscriptionEvents.Transcript
     except Exception:
+        # SDK not installed (tests / replay harness with a fake
+        # connection) — register under the event's wire name so fakes
+        # still capture the handler.
         logger.debug("deepgram LiveTranscriptionEvents not available", exc_info=True)
-        return
+        transcript_event = "Results"
 
     from backend.app.services.paralinguistics_live import (
         diar_turns_from_deepgram_words,
@@ -373,13 +386,24 @@ def _attach_deepgram_diarization(dg_connection: Any, window: Any) -> None:
                         }
                     )
             turns = diar_turns_from_deepgram_words(normalised)
-            if turns:
+            if not turns:
+                return
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(window.update_diarization, turns)
+                except RuntimeError:
+                    # Loop already closed — call is tearing down; a
+                    # late transcript has nowhere to go.
+                    logger.debug("diarization turns dropped: loop closed")
+            else:
+                # No loop supplied (tests / replay harness running
+                # everything on one thread) — mutate directly.
                 window.update_diarization(turns)
         except Exception:
             logger.debug("deepgram diarization handler failed", exc_info=True)
 
     try:
-        dg_connection.on(LiveTranscriptionEvents.Transcript, _on_transcript)
+        dg_connection.on(transcript_event, _on_transcript)
     except Exception:
         logger.debug(
             "could not register deepgram transcript handler", exc_info=True
