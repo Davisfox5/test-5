@@ -1403,18 +1403,79 @@ def _run_pipeline_impl(
         )
 
     transcript_for_scoring = _segments_for_llm(segments_dicts)
+    scorecard_results: List[Dict[str, Any]] = []
     if applicable_templates:
-        scorecard_results = _loop.run(
-            _get_scorecard_service().score_many(
-                transcript_for_scoring, applicable_templates, insights
-            )
+        # Exactly-once claim for the batched Haiku scoring call. Score
+        # rows are inserted HERE (not step 15) so persist-after-pay
+        # holds: rows + succeeded ledger flip land in one commit.
+        # REUSED → the rows are already in the DB from the winning run;
+        # HELD → another worker is mid-scoring — scores are non-blocking,
+        # so skip rather than defer the whole task (the holder's rows
+        # will land). Idempotent re-derivation: replace this
+        # interaction's machine-written scores instead of duplicating.
+        from backend.app.services.pipeline_ledger import (
+            STEP_SCORECARDS,
+            StepClaim,
+            claim_step,
+            complete_step,
+            fail_step,
         )
-    else:
-        scorecard_results = []
-    logger.info(
-        "Scored %d scorecard templates for interaction %s",
-        len(scorecard_results), interaction_id,
-    )
+
+        _sc_claim = claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_SCORECARDS,
+            input_hash=compute_input_hash(
+                _analysis_input_hash,
+                ",".join(sorted(t["id"] for t in applicable_templates)),
+            ),
+            worker_id=_worker_id(),
+        )
+        if _sc_claim.outcome == StepClaim.ACQUIRED:
+            try:
+                scorecard_results = _loop.run(
+                    _get_scorecard_service().score_many(
+                        transcript_for_scoring, applicable_templates, insights
+                    )
+                )
+            except Exception as _sc_exc:
+                fail_step(
+                    session, _sc_claim.run_id,
+                    error="%s: %s" % (type(_sc_exc).__name__, _sc_exc),
+                )
+                raise
+            session.query(InteractionScore).filter(
+                InteractionScore.interaction_id == interaction.id
+            ).delete(synchronize_session=False)
+            for sc in scorecard_results:
+                session.add(
+                    InteractionScore(
+                        interaction_id=interaction.id,
+                        template_id=uuid.UUID(sc["template_id"]),
+                        tenant_id=tenant.id,
+                        total_score=sc.get("total_score"),
+                        criterion_scores=sc.get("criterion_scores", []),
+                    )
+                )
+            complete_step(
+                session, _sc_claim.run_id, output_digest="interaction_scores"
+            )
+            logger.info(
+                "Scored %d scorecard templates for interaction %s",
+                len(scorecard_results), interaction_id,
+            )
+        elif _sc_claim.outcome == StepClaim.REUSED:
+            logger.info(
+                "Reusing persisted scorecard scores for interaction %s (ledger)",
+                interaction_id,
+            )
+        else:  # HELD
+            logger.info(
+                "Scorecard scoring for interaction %s held by another worker — "
+                "skipping (non-blocking)",
+                interaction_id,
+            )
 
     # ── Step 11: Snippet identification ──────────────────────────────
     snippet_dicts = _get_snippet_service().identify_notable_segments(
@@ -1696,6 +1757,14 @@ def _run_pipeline_impl(
     # ── Step 14: Insert action items ─────────────────────────────────
     # Capture every field the LLM emits; prior code dropped ``due_date``,
     # ``email_draft``, and the new advanced fields on the floor.
+    # Idempotent re-derivation: a retry that reaches this step again
+    # (the first pass committed at step 14a) replaces the machine-
+    # written items instead of duplicating them. Manually created items
+    # survive.
+    session.query(ActionItem).filter(
+        ActionItem.interaction_id == interaction.id,
+        ActionItem.manually_created == False,  # noqa: E712
+    ).delete(synchronize_session=False)
     for ai_item in insights.get("action_items", []):
         # Parse due_date if provided as a string. Tolerate malformed
         # values by leaving the column NULL rather than failing.
@@ -1798,6 +1867,29 @@ def _run_pipeline_impl(
         session.commit()
         _plan_diag["sync_commit_ok"] = True
 
+        # Exactly-once claim for the synthesis LLM call. Keyed on the
+        # analysis input-hash: same analysis → same plan; a re-analysis
+        # (changed transcript/variant/tier) legitimately re-synthesizes.
+        # REUSED/HELD both skip — synthesis is non-blocking by the
+        # locked failure-mode decision, so we never defer the task on it.
+        from backend.app.services.pipeline_ledger import (
+            STEP_PLAN_SYNTHESIS,
+            StepClaim as _StepClaim,
+            claim_step as _pl_claim_step,
+            complete_step as _pl_complete_step,
+            fail_step as _pl_fail_step,
+        )
+
+        _plan_claim = _pl_claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_PLAN_SYNTHESIS,
+            input_hash=_analysis_input_hash,
+            worker_id=_worker_id(),
+        )
+        _plan_diag["ledger_outcome"] = _plan_claim.outcome
+
         async def _run_plan_synthesis() -> None:
             # Dispose the engine pool first so the connection we open
             # is bound to THIS task's event loop. asyncpg connections
@@ -1899,7 +1991,23 @@ def _run_pipeline_impl(
                     _result.chosen_domain,
                 )
 
-        _loop.run(_run_plan_synthesis())
+        if _plan_claim.outcome == _StepClaim.ACQUIRED:
+            try:
+                _loop.run(_run_plan_synthesis())
+            except Exception as _plan_run_exc:
+                _pl_fail_step(
+                    session, _plan_claim.run_id,
+                    error="%s: %s" % (type(_plan_run_exc).__name__, _plan_run_exc),
+                )
+                raise
+            _pl_complete_step(
+                session, _plan_claim.run_id, output_digest="action_plans"
+            )
+        else:
+            logger.info(
+                "Action plan synthesis for interaction %s: ledger says %s — skipping",
+                interaction.id, _plan_claim.outcome,
+            )
     except SynthesisFailedError as _plan_exc:  # type: ignore[name-defined]
         logger.warning(
             "Action plan synthesis failed for interaction %s (non-fatal): %s",
@@ -1934,18 +2042,38 @@ def _run_pipeline_impl(
     # rides along with that same successful commit.
 
     # ── Step 15: Insert interaction scores ───────────────────────────
-    for sc in scorecard_results:
-        score_row = InteractionScore(
-            interaction_id=interaction.id,
-            template_id=uuid.UUID(sc["template_id"]),
-            tenant_id=tenant.id,
-            total_score=sc.get("total_score"),
-            criterion_scores=sc.get("criterion_scores", []),
-        )
-        session.add(score_row)
+    # Moved into step 10: score rows insert in the same commit that
+    # flips the scorecards ledger row to succeeded (persist-after-pay).
 
     # ── Step 16: Insert interaction snippets ─────────────────────────
+    # Idempotent re-derivation: snippets are recomputed from insights on
+    # every run, so a retry replaces the machine-written rows instead of
+    # duplicating them. Library-curated rows (in_library=True) survive;
+    # a recomputed snippet that collides with a surviving library row
+    # (same span + type) is skipped rather than duplicated.
+    _library_snippets = (
+        session.query(InteractionSnippet)
+        .filter(
+            InteractionSnippet.interaction_id == interaction.id,
+            InteractionSnippet.in_library == True,  # noqa: E712
+        )
+        .all()
+    )
+    _library_keys = {
+        (s.start_time, s.end_time, s.snippet_type) for s in _library_snippets
+    }
+    session.query(InteractionSnippet).filter(
+        InteractionSnippet.interaction_id == interaction.id,
+        InteractionSnippet.in_library == False,  # noqa: E712
+    ).delete(synchronize_session=False)
     for sn in snippet_dicts:
+        _sn_key = (
+            _coerce_seconds(sn.get("start_time")),
+            _coerce_seconds(sn.get("end_time")),
+            sn.get("snippet_type"),
+        )
+        if _sn_key in _library_keys:
+            continue
         snippet_row = InteractionSnippet(
             interaction_id=interaction.id,
             tenant_id=tenant.id,
@@ -2371,71 +2499,140 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                 tenant_features.get("paralinguistic_analysis", True)
             )
 
-            try:
-                if (
-                    interaction.audio_url
-                    and engine == "deepgram"
-                    and not want_paralinguistic
-                ):
-                    # URL mode: Deepgram fetches directly, we never stage.
-                    segments = asyncio.run(
-                        svc.transcribe(
-                            audio_url=interaction.audio_url,
-                            engine="deepgram",
-                            language=language,
-                            keyterms=keyterms,
-                            model=deepgram_model,
-                            tenant_features=tenant_features_for_engine,
-                        )
+            # Exactly-once claim for the paid Deepgram/Whisper call. The
+            # transcript is already persisted+committed the moment
+            # transcription returns (below), so retries short-circuit via
+            # the pre-populated-transcript branch above; the claim closes
+            # the remaining hole — two *concurrent* deliveries both
+            # observing an empty transcript and both paying to transcribe.
+            from backend.app.services.pipeline_ledger import (
+                STEP_TRANSCRIPTION,
+                StepClaim,
+                claim_step,
+                complete_step,
+                compute_input_hash,
+                fail_step,
+            )
+
+            _tr_run_id: Optional[uuid.UUID] = None
+            _tr_claim = claim_step(
+                session,
+                tenant_id=tenant.id,
+                interaction_id=interaction.id,
+                step_key=STEP_TRANSCRIPTION,
+                input_hash=compute_input_hash(
+                    interaction.audio_s3_key,
+                    interaction.audio_url,
+                    engine,
+                    deepgram_model,
+                    language,
+                ),
+                worker_id=_worker_id(),
+            )
+            if _tr_claim.outcome == StepClaim.HELD:
+                raise StepHeldError(
+                    "transcription for interaction %s held by another worker"
+                    % interaction_id
+                )
+            if _tr_claim.outcome == StepClaim.REUSED:
+                session.refresh(interaction)
+                if interaction.transcript and len(interaction.transcript) > 0:
+                    segments_dicts = interaction.transcript
+                    logger.info(
+                        "Reusing persisted transcript (%d segments) for "
+                        "interaction %s (ledger)",
+                        len(segments_dicts), interaction_id,
                     )
                 else:
-                    # Need a local path — from S3 staging, or download the
-                    # URL first (Whisper + paralinguistic both want bytes).
-                    if interaction.audio_s3_key:
-                        staged_key = interaction.audio_s3_key
-                        staged_path = s3_audio.download_to_tempfile(staged_key)
-                    else:
-                        import httpx
-                        import tempfile
-
-                        tmp = tempfile.NamedTemporaryFile(
-                            prefix="linda-audio-", suffix=".bin", delete=False
-                        )
-                        try:
-                            with httpx.Client(timeout=60.0) as client:
-                                resp = client.get(interaction.audio_url)
-                                resp.raise_for_status()
-                                tmp.write(resp.content)
-                        finally:
-                            tmp.close()
-                        staged_path = tmp.name
-
-                    segments = asyncio.run(
-                        svc.transcribe(
-                            audio_path=staged_path,
-                            engine=engine,
-                            language=language,
-                            keyterms=keyterms,
-                            model=deepgram_model,
-                            tenant_features=tenant_features_for_engine,
-                        )
+                    logger.warning(
+                        "Transcription ledger run %s for interaction %s is "
+                        "'succeeded' but no transcript persisted — "
+                        "re-transcribing without a claim",
+                        _tr_claim.run_id, interaction_id,
                     )
-                segments_dicts = _segments_to_dicts(segments)
-                interaction.transcript = segments_dicts
-                # Persist duration_seconds from the last segment if not set.
-                if not interaction.duration_seconds and segments:
-                    interaction.duration_seconds = int(segments[-1].end)
-                session.commit()
-            except Exception:
-                logger.exception(
-                    "Transcription failed for interaction %s", interaction_id
-                )
-                interaction.status = "transcription_failed"
-                session.commit()
-                # Clean up staged bytes on transcription failure too —
-                # the rest of the pipeline won't run.
-                _cleanup_staged_audio(session, interaction, staged_path, staged_key)
-                raise
+            else:
+                _tr_run_id = _tr_claim.run_id
+
+            if segments_dicts is None:
+                try:
+                    if (
+                        interaction.audio_url
+                        and engine == "deepgram"
+                        and not want_paralinguistic
+                    ):
+                        # URL mode: Deepgram fetches directly, we never stage.
+                        segments = asyncio.run(
+                            svc.transcribe(
+                                audio_url=interaction.audio_url,
+                                engine="deepgram",
+                                language=language,
+                                keyterms=keyterms,
+                                model=deepgram_model,
+                                tenant_features=tenant_features_for_engine,
+                            )
+                        )
+                    else:
+                        # Need a local path — from S3 staging, or download the
+                        # URL first (Whisper + paralinguistic both want bytes).
+                        if interaction.audio_s3_key:
+                            staged_key = interaction.audio_s3_key
+                            staged_path = s3_audio.download_to_tempfile(staged_key)
+                        else:
+                            import httpx
+                            import tempfile
+
+                            tmp = tempfile.NamedTemporaryFile(
+                                prefix="linda-audio-", suffix=".bin", delete=False
+                            )
+                            try:
+                                with httpx.Client(timeout=60.0) as client:
+                                    resp = client.get(interaction.audio_url)
+                                    resp.raise_for_status()
+                                    tmp.write(resp.content)
+                            finally:
+                                tmp.close()
+                            staged_path = tmp.name
+
+                        segments = asyncio.run(
+                            svc.transcribe(
+                                audio_path=staged_path,
+                                engine=engine,
+                                language=language,
+                                keyterms=keyterms,
+                                model=deepgram_model,
+                                tenant_features=tenant_features_for_engine,
+                            )
+                        )
+                    segments_dicts = _segments_to_dicts(segments)
+                    interaction.transcript = segments_dicts
+                    # Persist duration_seconds from the last segment if not set.
+                    if not interaction.duration_seconds and segments:
+                        interaction.duration_seconds = int(segments[-1].end)
+                    # Persist-after-pay: transcript + succeeded ledger row
+                    # land in the same commit.
+                    if _tr_run_id is not None:
+                        complete_step(
+                            session, _tr_run_id,
+                            output_digest="interaction.transcript",
+                            commit=False,
+                        )
+                    session.commit()
+                except Exception as _tr_exc:
+                    logger.exception(
+                        "Transcription failed for interaction %s", interaction_id
+                    )
+                    interaction.status = "transcription_failed"
+                    if _tr_run_id is not None:
+                        fail_step(
+                            session, _tr_run_id,
+                            error="%s: %s" % (type(_tr_exc).__name__, _tr_exc),
+                            commit=False,
+                        )
+                    session.commit()
+                    # Clean up staged bytes on transcription failure too —
+                    # the rest of the pipeline won't run.
+                    _cleanup_staged_audio(session, interaction, staged_path, staged_key)
+                    raise
         else:
             logger.warning(
                 "Interaction %s has no transcript, audio_s3_key, or audio_url",
@@ -2561,26 +2758,92 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
         if interaction.transcript and len(interaction.transcript) > 0:
             segments_dicts = interaction.transcript
         elif interaction.raw_text:
+            from backend.app.services.pipeline_ledger import (
+                STEP_SEGMENTATION,
+                StepClaim,
+                claim_step,
+                complete_step,
+                compute_input_hash,
+                fail_step,
+            )
             from backend.app.services.text_segmenter import segments_from_text
 
-            # Release the DB connection back to the pool before this
-            # call — segments_from_text may invoke a 30-60s Haiku LLM
-            # round-trip for un-tagged inputs, and holding the
-            # connection idle during that time triggers Neon's
-            # server-side idle-cutoff (TCP keepalives at the OS layer
-            # aren't propagated through Neon's proxy). Committing now
-            # is safe — at this point we've only done READ queries.
-            session.commit()
-            segments_dicts = segments_from_text(
-                interaction.raw_text,
-                duration_seconds=interaction.duration_seconds,
+            # Exactly-once claim for the segmenter's possible 30-60s Haiku
+            # call. The claim's commit also releases the DB connection
+            # before the LLM round-trip (Neon kills idle connections —
+            # this replaces the bare session.commit() that lived here).
+            # Committing here is safe — only READ queries so far.
+            _seg_run_id: Optional[uuid.UUID] = None
+            _seg_claim = claim_step(
+                session,
+                tenant_id=tenant.id,
+                interaction_id=interaction.id,
+                step_key=STEP_SEGMENTATION,
+                input_hash=compute_input_hash(
+                    interaction.raw_text, interaction.duration_seconds
+                ),
+                worker_id=_worker_id(),
             )
+            if _seg_claim.outcome == StepClaim.HELD:
+                raise StepHeldError(
+                    "segmentation for interaction %s held by another worker"
+                    % interaction_id
+                )
+            segments_dicts = None
+            if _seg_claim.outcome == StepClaim.REUSED:
+                session.refresh(interaction)
+                if interaction.transcript and len(interaction.transcript) > 0:
+                    segments_dicts = interaction.transcript
+                    logger.info(
+                        "Reusing persisted segmentation for interaction %s (ledger)",
+                        interaction_id,
+                    )
+                else:
+                    logger.warning(
+                        "Segmentation ledger run %s for interaction %s is "
+                        "'succeeded' but no transcript persisted — re-running "
+                        "without a claim",
+                        _seg_claim.run_id, interaction_id,
+                    )
+            else:
+                _seg_run_id = _seg_claim.run_id
+
+            if segments_dicts is None:
+                try:
+                    segments_dicts = segments_from_text(
+                        interaction.raw_text,
+                        duration_seconds=interaction.duration_seconds,
+                    )
+                except Exception as _seg_exc:
+                    if _seg_run_id is not None:
+                        fail_step(
+                            session, _seg_run_id,
+                            error="%s: %s" % (type(_seg_exc).__name__, _seg_exc),
+                        )
+                    raise
+                if segments_dicts:
+                    # Persist-after-pay: transcript + succeeded ledger row
+                    # in one commit, so a later-step failure never re-pays
+                    # the segmenter.
+                    interaction.transcript = segments_dicts
+                    if _seg_run_id is not None:
+                        complete_step(
+                            session, _seg_run_id,
+                            output_digest="interaction.transcript",
+                            commit=False,
+                        )
+                    session.commit()
             if not segments_dicts:
                 logger.error(
                     "Text segmenter returned empty for interaction %s",
                     interaction_id,
                 )
                 interaction.status = "failed"
+                if _seg_run_id is not None:
+                    fail_step(
+                        session, _seg_run_id, error="empty segmentation",
+                        commit=False,
+                    )
                 session.commit()
                 return {"status": "error", "detail": "Empty raw_text"}
         else:
