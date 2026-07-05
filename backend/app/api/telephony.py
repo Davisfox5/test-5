@@ -260,6 +260,37 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         await websocket.close(code=1011)
         return
 
+    # One Redis connection per session — shared by the snapshot
+    # publisher instead of a fresh connection every 3 s.
+    import asyncio
+    import redis.asyncio as aioredis
+
+    from backend.app.services.telephony.media_stream_pump import MediaStreamPump
+
+    session_redis = None
+    publish = None
+    if live_para_window is not None:
+        try:
+            session_redis = aioredis.from_url(
+                settings.REDIS_URL, decode_responses=True
+            )
+            publish = _make_paralinguistic_publisher(session_redis, session_id)
+        except Exception:
+            logger.debug("live para publisher unavailable", exc_info=True)
+
+    # The receive loop below only decodes and enqueues; the pump's
+    # consumer task forwards audio to Deepgram and runs the (bounded,
+    # deadline-guarded) paralinguistic snapshots. A slow Praat can no
+    # longer stall ingest — overload drops the oldest frames and shows
+    # up in linda_live_media_frames_dropped_total.
+    pump = MediaStreamPump(
+        send_audio=dg_connection.send,
+        window=live_para_window,
+        publish=publish,
+        provider="twilio",
+    )
+    pump_task = asyncio.get_event_loop().create_task(pump.run())
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -273,17 +304,10 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 payload = media.get("payload") or ""
                 audio = decode_media_payload(payload)
                 if audio:
-                    await dg_connection.send(audio)
-                    if live_para_window is not None:
-                        # Whole-window aggregate — we intentionally do
-                        # not trust the provider-reported ``track`` as
-                        # a proxy for agent/customer. Per-speaker live
-                        # features land once we wire Deepgram's live
-                        # diarization stream into the timeline.
-                        live_para_window.feed(audio)
-                        await _publish_paralinguistic_snapshot(
-                            session_id, live_para_window
-                        )
+                    # Whole-window aggregate — we intentionally do not
+                    # trust the provider-reported ``track`` as a proxy
+                    # for agent/customer; diarization owns that.
+                    pump.offer(audio)
             elif event == "stop":
                 break
             elif event == "start":
@@ -298,6 +322,11 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         logger.exception("Twilio media-stream handler crashed for %s", session_id)
     finally:
         try:
+            await pump.aclose()
+            await asyncio.wait_for(pump_task, timeout=10.0)
+        except Exception:
+            pump_task.cancel()
+        try:
             await dg_connection.finish()
         except Exception:
             pass
@@ -308,9 +337,10 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 pass
         try:
             from backend.app.api.websocket import _dispatch_batch_analysis
-            import redis.asyncio as aioredis
 
-            redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            redis = session_redis or aioredis.from_url(
+                settings.REDIS_URL, decode_responses=True
+            )
             try:
                 await _dispatch_batch_analysis(redis, session_id)
             finally:
@@ -410,65 +440,31 @@ def _attach_deepgram_diarization(
         )
 
 
-async def _publish_paralinguistic_snapshot(
-    session_id: str, window: Any
-) -> None:
-    """Take a rate-limited snapshot and publish it on the live-coaching
-    Redis channel. The UI already subscribes to this channel for
+def _make_paralinguistic_publisher(redis_conn: Any, session_id: str):
+    """Build the pump's ``publish`` callback: annotate arousal and emit
+    on the live-coaching Redis channel over the session's shared
+    connection. The UI already subscribes to this channel for
     ``LiveFeatureWindow`` snapshots; paralinguistic data lands under the
     ``paralinguistic`` subkey so existing clients ignore what they don't
     understand.
-
-    The Praat work runs in the default thread-pool executor. If another
-    snapshot is already in flight we simply don't queue a second one —
-    the window throttles itself via ``recompute_every_sec`` anyway.
     """
-    import asyncio
 
-    try:
-        from backend.app.services.metrics import LIVE_PARALINGUISTIC_SNAPSHOTS
-    except Exception:
-        LIVE_PARALINGUISTIC_SNAPSHOTS = None  # type: ignore
-
-    loop = asyncio.get_event_loop()
-    try:
-        features = await loop.run_in_executor(None, window.maybe_snapshot)
-    except Exception:
-        logger.debug("paralinguistic snapshot failed", exc_info=True)
-        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="error").inc()
-        return
-    if features is None:
-        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="short_buffer").inc()
-        return
-    if not getattr(features, "available", False):
-        return
-    if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-        LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="emitted").inc()
-
-    # Inline arousal annotation — deterministic, microsecond-cheap, so
-    # live coaching can render the label on the same frame.
-    try:
-        from backend.app.services.paralinguistics_emotion import annotate_arousal
-
-        annotated = annotate_arousal(features.as_dict())
-    except Exception:
-        annotated = features.as_dict()
-
-    try:
-        import redis.asyncio as aioredis
-
-        redis = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    async def _publish(features: Any) -> None:
+        # Inline arousal annotation — deterministic, microsecond-cheap,
+        # so live coaching can render the label on the same frame.
         try:
-            await redis.publish(
-                f"livecoach:{session_id}",
-                json.dumps({"paralinguistic": annotated}),
-            )
-        finally:
-            await redis.aclose()
-    except Exception:
-        logger.debug("paralinguistic publish failed", exc_info=True)
+            from backend.app.services.paralinguistics_emotion import annotate_arousal
+
+            annotated = annotate_arousal(features.as_dict())
+        except Exception:
+            annotated = features.as_dict()
+
+        await redis_conn.publish(
+            f"livecoach:{session_id}",
+            json.dumps({"paralinguistic": annotated}),
+        )
+
+    return _publish
 
 
 # ── SignalWire (TwiML-compatible) ─────────────────────────────────────
