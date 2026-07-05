@@ -1,6 +1,6 @@
 # 01 — Exactly-once correctness in the async LLM pipeline
 
-**Status:** 🟡 Discussing
+**Status:** 🔵 In implementation (plan agreed 2026-07-05)
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
 
 ---
@@ -154,10 +154,60 @@ slow tenant delays the rest.
 5. **Framework question:** stay hand-rolled on Celery, or adopt a durable-execution pattern
    (idempotent tasks + explicit saga) — without over-engineering?
 
-## 7. Chosen approach
+## 7. Chosen approach (agreed 2026-07-05)
 
-_To be filled in once we've talked through §6._
+**Durable per-step run ledger** (§6.1 → foundational fix now; §6.2 → separate ledger
+table; §6.3 → per-(interaction, step, input-hash); §6.4 → structural dispose at loop
+entry; §6.5 → stay on Celery, hand-rolled saga via the ledger).
+
+- **New table `interaction_step_runs`** — one row per (interaction, step, input-hash),
+  with `status` (`running` / `succeeded` / `failed`), `attempt`, and lease fields
+  (`claimed_by`, `claimed_at`, `lease_expires_at`). The claim is atomic: INSERT under a
+  unique constraint on (interaction_id, step_key, input_hash) — a concurrent duplicate
+  loses with IntegrityError; takeover of an expired/failed claim is a compare-and-set
+  UPDATE checked by rowcount. Lease TTL means a dead worker's claim expires instead of
+  wedging the interaction. `Interaction.status` is untouched — consumers see nothing new.
+- **Idempotency key = input-hash**: sha256 over the canonical step inputs (for analysis:
+  compressed transcript + prompt variant + tier). Retries dedupe; changed inputs
+  legitimately re-run.
+- **Persist-after-pay**: the moment a paid call returns, its output is committed together
+  with the ledger row flipping to `succeeded` — no more losing a Sonnet result to a
+  step-12 rollback. Ledger-wrapped steps: transcription (voice), segmentation (text),
+  analysis, scorecards, entity resolution, plan synthesis.
+- **Idempotent re-derivation** for steps 14/15/16: delete-then-insert scoped to
+  `interaction_id` (verified: today they blindly `session.add`, so retries duplicate
+  action items).
+- **3b structurally**: `_TaskEventLoop.__enter__` disposes the shared async engine once,
+  so every `_loop.run(...)` site (incl. `_emit_lifecycle`) gets fresh-loop connections
+  by construction rather than by per-call-site convention.
+- **3c**: a reconciliation beat task scans for `analyzed` interactions whose
+  entity-resolution ledger row is `failed` (or absent) and re-runs resolution through the
+  same claim machinery — bounded batches, concurrency-safe by construction.
+- **3d**: orchestrator dispatchers stop sync-waiting on chords (the callback persists the
+  aggregate; dispatch returns immediately), and `support_trend_scan` /
+  `cohort_recommendation_scan` fan out per-tenant subtasks each owning its session.
 
 ## 8. Implementation increments
 
-_To be sequenced once §7 is agreed. Each increment: red tests first → implement → verify._
+Each increment: red tests first → implement → verify. Sequenced, no calendar assigned.
+
+1. **Ledger foundation** — `InteractionStepRun` model + migration + claim/complete/fail
+   API (`services/pipeline_ledger.py`) + input-hash helper. Tests: claim uniqueness under
+   concurrency, lease expiry takeover, reuse on matching hash. ✅ blocks everything else.
+2. **3a analysis step** — wire claim → reuse-or-analyze → persist-after-pay into
+   `_run_pipeline_impl` step 9; drop the `len(summary) >= 40` guard. Tests: double-charge
+   concurrency test (two racers, exactly one paid call), retry-after-late-failure reuses
+   without re-paying, changed input re-analyzes.
+3. **Other paid steps** — transcription/segmentation persist-immediately; scorecards +
+   plan synthesis wrapped.
+4. **Idempotent re-derivation** — delete-then-insert for action items / scores /
+   snippets. Test: re-run produces no duplicates.
+5. **3b loop hygiene** — dispose at `_TaskEventLoop` entry; remove now-redundant inline
+   dispose in plan synthesis. Test: sync/async engine lifecycle across two sequential
+   task loops.
+6. **3c reconciliation** — orphan sweeper beat task over failed/absent resolution ledger
+   rows. Test: seeded orphan gets linked; already-claimed orphan is skipped.
+7. **3d orchestration** — non-blocking chords with callback-persisted aggregates;
+   per-tenant scan subtasks. Tests: dispatcher returns immediately with dispatch count;
+   aggregate reflects real per-tenant outcomes; scan subtask isolates its session.
+8. **Docs** — ARCHITECTURE.md §2.2 + this doc's status flip to 🔵/✅.
