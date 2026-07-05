@@ -1,7 +1,14 @@
 # 02 — Soft-real-time media + live coaching under a latency budget
 
-**Status:** 🟡 Discussing
+**Status:** 🔵 In implementation — increments 1–5 landed on
+`claude/realtime-media-hardening` (2026-07-05), pending review + merge.
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
+
+> Landed parameters: media queue 250 frames (~5 s) drop-oldest; snapshot
+> deadline 2.5 s with doubling cadence backoff capped at 12 s; grace
+> window 45 s; SIPREC cache revalidation 30 s; reap loop every 60 s.
+> Drops surface in `linda_live_media_frames_dropped_total`, overruns in
+> `linda_live_paralinguistic_snapshots_total{status="overrun"}`.
 
 > **Pre-launch lens (2026-07).** No live calls, no raw audio, no tenants on the
 > telephony paths yet. Everything here is testable only with synthetic frames and
