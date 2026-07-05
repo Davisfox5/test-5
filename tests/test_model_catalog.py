@@ -95,22 +95,31 @@ def test_failover_tier_map_degrades_downward():
 # ── Guard: no stray hardcoded model ids outside the catalog ───────────────
 
 
-def test_no_hardcoded_model_ids_in_services_or_api():
-    """The catalog is the only place a ``claude-*`` literal may appear in the
-    runtime service/api tree. Anything else forks the source of truth and
-    reintroduces the 25-file blast radius."""
+def test_no_hardcoded_model_ids_in_runtime_tree():
+    """The catalog (and the config defaults it reads) are the only places a
+    ``claude-*`` literal may appear anywhere in ``backend/`` or ``scripts/``.
+    Anything else forks the source of truth and reintroduces the 25-file blast
+    radius. Alembic versions are immutable history and stay allowlisted."""
     repo_root = pathlib.Path(__file__).resolve().parents[1]
-    roots = [
-        repo_root / "backend" / "app" / "services",
-        repo_root / "backend" / "app" / "api",
-    ]
-    allowed = {repo_root / "backend" / "app" / "services" / "model_catalog.py"}
+    roots = [repo_root / "backend", repo_root / "scripts"]
+    allowed_files = {
+        repo_root / "backend" / "app" / "services" / "model_catalog.py",
+        # The env-overridable pinned defaults the catalog resolves from.
+        repo_root / "backend" / "app" / "config.py",
+    }
+    # Migration files are frozen once merged; editing them to chase a rename
+    # would rewrite history. New migrations should not add model literals.
+    allowed_dirs = [repo_root / "backend" / "alembic" / "versions"]
     literal = re.compile(r"[\"']claude-[a-z0-9]")
 
     offenders: list[str] = []
     for root in roots:
+        if not root.exists():
+            continue
         for path in root.rglob("*.py"):
-            if path in allowed:
+            if path in allowed_files:
+                continue
+            if any(d in path.parents for d in allowed_dirs):
                 continue
             for i, line in enumerate(path.read_text().splitlines(), 1):
                 if literal.search(line):
