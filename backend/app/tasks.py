@@ -669,6 +669,25 @@ class _TaskEventLoop:
     def __enter__(self) -> "_TaskEventLoop":
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        # Structural 3b fix: dispose the shared async engine's pool ONCE
+        # at loop entry, so every ``_loop.run(...)`` site in the pipeline
+        # (lifecycle webhook emit, plan synthesis, search indexing, …)
+        # gets asyncpg connections bound to THIS loop by construction.
+        # Previously this was a per-call-site convention — plan synthesis
+        # remembered it, ``_emit_lifecycle`` didn't, and its stale-loop
+        # crashes were silently swallowed as "webhook emission failed".
+        # Disposing is a no-op on an empty pool, ~5ms otherwise, and safe
+        # under prefork (one task at a time per child). Import inside the
+        # method: backend.app.db must not be a hard import-time dep here.
+        try:
+            from backend.app.db import engine as _async_engine
+
+            self._loop.run_until_complete(_async_engine.dispose())
+        except Exception:
+            logger.warning(
+                "async engine dispose at task-loop entry failed (non-fatal)",
+                exc_info=True,
+            )
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -1891,25 +1910,10 @@ def _run_pipeline_impl(
         _plan_diag["ledger_outcome"] = _plan_claim.outcome
 
         async def _run_plan_synthesis() -> None:
-            # Dispose the engine pool first so the connection we open
-            # is bound to THIS task's event loop. asyncpg connections
-            # are loop-coupled; the async engine in backend.app.db is
-            # module-level (created once at worker boot), and its
-            # pool retains connections bound to whatever loop opened
-            # them. After this worker has handled any prior async DB
-            # work (an earlier Celery task, a beat-scheduled scan),
-            # the pool holds connections bound to a stale loop. The
-            # next checkout's pool_pre_ping fires "RuntimeError: Task
-            # got Future attached to a different loop" against
-            # asyncpg.protocol.query, killing synthesis silently.
-            #
-            # Disposing is a no-op when the pool is empty and cheap
-            # (~5ms) when it isn't. Forces the next checkout to open
-            # a fresh asyncpg connection bound to the loop _TaskEventLoop
-            # created for this task.
-            from backend.app.db import engine as _async_engine
-            await _async_engine.dispose()
-
+            # No dispose-first needed here anymore: ``_TaskEventLoop``
+            # disposes the shared async engine at loop entry, so any
+            # connection checked out inside this loop is already bound
+            # to it (see the __enter__ docblock).
             async with _async_session_factory() as async_db:
                 synthesizer = ActionPlanSynthesizer()
                 # Re-fetch the tenant + interaction from the async
