@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -33,9 +34,30 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
 
+    # SIPREC idle reaper: finalises sessions whose Redis state
+    # expired because the SRS died without recording.stopped. Runs in
+    # every worker; reaping is idempotent so the overlap is harmless.
+    import asyncio as _asyncio
+
+    async def _siprec_reap_loop() -> None:
+        from backend.app.services.telephony.siprec.bridge import get_bridge
+
+        log = logging.getLogger(__name__)
+        while True:
+            await _asyncio.sleep(60.0)
+            try:
+                reaped = await get_bridge().reap_stale_sessions()
+                if reaped:
+                    log.warning("SIPREC reaper finalised %d stale sessions", reaped)
+            except Exception:
+                log.exception("SIPREC reap loop iteration failed")
+
+    reap_task = _asyncio.get_event_loop().create_task(_siprec_reap_loop())
+
     yield
 
     # ── Shutdown ──
+    reap_task.cancel()
     await engine.dispose()
 
 
