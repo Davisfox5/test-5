@@ -3389,89 +3389,136 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         session.close()
 
 
-@celery_app.task(name="support_trend_scan")
-def support_trend_scan() -> Dict[str, Any]:
-    """Daily AI-driven cross-customer trend scan.
+def _all_tenant_ids() -> List[str]:
+    """Snapshot tenant ids on a short-lived session (dispatcher helper)."""
+    from backend.app.models import Tenant
 
-    Embeds any missing SupportCase subjects, clusters by similarity,
-    and persists alerts + recommendations for clusters that are
-    actually growing (not just hard-count thresholds). Per-tenant
-    failures land in the logger; the rest of the run continues.
+    session = _get_sync_session()
+    try:
+        return [str(t.id) for t in session.query(Tenant.id).all()]
+    finally:
+        session.close()
+
+
+@celery_app.task(name="_log_scan_aggregate")
+def _log_scan_aggregate(
+    results: List[Optional[Dict[str, Any]]], scan_name: str
+) -> Dict[str, Any]:
+    """Chord callback: the single honest aggregate for a fan-out scan.
+
+    Runs only after every per-tenant subtask finished, so it reports
+    *real* outcomes — unlike the old sync-wait dispatchers, which
+    reported "0 processed / all failed" whenever the wait timed out.
     """
-    import asyncio
+    ok = 0
+    failed: List[str] = []
+    for r in results or []:
+        if isinstance(r, dict) and not r.get("error"):
+            ok += 1
+        elif isinstance(r, dict):
+            failed.append(str(r.get("tenant_id") or "unknown"))
+        else:
+            failed.append("unknown")
+    summary = {
+        "scan": scan_name,
+        "tenants_processed": ok,
+        "failed_tenants": failed,
+    }
+    log = logger.warning if failed else logger.info
+    log(
+        "%s aggregate: %d tenants processed, %d failed (%s)",
+        scan_name, ok, len(failed), ",".join(failed) or "-",
+    )
+    return summary
 
+
+@celery_app.task(name="support_trend_scan_tenant")
+def support_trend_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the support trend scan — own session, own
+    event loop, so one slow tenant can't delay the others."""
     from backend.app.models import Tenant
     from backend.app.services.support_trend_detector import run_for_tenant
 
     session = _get_sync_session()
-    by_tenant: Dict[str, Dict[str, Any]] = {}
     try:
-        tenants = (
-            session.execute(__import__("sqlalchemy").select(Tenant))
-        ).scalars().all()
-
-        async def _run_for_one(t: Tenant) -> Tuple[str, Dict[str, Any]]:
-            try:
-                result = await run_for_tenant(session, t)
-                return str(t.id), result
-            except Exception:
-                logger.exception(
-                    "Support trend scan failed for tenant %s", t.id
-                )
-                return str(t.id), {"error": 1}
-
-        async def _run_all() -> List[Tuple[str, Dict[str, Any]]]:
-            # Sequential under one loop, not parallel — the shared sync
-            # ``session`` is not safe for concurrent use. The win is
-            # eliminating the per-tenant loop spin-up cost (~100-500ms
-            # each from httpx / asyncpg pool reinit) by keeping the same
-            # event loop and HTTP client pools warm across tenants.
-            results: List[Tuple[str, Dict[str, Any]]] = []
-            for t in tenants:
-                results.append(await _run_for_one(t))
-                # rollback any failed-tenant txn before the next one
-                if results[-1][1].get("error"):
-                    session.rollback()
-            return results
-
-        for tid, result in asyncio.run(_run_all()):
-            by_tenant[tid] = result
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = _run_async(lambda: run_for_tenant(session, tenant))
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("Support trend scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
     finally:
         session.close()
-    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
 
 
-@celery_app.task(name="cohort_recommendation_scan")
-def cohort_recommendation_scan() -> Dict[str, Any]:
-    """Daily cohort detectors -> ManagerRecommendation inserts.
+@celery_app.task(name="support_trend_scan")
+def support_trend_scan() -> Dict[str, Any]:
+    """Daily AI-driven cross-customer trend scan — dispatcher.
 
-    Wraps ``cohort_recommendations.run_for_tenant`` for every tenant.
-    Per-tenant failures land in the logger; the rest of the run
-    continues. Returns per-tenant counts so observability can correlate
-    a missing recommendation with a tenant-level failure.
+    Fans out one subtask per tenant (each with its own session + loop;
+    the old version ran all tenants sequentially under one shared sync
+    session) and returns a dispatch receipt immediately. The chord
+    callback logs the honest aggregate once every tenant finished.
     """
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(support_trend_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("support_trend_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="cohort_recommendation_scan_tenant")
+def cohort_recommendation_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the cohort recommendation scan."""
     from backend.app.models import Tenant
     from backend.app.services.cohort_recommendations import run_for_tenant
 
     session = _get_sync_session()
-    by_tenant: Dict[str, Dict[str, int]] = {}
     try:
-        tenants = (
-            session.execute(__import__("sqlalchemy").select(Tenant))
-        ).scalars().all()
-        for t in tenants:
-            try:
-                by_tenant[str(t.id)] = run_for_tenant(session, t)
-            except Exception:
-                logger.exception(
-                    "Cohort recommendation scan failed for tenant %s",
-                    t.id,
-                )
-                session.rollback()
-                by_tenant[str(t.id)] = {"error": 1}
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        counts = run_for_tenant(session, tenant)
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(counts or {})
+        return out
+    except Exception:
+        logger.exception(
+            "Cohort recommendation scan failed for tenant %s", tenant_id
+        )
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
     finally:
         session.close()
-    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
+
+
+@celery_app.task(name="cohort_recommendation_scan")
+def cohort_recommendation_scan() -> Dict[str, Any]:
+    """Daily cohort detectors → ManagerRecommendation inserts — dispatcher.
+
+    Same fan-out shape as ``support_trend_scan``: per-tenant subtasks,
+    immediate dispatch receipt, honest aggregate in the chord callback.
+    """
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(cohort_recommendation_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("cohort_recommendation_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
 @celery_app.task(name="reconcile_orphan_interactions")
@@ -3765,25 +3812,35 @@ def _aggregate_orchestration(results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 baselines_refreshed += 1
         else:
             failed.append(str(r.get("tenant_id") or "unknown"))
-    return {
+    summary = {
         "tenants_processed": processed,
         "profile_updates": totals,
         "paralinguistic_baselines_refreshed": baselines_refreshed,
         "failed_tenants": failed,
     }
+    # The dispatcher no longer sync-waits on this chord, so this log line
+    # IS the run's aggregate record — keep it structured and loud.
+    log = logger.warning if failed else logger.info
+    log(
+        "orchestrator_daily aggregate: %d tenants processed, %d failed (%s)",
+        processed, len(failed), ",".join(failed) or "-",
+    )
+    return summary
 
 
 @celery_app.task(name="orchestrator_daily_all_tenants")
 def orchestrator_daily_all_tenants() -> Dict[str, Any]:
     """Daily consolidation of delta reports into profile versions.
 
-    Fans out one task per tenant via a Celery chord so per-tenant work
-    runs in parallel across workers. The callback reduces the per-tenant
-    results back into the aggregate shape the beat-schedule consumer
-    expects (tenants_processed, profile_updates, paralinguistic_baselines_refreshed).
+    Fans out one task per tenant via a Celery chord and returns a
+    dispatch receipt immediately (no sync-wait — see the comment at the
+    dispatch site). The chord callback ``_aggregate_orchestration``
+    reduces the per-tenant results into the aggregate
+    (tenants_processed, profile_updates, paralinguistic_baselines_refreshed)
+    and logs it — that log line is the run's record.
 
-    Failure semantics: a single tenant's exception no longer halts the
-    rest — it surfaces in ``failed_tenants`` instead.
+    Failure semantics: a single tenant's exception never halts the rest —
+    it surfaces in the aggregate's ``failed_tenants``.
     """
     from celery import chord, group
 
@@ -3796,31 +3853,17 @@ def orchestrator_daily_all_tenants() -> Dict[str, Any]:
         session.close()
 
     if not tenant_ids:
-        return {
-            "tenants_processed": 0,
-            "profile_updates": {},
-            "paralinguistic_baselines_refreshed": 0,
-            "failed_tenants": [],
-        }
+        return {"dispatched_tenants": 0}
 
+    # Dispatch and return immediately. The old version sync-waited here
+    # (``.get(timeout=3600)``) — pinning a worker slot for up to 1h and,
+    # on timeout, reporting "0 processed / all tenants failed" even when
+    # every per-tenant subtask succeeded. The chord callback
+    # (``_aggregate_orchestration``) is now the single honest aggregate:
+    # it runs only after all subtasks finish and logs real outcomes.
     header = group(_orchestrate_one_tenant.s(tid) for tid in tenant_ids)
     async_result = chord(header)(_aggregate_orchestration.s())
-    # Block on the chord so the beat consumer still gets the aggregate
-    # dict it always returned. Timeout = generous; per-tenant tasks each
-    # have their own internal try/except, so the chord only stalls when
-    # workers are saturated.
-    try:
-        return async_result.get(disable_sync_subtasks=False, timeout=3600)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "orchestrator chord aggregation failed; returning partial state"
-        )
-        return {
-            "tenants_processed": 0,
-            "profile_updates": {},
-            "paralinguistic_baselines_refreshed": 0,
-            "failed_tenants": tenant_ids,
-        }
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
 def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
@@ -3922,6 +3965,11 @@ def _aggregate_orchestration_weekly(per_tenant: List[Dict[str, Any]]) -> Dict[st
             processed += 1
         else:
             failed.append(str(r.get("tenant_id") or "unknown"))
+    log = logger.warning if failed else logger.info
+    log(
+        "orchestrator_weekly aggregate: %d tenants processed, %d failed (%s)",
+        processed, len(failed), ",".join(failed) or "-",
+    )
     return {"tenants_processed": processed, "failed_tenants": failed}
 
 
@@ -3946,17 +3994,12 @@ def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
         session.close()
 
     if not tenant_ids:
-        return {"tenants_processed": 0, "failed_tenants": []}
+        return {"dispatched_tenants": 0}
 
+    # Non-blocking dispatch — see the daily orchestrator's comment.
     header = group(_orchestrate_one_tenant_weekly.s(tid) for tid in tenant_ids)
     async_result = chord(header)(_aggregate_orchestration_weekly.s())
-    try:
-        return async_result.get(disable_sync_subtasks=False, timeout=3600)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "weekly orchestrator chord aggregation failed; partial state"
-        )
-        return {"tenants_processed": 0, "failed_tenants": tenant_ids}
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
 # ── Outcomes backfill & calibration ──────────────────────────────────────
