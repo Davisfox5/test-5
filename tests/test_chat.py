@@ -321,6 +321,125 @@ def test_double_confirm_returns_409():
     assert exc.value.status_code == 409
 
 
+# ── SSE stream termination guarantees ──────────────────────────────────────
+#
+# _stream_chat must end every stream with a terminal `done`/`error` event,
+# emit keep-alive comments while the producer is silent, and bound total
+# stream lifetime server-side (Flex aborts client-side at 120s; we must
+# terminate cleanly first).
+
+
+class _StreamSession(_FakeSession):
+    def __init__(self):
+        super().__init__()
+        self.rolled_back = False
+
+    async def rollback(self):
+        self.rolled_back = True
+
+
+def _drain_stream(ctx, message="hi"):
+    from backend.app.api import chat as chat_module
+
+    async def _go():
+        frames = []
+        async for frame in chat_module._stream_chat(ctx, message, uuid.uuid4()):
+            frames.append(frame)
+        return frames
+
+    return asyncio.run(_go())
+
+
+def _parse_events(frames):
+    import json as _json
+
+    return [
+        _json.loads(f[len("data: "):])
+        for f in frames
+        if f.startswith("data: ")
+    ]
+
+
+def test_stream_chat_passes_events_through_and_ends_with_done(monkeypatch):
+    from backend.app.api import chat as chat_module
+
+    async def fake_turn(ctx, msg):
+        yield {"type": "text", "delta": "hello"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", fake_turn)
+    session = _StreamSession()
+    frames = _drain_stream(SimpleNamespace(db=session))
+    events = _parse_events(frames)
+
+    assert events[0]["type"] == "conversation"
+    assert {"type": "text", "delta": "hello"} in events
+    assert events[-1]["type"] == "done"
+    assert session.committed is True
+    assert session.rolled_back is False
+
+
+def test_stream_chat_emits_terminal_error_when_producer_raises(monkeypatch):
+    from backend.app.api import chat as chat_module
+
+    async def failing_turn(ctx, msg):
+        yield {"type": "text", "delta": "partial"}
+        raise RuntimeError("upstream LLM blew up")
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", failing_turn)
+    session = _StreamSession()
+    events = _parse_events(_drain_stream(SimpleNamespace(db=session)))
+
+    assert events[-1]["type"] == "error"
+    assert "upstream LLM blew up" in events[-1]["message"]
+    assert session.rolled_back is True
+    assert session.committed is False
+
+
+def test_stream_chat_bounds_lifetime_with_terminal_error(monkeypatch):
+    from backend.app.api import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "_STREAM_LIFETIME_S", 0.3)
+    monkeypatch.setattr(chat_module, "_HEARTBEAT_INTERVAL_S", 0.05)
+
+    async def stalled_turn(ctx, msg):
+        yield {"type": "text", "delta": "thinking…"}
+        await asyncio.sleep(60)  # upstream stall — never finishes
+        yield {"type": "done"}
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", stalled_turn)
+    session = _StreamSession()
+    frames = _drain_stream(SimpleNamespace(db=session))
+    events = _parse_events(frames)
+
+    # Terminal error, not a silent hang.
+    assert events[-1]["type"] == "error"
+    assert session.rolled_back is True
+    assert session.committed is False
+    # Heartbeat comments were emitted while waiting on the stall.
+    assert any(f.startswith(": keep-alive") for f in frames)
+
+
+def test_stream_chat_heartbeats_during_slow_turn_then_completes(monkeypatch):
+    from backend.app.api import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "_HEARTBEAT_INTERVAL_S", 0.05)
+
+    async def slow_turn(ctx, msg):
+        await asyncio.sleep(0.2)  # several heartbeat intervals of silence
+        yield {"type": "text", "delta": "worth the wait"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", slow_turn)
+    session = _StreamSession()
+    frames = _drain_stream(SimpleNamespace(db=session))
+    events = _parse_events(frames)
+
+    assert any(f.startswith(": keep-alive") for f in frames)
+    assert events[-1]["type"] == "done"
+    assert session.committed is True
+
+
 # ── White-label guard ──────────────────────────────────────────────────────
 
 

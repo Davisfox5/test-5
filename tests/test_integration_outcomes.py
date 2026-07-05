@@ -238,6 +238,202 @@ async def test_outcomes_unknown_type_returns_422(
 # ── Dead-letter tail endpoint ───────────────────────────────────────────
 
 
+# ── First-class customer_id ─────────────────────────────────────────────
+
+
+async def _seed_customer(session_factory, tenant_id, *, attach_to=None):
+    """Create a Customer; optionally set it as an interaction's resolved
+    customer."""
+    from backend.app.models import Customer, Interaction
+
+    async with session_factory() as s:
+        customer = Customer(tenant_id=tenant_id, name=f"Acme-{uuid.uuid4().hex[:6]}")
+        s.add(customer)
+        await s.commit()
+        await s.refresh(customer)
+        if attach_to is not None:
+            interaction = (
+                await s.execute(
+                    select(Interaction).where(Interaction.id == attach_to)
+                )
+            ).scalar_one()
+            interaction.customer_id = customer.id
+            await s.commit()
+        return customer
+
+
+@pytest.mark.asyncio
+async def test_outcomes_accepts_matching_customer_and_persists_it(
+    test_client, test_interaction, test_tenant, test_session_factory, test_session
+):
+    from backend.app.models import OutcomeEventIngestion
+
+    customer = await _seed_customer(
+        test_session_factory, test_tenant.id, attach_to=test_interaction.id
+    )
+
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes",
+        json={
+            "interaction_id": str(test_interaction.id),
+            "outcome_type": "deal_won",
+            "event_id": "evt-cust-match",
+            "customer_id": str(customer.id),
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["accepted"] == 1
+
+    row = (
+        await test_session.execute(
+            select(OutcomeEventIngestion).where(
+                OutcomeEventIngestion.event_id == "evt-cust-match"
+            )
+        )
+    ).scalar_one()
+    assert str(row.customer_id) == str(customer.id)
+
+
+@pytest.mark.asyncio
+async def test_outcomes_rejects_mismatched_customer_with_422(
+    test_client, test_interaction, test_tenant, test_session_factory, test_session
+):
+    from backend.app.models import DroppedOutcomeEvent
+
+    # The interaction resolves to customer A; the event claims customer B.
+    await _seed_customer(
+        test_session_factory, test_tenant.id, attach_to=test_interaction.id
+    )
+    other = await _seed_customer(test_session_factory, test_tenant.id)
+
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes",
+        json={
+            "interaction_id": str(test_interaction.id),
+            "outcome_type": "deal_won",
+            "event_id": "evt-cust-mismatch",
+            "customer_id": str(other.id),
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "customer_mismatch" in resp.json()["detail"]
+
+    # Dead-lettered (and the row survived the 422's rollback).
+    reasons = [
+        r.reason
+        for r in (await test_session.execute(select(DroppedOutcomeEvent))).scalars().all()
+    ]
+    assert "customer_mismatch" in reasons
+
+
+@pytest.mark.asyncio
+async def test_outcomes_rejects_unknown_customer_with_422(
+    test_client, test_interaction
+):
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes",
+        json={
+            "interaction_id": str(test_interaction.id),
+            "outcome_type": "deal_won",
+            "event_id": "evt-cust-unknown",
+            "customer_id": str(uuid.uuid4()),
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "customer_not_found" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_outcomes_batch_drops_mismatch_without_failing_batch(
+    test_client, test_interaction, test_tenant, test_session_factory
+):
+    await _seed_customer(
+        test_session_factory, test_tenant.id, attach_to=test_interaction.id
+    )
+    other = await _seed_customer(test_session_factory, test_tenant.id)
+
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes/batch",
+        json={
+            "events": [
+                {
+                    "interaction_id": str(test_interaction.id),
+                    "outcome_type": "deal_won",
+                    "event_id": "evt-batch-ok",
+                },
+                {
+                    "interaction_id": str(test_interaction.id),
+                    "outcome_type": "deal_lost",
+                    "event_id": "evt-batch-bad",
+                    "customer_id": str(other.id),
+                },
+            ]
+        },
+    )
+    # Batch semantics unchanged: 202 with per-event counts.
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["accepted"] == 1
+    assert body["dropped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_outcomes_accepts_claim_when_interaction_has_no_resolved_customer(
+    test_client, test_interaction, test_tenant, test_session_factory
+):
+    # No customer attached to the interaction — the claim can't be
+    # disproven, so it's accepted and persisted.
+    customer = await _seed_customer(test_session_factory, test_tenant.id)
+
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes",
+        json={
+            "interaction_id": str(test_interaction.id),
+            "outcome_type": "customer_replied",
+            "event_id": "evt-cust-unresolved",
+            "customer_id": str(customer.id),
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["accepted"] == 1
+
+
+# ── Naive occurred_at normalization (item 6) ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_outcomes_naive_occurred_at_is_normalized_to_utc(
+    test_client, test_interaction, test_session
+):
+    """A naive occurred_at used to hit an aware/naive TypeError in
+    _apply_events; it is now treated as UTC and serialized with an
+    explicit offset."""
+    from backend.app.models import InteractionFeatures
+
+    resp = await test_client.post(
+        f"{PREFIX}/outcomes",
+        json={
+            "interaction_id": str(test_interaction.id),
+            "outcome_type": "customer_replied",
+            "event_id": "evt-naive-ts",
+            "occurred_at": "2026-07-01T10:00:00",  # no offset
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["accepted"] == 1
+
+    row = (
+        await test_session.execute(
+            select(InteractionFeatures).where(
+                InteractionFeatures.interaction_id == test_interaction.id
+            )
+        )
+    ).scalar_one()
+    recorded = row.proxy_outcomes["customer_replied"]
+    entry = recorded[0] if isinstance(recorded, list) else recorded
+    assert entry["occurred_at"].endswith("+00:00")
+
+
 @pytest.mark.asyncio
 async def test_dead_letter_recent_returns_recent_drops(
     test_client, test_interaction

@@ -7,7 +7,7 @@ message.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -855,7 +855,7 @@ async def log_outcome(
     interaction.outcome_confidence = 1.0  # agent-confirmed
     interaction.outcome_source = "agent_logged"
     interaction.outcome_notes = body.outcome_notes
-    interaction.outcome_captured_at = datetime.utcnow()
+    interaction.outcome_captured_at = datetime.now(timezone.utc)
 
     event_created: Optional[str] = None
     customer_id_for_rebuild: Optional[uuid.UUID] = None

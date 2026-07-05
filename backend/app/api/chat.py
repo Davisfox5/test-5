@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -88,18 +89,119 @@ def _sse(event: Dict[str, Any]) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
+# Keepalive cadence while waiting on the LLM — SSE comment frames stop
+# intermediaries (nginx, fly-proxy) from idle-closing the connection.
+_HEARTBEAT_INTERVAL_S = 15.0
+# Hard server-side bound on total stream lifetime. Consumers (Flex) run a
+# 120s client-side abort; expiring here first turns "hang until the client
+# gives up" into a clean terminal `error` event.
+_STREAM_LIFETIME_S = 120.0
+
+_QUEUE_END = None  # sentinel — producer events are always dicts
+
+
 async def _stream_chat(
     ctx: AgentContext, user_message: str, conversation_id: uuid.UUID
 ) -> AsyncIterator[str]:
+    """Adapt ``run_chat_turn`` into SSE frames with termination guarantees:
+
+    - every exit path ends in a terminal ``done`` or ``error`` event,
+    - a ``: keep-alive`` comment is emitted every ~15s of producer silence,
+    - total stream lifetime is bounded at 120s (clean ``error`` on expiry).
+
+    The producer runs in a background task feeding a queue so heartbeat
+    timeouts never cancel it mid-``__anext__``; commit/rollback happens
+    only after the pump task has finished, keeping the shared session
+    single-user.
+    """
     yield _sse({"type": "conversation", "conversation_id": str(conversation_id)})
+
+    queue: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
+    pump_failure: List[BaseException] = []
+
+    async def _pump() -> None:
+        try:
+            async for event in run_chat_turn(ctx, user_message):
+                await queue.put(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            pump_failure.append(exc)
+        finally:
+            queue.put_nowait(_QUEUE_END)
+
+    pump = asyncio.create_task(_pump())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STREAM_LIFETIME_S
+    saw_terminal = False
+    timed_out = False
+
     try:
-        async for event in run_chat_turn(ctx, user_message):
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=min(_HEARTBEAT_INTERVAL_S, remaining)
+                )
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                continue
+            if event is _QUEUE_END:
+                break
+            if event.get("type") in ("done", "error"):
+                saw_terminal = True
             yield _sse(event)
-        await ctx.db.commit()
-    except Exception as exc:
-        logger.exception("chat stream failed")
-        await ctx.db.rollback()
-        yield _sse({"type": "error", "message": str(exc)})
+
+        if timed_out:
+            logger.warning(
+                "chat stream exceeded %.0fs lifetime (conversation %s)",
+                _STREAM_LIFETIME_S,
+                conversation_id,
+            )
+            pump.cancel()
+            try:
+                await pump
+            except (asyncio.CancelledError, Exception):
+                pass
+            await ctx.db.rollback()
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": (
+                        f"Stream exceeded the {int(_STREAM_LIFETIME_S)}s server "
+                        "limit. Start a new request to continue."
+                    ),
+                }
+            )
+            return
+
+        if pump_failure:
+            logger.error("chat stream failed", exc_info=pump_failure[0])
+            await ctx.db.rollback()
+            yield _sse({"type": "error", "message": str(pump_failure[0])})
+            return
+
+        try:
+            await ctx.db.commit()
+        except Exception as exc:
+            logger.exception("chat stream commit failed")
+            await ctx.db.rollback()
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+        # run_chat_turn always ends with `done`; belt-and-braces so the
+        # terminal-event guarantee survives producer refactors.
+        if not saw_terminal:
+            yield _sse({"type": "done"})
+    finally:
+        if not pump.done():
+            pump.cancel()
+            try:
+                await pump
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────

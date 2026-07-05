@@ -120,7 +120,7 @@ async def export_tenant_data(
             log_entry.finished_at = datetime.now(timezone.utc)
             await db.commit()
 
-    filename = f"linda-export-{tenant_id}-{datetime.utcnow().strftime('%Y%m%d')}.ndjson"
+    filename = f"linda-export-{tenant_id}-{datetime.now(timezone.utc).strftime('%Y%m%d')}.ndjson"
     return StreamingResponse(
         _stream(),
         media_type="application/x-ndjson",

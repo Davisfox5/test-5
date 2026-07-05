@@ -17,8 +17,11 @@ from backend.app.services.webhook_dispatcher import (
     _BACKOFF_SECONDS,
     _MAX_ATTEMPTS,
     _event_matches,
+    _payload_shape_error,
     deliver_one,
+    emit_event,
     sign_payload,
+    sign_payload_v2,
 )
 from backend.app.services.webhook_events import (
     BRIEF_ALERT_EVENT_MAP,
@@ -62,6 +65,29 @@ def test_event_matches_prefix():
 
 def test_event_matches_empty_list_is_false():
     assert _event_matches([], "anything") is False
+
+
+def test_sign_payload_v2_binds_timestamp_into_signature():
+    import hashlib
+    import hmac
+
+    sig = sign_payload_v2("hello", "s3cret", 1751500000)
+    expected = hmac.new(
+        b"s3cret", b"1751500000.hello", hashlib.sha256
+    ).hexdigest()
+    assert sig == expected
+    # A shifted timestamp (i.e. a replay with a doctored header) produces
+    # a different signature over the same body.
+    assert sign_payload_v2("hello", "s3cret", 1751500001) != sig
+
+
+def test_payload_shape_error_accepts_valid_and_rejects_invalid():
+    assert _payload_shape_error("customer.churned", {"x": 1}) is None
+    assert _payload_shape_error("", {"x": 1}) is not None
+    assert _payload_shape_error(None, {"x": 1}) is not None
+    assert _payload_shape_error("ok", None) is not None
+    assert _payload_shape_error("ok", [1, 2]) is not None
+    assert _payload_shape_error("ok", "bare string") is not None
 
 
 def test_event_catalog_sanity():
@@ -241,3 +267,76 @@ async def test_deliver_one_noop_when_already_sent():
     assert result["status"] == "sent"
     # No side-effects on a second call.
     assert d.attempt_count == 0
+
+
+# ── Dual-signature headers (replay protection) ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_deliver_one_sends_legacy_and_v2_signatures():
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    wh = FakeWebhook(secret="secret-x")
+    d = FakeDelivery(wh)
+    db = FakeSession(wh, d)
+    captured = {}
+
+    class _CapturingClient:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, content=None, headers=None):
+            captured["body"] = content
+            captured["headers"] = headers
+            return SimpleNamespace(status_code=200)
+
+    with patch(
+        "backend.app.services.webhook_dispatcher.httpx.AsyncClient",
+        _CapturingClient,
+    ):
+        result = await deliver_one(db, d.id)
+
+    assert result["status"] == "sent"
+    headers = captured["headers"]
+    body = captured["body"]
+
+    # Legacy scheme unchanged — existing consumers keep verifying.
+    legacy = hmac.new(b"secret-x", body.encode(), hashlib.sha256).hexdigest()
+    assert headers["X-Linda-Signature"] == f"sha256={legacy}"
+
+    # v2 scheme: t=<unix>,v1=<hex over "{t}.{body}">, timestamp current.
+    ts_header = int(headers["X-Linda-Timestamp"])
+    assert abs(time.time() - ts_header) < 60
+    t_part, v1_part = headers["X-Linda-Signature-V2"].split(",")
+    assert t_part == f"t={ts_header}"
+    expected_v2 = hmac.new(
+        b"secret-x", f"{ts_header}.{body}".encode(), hashlib.sha256
+    ).hexdigest()
+    assert v1_part == f"v1={expected_v2}"
+
+    # The signed body is the delivery payload, compact-serialized.
+    assert json.loads(body) == d.payload
+
+
+# ── Payload shape enforced at enqueue ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_emit_event_rejects_non_object_payload_before_db():
+    # db=None proves rejection happens before any session use.
+    tenant_id = uuid.uuid4()
+    assert await emit_event(None, tenant_id, "customer.churned", ["not", "a", "dict"]) == []
+    assert await emit_event(None, tenant_id, "customer.churned", None) == []
+    assert await emit_event(None, tenant_id, "", {"data": 1}) == []
+    assert await emit_event(None, tenant_id, None, {"data": 1}) == []
+
+
+def test_dispatch_sync_rejects_non_object_payload_before_db():
+    from backend.app.services.webhook_dispatcher import dispatch_sync
+
+    tenant_id = uuid.uuid4()
+    assert dispatch_sync(None, tenant_id, "customer.churned", None) == []
+    assert dispatch_sync(None, tenant_id, "", {"data": 1}) == []

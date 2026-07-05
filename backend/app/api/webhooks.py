@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import httpx
@@ -309,14 +309,21 @@ async def test_webhook(
     # signing. ``decrypt_token`` is tolerant of legacy plaintext rows.
     plaintext_secret = decrypt_token(webhook.secret) or webhook.secret
     signature = dispatcher.sign_payload(payload_str, plaintext_secret)
+    # Same dual-signature scheme as real deliveries (see docs/webhooks.md)
+    # so consumers can verify their v2 implementation against a test ping.
+    # Send the signed body verbatim — the signature is over payload_str.
+    timestamp = int(datetime.now(timezone.utc).timestamp())
+    signature_v2 = dispatcher.sign_payload_v2(payload_str, plaintext_secret, timestamp)
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 webhook.url,
-                json=test_payload,
+                content=payload_str,
                 headers={
                     "X-Linda-Signature": f"sha256={signature}",
+                    "X-Linda-Timestamp": str(timestamp),
+                    "X-Linda-Signature-V2": f"t={timestamp},v1={signature_v2}",
                     "X-Linda-Event": "webhook.test",
                     "Content-Type": "application/json",
                 },

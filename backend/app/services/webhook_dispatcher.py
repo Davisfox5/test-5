@@ -14,9 +14,17 @@ Retry policy: 5 attempts with exponential backoff (10s, 1m, 5m, 30m, 2h).
 After the 5th failure the row is marked ``dead_letter`` and the webhook's
 ``consecutive_failures`` counter is incremented for the admin UI.
 
-Signature: ``X-Linda-Signature: sha256=<hex>`` over the literal
-request body. Recipients verify by recomputing ``HMAC_SHA256(secret,
-body)``.
+Signatures: every delivery carries two schemes during the migration
+window (see ``docs/webhooks.md``):
+
+- Legacy — ``X-Linda-Signature: sha256=<hex>``, HMAC-SHA256 over the
+  literal request body. Verifiable but replayable; will be dropped once
+  consumers have moved to v2.
+- v2 (replay-protected) — ``X-Linda-Timestamp: <unix seconds>`` plus
+  ``X-Linda-Signature-V2: t=<unix seconds>,v1=<hex>`` where the hex is
+  ``HMAC_SHA256(secret, f"{timestamp}.{body}")``. Consumers should
+  recompute the HMAC from the header timestamp + raw body and reject
+  deliveries whose timestamp is more than ±5 minutes from their clock.
 
 Event filtering: each Webhook row's ``events`` list either contains
 ``"*"`` (receive everything) or an explicit list of event names. We
@@ -118,6 +126,32 @@ def sign_payload(payload: str, secret: str) -> str:
     ).hexdigest()
 
 
+def sign_payload_v2(payload: str, secret: str, timestamp: int) -> str:
+    """Replay-protected signature: HMAC over ``f"{timestamp}.{payload}"``.
+
+    The timestamp travels in ``X-Linda-Timestamp`` (and inside the
+    ``X-Linda-Signature-V2`` header as ``t=``), so a captured delivery
+    replayed later fails verification on any consumer enforcing the
+    documented ±5 minute tolerance.
+    """
+    return sign_payload(f"{timestamp}.{payload}", secret)
+
+
+def _payload_shape_error(event: Any, payload: Any) -> Optional[str]:
+    """Validate the enqueue-time contract: the delivered JSON body is an
+    object with a string ``event`` and an object ``data``.
+
+    ``_envelope`` builds the outer object itself, so the only ways to
+    violate the contract are a non-string/empty event name or a
+    non-dict payload. Returns a reason string when invalid, else None.
+    """
+    if not isinstance(event, str) or not event.strip():
+        return f"event must be a non-empty string, got {type(event).__name__}"
+    if not isinstance(payload, dict):
+        return f"payload must be a JSON object, got {type(payload).__name__}"
+    return None
+
+
 def _event_matches(filters: List[str], event: str) -> bool:
     """Match an event name against a webhook's ``events`` list.
 
@@ -159,6 +193,14 @@ def dispatch_sync(
     failure as non-fatal, so even if no webhooks are configured (the
     common case in fresh tenants) this is a fast no-op.
     """
+    shape_error = _payload_shape_error(event, payload)
+    if shape_error is not None:
+        logger.error(
+            "webhook payload rejected at enqueue (tenant=%s event=%r): %s",
+            tenant_id, event, shape_error,
+        )
+        return []
+
     from sqlalchemy.orm import Session as _SyncSession  # local import to avoid cycle
 
     assert isinstance(db, _SyncSession), "dispatch_sync requires a sync SQLAlchemy Session"
@@ -221,7 +263,19 @@ async def emit_event(
 
     Safe to call in any request or task handler — DB writes only, no
     blocking HTTP. Returns the delivery rows so callers can log or react.
+
+    Payloads that would violate the delivery contract (JSON object with
+    a string ``event`` and object ``data``) are rejected at enqueue —
+    logged at error level and no delivery rows written.
     """
+    shape_error = _payload_shape_error(event, payload)
+    if shape_error is not None:
+        logger.error(
+            "webhook payload rejected at enqueue (tenant=%s event=%r): %s",
+            tenant_id, event, shape_error,
+        )
+        return []
+
     stmt = select(Webhook).where(
         Webhook.tenant_id == tenant_id,
         Webhook.active.is_(True),
@@ -331,22 +385,29 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
         delivery.last_error = "webhook URL points at a private network"
         return {"status": "dead_letter", "id": str(delivery_id)}
 
+    now = datetime.now(timezone.utc)
     payload_str = json.dumps(delivery.payload, separators=(",", ":"), default=str)
     # ``Webhook.secret`` is stored Fernet-encrypted; decrypt at dispatch
     # time. ``decrypt_token`` returns legacy plaintext unchanged for any
     # rows that predate the encryption rollout.
     plaintext_secret = decrypt_token(webhook.secret) or webhook.secret
+    # Dual signatures during the v2 migration window: legacy body-only
+    # (replayable — consumers still on it keep working) plus the
+    # timestamped v2 scheme. See docs/webhooks.md for the verification
+    # contract and the ±5 minute tolerance.
+    timestamp = int(now.timestamp())
     signature = sign_payload(payload_str, plaintext_secret)
+    signature_v2 = sign_payload_v2(payload_str, plaintext_secret, timestamp)
 
     headers = {
         "Content-Type": "application/json",
         "X-Linda-Event": delivery.event,
         "X-Linda-Signature": f"sha256={signature}",
+        "X-Linda-Timestamp": str(timestamp),
+        "X-Linda-Signature-V2": f"t={timestamp},v1={signature_v2}",
         "X-Linda-Delivery": str(delivery.id),
         "X-Linda-Attempt": str(delivery.attempt_count + 1),
     }
-
-    now = datetime.now(timezone.utc)
     attempts = list(delivery.attempts or [])
     status_code: Optional[int] = None
     error: Optional[str] = None
@@ -476,3 +537,6 @@ class WebhookDispatcher:
 
     def sign_payload(self, payload: str, secret: str) -> str:
         return sign_payload(payload, secret)
+
+    def sign_payload_v2(self, payload: str, secret: str, timestamp: int) -> str:
+        return sign_payload_v2(payload, secret, timestamp)

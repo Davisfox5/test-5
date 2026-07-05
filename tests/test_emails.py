@@ -314,3 +314,165 @@ async def test_list_emails_filters_by_date_range(
     body = resp.json()
     assert body["total"] == 1, body
     assert body["items"][0]["subject"] == "recent"
+
+
+# ── send-follow-up failure contract ──────────────────────────────────
+#
+# Consumers (Flex) must be able to detect a provider failure
+# programmatically: a 2xx response always means the provider accepted
+# the message; provider failures are 401 (auth) / 502 (send), and the
+# ``failed`` EmailSend row survives the error response (it used to be
+# rolled back with the raised HTTPException).
+
+
+async def _seed_interaction_and_integration(session_factory, tenant_id):
+    from backend.app.models import Integration, Interaction
+
+    async with session_factory() as session:
+        interaction = Interaction(tenant_id=tenant_id, channel="voice")
+        integ = Integration(
+            tenant_id=tenant_id,
+            provider="google",
+            access_token=None,
+            refresh_token=None,
+        )
+        session.add(interaction)
+        session.add(integ)
+        await session.commit()
+        await session.refresh(interaction)
+        return interaction
+
+
+class _FakeSender:
+    """Stands in for GmailSender/OutlookSender via a patched _build_sender."""
+
+    def __init__(self, outcome):
+        self._outcome = outcome
+        self.closed = False
+
+    async def send(self, **kwargs):
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+    async def close(self):
+        self.closed = True
+
+
+def _patch_sender(monkeypatch, outcome) -> _FakeSender:
+    from backend.app.api import emails as emails_module
+
+    sender = _FakeSender(outcome)
+    monkeypatch.setattr(
+        emails_module, "_build_sender", lambda integ, principal_email_hint: sender
+    )
+    return sender
+
+
+async def _get_send_rows(session_factory, tenant_id):
+    from sqlalchemy import select
+
+    from backend.app.models import EmailSend
+
+    async with session_factory() as session:
+        return list(
+            (
+                await session.execute(
+                    select(EmailSend).where(EmailSend.tenant_id == tenant_id)
+                )
+            ).scalars().all()
+        )
+
+
+async def test_send_follow_up_provider_failure_returns_502_with_failed_row(
+    emails_client, test_session_factory, test_tenant, monkeypatch
+):
+    from backend.app.services.email.base import EmailSendError
+
+    interaction = await _seed_interaction_and_integration(
+        test_session_factory, test_tenant.id
+    )
+    sender = _patch_sender(monkeypatch, EmailSendError("gmail 500: backend error"))
+
+    resp = await emails_client.post(
+        f"/api/v1/interactions/{interaction.id}/send-follow-up",
+        json={"to": "sarah@foo.com", "subject": "Hi", "body": "Following up."},
+    )
+
+    # Never a 2xx "sent" on provider failure.
+    assert resp.status_code == 502, resp.text
+    assert "gmail 500" in resp.json()["detail"]
+    assert sender.closed is True
+
+    # The failed row was committed despite the raised HTTPException.
+    rows = await _get_send_rows(test_session_factory, test_tenant.id)
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert "gmail 500" in (rows[0].error or "")
+
+
+async def test_send_follow_up_auth_failure_returns_401_with_failed_row(
+    emails_client, test_session_factory, test_tenant, monkeypatch
+):
+    from backend.app.services.email.base import EmailAuthError
+
+    interaction = await _seed_interaction_and_integration(
+        test_session_factory, test_tenant.id
+    )
+    _patch_sender(monkeypatch, EmailAuthError("token revoked"))
+
+    resp = await emails_client.post(
+        f"/api/v1/interactions/{interaction.id}/send-follow-up",
+        json={"to": "sarah@foo.com", "subject": "Hi", "body": "Following up."},
+    )
+
+    assert resp.status_code == 401, resp.text
+    rows = await _get_send_rows(test_session_factory, test_tenant.id)
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert (rows[0].error or "").startswith("auth:")
+
+
+async def test_send_follow_up_unexpected_error_returns_502_not_2xx(
+    emails_client, test_session_factory, test_tenant, monkeypatch
+):
+    interaction = await _seed_interaction_and_integration(
+        test_session_factory, test_tenant.id
+    )
+    _patch_sender(monkeypatch, RuntimeError("connection reset mid-flight"))
+
+    resp = await emails_client.post(
+        f"/api/v1/interactions/{interaction.id}/send-follow-up",
+        json={"to": "sarah@foo.com", "subject": "Hi", "body": "Following up."},
+    )
+
+    assert resp.status_code == 502, resp.text
+    rows = await _get_send_rows(test_session_factory, test_tenant.id)
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert "RuntimeError" in (rows[0].error or "")
+
+
+async def test_send_follow_up_success_returns_201_sent(
+    emails_client, test_session_factory, test_tenant, monkeypatch
+):
+    from types import SimpleNamespace
+
+    interaction = await _seed_interaction_and_integration(
+        test_session_factory, test_tenant.id
+    )
+    _patch_sender(
+        monkeypatch,
+        SimpleNamespace(provider_message_id="prov-123", message_id="msg-123"),
+    )
+
+    resp = await emails_client.post(
+        f"/api/v1/interactions/{interaction.id}/send-follow-up",
+        json={"to": "sarah@foo.com", "subject": "Hi", "body": "Following up."},
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["status"] == "sent"
+    assert body["error"] is None
+    assert body["provider_message_id"] == "prov-123"
