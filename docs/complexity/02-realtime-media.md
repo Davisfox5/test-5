@@ -218,11 +218,61 @@ Today these never overlap **only because** the handler `await`s the executor inl
    first / cherry-pick the register alongside this doc / leave this doc
    standalone until the register lands?
 
-## 8. Chosen approach
+## 8. Chosen approach (agreed 2026-07-05)
 
-_To be filled in once we've talked through §7._
+- **2a → A2 (single-writer).** The Deepgram callback thread never touches the
+  window; it hands turns to the event loop via `call_soon_threadsafe`. All
+  mutation happens on the loop thread; the Praat executor thread receives an
+  immutable copy of (audio, turns). Races are impossible by construction.
+- **2b → B1 (bounded queue + drop-oldest + metrics)** on the Media Streams path;
+  the receive loop only decodes and enqueues, a per-session consumer feeds
+  Deepgram and the window. Drops are counted in a metric and warned once per
+  session. (Server-initiated AudioHook pause deferred — that path already has
+  client-side flow control.)
+- **2c → C1 + C3 + C4.** Grace-period re-attach on WS disconnect (Redis
+  connection-generation + deferred finalization + offset rebase) across WS
+  paths; AudioHook position-based resume on top; SIPREC session/sequence state
+  moves to Redis (fixes the `--workers 2` frame-dropping defect, the
+  `handle_started` check-then-act race via atomic claim, and enforces the idle
+  timeout via TTL).
+- **2d → D1 + D4.** In-flight guard, per-snapshot deadline with skip + cadence
+  backoff; decode-at-feed (incremental), in-memory WAV, shared Redis connection.
+  Per-feature timeouts (D2) and process-pool kill (D3) deferred until real Praat
+  timings justify them.
 
 ## 9. Implementation increments
 
-_To be sequenced once §8 is agreed. Each increment: red tests first (synthetic
-frames — no live audio exists pre-launch) → implement → verify._
+Each increment: red tests first (synthetic frames — no live audio exists
+pre-launch) → implement → verify.
+
+1. **Single-writer `LiveParalinguisticWindow` (2a).** Split snapshot into a
+   loop-thread `begin` (cadence check + immutable copy) and a pure executor-side
+   compute; Deepgram handler posts turns through `call_soon_threadsafe`.
+   Tests: cross-thread hammer, copy-isolation semantics.
+2. **Media Streams loop restructure (2b + 2d).** Bounded frame queue with
+   drop-oldest + drop counter; consumer task; snapshot task with in-flight
+   guard, deadline-skip, cadence backoff; decode-at-feed; `io.BytesIO` WAV;
+   one Redis connection per session. Tests: slow-extractor stall test, overflow
+   drop test, deadline-skip test.
+3. **Grace-period re-attach (C1).** Connection-generation key in Redis;
+   disconnect defers `_dispatch_batch_analysis` behind a TTL (~45s); re-attach
+   to the same session URL cancels finalization and rebases diarization offsets
+   from the accumulated audio position; clean `stop` finalizes immediately.
+   Tests: drop-and-rejoin → one interaction with continuous offsets; TTL expiry
+   → finalized.
+4. **AudioHook position resume (C3).** Persist per-session audio position on
+   close; a re-open for the same AudioHook session id restores position and
+   applies the same grace-period finalization. Tests: replayed session fixtures
+   with a mid-stream reconnect.
+5. **SIPREC durability (C4).** Session map + per-label sequence state in Redis
+   with TTL-enforced idle timeout; atomic `SET NX` claim in `handle_started`;
+   lazy per-worker dispatch open on first frame; reaper finalizes DB rows for
+   expired sessions. Tests: two-bridge (two-worker) simulation, concurrent
+   `started` retries, idle expiry.
+6. **Wrap-up.** Full suite, `python3 -c "from backend.app.main import app"`,
+   doc status flip to 🔵/✅.
+
+**Also noted during verification:** production `get_bridge()` never wires a real
+`TranscriptionDispatch` — SIPREC audio currently flows to `_NullDispatch` and is
+discarded (bridge.py:450–463). Pre-launch by design, but it means increment 5's
+"lazy dispatch open" is the natural place to wire Deepgram when SIPREC goes live.
