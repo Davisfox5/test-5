@@ -191,6 +191,13 @@ celery_app.conf.update(
             "task": "outcomes_backfill_all_tenants",
             "schedule": crontab(minute=30, hour=3),
         },
+        # 3c detect-and-heal: re-run entity resolution for interactions
+        # whose resolution step failed (ledger status 'failed'). Hourly;
+        # bounded batch, idempotent, concurrency-safe via the ledger.
+        "reconcile-orphan-interactions": {
+            "task": "reconcile_orphan_interactions",
+            "schedule": crontab(minute=25),
+        },
         "calibration-weekly": {
             "task": "calibration_fit_all_tenants",
             "schedule": crontab(minute=0, hour=6, day_of_week=1),
@@ -1542,35 +1549,73 @@ def _run_pipeline_impl(
     # contact-rollup step (13b) against the freshly-resolved contact.
     try:
         from backend.app.services.entity_resolution import resolve_interaction_entities
-
-        resolution = _loop.run(
-            resolve_interaction_entities(
-                session=session,
-                interaction=interaction,
-                tenant=tenant,
-                insights=insights,
-                compressed_transcript=compressed_text,
-            )
+        from backend.app.services.pipeline_ledger import (
+            STEP_ENTITY_RESOLUTION,
+            StepClaim as _ErStepClaim,
+            claim_step as _er_claim_step,
+            complete_step as _er_complete_step,
+            fail_step as _er_fail_step,
         )
-        if resolution.customer_action != "none":
+
+        # Ledger-wrapped so a swallowed failure is *discoverable*: a
+        # 'failed' row here is exactly what the reconcile_orphan_
+        # interactions sweeper scans for, and a 'succeeded' row lets it
+        # distinguish "resolution crashed" from "there was genuinely
+        # nobody to resolve" — the ambiguity called out in
+        # docs/complexity/01 §3c.
+        _er_claim = _er_claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_ENTITY_RESOLUTION,
+            input_hash=_analysis_input_hash,
+            worker_id=_worker_id(),
+        )
+        if _er_claim.outcome == _ErStepClaim.ACQUIRED:
+            try:
+                resolution = _loop.run(
+                    resolve_interaction_entities(
+                        session=session,
+                        interaction=interaction,
+                        tenant=tenant,
+                        insights=insights,
+                        compressed_transcript=compressed_text,
+                    )
+                )
+            except Exception as _er_exc:
+                _er_fail_step(
+                    session, _er_claim.run_id,
+                    error="%s: %s" % (type(_er_exc).__name__, _er_exc),
+                )
+                raise
+            if resolution.customer_action != "none":
+                logger.info(
+                    "Entity resolution for interaction %s: %s (score=%.2f, customer_id=%s)",
+                    interaction_id,
+                    resolution.customer_action,
+                    resolution.customer_score,
+                    resolution.customer_id,
+                )
+            if resolution.suggestions:
+                # Stash suggestions on the interaction so the SPA can
+                # render the inline match-candidate card. The
+                # notification-tray surface plugs into the same data via
+                # a dedicated endpoint in the Suggestions phase.
+                existing_meta = (
+                    getattr(interaction, "insights", None) or {}
+                )
+                existing_meta = dict(existing_meta)
+                existing_meta["entity_resolution_suggestions"] = resolution.suggestions
+                interaction.insights = existing_meta
+            _er_complete_step(
+                session, _er_claim.run_id,
+                output_digest="customer_id=%s" % (interaction.customer_id,),
+            )
+        else:
             logger.info(
-                "Entity resolution for interaction %s: %s (score=%.2f, customer_id=%s)",
-                interaction_id,
-                resolution.customer_action,
-                resolution.customer_score,
-                resolution.customer_id,
+                "Entity resolution for interaction %s: ledger says %s — skipping",
+                interaction_id, _er_claim.outcome,
             )
-        if resolution.suggestions:
-            # Stash suggestions on the interaction so the SPA can
-            # render the inline match-candidate card. The
-            # notification-tray surface plugs into the same data via
-            # a dedicated endpoint in the Suggestions phase.
-            existing_meta = (
-                getattr(interaction, "insights", None) or {}
-            )
-            existing_meta = dict(existing_meta)
-            existing_meta["entity_resolution_suggestions"] = resolution.suggestions
-            interaction.insights = existing_meta
     except Exception:
         logger.exception(
             "Entity resolution failed for interaction %s — continuing as orphan",
@@ -3427,6 +3472,142 @@ def cohort_recommendation_scan() -> Dict[str, Any]:
     finally:
         session.close()
     return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
+
+
+@celery_app.task(name="reconcile_orphan_interactions")
+def reconcile_orphan_interactions(
+    batch_size: int = 50, lookback_days: int = 30
+) -> Dict[str, Any]:
+    """Detect-and-heal for orphaned interactions (docs/complexity/01 §3c).
+
+    Entity resolution is best-effort in the pipeline: a failure lands
+    the interaction as ``analyzed`` with no customer linkage. The step
+    ledger makes that state discoverable — this sweeper scans for
+    interactions whose entity_resolution run is ``failed``, re-claims
+    each run through the ledger (atomic, so a racing sweeper or a
+    concurrent pipeline retry loses cleanly), and re-runs resolution
+    against the persisted insights + transcript.
+
+    A ``succeeded`` run with no linkage means "genuinely nobody to
+    resolve" and is intentionally left alone.
+    """
+    from datetime import timedelta
+
+    from backend.app.models import Interaction, InteractionStepRun, Tenant
+    from backend.app.services.pipeline_ledger import (
+        STEP_ENTITY_RESOLUTION,
+        StepClaim,
+        claim_step,
+        complete_step,
+        fail_step,
+    )
+
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    session = _get_sync_session()
+    scanned = 0
+    healed = 0
+    failed = 0
+    try:
+        pairs = (
+            session.query(Interaction, InteractionStepRun)
+            .join(
+                InteractionStepRun,
+                (InteractionStepRun.interaction_id == Interaction.id)
+                & (InteractionStepRun.step_key == STEP_ENTITY_RESOLUTION),
+            )
+            .filter(
+                Interaction.status == "analyzed",
+                Interaction.customer_id.is_(None),
+                InteractionStepRun.status == "failed",
+                Interaction.created_at >= cutoff,
+            )
+            .order_by(Interaction.created_at.asc())
+            .limit(batch_size)
+            .all()
+        )
+        if not pairs:
+            return {"scanned": 0, "healed": 0, "failed": 0}
+
+        tenants: Dict[Any, Any] = {}
+        with _TaskEventLoop() as _loop:
+            for interaction, run in pairs:
+                scanned += 1
+                tenant = tenants.get(interaction.tenant_id)
+                if tenant is None:
+                    tenant = (
+                        session.query(Tenant)
+                        .filter(Tenant.id == interaction.tenant_id)
+                        .first()
+                    )
+                    tenants[interaction.tenant_id] = tenant
+                if tenant is None:
+                    continue
+
+                claim = claim_step(
+                    session,
+                    tenant_id=tenant.id,
+                    interaction_id=interaction.id,
+                    step_key=STEP_ENTITY_RESOLUTION,
+                    input_hash=run.input_hash,
+                    worker_id=_worker_id(),
+                )
+                if claim.outcome != StepClaim.ACQUIRED:
+                    # Healed by a pipeline retry, or another sweeper is
+                    # on it right now — either way, not ours.
+                    continue
+
+                # Rebuild the compressed transcript from the persisted
+                # segments — good enough for the resolver's name/context
+                # matching (the original compression only drops filler).
+                transcript = interaction.transcript or []
+                compressed = "\n".join(
+                    "%s: %s" % (s.get("speaker_id") or "?", s.get("text") or "")
+                    for s in transcript
+                    if isinstance(s, dict)
+                )
+                try:
+                    from backend.app.services.entity_resolution import (
+                        resolve_interaction_entities,
+                    )
+
+                    resolution = _loop.run(
+                        resolve_interaction_entities(
+                            session=session,
+                            interaction=interaction,
+                            tenant=tenant,
+                            insights=dict(interaction.insights or {}),
+                            compressed_transcript=compressed,
+                        )
+                    )
+                except Exception as exc:
+                    fail_step(
+                        session, claim.run_id,
+                        error="%s: %s" % (type(exc).__name__, exc),
+                    )
+                    failed += 1
+                    logger.warning(
+                        "Orphan reconciliation failed again for interaction %s "
+                        "(will retry next sweep)",
+                        interaction.id, exc_info=True,
+                    )
+                    continue
+
+                if resolution.suggestions:
+                    meta = dict(getattr(interaction, "insights", None) or {})
+                    meta["entity_resolution_suggestions"] = resolution.suggestions
+                    interaction.insights = meta
+                complete_step(
+                    session, claim.run_id,
+                    output_digest="customer_id=%s" % (interaction.customer_id,),
+                )
+                healed += 1
+                logger.info(
+                    "Orphan reconciliation healed interaction %s (action=%s)",
+                    interaction.id, resolution.customer_action,
+                )
+    finally:
+        session.close()
+    return {"scanned": scanned, "healed": healed, "failed": failed}
 
 
 @celery_app.task(
