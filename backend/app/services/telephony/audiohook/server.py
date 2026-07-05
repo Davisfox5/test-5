@@ -153,6 +153,10 @@ class AudiohookSessionState:
     paused: bool = False
     audio_frames_received: int = 0
     audio_bytes_received: int = 0
+    # Seconds of audio already received by a PRIOR connection for the
+    # same conversation (mid-call reconnect). Restored from the
+    # position store on ``open``; 0.0 for a fresh call.
+    resume_offset_sec: float = 0.0
     persisted_id: Optional[Any] = None  # populated by persist_open callback
     server_seq: int = 0
     last_client_seq: int = 0
@@ -184,6 +188,37 @@ class AudiohookSessionState:
             return "both"
         return "unknown"
 
+    def audio_position_sec(self) -> float:
+        """Total seconds of audio received for this *conversation*,
+        including audio streamed by prior connections before a
+        mid-call reconnect. Derived from byte counts against the
+        negotiated media format (PCMU: 1 byte/sample, L16: 2)."""
+
+        if self.media is None:
+            return self.resume_offset_sec
+        bytes_per_sample = 2 if self.media.format.upper() == "L16" else 1
+        n_channels = max(1, len(self.media.channels))
+        bytes_per_sec = float(self.media.rate * bytes_per_sample * n_channels)
+        if bytes_per_sec <= 0:
+            return self.resume_offset_sec
+        return self.resume_offset_sec + self.audio_bytes_received / bytes_per_sec
+
+
+class PositionStore(Protocol):
+    """Durable per-conversation audio position for mid-call reconnects.
+
+    ``load`` is called during the ``open`` exchange of an audio session
+    (after ``conversation_id`` and media are known) and returns the
+    seconds already streamed by prior connections — 0.0 for a fresh
+    conversation. ``save`` is called on a dirty disconnect; ``clear``
+    on a clean client ``close`` (conversation over)."""
+
+    async def load(self, state: "AudiohookSessionState") -> float: ...
+
+    async def save(self, state: "AudiohookSessionState") -> None: ...
+
+    async def clear(self, state: "AudiohookSessionState") -> None: ...
+
 
 # ── The state machine ──────────────────────────────────────────────────
 
@@ -211,12 +246,14 @@ class AudiohookSession:
         tenant_id: str,
         persist_open: Optional[PersistOpen] = None,
         persist_close: Optional[PersistClose] = None,
+        position_store: Optional[PositionStore] = None,
         config: Optional[AudiohookSessionConfig] = None,
     ) -> None:
         self.transport = transport
         self.sink = sink
         self.persist_open = persist_open
         self.persist_close = persist_close
+        self.position_store = position_store
         self.config = config or AudiohookSessionConfig()
         self.state = AudiohookSessionState(tenant_id=tenant_id)
         # Internal flags for the receive loop.
@@ -273,6 +310,22 @@ class AudiohookSession:
             await self._loop()
         finally:
             self.state.ended_at = datetime.now(tz=timezone.utc)
+            # Position bookkeeping for mid-call reconnects: a clean
+            # client ``close`` ends the conversation (clear); a dirty
+            # transport drop persists the position so the next
+            # connection for this conversation resumes the timeline.
+            if (
+                self.position_store is not None
+                and self.state.connection_type == CONNECTION_TYPE_AUDIO
+                and self.state.media is not None
+            ):
+                try:
+                    if self._closing:
+                        await self.position_store.clear(self.state)
+                    else:
+                        await self.position_store.save(self.state)
+                except Exception:
+                    logger.exception("AudioHook position store failed")
             try:
                 await self.sink.on_close(self.state)
             except Exception:
@@ -425,6 +478,26 @@ class AudiohookSession:
             return False
 
         self.state.media = chosen
+
+        # Mid-call reconnect: restore how much audio prior connections
+        # for this conversation already streamed, so downstream
+        # consumers keep a continuous timeline instead of restarting
+        # at zero.
+        if self.position_store is not None:
+            try:
+                self.state.resume_offset_sec = float(
+                    await self.position_store.load(self.state) or 0.0
+                )
+                if self.state.resume_offset_sec > 0.0:
+                    logger.info(
+                        "AudioHook conversation %s re-attached — resuming "
+                        "position at %.1fs",
+                        self.state.conversation_id,
+                        self.state.resume_offset_sec,
+                    )
+            except Exception:
+                logger.exception("AudioHook position restore failed")
+
         opened = AudiohookOpenedMessage(media=chosen, start_paused=False)
         await self._send_control(AudiohookMessageType.OPENED, opened.to_parameters())
         self._opened = True

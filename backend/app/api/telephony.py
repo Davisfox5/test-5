@@ -206,6 +206,31 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         LIVE_DEEPGRAM_WS_CONNECTS = LIVE_PARALINGUISTIC_SNAPSHOTS = None  # type: ignore
         LIVE_SESSIONS = None  # type: ignore
 
+    import asyncio
+    import redis.asyncio as aioredis
+
+    from backend.app.services.telephony import live_session_resume as resume
+
+    # Grace-period re-attach: register this connection and learn where
+    # the call's timeline already stands (0.0 for a fresh call). If a
+    # prior connection dropped within the grace window, its deferred
+    # finalizer sees the new generation and stands down.
+    session_redis = None
+    attempt = None
+    try:
+        session_redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        attempt = await resume.begin_connection(session_redis, session_id)
+        if attempt.resumed:
+            logger.info(
+                "Live session %s re-attached (gen=%d) at %.1fs — resuming timeline",
+                session_id,
+                attempt.generation,
+                attempt.resume_offset_sec,
+            )
+    except Exception:
+        logger.debug("resume state unavailable for %s", session_id, exc_info=True)
+    resume_offset = attempt.resume_offset_sec if attempt is not None else 0.0
+
     # Per-tenant live paralinguistic surface (opt-in). The window runs
     # on CPU in the worker thread-pool so we don't block Deepgram I/O.
     live_para_window = None
@@ -221,17 +246,27 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                         LiveParalinguisticWindow,
                     )
 
-                    live_para_window = LiveParalinguisticWindow()
+                    live_para_window = LiveParalinguisticWindow(
+                        start_offset=resume_offset
+                    )
     except Exception:
         logger.debug("Couldn't update LiveSession.status", exc_info=True)
 
     # Deepgram live → diarization timeline → paralinguistic window.
     # We register the event handler before start() so the first
     # Results frame doesn't slip through. The SDK invokes handlers on
-    # its own thread, so we only call threadsafe mutators on the
-    # window (feed + update_diarization are plain lists/deques).
+    # its own thread; the window is single-writer (event loop only),
+    # so the handler marshals turns onto this loop instead of touching
+    # the window from the SDK thread. On a re-attach, Deepgram's word
+    # offsets restart at zero for the new connection — shift them by
+    # the resume offset so they line up with the window's timeline.
     if live_para_window is not None:
-        _attach_deepgram_diarization(dg_connection, live_para_window)
+        _attach_deepgram_diarization(
+            dg_connection,
+            live_para_window,
+            loop=asyncio.get_running_loop(),
+            call_start_offset=resume_offset,
+        )
 
     try:
         await dg_connection.start(
@@ -255,6 +290,29 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         await websocket.close(code=1011)
         return
 
+    from backend.app.services.telephony.media_stream_pump import MediaStreamPump
+
+    # One Redis connection per session — shared by the snapshot
+    # publisher instead of a fresh connection every 3 s.
+    publish = None
+    if live_para_window is not None and session_redis is not None:
+        publish = _make_paralinguistic_publisher(session_redis, session_id)
+
+    # The receive loop below only decodes and enqueues; the pump's
+    # consumer task forwards audio to Deepgram and runs the (bounded,
+    # deadline-guarded) paralinguistic snapshots. A slow Praat can no
+    # longer stall ingest — overload drops the oldest frames and shows
+    # up in linda_live_media_frames_dropped_total.
+    pump = MediaStreamPump(
+        send_audio=dg_connection.send,
+        window=live_para_window,
+        publish=publish,
+        provider="twilio",
+        initial_audio_seconds=resume_offset,
+    )
+    pump_task = asyncio.get_event_loop().create_task(pump.run())
+
+    clean_stop = False
     try:
         while True:
             raw = await websocket.receive_text()
@@ -268,18 +326,12 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 payload = media.get("payload") or ""
                 audio = decode_media_payload(payload)
                 if audio:
-                    await dg_connection.send(audio)
-                    if live_para_window is not None:
-                        # Whole-window aggregate — we intentionally do
-                        # not trust the provider-reported ``track`` as
-                        # a proxy for agent/customer. Per-speaker live
-                        # features land once we wire Deepgram's live
-                        # diarization stream into the timeline.
-                        live_para_window.feed(audio)
-                        await _publish_paralinguistic_snapshot(
-                            session_id, live_para_window
-                        )
+                    # Whole-window aggregate — we intentionally do not
+                    # trust the provider-reported ``track`` as a proxy
+                    # for agent/customer; diarization owns that.
+                    pump.offer(audio)
             elif event == "stop":
+                clean_stop = True
                 break
             elif event == "start":
                 logger.info(
@@ -293,6 +345,11 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
         logger.exception("Twilio media-stream handler crashed for %s", session_id)
     finally:
         try:
+            await pump.aclose()
+            await asyncio.wait_for(pump_task, timeout=10.0)
+        except Exception:
+            pump_task.cancel()
+        try:
             await dg_connection.finish()
         except Exception:
             pass
@@ -301,10 +358,40 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 LIVE_SESSIONS.labels(provider="twilio").dec()
             except Exception:
                 pass
-        try:
-            from backend.app.api.websocket import _dispatch_batch_analysis
-            import redis.asyncio as aioredis
+        await _finalize_or_defer(
+            session_redis=session_redis,
+            session_id=session_id,
+            clean_stop=clean_stop,
+            generation=attempt.generation if attempt is not None else None,
+            audio_seconds=pump.audio_seconds,
+        )
 
+
+async def _finalize_or_defer(
+    *,
+    session_redis: Any,
+    session_id: str,
+    clean_stop: bool,
+    generation: Optional[int],
+    audio_seconds: float,
+) -> None:
+    """End-of-connection policy for a live media WebSocket.
+
+    A clean provider ``stop`` finalises immediately (dispatch batch
+    analysis + clear resume state). A dirty disconnect records the
+    audio position and defers finalisation behind the grace window so
+    a re-attach can pick the call back up. When the resume machinery
+    was unavailable, fall back to the legacy immediate dispatch.
+    """
+    import redis.asyncio as aioredis
+
+    from backend.app.api.websocket import _dispatch_batch_analysis
+    from backend.app.services.telephony import live_session_resume as resume
+
+    settings = get_settings()
+
+    if session_redis is None or generation is None:
+        try:
             redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
             try:
                 await _dispatch_batch_analysis(redis, session_id)
@@ -312,26 +399,69 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
                 await redis.aclose()
         except Exception:
             logger.exception("Batch analysis dispatch failed for %s", session_id)
+        return
+
+    try:
+        if clean_stop:
+            await _dispatch_batch_analysis(session_redis, session_id)
+            await resume.clear_resume_state(session_redis, session_id)
+        else:
+            await resume.record_audio_position(
+                session_redis, session_id, audio_seconds
+            )
+            resume.schedule_deferred_finalize(
+                session_id=session_id,
+                generation=generation,
+                redis_factory=lambda: aioredis.from_url(
+                    settings.REDIS_URL, decode_responses=True
+                ),
+                dispatch=_dispatch_batch_analysis,
+            )
+            logger.info(
+                "Live session %s disconnected mid-call at %.1fs — finalize "
+                "deferred %.0fs pending re-attach",
+                session_id,
+                audio_seconds,
+                resume.GRACE_PERIOD_SEC,
+            )
+    except Exception:
+        logger.exception("Batch analysis dispatch failed for %s", session_id)
+    finally:
+        try:
+            await session_redis.aclose()
+        except Exception:
+            pass
 
 
-def _attach_deepgram_diarization(dg_connection: Any, window: Any) -> None:
+def _attach_deepgram_diarization(
+    dg_connection: Any,
+    window: Any,
+    loop: Any = None,
+    call_start_offset: float = 0.0,
+) -> None:
     """Wire Deepgram's live ``Transcript`` events into the per-speaker
     diarization timeline of a :class:`LiveParalinguisticWindow`.
 
-    Runs on whatever thread the Deepgram SDK chose. We only touch
-    ``window.update_diarization``, which is list-based and safe to
-    call from any thread (GIL-protected mutation + no async side
-    effects). The audio feed and snapshot reads on the main task
-    thread don't race against it.
+    The SDK invokes the handler on whatever thread it chose; the window
+    is **single-writer** (all mutation on the event loop), so the
+    handler parses on the SDK thread and marshals the resulting turns
+    onto ``loop`` via ``call_soon_threadsafe``. If the loop is already
+    closed (call teardown racing a late transcript), the turns are
+    dropped — diarization is best-effort.
 
-    Silent on failures — diarization is best-effort; a parsing glitch
-    mustn't take down the audio ingest path.
+    Silent on failures — a parsing glitch mustn't take down the audio
+    ingest path.
     """
     try:
         from deepgram import LiveTranscriptionEvents  # type: ignore
+
+        transcript_event: Any = LiveTranscriptionEvents.Transcript
     except Exception:
+        # SDK not installed (tests / replay harness with a fake
+        # connection) — register under the event's wire name so fakes
+        # still capture the handler.
         logger.debug("deepgram LiveTranscriptionEvents not available", exc_info=True)
-        return
+        transcript_event = "Results"
 
     from backend.app.services.paralinguistics_live import (
         diar_turns_from_deepgram_words,
@@ -372,79 +502,58 @@ def _attach_deepgram_diarization(dg_connection: Any, window: Any) -> None:
                             "end": getattr(w, "end", None),
                         }
                     )
-            turns = diar_turns_from_deepgram_words(normalised)
-            if turns:
+            turns = diar_turns_from_deepgram_words(
+                normalised, call_start_offset=call_start_offset
+            )
+            if not turns:
+                return
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(window.update_diarization, turns)
+                except RuntimeError:
+                    # Loop already closed — call is tearing down; a
+                    # late transcript has nowhere to go.
+                    logger.debug("diarization turns dropped: loop closed")
+            else:
+                # No loop supplied (tests / replay harness running
+                # everything on one thread) — mutate directly.
                 window.update_diarization(turns)
         except Exception:
             logger.debug("deepgram diarization handler failed", exc_info=True)
 
     try:
-        dg_connection.on(LiveTranscriptionEvents.Transcript, _on_transcript)
+        dg_connection.on(transcript_event, _on_transcript)
     except Exception:
         logger.debug(
             "could not register deepgram transcript handler", exc_info=True
         )
 
 
-async def _publish_paralinguistic_snapshot(
-    session_id: str, window: Any
-) -> None:
-    """Take a rate-limited snapshot and publish it on the live-coaching
-    Redis channel. The UI already subscribes to this channel for
+def _make_paralinguistic_publisher(redis_conn: Any, session_id: str):
+    """Build the pump's ``publish`` callback: annotate arousal and emit
+    on the live-coaching Redis channel over the session's shared
+    connection. The UI already subscribes to this channel for
     ``LiveFeatureWindow`` snapshots; paralinguistic data lands under the
     ``paralinguistic`` subkey so existing clients ignore what they don't
     understand.
-
-    The Praat work runs in the default thread-pool executor. If another
-    snapshot is already in flight we simply don't queue a second one —
-    the window throttles itself via ``recompute_every_sec`` anyway.
     """
-    import asyncio
 
-    try:
-        from backend.app.services.metrics import LIVE_PARALINGUISTIC_SNAPSHOTS
-    except Exception:
-        LIVE_PARALINGUISTIC_SNAPSHOTS = None  # type: ignore
-
-    loop = asyncio.get_event_loop()
-    try:
-        features = await loop.run_in_executor(None, window.maybe_snapshot)
-    except Exception:
-        logger.debug("paralinguistic snapshot failed", exc_info=True)
-        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="error").inc()
-        return
-    if features is None:
-        if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-            LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="short_buffer").inc()
-        return
-    if not getattr(features, "available", False):
-        return
-    if LIVE_PARALINGUISTIC_SNAPSHOTS is not None:
-        LIVE_PARALINGUISTIC_SNAPSHOTS.labels(status="emitted").inc()
-
-    # Inline arousal annotation — deterministic, microsecond-cheap, so
-    # live coaching can render the label on the same frame.
-    try:
-        from backend.app.services.paralinguistics_emotion import annotate_arousal
-
-        annotated = annotate_arousal(features.as_dict())
-    except Exception:
-        annotated = features.as_dict()
-
-    try:
-        import redis.asyncio as aioredis
-
-        redis = aioredis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    async def _publish(features: Any) -> None:
+        # Inline arousal annotation — deterministic, microsecond-cheap,
+        # so live coaching can render the label on the same frame.
         try:
-            await redis.publish(
-                f"livecoach:{session_id}",
-                json.dumps({"paralinguistic": annotated}),
-            )
-        finally:
-            await redis.aclose()
-    except Exception:
-        logger.debug("paralinguistic publish failed", exc_info=True)
+            from backend.app.services.paralinguistics_emotion import annotate_arousal
+
+            annotated = annotate_arousal(features.as_dict())
+        except Exception:
+            annotated = features.as_dict()
+
+        await redis_conn.publish(
+            f"livecoach:{session_id}",
+            json.dumps({"paralinguistic": annotated}),
+        )
+
+    return _publish
 
 
 # ── SignalWire (TwiML-compatible) ─────────────────────────────────────
@@ -727,6 +836,13 @@ async def telnyx_voice_webhook(
                 redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
                 try:
                     await _dispatch_batch_analysis(redis, str(sess.id))
+                    # Provider-confirmed hangup: clear any resume state
+                    # so a pending grace-period finalizer stands down.
+                    from backend.app.services.telephony import (
+                        live_session_resume as resume,
+                    )
+
+                    await resume.clear_resume_state(redis, str(sess.id))
                 finally:
                     await redis.aclose()
             except Exception:

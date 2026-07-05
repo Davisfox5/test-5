@@ -54,6 +54,69 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ── Mid-call reconnect position store ──────────────────────────────────
+
+
+class _RedisAudiohookPositionStore:
+    """Redis-backed :class:`PositionStore` keyed by (tenant,
+    conversation). Genesys reconnects mid-call with a fresh WebSocket
+    and session id but the same ``conversationId`` — the stored
+    position lets the new connection continue the conversation's
+    timeline instead of restarting at zero."""
+
+    _TTL_SECONDS = 3600
+
+    def __init__(self, redis_url: str) -> None:
+        self._redis_url = redis_url
+
+    def _key(self, state: AudiohookSessionState) -> str:
+        return f"audiohook:pos:{state.tenant_id}:{state.conversation_id}"
+
+    async def _with_redis(self, fn):
+        import redis.asyncio as aioredis
+
+        redis = aioredis.from_url(self._redis_url, decode_responses=True)
+        try:
+            return await fn(redis)
+        finally:
+            await redis.aclose()
+
+    async def load(self, state: AudiohookSessionState) -> float:
+        if not state.conversation_id:
+            return 0.0
+
+        async def _load(redis):
+            raw = await redis.get(self._key(state))
+            try:
+                return float(raw) if raw is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
+        return await self._with_redis(_load)
+
+    async def save(self, state: AudiohookSessionState) -> None:
+        if not state.conversation_id:
+            return
+
+        async def _save(redis):
+            await redis.set(
+                self._key(state),
+                repr(state.audio_position_sec()),
+                ex=self._TTL_SECONDS,
+            )
+
+        await self._with_redis(_save)
+
+    async def clear(self, state: AudiohookSessionState) -> None:
+        if not state.conversation_id:
+            return
+
+        async def _clear(redis):
+            await redis.delete(self._key(state))
+
+        await self._with_redis(_clear)
+
+
 # ── Audio sink wired to Deepgram live + paralinguistic window ──────────
 
 
@@ -340,12 +403,23 @@ async def audiohook_endpoint(
         ) -> None:
             await _persist_close(state, persisted_id, db)
 
+        try:
+            from backend.app.config import get_settings
+
+            position_store: Optional[_RedisAudiohookPositionStore] = (
+                _RedisAudiohookPositionStore(get_settings().REDIS_URL)
+            )
+        except Exception:
+            logger.debug("AudioHook position store unavailable", exc_info=True)
+            position_store = None
+
         session = AudiohookSession(
             transport=transport,
             sink=sink,
             tenant_id=tenant_id,
             persist_open=_persist_open_cb,
             persist_close=_persist_close_cb,
+            position_store=position_store,
         )
         await session.handle()
 
