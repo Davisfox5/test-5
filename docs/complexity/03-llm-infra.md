@@ -1,6 +1,6 @@
 # 03 — Model-agnostic LLM infra: cost, quality & context-rot governance
 
-**Status:** 🟡 Discussing
+**Status:** 🔵 In implementation (fix built + tested on `claude/llm-infra-hardening`; merge pending approval)
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
 
 > Companion to the [agent-infra audit](../agent-infra-audit.md) (2026-07-01), which
@@ -143,10 +143,40 @@ through `compute_max_tokens(call_site=...)` closes this for free.
 5. **G4 scope:** extend the guard test to `backend/` + `scripts/` with an explicit
    allowlist (config defaults, catalog, alembic, seeds, tests) — any reason not to?
 
-## 6. Chosen approach
+## 6. Chosen approach (decided 2026-07-05)
 
-_To be filled in once we've talked through §5._
+1. **G1 — faithful replay.** `role="tool"` rows replay as user/`tool_result`
+   messages, restoring the exact wire shape (Linda keeps memory of prior tool
+   outputs; broken conversations heal with no data migration). A pairing
+   repair pass additionally strips unpaired `tool_use`/`tool_result` blocks
+   left by turns that crashed mid-exchange, so one bad turn can't poison the
+   conversation.
+2. **G2 — caller records the final message.** New
+   `ModelRouter.record_stream_completion(req, final_message)` with the same
+   served-tier reconciliation as `ainvoke`; `run_chat_turn` calls it after
+   `get_final_message()`.
+3. **G3 — raise caps + detect/log.** Both surfaces go to a 4096 override
+   routed through `compute_max_tokens(call_site=...)` (learned ceilings now
+   apply). Truncation is logged on Ask Linda (streaming can't safely retry)
+   and forces `requires_human_review` on email reply even when the cut-off
+   JSON parses.
+4. **G4 — extend the guard and fix the seed.** The stray-literal guard scans
+   all of `backend/` + `scripts/` (allowlist: `model_catalog.py`, `config.py`,
+   frozen alembic versions); `seed_sales.py`'s DB default now interpolates
+   `model_catalog.SONNET`.
 
 ## 7. Implementation increments
 
-_To be sequenced once §6 is agreed. Each increment: red tests first → implement → verify._
+All landed red-first on `claude/llm-infra-hardening`; suite green
+(1438 passed / 7 skipped), app-import smoke check clean.
+
+1. **G1 + G2 + G3** — `linda_agent.py` (`_rows_to_messages`,
+   `_repair_tool_pairing`, computed cap, truncation log, stream-telemetry
+   call), `model_router.py` (`record_stream_completion`), `email_reply.py`
+   (`_draft_from_response`, computed cap). Tests:
+   `tests/test_llm_infra_hardening.py` (wire-validity property test over
+   windowed tool conversations; served-tier reconciliation; truncation
+   flagging; full fake-router turn integration).
+2. **G4** — guard-test scope extension
+   (`tests/test_model_catalog.py::test_no_hardcoded_model_ids_in_runtime_tree`)
+   + `backend/scripts/seed_sales.py` catalog interpolation.
