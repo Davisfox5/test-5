@@ -327,6 +327,18 @@ class ModelRouter:
         except Exception:  # pragma: no cover — telemetry must never break a call
             logger.debug("router telemetry record failed", exc_info=True)
 
+    def record_stream_completion(self, req: LLMRequest, final_message: Any) -> None:
+        """Telemetry for a streamed call. ``astream`` yields the live stream,
+        so only the caller ever sees the final message — it hands the message
+        back here after ``get_final_message()``. Served-tier reconciliation
+        matches ``ainvoke``: an open-time failover may have served the request
+        on a cheaper model than the one selected."""
+        tier = self.select_tier(req)
+        served = model_catalog.tier_for_model(getattr(final_message, "model", None))
+        if served is not None:
+            tier = Tier(served)
+        self._record(req, tier, final_message)
+
     def invoke(self, req: LLMRequest) -> LLMResponse:
         """Sync path — used inside Celery tasks."""
         return asyncio.run(self.ainvoke(req))
