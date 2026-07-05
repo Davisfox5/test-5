@@ -86,6 +86,16 @@ def compute_input_hash(*parts: Any) -> str:
     return h.hexdigest()
 
 
+class StepHeldError(Exception):
+    """Another worker holds a live lease on this step.
+
+    Raised so the Celery task defers (retry with countdown) instead of
+    double-paying. The task's except-handler must treat this as
+    "try again later", NOT as a pipeline failure — no ``status='failed'``,
+    no error stamp.
+    """
+
+
 class StepClaim:
     """Outcome of :func:`claim_step`."""
 
@@ -215,6 +225,95 @@ def claim_step(
     if result.rowcount == 1:
         return StepClaim(StepClaim.ACQUIRED, row.id, attempt=new_attempt)
     return StepClaim(StepClaim.HELD, row.id, attempt=prior_attempt)
+
+
+# Keys the task failure-handler merges into ``insights`` when a later
+# step fails; they describe the *task attempt*, not the analysis, and
+# must never force a re-pay or leak into a reused result.
+_TRANSIENT_INSIGHT_KEYS = ("error", "step", "retry_count")
+
+
+def run_analysis_with_ledger(
+    session: Session,
+    *,
+    tenant_id: uuid.UUID,
+    interaction: Any,
+    input_hash: str,
+    worker_id: str,
+    analyze_fn: Any,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> "dict":
+    """Exactly-once wrapper for the paid analysis step (pipeline step 9).
+
+    ``analyze_fn`` is a zero-arg callable performing the paid LLM call
+    and returning the insights dict. Returns the insights to use —
+    freshly computed, or reused from a prior persisted run.
+
+    Raises :class:`StepHeldError` when another worker holds a live lease
+    (caller defers the task). Re-raises ``analyze_fn`` exceptions after
+    marking the run failed (retryable by the next claim).
+    """
+    claim = claim_step(
+        session,
+        tenant_id=tenant_id,
+        interaction_id=interaction.id,
+        step_key=STEP_ANALYSIS,
+        input_hash=input_hash,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
+
+    if claim.outcome == StepClaim.HELD:
+        raise StepHeldError(
+            "analysis for interaction %s held by another worker (run %s)"
+            % (interaction.id, claim.run_id)
+        )
+
+    run_id: Optional[uuid.UUID] = claim.run_id
+    if claim.outcome == StepClaim.REUSED:
+        # The winner committed insights in the same transaction that
+        # flipped the run to succeeded — refresh to see them.
+        session.refresh(interaction)
+        prior = dict(getattr(interaction, "insights", None) or {})
+        summary = prior.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            for key in _TRANSIENT_INSIGHT_KEYS:
+                prior.pop(key, None)
+            logger.info(
+                "Reusing persisted analysis for interaction %s (ledger run %s)",
+                interaction.id, claim.run_id,
+            )
+            return prior
+        # Ledger says succeeded but the payload is gone (manual edit /
+        # partial restore). Re-run unprotected rather than ship an
+        # interaction with no analysis — loudly, this should not happen.
+        logger.warning(
+            "Ledger run %s for interaction %s is 'succeeded' but no summary "
+            "is persisted — re-running analysis without a claim",
+            claim.run_id, interaction.id,
+        )
+        run_id = None
+
+    try:
+        insights = analyze_fn()
+    except Exception as exc:
+        if run_id is not None:
+            fail_step(session, run_id, error="%s: %s" % (type(exc).__name__, exc))
+        raise
+
+    # Persist-after-pay: the paid output and the succeeded ledger row
+    # land in ONE commit — no window where the money was spent but the
+    # ledger forgot. Preserve keys other steps may have stashed.
+    merged = dict(getattr(interaction, "insights", None) or {})
+    for key in _TRANSIENT_INSIGHT_KEYS:
+        merged.pop(key, None)
+    merged.update(dict(insights or {}))
+    interaction.insights = merged
+    if run_id is not None:
+        complete_step(session, run_id, output_digest="interaction.insights")
+    else:
+        session.commit()
+    return dict(insights or {})
 
 
 def complete_step(

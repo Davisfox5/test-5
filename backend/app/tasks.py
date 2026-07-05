@@ -35,6 +35,7 @@ from backend.app.logging_setup import (
     reset_context,
 )
 from backend.app.observability import init_sentry
+from backend.app.services.pipeline_ledger import StepHeldError
 
 configure_logging()
 init_sentry()
@@ -629,6 +630,16 @@ def _get_sync_session() -> Session:
     return _SyncSessionFactory()
 
 
+def _worker_id() -> str:
+    """Stable identity for step-ledger claims: host + pid of this
+    prefork child. Two concurrent claimers always differ in at least
+    one component."""
+    import os
+    import socket
+
+    return "%s:%s" % (socket.gethostname(), os.getpid())
+
+
 # ── Per-task event loop reuse ─────────────────────────────────────────────
 #
 # ``_run_pipeline`` hits ~8 async entrypoints (triage, analysis, webhook
@@ -1217,32 +1228,35 @@ def _run_pipeline_impl(
     _call_dt = getattr(interaction, "started_at", None) or interaction.created_at
     _call_date_str = _call_dt.date().isoformat() if _call_dt else None
 
-    # Idempotency check: when a downstream step (scorecard, snippets,
-    # webhook fan-out) fails the whole task is retried. Re-running the
-    # Sonnet analysis on a retry is the most expensive part of the
-    # pipeline and we already persisted its output on the prior attempt
-    # — so reuse it instead of paying for a second Anthropic call.
-    # ``summary`` is the analyzer's canonical output field; presence of
-    # a non-trivial value + the absence of a retry-error stamp tells us
-    # the prior pass got past step 9 cleanly.
-    prior_insights = dict(getattr(interaction, "insights", None) or {})
-    prior_summary = prior_insights.get("summary")
-    prior_has_error = "error" in prior_insights
-    if (
-        isinstance(prior_summary, str)
-        and len(prior_summary.strip()) >= 40
-        and not prior_has_error
-    ):
-        logger.info(
-            "Skipping AI analysis for interaction %s — reusing insights from prior attempt",
-            interaction_id,
-        )
-        insights = prior_insights
-    else:
-        insights = _loop.run(
+    # Exactly-once claim for the paid Sonnet call (ledger — see
+    # docs/complexity/01 §7). Replaces the old content-sniffing reuse
+    # guard (``len(summary) >= 40``): the ledger row is authoritative.
+    # REUSED → a prior attempt persisted this exact analysis (same
+    # transcript + variant + tier) — never re-pay, even when a
+    # later-step failure stamped ``insights['error']``. HELD → another
+    # worker is mid-analysis on this interaction (duplicate delivery /
+    # double enqueue) — StepHeldError defers the whole task instead of
+    # double-paying. ACQUIRED → analyze, then persist-after-pay: the
+    # output and the succeeded ledger row land in one commit, so a
+    # failure in ANY later step can no longer lose the paid result.
+    from backend.app.services.pipeline_ledger import (
+        compute_input_hash,
+        run_analysis_with_ledger,
+    )
+
+    _effective_tier = overrides.get("force_tier") or recommended_tier
+    _analysis_input_hash = compute_input_hash(
+        compressed_for_llm,
+        getattr(variant, "variant_id", None),
+        _effective_tier,
+        _call_date_str,
+    )
+
+    def _paid_analysis() -> Dict[str, Any]:
+        return _loop.run(
             _get_analysis_service().analyze(
                 compressed_for_llm,
-                tier=overrides.get("force_tier") or recommended_tier,
+                tier=_effective_tier,
                 triage_result=triage_result,
                 system_prompt_override=variant.prompt_template,
                 tenant_context_block=tenant_block,
@@ -1255,6 +1269,15 @@ def _run_pipeline_impl(
                 call_date=_call_date_str,
             )
         )
+
+    insights = run_analysis_with_ledger(
+        session,
+        tenant_id=tenant.id,
+        interaction=interaction,
+        input_hash=_analysis_input_hash,
+        worker_id=_worker_id(),
+        analyze_fn=_paid_analysis,
+    )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
     logger.info(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
@@ -2454,6 +2477,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
+    except StepHeldError as exc:
+        # Another worker holds the analysis lease (duplicate delivery /
+        # double enqueue). Not a failure: leave status + insights alone
+        # and check back after the lease holder has had time to finish.
+        session.rollback()
+        logger.info(
+            "Voice pipeline deferring interaction %s: %s", interaction_id, exc
+        )
+        raise self.retry(exc=exc, countdown=120)
     except Exception as exc:
         session.rollback()
         logger.exception(
@@ -2573,6 +2605,13 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
+    except StepHeldError as exc:
+        # See the voice-task handler: defer, don't fail.
+        session.rollback()
+        logger.info(
+            "Text pipeline deferring interaction %s: %s", interaction_id, exc
+        )
+        raise self.retry(exc=exc, countdown=120)
     except Exception as exc:
         session.rollback()
         logger.exception(
