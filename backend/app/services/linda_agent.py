@@ -29,7 +29,7 @@ from backend.app.models import (
     User,
     WriteProposal,
 )
-from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
 from backend.app.services.model_router import (
     CacheableBlock,
     LLMRequest,
@@ -44,7 +44,12 @@ from backend.app.services import model_catalog
 logger = logging.getLogger(__name__)
 
 LINDA_MODEL = model_catalog.SONNET
-MAX_TOKENS = 2048
+# Requested output cap. 4096 (was 2048): Sonnet 5's tokenizer emits ~30% more
+# tokens for the same text, and 2048 was truncating answers mid-sentence with
+# no signal. ``max_tokens`` is an upper bound, not a target — unused budget
+# costs nothing. The effective cap still flows through ``compute_max_tokens``
+# (learned ceilings + tier ceiling apply).
+MAX_TOKENS = 4096
 PROPOSAL_TTL = timedelta(hours=24)
 
 # Pre-rot context threshold: the most recent N replayed messages we SEND to the
@@ -438,6 +443,90 @@ def _window_history(
     return window
 
 
+def _tool_use_ids(content: Any) -> set:
+    if not isinstance(content, list):
+        return set()
+    return {
+        b.get("id") for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    }
+
+
+def _tool_result_ids(content: Any) -> set:
+    if not isinstance(content, list):
+        return set()
+    return {
+        b.get("tool_use_id") for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    }
+
+
+def _repair_tool_pairing(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Enforce the Anthropic tool contract on a replayed history: every
+    assistant ``tool_use`` must be answered by the immediately-following user
+    ``tool_result`` (matching ids), and no ``tool_result`` may appear without
+    its ``tool_use``. Rows persisted by a turn that crashed mid-exchange
+    violate this; rather than 400 every later turn, strip the unpaired blocks
+    (keeping any assistant text) and drop orphaned results."""
+    out: List[Dict[str, Any]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        content = msg.get("content")
+        if msg.get("role") == "assistant":
+            use_ids = _tool_use_ids(content)
+            if use_ids:
+                nxt = messages[i + 1] if i + 1 < n else None
+                nxt_results = (
+                    _tool_result_ids(nxt.get("content"))
+                    if nxt is not None and nxt.get("role") == "user"
+                    else set()
+                )
+                if use_ids == nxt_results:
+                    out.append(msg)
+                    out.append(nxt)
+                    i += 2
+                    continue
+                # Unpaired / mismatched exchange: keep the assistant's text,
+                # drop the tool_use blocks (and any mismatched result message).
+                kept = [
+                    b for b in content
+                    if not (isinstance(b, dict) and b.get("type") == "tool_use")
+                ]
+                if kept:
+                    out.append({"role": "assistant", "content": kept})
+                i += 2 if nxt_results else 1
+                continue
+        if msg.get("role") == "user" and _tool_result_ids(content):
+            # Orphan tool_result (its tool_use didn't survive): drop it.
+            i += 1
+            continue
+        out.append(msg)
+        i += 1
+    return out
+
+
+def _rows_to_messages(rows: List[Any]) -> List[Dict[str, Any]]:
+    """Convert persisted ``LindaChatMessage`` rows back to Anthropic wire
+    messages. A tool exchange is persisted as three rows — the assistant row
+    (``tool_calls`` holds its text + ``tool_use`` blocks) and a ``role="tool"``
+    row holding the ``tool_result`` blocks. On the wire, tool results return
+    to the model as a *user* turn, so the tool row is replayed as one;
+    skipping it (the old behavior) left dangling ``tool_use`` blocks that
+    400'd every turn after a tool-using turn."""
+    messages: List[Dict[str, Any]] = []
+    for row in rows:
+        if row.role in ("user", "assistant"):
+            if row.tool_calls:
+                messages.append({"role": row.role, "content": row.tool_calls})
+            else:
+                messages.append({"role": row.role, "content": row.content})
+        elif row.role == "tool" and row.tool_calls:
+            messages.append({"role": "user", "content": row.tool_calls})
+    return _repair_tool_pairing(messages)
+
+
 async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Dict[str, Any]]:
     """Replay prior messages in Anthropic message format."""
     rows = (
@@ -447,14 +536,7 @@ async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Di
             .order_by(LindaChatMessage.created_at.asc())
         )
     ).scalars().all()
-    messages: List[Dict[str, Any]] = []
-    for row in rows:
-        if row.role in ("user", "assistant"):
-            if row.tool_calls:
-                messages.append({"role": row.role, "content": row.tool_calls})
-            else:
-                messages.append({"role": row.role, "content": row.content})
-    return messages
+    return _rows_to_messages(rows)
 
 
 async def run_chat_turn(
@@ -507,25 +589,39 @@ async def run_chat_turn(
         # selection + open-time failover); the tool-dispatch loop below is
         # unchanged. temperature=0.7: warm but coherent enough for reliable
         # tool-argument construction (chat previously ran at the default 1.0).
-        async with router.astream(
-            LLMRequest(
-                task_type=TaskType.GENERIC,
-                forced_tier=Tier.SONNET,
-                user_message="",
-                messages=history,
-                tools=TOOLS,
-                system_blocks=req_system,
-                max_tokens=MAX_TOKENS,
-                temperature=0.7,
+        req = LLMRequest(
+            task_type=TaskType.GENERIC,
+            forced_tier=Tier.SONNET,
+            user_message="",
+            messages=history,
+            tools=TOOLS,
+            system_blocks=req_system,
+            max_tokens=compute_max_tokens(
+                Tier.SONNET.value,
+                explicit_override=MAX_TOKENS,
                 call_site="linda_chat",
-            )
-        ) as stream:
+            ),
+            temperature=0.7,
+            call_site="linda_chat",
+        )
+        async with router.astream(req) as stream:
             async for event in stream:
                 if event.type == "content_block_delta" and event.delta.type == "text_delta":
                     assistant_text_parts.append(event.delta.text)
                     yield {"type": "text", "delta": event.delta.text}
 
             final = await stream.get_final_message()
+
+        # Streamed calls bypass ``ainvoke``'s telemetry site; hand the final
+        # message back to the router so linda_chat shows up in
+        # ``llm_call_telemetry`` / truncation counts / learned ceilings.
+        router.record_stream_completion(req, final)
+        if final.stop_reason == "max_tokens":
+            logger.warning(
+                "linda_chat truncated at max_tokens=%s (conversation %s, loop %d); "
+                "the user saw a cut-off answer",
+                req.max_tokens, ctx.conversation_id, loop_idx,
+            )
 
         # Serialize assistant content blocks for history + DB
         for block in final.content:

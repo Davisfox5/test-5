@@ -6,11 +6,17 @@ No AI analysis is run here — transcripts only.
 """
 
 import os
+import sys
 import uuid
 import json
 import random
 import psycopg2
 from datetime import datetime, timedelta
+
+# Repo root on sys.path so the model catalog resolves when the script is run
+# directly (python3 backend/scripts/seed_sales.py).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from backend.app.services.model_catalog import SONNET as SONNET_MODEL  # noqa: E402
 # Load .env manually since dotenv may not be installed
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
 if os.path.exists(env_path):
@@ -115,7 +121,7 @@ CREATE TABLE ai_insights (
     id               UUID PRIMARY KEY,
     call_id          UUID REFERENCES calls(id) ON DELETE CASCADE,
     tenant_id        UUID REFERENCES tenants(id) ON DELETE CASCADE,
-    model            VARCHAR(100) DEFAULT 'claude-sonnet-5',
+    model            VARCHAR(100) DEFAULT '__SONNET_MODEL__',
     summary          TEXT,
     sentiment_overall VARCHAR(20),
     sentiment_score  FLOAT,
@@ -757,7 +763,9 @@ SALES_CALLS = [
 
 def run_schema(conn):
     with conn.cursor() as cur:
-        cur.execute(SCHEMA_SQL)
+        # The seed default tracks the catalog's Sonnet id instead of pinning
+        # its own literal (SCHEMA_SQL can't be an f-string — JSONB '{}' braces).
+        cur.execute(SCHEMA_SQL.replace("__SONNET_MODEL__", SONNET_MODEL))
     conn.commit()
     print("✓ Schema created")
 

@@ -39,7 +39,7 @@ from backend.app.models import (
     KBDocument,
     Tenant,
 )
-from backend.app.services.llm_client import get_async_anthropic
+from backend.app.services.llm_client import compute_max_tokens, get_async_anthropic
 from backend.app.services.triage_service import _strip_json_fences
 
 from backend.app.services import model_catalog
@@ -54,6 +54,8 @@ from backend.app.services.model_router import (
 logger = logging.getLogger(__name__)
 
 SONNET = model_catalog.SONNET
+# Requested output cap for a reply draft; see the LLMRequest note in draft().
+REPLY_MAX_TOKENS = 4096
 
 SYSTEM_PROMPT = (
     "You are drafting a reply email on behalf of a professional "
@@ -313,6 +315,40 @@ def _format_kb(docs: List[KBDocument]) -> str:
     )
 
 
+def _draft_from_response(response: Any, conversation: Any) -> ReplyDraft:
+    """Convert a router response into a ``ReplyDraft``.
+
+    A truncated response (``stop_reason == "max_tokens"``) must never ship as
+    an unreviewed draft: even when the cut-off JSON happens to parse, the body
+    may end mid-sentence — so truncation always forces
+    ``requires_human_review``."""
+    truncated = getattr(response, "stop_reason", None) == "max_tokens"
+    if truncated:
+        logger.warning(
+            "email_reply truncated at max_tokens; flagging draft for human review"
+        )
+    raw = response.text
+    try:
+        data: Dict[str, Any] = json.loads(_strip_json_fences(raw))
+    except json.JSONDecodeError:
+        logger.exception("Reply drafter JSON parse failed; returning raw text")
+        return ReplyDraft(
+            subject=f"Re: {conversation.subject or ''}",
+            body=raw,
+            rationale="(model returned unparseable JSON — body shown verbatim)",
+            citations=[],
+            requires_human_review=True,
+        )
+
+    return ReplyDraft(
+        subject=str(data.get("subject") or f"Re: {conversation.subject or ''}"),
+        body=str(data.get("body") or ""),
+        rationale=str(data.get("rationale") or ""),
+        citations=list(data.get("citations") or []),
+        requires_human_review=bool(data.get("requires_human_review", False)) or truncated,
+    )
+
+
 class ReplyDrafter:
     def __init__(
         self, client: Optional[anthropic.AsyncAnthropic] = None
@@ -377,7 +413,15 @@ class ReplyDrafter:
                 forced_tier=Tier.SONNET,
                 user_message=user_content,
                 system_blocks=[CacheableBlock(text=system_prompt, cache=True)],
-                max_tokens=2048,
+                # 4096 (was 2048): Sonnet 5's tokenizer emits ~30% more tokens
+                # for the same text, and a truncated draft ships broken JSON.
+                # max_tokens is an upper bound — unused budget costs nothing.
+                # Learned ceilings + the tier ceiling still apply.
+                max_tokens=compute_max_tokens(
+                    Tier.SONNET.value,
+                    explicit_override=REPLY_MAX_TOKENS,
+                    call_site="email_reply",
+                ),
                 temperature=0.3,
                 call_site="email_reply",
             )
@@ -385,23 +429,4 @@ class ReplyDrafter:
         _metrics.LLM_LATENCY.labels(surface="email_reply", model=SONNET).observe(
             time.perf_counter() - t0
         )
-        raw = response.text
-        try:
-            data: Dict[str, Any] = json.loads(_strip_json_fences(raw))
-        except json.JSONDecodeError:
-            logger.exception("Reply drafter JSON parse failed; returning raw text")
-            return ReplyDraft(
-                subject=f"Re: {conversation.subject or ''}",
-                body=raw,
-                rationale="(model returned unparseable JSON — body shown verbatim)",
-                citations=[],
-                requires_human_review=True,
-            )
-
-        return ReplyDraft(
-            subject=str(data.get("subject") or f"Re: {conversation.subject or ''}"),
-            body=str(data.get("body") or ""),
-            rationale=str(data.get("rationale") or ""),
-            citations=list(data.get("citations") or []),
-            requires_human_review=bool(data.get("requires_human_review", False)),
-        )
+        return _draft_from_response(response, conversation)
