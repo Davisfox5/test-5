@@ -1,7 +1,7 @@
 """outcome events — first-class customer_id
 
 Revision ID: fx_001_outcome_customer_id
-Revises: c9e1d4b7f3a8
+Revises: eb_001_email_backfill_jobs
 Create Date: 2026-07-02 12:00:00.000000
 
 Adds ``outcome_event_ingestions.customer_id`` — optional first-class
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 # revision identifiers
 revision: str = "fx_001_outcome_customer_id"
-down_revision: Union[str, None] = "c9e1d4b7f3a8"
+down_revision: Union[str, None] = "eb_001_email_backfill_jobs"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
