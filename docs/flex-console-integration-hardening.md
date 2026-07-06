@@ -1,12 +1,14 @@
 # Flex console integration hardening — LINDA-side work items
 
-> **Status (2026-07-05): items 1–6 SHIPPED** in PR #156 (plus #157 for an
-> alembic two-heads fix), deployed to `linda-staging` + `linda-staging-app`.
-> Item 7 deliberately deferred. Remaining coordination: the Flex-side
-> follow-ups for items 1 and 3 (verify `X-Linda-Signature-V2` per
-> [webhooks.md](webhooks.md); pass `customer_id` on outcome events), then
-> a LINDA-side PR to drop the legacy body-only signature header once all
-> consumers are on v2.
+> **Status (2026-07-06): ALL ITEMS COMPLETE — no work remains.**
+> Items 1–6 shipped in #156 (+#157/#161 follow-ups); item 7 (page cap
+> 200→500) in #162. Flex-side follow-ups landed (Flex PR #49): strict
+> `X-Linda-Signature-V2` verification per [webhooks.md](webhooks.md) and
+> first-class `customer_id` on outcomes. The legacy body-only signature
+> header was then dropped in #164 after confirming against the staging DB
+> that the only other registered receivers are webhook.site catchers on
+> test tenants. Verified end-to-end in production: fresh v2-signed ping →
+> 200, stale replay → 401.
 
 **Origin:** A 2026-07-02 bug sweep of the Flex platform (the gym-SaaS repo whose
 `/super-admin/prospects` console dogfoods LINDA) fixed everything fixable on the
