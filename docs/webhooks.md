@@ -30,11 +30,10 @@ Consumers can rely on `event` being a string and `data` being an object; a
 | `X-Linda-Event` | Event name (same as `event` in the body). |
 | `X-Linda-Delivery` | Delivery row UUID — stable across retries; use it for idempotency. |
 | `X-Linda-Attempt` | 1-based attempt counter. |
-| `X-Linda-Signature` | **Legacy** signature: `sha256=<hex>` (see below). |
 | `X-Linda-Timestamp` | Unix seconds at which this attempt was signed. |
 | `X-Linda-Signature-V2` | **Replay-protected** signature: `t=<unix seconds>,v1=<hex>`. |
 
-## Signature verification (v2 — use this)
+## Signature verification
 
 1. Parse `X-Linda-Signature-V2` into `t` (integer unix seconds) and `v1` (hex).
 2. Reject if `|now - t|` exceeds your tolerance. **Recommended tolerance:
@@ -50,13 +49,12 @@ legitimate delivery cannot advance `t` without invalidating `v1`.
 Each attempt (including retries) is signed fresh at send time, so retried
 deliveries carry a current timestamp and pass the tolerance check.
 
-## Legacy signature (deprecated — migration window only)
+## Legacy signature (removed)
 
-`X-Linda-Signature: sha256=<hex>` where hex = `HMAC_SHA256(secret, raw_body)`.
-No timestamp is bound in, so it verifies forever — i.e. it is replayable.
-It is still sent so existing consumers keep working; verify v2 instead as
-soon as you can. Once known consumers (Flex) are on v2, the legacy header
-will be dropped.
+Deliveries used to also carry `X-Linda-Signature: sha256=<hex>` with hex =
+`HMAC_SHA256(secret, raw_body)`. No timestamp was bound in, so it verified
+forever — i.e. it was replayable. The header was removed after known
+consumers moved to v2; verify `X-Linda-Signature-V2` only.
 
 ## Retries
 
@@ -67,5 +65,5 @@ delivery is dead-lettered. Any 2xx acknowledges a delivery. Dedupe on
 ## Test pings
 
 `POST /webhooks/{id}/test` sends a `webhook.test` event carrying the same
-dual-signature headers as real deliveries, so you can verify a v2
+signature headers as real deliveries, so you can verify a v2
 implementation end-to-end before real traffic depends on it.

@@ -273,7 +273,7 @@ async def test_deliver_one_noop_when_already_sent():
 
 
 @pytest.mark.asyncio
-async def test_deliver_one_sends_legacy_and_v2_signatures():
+async def test_deliver_one_sends_v2_signature_only():
     import hashlib
     import hmac
     import json
@@ -303,9 +303,8 @@ async def test_deliver_one_sends_legacy_and_v2_signatures():
     headers = captured["headers"]
     body = captured["body"]
 
-    # Legacy scheme unchanged — existing consumers keep verifying.
-    legacy = hmac.new(b"secret-x", body.encode(), hashlib.sha256).hexdigest()
-    assert headers["X-Linda-Signature"] == f"sha256={legacy}"
+    # Legacy body-only header is gone — it was replayable by design.
+    assert "X-Linda-Signature" not in headers
 
     # v2 scheme: t=<unix>,v1=<hex over "{t}.{body}">, timestamp current.
     ts_header = int(headers["X-Linda-Timestamp"])
