@@ -364,3 +364,22 @@ def test_owner_connection_bypasses_rls(rls_database):
             assert len(rows) >= 2  # sees both tenants' rows
     finally:
         engine.dispose()
+
+
+def test_startup_posture_check_tells_owner_from_app_role(rls_database):
+    """The lifespan warning must fire for the owner DSN and stay quiet for
+    the enforcing app role."""
+    from sqlalchemy import create_engine
+
+    from backend.app.rls import runtime_bypasses_rls
+
+    owner = create_engine(TEST_POSTGRES_URL)
+    app_role = create_engine(_app_role_url(TEST_POSTGRES_URL, "postgresql"))
+    try:
+        with owner.connect() as conn:
+            assert runtime_bypasses_rls(conn) is not None
+        with app_role.connect() as conn:
+            assert runtime_bypasses_rls(conn) is None
+    finally:
+        owner.dispose()
+        app_role.dispose()

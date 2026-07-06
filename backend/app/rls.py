@@ -150,6 +150,45 @@ def bootstrap_statements() -> List[str]:
     return [TENANT_RESOLVER_DDL]
 
 
+def runtime_bypasses_rls(sync_connection) -> Optional[str]:
+    """Why the current connection would skip RLS, or None if it enforces it.
+
+    Called from the API lifespan (via ``conn.run_sync``) so startup logs
+    say whether the backstop is actually live. Checks the three bypass
+    routes: superuser, BYPASSRLS, and table ownership (owners skip
+    non-FORCEd policies).
+    """
+    from sqlalchemy import text as _text
+
+    row = sync_connection.execute(
+        _text(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles "
+            "WHERE rolname = current_user"
+        )
+    ).first()
+    if row is None:
+        return None
+    if row[0]:
+        return "connected as a superuser ({0})".format(_current_user(sync_connection))
+    if row[1]:
+        return "role {0} has BYPASSRLS".format(_current_user(sync_connection))
+    owns = sync_connection.execute(
+        _text(
+            "SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner "
+            "WHERE c.relname = 'interactions' AND r.rolname = current_user"
+        )
+    ).scalar()
+    if owns:
+        return "role {0} owns the tables".format(_current_user(sync_connection))
+    return None
+
+
+def _current_user(sync_connection) -> str:
+    from sqlalchemy import text as _text
+
+    return str(sync_connection.execute(_text("SELECT current_user")).scalar())
+
+
 def grant_statements(role: str) -> List[str]:
     """Grants letting a non-owner app role use the schema (RLS still applies)."""
     return [
