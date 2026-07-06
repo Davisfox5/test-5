@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,6 +87,16 @@ class EventIn(BaseModel):
     rfc822_message_id: Optional[str] = None
     occurred_at: Optional[datetime] = None
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _occurred_at_utc_aware(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Normalize naive input to UTC-aware (same convention as
+        ``OutcomeEvent.occurred_at``) — a naive value would serialize
+        without an offset and be re-parsed as local time downstream."""
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class EventBulkIn(BaseModel):
