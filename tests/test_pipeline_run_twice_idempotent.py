@@ -237,7 +237,11 @@ def test_pipeline_twice_pays_once_and_never_duplicates(env):
     assert env.calls.analyze == 1
     assert env.calls.score_many == 1
     first = _counts(env)
-    assert first == {"action_items": 2, "scores": 1, "snippets": 1}
+    # 4b cutover: the pipeline no longer writes machine ActionItem rows —
+    # the ActionPlan DAG is the canonical action output (see
+    # docs/complexity/04-tenant-isolation-migration.md §4). The LLM's
+    # suggestions live in insights['action_items'] only.
+    assert first == {"action_items": 0, "scores": 1, "snippets": 1}
 
     session = env.factory()
     ix = session.get(Interaction, env.interaction_id)
@@ -275,9 +279,10 @@ def test_pipeline_twice_pays_once_and_never_duplicates(env):
     assert env.calls.score_many == 1, "second delivery re-paid the scorecard call"
 
     second = _counts(env)
-    # 2 machine + 1 manual action items; scores replaced not duplicated;
-    # the library snippet survives and its recomputed twin is skipped.
-    assert second == {"action_items": 3, "scores": 1, "snippets": 1}
+    # Only the manual action item exists (the pipeline writes none);
+    # scores replaced not duplicated; the library snippet survives and
+    # its recomputed twin is skipped.
+    assert second == {"action_items": 1, "scores": 1, "snippets": 1}
 
     session = env.factory()
     titles = {a.title for a in session.query(ActionItem).all()}
