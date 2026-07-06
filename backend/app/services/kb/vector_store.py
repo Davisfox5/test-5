@@ -75,6 +75,12 @@ class VectorStore(Protocol):
         exclude_chunk_ids: Optional[Sequence[uuid.UUID]] = None,
     ) -> List[SearchHit]: ...
 
+    async def purge_tenant(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> None: ...
+
 
 # ──────────────────────────────────────────────────────────
 # pgvector implementation
@@ -132,6 +138,19 @@ class PgVectorStore:
                 "WHERE tenant_id = :tenant_id AND doc_id = :doc_id"
             ),
             {"tenant_id": str(tenant_id), "doc_id": str(doc_id)},
+        )
+
+    async def purge_tenant(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        # Vectors live in kb_chunks rows, which tenant hard-delete removes
+        # relationally — this exists so offboarding can call one method
+        # regardless of backend.
+        await db.execute(
+            text("DELETE FROM kb_chunks WHERE tenant_id = :tenant_id"),
+            {"tenant_id": str(tenant_id)},
         )
 
     async def search(
@@ -287,6 +306,32 @@ class QdrantStore:
             ),
         )
 
+    async def purge_tenant(
+        self,
+        db: AsyncSession,  # noqa: ARG002
+        tenant_id: uuid.UUID,
+    ) -> None:
+        """Drop every point the tenant owns — offboarding/GDPR cleanup.
+
+        Without this, hard-deleting a tenant left its vectors (chunk text
+        included in payloads!) orphaned in the shared collection forever.
+        """
+        from qdrant_client.http import models as qm
+
+        await self._client.delete(
+            collection_name=self._COLLECTION,
+            points_selector=qm.FilterSelector(
+                filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="tenant_id",
+                            match=qm.MatchValue(value=str(tenant_id)),
+                        )
+                    ]
+                )
+            ),
+        )
+
     async def search(
         self,
         db: AsyncSession,  # noqa: ARG002
@@ -309,13 +354,26 @@ class QdrantStore:
                 qm.HasIdCondition(has_id=[str(cid) for cid in exclude_chunk_ids])
             )
 
-        results = await self._client.search(
-            collection_name=self._COLLECTION,
-            query_vector=list(query_embedding),
-            query_filter=qm.Filter(must=must, must_not=must_not or None),
-            limit=k,
-            with_payload=True,
-        )
+        # qdrant-client removed the deprecated ``search`` in 1.12+ (we pin
+        # only >=1.9, so both generations occur in the wild); prefer the
+        # current ``query_points`` and fall back for older clients.
+        if hasattr(self._client, "query_points"):
+            response = await self._client.query_points(
+                collection_name=self._COLLECTION,
+                query=list(query_embedding),
+                query_filter=qm.Filter(must=must, must_not=must_not or None),
+                limit=k,
+                with_payload=True,
+            )
+            results = response.points
+        else:  # pragma: no cover — legacy client
+            results = await self._client.search(
+                collection_name=self._COLLECTION,
+                query_vector=list(query_embedding),
+                query_filter=qm.Filter(must=must, must_not=must_not or None),
+                limit=k,
+                with_payload=True,
+            )
 
         hits: List[SearchHit] = []
         for r in results:

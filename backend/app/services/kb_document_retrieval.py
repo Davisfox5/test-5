@@ -1,234 +1,38 @@
-"""Retrieval for the KB — Qdrant when configured, keyword fallback otherwise.
+"""Doc-level KB retrieval — the maintained vector store, keyword fallback.
 
 The reply drafter calls :func:`retrieve` with a free-form query (the
 email thread's most recent message + subject).  We return a ranked list
 of ``(KBDocument, score)`` tuples; the caller decides how many to paste
 into the Sonnet prompt.
 
-Embeddings are pluggable via :class:`EmbeddingClient`.  If no provider
-is configured we degrade gracefully to a PostgreSQL keyword ranker.
-That fallback is deterministic, tenant-scoped, and — critically — never
-introduces cross-tenant leakage.
+Vector search goes through :class:`~backend.app.services.kb.retrieval.
+RetrievalService` — the single choke point over ``kb/vector_store.py``
+(pgvector by default, the shared-collection Qdrant backend when
+``VECTOR_BACKEND=qdrant``), which injects the tenant filter on every
+query. This module previously carried its OWN Qdrant client writing to
+per-tenant ``kb_tenant_{id}`` collections that ingestion never populated
+— a dead vector path that silently keyword-fell-back on every call, and
+a second unmanaged client outside the tenant-isolation choke point
+(docs/complexity/04-tenant-isolation-migration.md §5). Retired 2026-07.
 
-Query embeddings are cached in Redis with a 24h TTL keyed by sha256(query).
-The cost-audit identified common queries ("pricing", "onboarding", etc.)
-hammering Voyage's billable embedding API — caching once per query window
-typically eliminates ~30-40% of embed calls in production.
+If embeddings/vector search are unavailable we degrade gracefully to a
+PostgreSQL keyword ranker.  That fallback is deterministic,
+tenant-scoped, and — critically — never introduces cross-tenant leakage.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import logging
 import math
 import re
-import struct
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import get_settings
 from backend.app.models import KBDocument
 
 logger = logging.getLogger(__name__)
-
-QDRANT_COLLECTION_PREFIX = "kb_tenant_"
-
-# 24h cache window — KB embeddings change only when the embedding model
-# itself changes, so a long TTL is safe. Keyed by model + query hash so a
-# model upgrade simply rolls over.
-_EMBED_CACHE_TTL_SECONDS = 24 * 60 * 60
-_EMBED_CACHE_KEY = "embed:v1:voyage-3:{}"
-
-
-def _embed_redis():
-    """Best-effort Redis client for the embedding cache."""
-    try:
-        import redis  # type: ignore
-
-        return redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
-    except Exception:  # pragma: no cover — Redis may be unavailable in tests
-        return None
-
-
-def _vector_to_b64(vec: List[float]) -> str:
-    return base64.b64encode(struct.pack(f"{len(vec)}f", *vec)).decode("ascii")
-
-
-def _b64_to_vector(s: str) -> List[float]:
-    raw = base64.b64decode(s)
-    n = len(raw) // 4
-    return list(struct.unpack(f"{n}f", raw))
-
-
-def _query_cache_key(query: str) -> str:
-    h = hashlib.sha256(query.encode("utf-8")).hexdigest()
-    return _EMBED_CACHE_KEY.format(h)
-
-
-def _cached_query_embed(query: str) -> Optional[List[float]]:
-    r = _embed_redis()
-    if r is None:
-        return None
-    try:
-        raw = r.get(_query_cache_key(query))
-        if not raw:
-            return None
-        return _b64_to_vector(raw)
-    except Exception:
-        logger.debug("embed cache get failed (non-fatal)", exc_info=True)
-        return None
-
-
-def _store_query_embed(query: str, vector: List[float]) -> None:
-    r = _embed_redis()
-    if r is None:
-        return
-    try:
-        r.setex(
-            _query_cache_key(query),
-            _EMBED_CACHE_TTL_SECONDS,
-            _vector_to_b64(vector),
-        )
-    except Exception:
-        logger.debug("embed cache set failed (non-fatal)", exc_info=True)
-
-# ── Embedding client ────────────────────────────────────
-
-
-class EmbeddingClient:
-    """Lazy, optional embedding provider.
-
-    Currently supports Voyage AI (Anthropic's recommended partner).  Add
-    more providers by extending :meth:`embed_texts`.
-    """
-
-    def __init__(self) -> None:
-        self._settings = get_settings()
-
-    @property
-    def available(self) -> bool:
-        return bool(getattr(self._settings, "VOYAGE_API_KEY", ""))
-
-    def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        if not self.available:
-            return []
-        import httpx
-
-        resp = httpx.post(
-            "https://api.voyageai.com/v1/embeddings",
-            json={"input": texts, "model": "voyage-3", "input_type": "document"},
-            headers={
-                "Authorization": f"Bearer {self._settings.VOYAGE_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        return [row["embedding"] for row in resp.json()["data"]]
-
-
-# ── Qdrant client wrapper ───────────────────────────────
-
-
-class QdrantStore:
-    def __init__(self) -> None:
-        self._settings = get_settings()
-        self._client = None
-
-    @property
-    def available(self) -> bool:
-        return bool(self._settings.QDRANT_URL)
-
-    def _get(self):
-        if self._client is None:
-            from qdrant_client import QdrantClient
-
-            self._client = QdrantClient(
-                url=self._settings.QDRANT_URL,
-                api_key=self._settings.QDRANT_API_KEY or None,
-                timeout=10,
-            )
-        return self._client
-
-    def collection(self, tenant_id) -> str:
-        return f"{QDRANT_COLLECTION_PREFIX}{tenant_id}"
-
-    def ensure_collection(self, tenant_id, vector_size: int = 1024) -> None:
-        from qdrant_client.models import Distance, VectorParams
-
-        client = self._get()
-        name = self.collection(tenant_id)
-        existing = {c.name for c in client.get_collections().collections}
-        if name not in existing:
-            client.create_collection(
-                collection_name=name,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-            )
-
-    def upsert(self, tenant_id, doc_id: str, vector: List[float], payload: dict) -> None:
-        from qdrant_client.models import PointStruct
-
-        self.ensure_collection(tenant_id, vector_size=len(vector))
-        self._get().upsert(
-            collection_name=self.collection(tenant_id),
-            points=[PointStruct(id=doc_id, vector=vector, payload=payload)],
-        )
-
-    def query(self, tenant_id, vector: List[float], k: int) -> List[Tuple[str, float]]:
-        hits = self._get().search(
-            collection_name=self.collection(tenant_id), query_vector=vector, limit=k
-        )
-        return [(str(h.id), float(h.score)) for h in hits]
-
-    def delete(self, tenant_id, doc_id: str) -> None:
-        self._get().delete(
-            collection_name=self.collection(tenant_id),
-            points_selector=[doc_id],
-        )
-
-
-# ── Public API ──────────────────────────────────────────
-
-
-_embed = EmbeddingClient()
-_store = QdrantStore()
-
-
-async def index_document(db: AsyncSession, doc: KBDocument) -> None:
-    """Upsert a single KB doc into Qdrant if vectors are available.
-
-    Non-fatal: logs and returns on any failure, so a dead Qdrant never
-    blocks a KB write.
-    """
-    if not (_embed.available and _store.available):
-        return
-    content = f"{doc.title or ''}\n\n{doc.content or ''}"[:8000]
-    try:
-        vectors = _embed.embed_texts([content])
-        if not vectors:
-            return
-        _store.upsert(
-            doc.tenant_id,
-            str(doc.id),
-            vectors[0],
-            {"title": doc.title or "", "tags": doc.tags or []},
-        )
-        doc.qdrant_point_id = str(doc.id)
-    except Exception:
-        logger.exception("KB Qdrant index failed for doc %s (non-fatal)", doc.id)
-
-
-async def delete_from_index(tenant_id, doc_id) -> None:
-    if not _store.available:
-        return
-    try:
-        _store.delete(tenant_id, str(doc_id))
-    except Exception:
-        logger.exception("KB Qdrant delete failed for doc %s (non-fatal)", doc_id)
 
 
 async def retrieve(
@@ -236,39 +40,38 @@ async def retrieve(
 ) -> List[Tuple[KBDocument, float]]:
     """Return ranked KB docs for a query, tenant-scoped.
 
-    Tries Qdrant vector search first.  Falls back to a keyword ranker
-    that walks SQL candidates and scores them by term overlap — good
-    enough to surface the right doc on small corpora and never
-    hallucinates a cross-tenant hit.
+    Tries the maintained vector path first (chunk-level hits collapsed to
+    their parent documents, best chunk score wins).  Falls back to the
+    keyword ranker on any failure or empty result — good enough to
+    surface the right doc on small corpora and never hallucinates a
+    cross-tenant hit.
     """
-    # Vector path
-    if _embed.available and _store.available:
-        try:
-            vector = _cached_query_embed(query)
-            if vector is None:
-                vector = _embed.embed_texts([query])[0]
-                _store_query_embed(query, vector)
-            ranked = _store.query(tenant_id, vector, k=k)
-            if ranked:
-                import uuid as _uuid
+    try:
+        from backend.app.services.kb.retrieval import RetrievalService
 
-                ids = [_uuid.UUID(pid) for pid, _ in ranked]
-                rows = (
-                    await db.execute(
-                        select(KBDocument).where(
-                            KBDocument.tenant_id == tenant_id,
-                            KBDocument.id.in_(ids),
-                        )
+        hits = await RetrievalService().search(db, tenant_id, query, k=k * 3)
+        if hits:
+            doc_ids = {h.doc_id for h in hits}
+            rows = (
+                await db.execute(
+                    select(KBDocument).where(
+                        KBDocument.tenant_id == tenant_id,
+                        KBDocument.id.in_(doc_ids),
                     )
-                ).scalars().all()
-                by_id = {str(r.id): r for r in rows}
-                return [
-                    (by_id[pid], score)
-                    for pid, score in ranked
-                    if pid in by_id
-                ]
-        except Exception:
-            logger.exception("Qdrant retrieval failed; falling back to keyword ranker")
+                )
+            ).scalars().all()
+            by_id = {r.id: r for r in rows}
+            ranked: List[Tuple[KBDocument, float]] = []
+            seen = set()
+            for h in hits:  # hits arrive score-descending
+                if h.doc_id in seen or h.doc_id not in by_id:
+                    continue
+                seen.add(h.doc_id)
+                ranked.append((by_id[h.doc_id], float(h.score)))
+            if ranked:
+                return ranked[:k]
+    except Exception:
+        logger.exception("KB vector retrieval failed; falling back to keyword ranker")
 
     return await _keyword_ranker(db, tenant_id, query, k)
 
