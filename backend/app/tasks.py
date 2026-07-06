@@ -1080,7 +1080,6 @@ def _run_pipeline_impl(
     audio_path: Optional[str] = None,
 ) -> None:
     from backend.app.models import (
-        ActionItem,
         Contact,
         Conversation,
         InteractionScore,
@@ -1749,78 +1748,33 @@ def _run_pipeline_impl(
             elif interaction.direction == "outbound":
                 conv.status = "waiting_customer"
 
-    # ── Step 14: Insert action items ─────────────────────────────────
-    # Capture every field the LLM emits; prior code dropped ``due_date``,
-    # ``email_draft``, and the new advanced fields on the floor.
+    # ── Step 14: Action items — retired 2026-07 (4b cutover) ─────────
+    # The pipeline no longer writes legacy ActionItem rows; the Action
+    # Plan DAG below is the canonical output of analysis. The raw LLM
+    # suggestions stay available in insights['action_items'] (plan
+    # synthesis seeds, email drafts, outcome inference all read the
+    # JSON, not the table). ActionItem persists only for manually
+    # created tasks (POST /action-items, Linda chat proposals, manager
+    # triage).
+    #
+    # Category-taxonomy discovery used to piggyback on the row inserts;
+    # keep feeding LLM-emitted categories so alias mapping and promotion
+    # candidates continue to accumulate.
     for ai_item in insights.get("action_items", []):
-        # Parse due_date if provided as a string. Tolerate malformed
-        # values by leaving the column NULL rather than failing.
-        raw_due = ai_item.get("due_date")
-        parsed_due = None
-        if isinstance(raw_due, str) and raw_due.strip():
-            try:
-                parsed_due = date.fromisoformat(raw_due.strip())
-            except ValueError:
-                parsed_due = None
-
-        # email_draft can arrive as the new {subject, body} dict or as
-        # the legacy plain string under either ``email_draft`` or
-        # ``suggested_email_draft``. Normalize to the dict shape stored
-        # in JSONB.
-        raw_email = ai_item.get("email_draft") or ai_item.get("suggested_email_draft")
-        if isinstance(raw_email, str):
-            email_draft = {"subject": "", "body": raw_email}
-        elif isinstance(raw_email, dict):
-            email_draft = raw_email
-        else:
-            email_draft = None
-
-        raw_category = ai_item.get("category")
-        # Normalize category through the taxonomy service: known aliases
-        # map to canonical names; unknown strings get logged as candidates
-        # for promotion. Failures are non-fatal — we keep the raw value.
-        canonical_category = raw_category
         try:
             from backend.app.services.category_taxonomy import record_occurrence
-            normalized = record_occurrence(session, tenant.id, raw_category or "")
-            if normalized:
-                canonical_category = normalized
+
+            record_occurrence(session, tenant.id, ai_item.get("category") or "")
         except Exception:
             logger.debug(
-                "category taxonomy lookup failed for %r (non-fatal)",
-                raw_category, exc_info=True,
+                "category taxonomy record failed (non-fatal)", exc_info=True
             )
 
-        action = ActionItem(
-            interaction_id=interaction.id,
-            tenant_id=tenant.id,
-            title=ai_item.get("title", "Untitled"),
-            description=ai_item.get("description", ""),
-            category=canonical_category,
-            priority=ai_item.get("priority", "medium"),
-            status="open",
-            due_date=parsed_due,
-            email_draft=email_draft,
-            call_script=ai_item.get("call_script") or None,
-            next_step_type=ai_item.get("next_step_type"),
-            recommended_channel=ai_item.get("recommended_channel"),
-            channel_reasoning=ai_item.get("channel_reasoning"),
-            participants=ai_item.get("participants") or [],
-            prep_artifacts=ai_item.get("prep_artifacts") or [],
-            implicit_signal=ai_item.get("implicit_signal"),
-            suggested_attachments=ai_item.get("suggested_attachments") or [],
-            manually_created=False,
-        )
-        session.add(action)
-
-    # ── Step 14a: Synthesize Action Plan (new DAG-based workflow) ────
-    # The Action Plan is the DAG-based successor to ActionItem. It runs
-    # alongside ActionItem during the cutover so consumers can migrate
-    # at their own pace; both surfaces stay populated for the same
-    # interaction. Per the locked failure-mode decision, plan synthesis
-    # never blocks the pipeline — on any error we log and continue;
-    # the user just sees the legacy action_items list until the next
-    # call goes through cleanly.
+    # ── Step 14a: Synthesize Action Plan (the canonical action model) ─
+    # Per the locked failure-mode decision, plan synthesis never blocks
+    # the pipeline — on any error we log and continue; the interaction
+    # still carries insights['action_items'] for the analysis surfaces,
+    # and the next clean run recreates the plan.
     #
     # The synthesizer wants an AsyncSession; the pipeline holds a sync
     # one. We open a short-lived async session over the same database

@@ -791,6 +791,15 @@ class Interaction(Base):
 
 
 class ActionItem(Base):
+    """A manually created task (POST /action-items, Linda chat proposals,
+    manager triage).
+
+    4b cutover (2026-07): the analysis pipeline no longer writes rows here
+    — the ActionPlan → ActionStep DAG is the canonical action model for
+    interaction follow-ups. The LLM's raw suggestions remain available in
+    ``Interaction.insights['action_items']``.
+    """
+
     __tablename__ = "action_items"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)

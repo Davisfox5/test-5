@@ -1,6 +1,7 @@
 # 04 — Multi-tenant isolation + mid-flight action-model migration
 
-**Status:** 🟢 Plan agreed (isolation) · 🟡 Discussing (action-model cutover)
+**Status:** 🔵 Implemented on `claude/tenant-isolation-rls` (isolation + 4b cutover) — pending
+review/merge; backstop goes live in staging/prod via the §9 ops runbook (role + APP_DATABASE_URL).
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
 
 > **Pre-launch lens (2026-07).** Zero tenants, zero production data. This is the *cheapest
@@ -252,6 +253,11 @@ which is exactly why it's safe to commit to now. Revisit this ADR if any trigger
 3. ✅ RLS on all tenant-scoped tables (`rls_002`) + global allow-list + nullable-hybrid
    handling + per-tenant context wiring across Celery all-tenant loops, alt-auth/webhook
    endpoints, and WebSocket handlers.
-4. 🔵 Qdrant choke point + cross-tenant vector test + offboarding cleanup.
+4. ✅ Qdrant choke point (orphaned second client retired; `query_points` API fix;
+   `purge_tenant` on offboarding; cross-tenant vector tests against a real in-process engine).
 5. ✅ ES verified / Redis diarization key fix.
-6. 🔵 Action-model cutover (4b).
+6. ✅ Action-model cutover (4b): the pipeline no longer writes legacy ActionItem rows — the
+   ActionPlan DAG is canonical; CRM write-back reads open ActionSteps (the old ActionItem
+   filter used status values the pipeline never wrote, so activity write-back had been
+   silently dark); the dashboard widget reads active plans; `ActionItem` remains only for
+   manually created tasks. The non-atomic dual-write (§4) is gone.
