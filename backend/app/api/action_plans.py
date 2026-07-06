@@ -1404,7 +1404,6 @@ async def send_email_for_step(
         record.status = "failed"
         record.error = f"auth: {exc}"[:500]
         await db.commit()
-        await _close_sender(sender)
         return SendStepEmailResult(
             success=False, provider=integ.provider, email_send_id=record.id,
             error=f"auth: {exc}",
@@ -1413,10 +1412,22 @@ async def send_email_for_step(
         record.status = "failed"
         record.error = str(exc)[:500]
         await db.commit()
-        await _close_sender(sender)
         return SendStepEmailResult(
             success=False, provider=integ.provider, email_send_id=record.id,
             error=str(exc),
+        )
+    except Exception as exc:
+        # A sender bug or transport error outside the typed exceptions
+        # would otherwise 500 and roll back the pending row, losing the
+        # outbox audit. Persist the failure and report it in the same
+        # success=False shape the SPA already handles.
+        logger.exception("send_step_email: unexpected provider failure")
+        record.status = "failed"
+        record.error = f"{type(exc).__name__}: {exc}"[:500]
+        await db.commit()
+        return SendStepEmailResult(
+            success=False, provider=integ.provider, email_send_id=record.id,
+            error="Email provider send failed",
         )
     finally:
         await _close_sender(sender)

@@ -66,7 +66,10 @@ def _make_customer(
         name=name,
         onboarding_status=onboarding,
         renewal_date=(
-            date.today() + timedelta(days=renewal_in_days)
+            # Seed against the service's clock (UTC), not the local date —
+            # date.today() is one day behind UTC in US evenings, which
+            # shifted days_to_renewal off by one.
+            datetime.now(timezone.utc).date() + timedelta(days=renewal_in_days)
             if renewal_in_days is not None
             else None
         ),
