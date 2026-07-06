@@ -87,6 +87,15 @@ entity resolution → signal/scorecard/snippet generation → notifications/webh
 steps run as Celery tasks off a Redis broker, across three queues: **`priority`, `default`,
 `batch`**.
 
+**Exactly-once effects:** every paid / non-idempotent pipeline step (transcription,
+segmentation, analysis, scorecards, entity resolution, plan synthesis) claims a row in
+the **`interaction_step_runs` ledger** (`services/pipeline_ledger.py`) before running —
+atomic claim, lease TTL, per-(interaction, step, input-hash) idempotency — so retries and
+duplicate deliveries *resume* instead of re-paying LLM calls. Outputs commit in the same
+transaction that marks the step succeeded ("persist-after-pay"). An hourly
+`reconcile_orphan_interactions` beat task re-runs failed entity resolutions. Design and
+rationale: [docs/complexity/01-pipeline-exactly-once.md](docs/complexity/01-pipeline-exactly-once.md).
+
 `beat_schedule` (in `tasks.py`) drives ~30 recurring jobs — e.g. weekly tenant insights,
 daily/weekly orchestration, outcomes backfill, calibration / IRT / churn-model fits, audio
 & event retention sweeps, email-ingest polling, feedback-stream consumption, CRM sync,

@@ -35,6 +35,7 @@ from backend.app.logging_setup import (
     reset_context,
 )
 from backend.app.observability import init_sentry
+from backend.app.services.pipeline_ledger import StepHeldError
 
 configure_logging()
 init_sentry()
@@ -189,6 +190,13 @@ celery_app.conf.update(
         "outcomes-backfill-daily": {
             "task": "outcomes_backfill_all_tenants",
             "schedule": crontab(minute=30, hour=3),
+        },
+        # 3c detect-and-heal: re-run entity resolution for interactions
+        # whose resolution step failed (ledger status 'failed'). Hourly;
+        # bounded batch, idempotent, concurrency-safe via the ledger.
+        "reconcile-orphan-interactions": {
+            "task": "reconcile_orphan_interactions",
+            "schedule": crontab(minute=25),
         },
         "calibration-weekly": {
             "task": "calibration_fit_all_tenants",
@@ -629,6 +637,16 @@ def _get_sync_session() -> Session:
     return _SyncSessionFactory()
 
 
+def _worker_id() -> str:
+    """Stable identity for step-ledger claims: host + pid of this
+    prefork child. Two concurrent claimers always differ in at least
+    one component."""
+    import os
+    import socket
+
+    return "%s:%s" % (socket.gethostname(), os.getpid())
+
+
 # ── Per-task event loop reuse ─────────────────────────────────────────────
 #
 # ``_run_pipeline`` hits ~8 async entrypoints (triage, analysis, webhook
@@ -658,6 +676,25 @@ class _TaskEventLoop:
     def __enter__(self) -> "_TaskEventLoop":
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        # Structural 3b fix: dispose the shared async engine's pool ONCE
+        # at loop entry, so every ``_loop.run(...)`` site in the pipeline
+        # (lifecycle webhook emit, plan synthesis, search indexing, …)
+        # gets asyncpg connections bound to THIS loop by construction.
+        # Previously this was a per-call-site convention — plan synthesis
+        # remembered it, ``_emit_lifecycle`` didn't, and its stale-loop
+        # crashes were silently swallowed as "webhook emission failed".
+        # Disposing is a no-op on an empty pool, ~5ms otherwise, and safe
+        # under prefork (one task at a time per child). Import inside the
+        # method: backend.app.db must not be a hard import-time dep here.
+        try:
+            from backend.app.db import engine as _async_engine
+
+            self._loop.run_until_complete(_async_engine.dispose())
+        except Exception:
+            logger.warning(
+                "async engine dispose at task-loop entry failed (non-fatal)",
+                exc_info=True,
+            )
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -1217,32 +1254,35 @@ def _run_pipeline_impl(
     _call_dt = getattr(interaction, "started_at", None) or interaction.created_at
     _call_date_str = _call_dt.date().isoformat() if _call_dt else None
 
-    # Idempotency check: when a downstream step (scorecard, snippets,
-    # webhook fan-out) fails the whole task is retried. Re-running the
-    # Sonnet analysis on a retry is the most expensive part of the
-    # pipeline and we already persisted its output on the prior attempt
-    # — so reuse it instead of paying for a second Anthropic call.
-    # ``summary`` is the analyzer's canonical output field; presence of
-    # a non-trivial value + the absence of a retry-error stamp tells us
-    # the prior pass got past step 9 cleanly.
-    prior_insights = dict(getattr(interaction, "insights", None) or {})
-    prior_summary = prior_insights.get("summary")
-    prior_has_error = "error" in prior_insights
-    if (
-        isinstance(prior_summary, str)
-        and len(prior_summary.strip()) >= 40
-        and not prior_has_error
-    ):
-        logger.info(
-            "Skipping AI analysis for interaction %s — reusing insights from prior attempt",
-            interaction_id,
-        )
-        insights = prior_insights
-    else:
-        insights = _loop.run(
+    # Exactly-once claim for the paid Sonnet call (ledger — see
+    # docs/complexity/01 §7). Replaces the old content-sniffing reuse
+    # guard (``len(summary) >= 40``): the ledger row is authoritative.
+    # REUSED → a prior attempt persisted this exact analysis (same
+    # transcript + variant + tier) — never re-pay, even when a
+    # later-step failure stamped ``insights['error']``. HELD → another
+    # worker is mid-analysis on this interaction (duplicate delivery /
+    # double enqueue) — StepHeldError defers the whole task instead of
+    # double-paying. ACQUIRED → analyze, then persist-after-pay: the
+    # output and the succeeded ledger row land in one commit, so a
+    # failure in ANY later step can no longer lose the paid result.
+    from backend.app.services.pipeline_ledger import (
+        compute_input_hash,
+        run_analysis_with_ledger,
+    )
+
+    _effective_tier = overrides.get("force_tier") or recommended_tier
+    _analysis_input_hash = compute_input_hash(
+        compressed_for_llm,
+        getattr(variant, "variant_id", None),
+        _effective_tier,
+        _call_date_str,
+    )
+
+    def _paid_analysis() -> Dict[str, Any]:
+        return _loop.run(
             _get_analysis_service().analyze(
                 compressed_for_llm,
-                tier=overrides.get("force_tier") or recommended_tier,
+                tier=_effective_tier,
                 triage_result=triage_result,
                 system_prompt_override=variant.prompt_template,
                 tenant_context_block=tenant_block,
@@ -1255,6 +1295,15 @@ def _run_pipeline_impl(
                 call_date=_call_date_str,
             )
         )
+
+    insights = run_analysis_with_ledger(
+        session,
+        tenant_id=tenant.id,
+        interaction=interaction,
+        input_hash=_analysis_input_hash,
+        worker_id=_worker_id(),
+        analyze_fn=_paid_analysis,
+    )
     interaction.prompt_variant_id = _variant_to_uuid(variant.variant_id)
     logger.info(
         "AI analysis complete for interaction %s (variant=%s status=%s)",
@@ -1380,18 +1429,79 @@ def _run_pipeline_impl(
         )
 
     transcript_for_scoring = _segments_for_llm(segments_dicts)
+    scorecard_results: List[Dict[str, Any]] = []
     if applicable_templates:
-        scorecard_results = _loop.run(
-            _get_scorecard_service().score_many(
-                transcript_for_scoring, applicable_templates, insights
-            )
+        # Exactly-once claim for the batched Haiku scoring call. Score
+        # rows are inserted HERE (not step 15) so persist-after-pay
+        # holds: rows + succeeded ledger flip land in one commit.
+        # REUSED → the rows are already in the DB from the winning run;
+        # HELD → another worker is mid-scoring — scores are non-blocking,
+        # so skip rather than defer the whole task (the holder's rows
+        # will land). Idempotent re-derivation: replace this
+        # interaction's machine-written scores instead of duplicating.
+        from backend.app.services.pipeline_ledger import (
+            STEP_SCORECARDS,
+            StepClaim,
+            claim_step,
+            complete_step,
+            fail_step,
         )
-    else:
-        scorecard_results = []
-    logger.info(
-        "Scored %d scorecard templates for interaction %s",
-        len(scorecard_results), interaction_id,
-    )
+
+        _sc_claim = claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_SCORECARDS,
+            input_hash=compute_input_hash(
+                _analysis_input_hash,
+                ",".join(sorted(t["id"] for t in applicable_templates)),
+            ),
+            worker_id=_worker_id(),
+        )
+        if _sc_claim.outcome == StepClaim.ACQUIRED:
+            try:
+                scorecard_results = _loop.run(
+                    _get_scorecard_service().score_many(
+                        transcript_for_scoring, applicable_templates, insights
+                    )
+                )
+            except Exception as _sc_exc:
+                fail_step(
+                    session, _sc_claim.run_id,
+                    error="%s: %s" % (type(_sc_exc).__name__, _sc_exc),
+                )
+                raise
+            session.query(InteractionScore).filter(
+                InteractionScore.interaction_id == interaction.id
+            ).delete(synchronize_session=False)
+            for sc in scorecard_results:
+                session.add(
+                    InteractionScore(
+                        interaction_id=interaction.id,
+                        template_id=uuid.UUID(sc["template_id"]),
+                        tenant_id=tenant.id,
+                        total_score=sc.get("total_score"),
+                        criterion_scores=sc.get("criterion_scores", []),
+                    )
+                )
+            complete_step(
+                session, _sc_claim.run_id, output_digest="interaction_scores"
+            )
+            logger.info(
+                "Scored %d scorecard templates for interaction %s",
+                len(scorecard_results), interaction_id,
+            )
+        elif _sc_claim.outcome == StepClaim.REUSED:
+            logger.info(
+                "Reusing persisted scorecard scores for interaction %s (ledger)",
+                interaction_id,
+            )
+        else:  # HELD
+            logger.info(
+                "Scorecard scoring for interaction %s held by another worker — "
+                "skipping (non-blocking)",
+                interaction_id,
+            )
 
     # ── Step 11: Snippet identification ──────────────────────────────
     snippet_dicts = _get_snippet_service().identify_notable_segments(
@@ -1439,35 +1549,73 @@ def _run_pipeline_impl(
     # contact-rollup step (13b) against the freshly-resolved contact.
     try:
         from backend.app.services.entity_resolution import resolve_interaction_entities
-
-        resolution = _loop.run(
-            resolve_interaction_entities(
-                session=session,
-                interaction=interaction,
-                tenant=tenant,
-                insights=insights,
-                compressed_transcript=compressed_text,
-            )
+        from backend.app.services.pipeline_ledger import (
+            STEP_ENTITY_RESOLUTION,
+            StepClaim as _ErStepClaim,
+            claim_step as _er_claim_step,
+            complete_step as _er_complete_step,
+            fail_step as _er_fail_step,
         )
-        if resolution.customer_action != "none":
+
+        # Ledger-wrapped so a swallowed failure is *discoverable*: a
+        # 'failed' row here is exactly what the reconcile_orphan_
+        # interactions sweeper scans for, and a 'succeeded' row lets it
+        # distinguish "resolution crashed" from "there was genuinely
+        # nobody to resolve" — the ambiguity called out in
+        # docs/complexity/01 §3c.
+        _er_claim = _er_claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_ENTITY_RESOLUTION,
+            input_hash=_analysis_input_hash,
+            worker_id=_worker_id(),
+        )
+        if _er_claim.outcome == _ErStepClaim.ACQUIRED:
+            try:
+                resolution = _loop.run(
+                    resolve_interaction_entities(
+                        session=session,
+                        interaction=interaction,
+                        tenant=tenant,
+                        insights=insights,
+                        compressed_transcript=compressed_text,
+                    )
+                )
+            except Exception as _er_exc:
+                _er_fail_step(
+                    session, _er_claim.run_id,
+                    error="%s: %s" % (type(_er_exc).__name__, _er_exc),
+                )
+                raise
+            if resolution.customer_action != "none":
+                logger.info(
+                    "Entity resolution for interaction %s: %s (score=%.2f, customer_id=%s)",
+                    interaction_id,
+                    resolution.customer_action,
+                    resolution.customer_score,
+                    resolution.customer_id,
+                )
+            if resolution.suggestions:
+                # Stash suggestions on the interaction so the SPA can
+                # render the inline match-candidate card. The
+                # notification-tray surface plugs into the same data via
+                # a dedicated endpoint in the Suggestions phase.
+                existing_meta = (
+                    getattr(interaction, "insights", None) or {}
+                )
+                existing_meta = dict(existing_meta)
+                existing_meta["entity_resolution_suggestions"] = resolution.suggestions
+                interaction.insights = existing_meta
+            _er_complete_step(
+                session, _er_claim.run_id,
+                output_digest="customer_id=%s" % (interaction.customer_id,),
+            )
+        else:
             logger.info(
-                "Entity resolution for interaction %s: %s (score=%.2f, customer_id=%s)",
-                interaction_id,
-                resolution.customer_action,
-                resolution.customer_score,
-                resolution.customer_id,
+                "Entity resolution for interaction %s: ledger says %s — skipping",
+                interaction_id, _er_claim.outcome,
             )
-        if resolution.suggestions:
-            # Stash suggestions on the interaction so the SPA can
-            # render the inline match-candidate card. The
-            # notification-tray surface plugs into the same data via
-            # a dedicated endpoint in the Suggestions phase.
-            existing_meta = (
-                getattr(interaction, "insights", None) or {}
-            )
-            existing_meta = dict(existing_meta)
-            existing_meta["entity_resolution_suggestions"] = resolution.suggestions
-            interaction.insights = existing_meta
     except Exception:
         logger.exception(
             "Entity resolution failed for interaction %s — continuing as orphan",
@@ -1673,6 +1821,14 @@ def _run_pipeline_impl(
     # ── Step 14: Insert action items ─────────────────────────────────
     # Capture every field the LLM emits; prior code dropped ``due_date``,
     # ``email_draft``, and the new advanced fields on the floor.
+    # Idempotent re-derivation: a retry that reaches this step again
+    # (the first pass committed at step 14a) replaces the machine-
+    # written items instead of duplicating them. Manually created items
+    # survive.
+    session.query(ActionItem).filter(
+        ActionItem.interaction_id == interaction.id,
+        ActionItem.manually_created == False,  # noqa: E712
+    ).delete(synchronize_session=False)
     for ai_item in insights.get("action_items", []):
         # Parse due_date if provided as a string. Tolerate malformed
         # values by leaving the column NULL rather than failing.
@@ -1775,26 +1931,34 @@ def _run_pipeline_impl(
         session.commit()
         _plan_diag["sync_commit_ok"] = True
 
-        async def _run_plan_synthesis() -> None:
-            # Dispose the engine pool first so the connection we open
-            # is bound to THIS task's event loop. asyncpg connections
-            # are loop-coupled; the async engine in backend.app.db is
-            # module-level (created once at worker boot), and its
-            # pool retains connections bound to whatever loop opened
-            # them. After this worker has handled any prior async DB
-            # work (an earlier Celery task, a beat-scheduled scan),
-            # the pool holds connections bound to a stale loop. The
-            # next checkout's pool_pre_ping fires "RuntimeError: Task
-            # got Future attached to a different loop" against
-            # asyncpg.protocol.query, killing synthesis silently.
-            #
-            # Disposing is a no-op when the pool is empty and cheap
-            # (~5ms) when it isn't. Forces the next checkout to open
-            # a fresh asyncpg connection bound to the loop _TaskEventLoop
-            # created for this task.
-            from backend.app.db import engine as _async_engine
-            await _async_engine.dispose()
+        # Exactly-once claim for the synthesis LLM call. Keyed on the
+        # analysis input-hash: same analysis → same plan; a re-analysis
+        # (changed transcript/variant/tier) legitimately re-synthesizes.
+        # REUSED/HELD both skip — synthesis is non-blocking by the
+        # locked failure-mode decision, so we never defer the task on it.
+        from backend.app.services.pipeline_ledger import (
+            STEP_PLAN_SYNTHESIS,
+            StepClaim as _StepClaim,
+            claim_step as _pl_claim_step,
+            complete_step as _pl_complete_step,
+            fail_step as _pl_fail_step,
+        )
 
+        _plan_claim = _pl_claim_step(
+            session,
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            step_key=STEP_PLAN_SYNTHESIS,
+            input_hash=_analysis_input_hash,
+            worker_id=_worker_id(),
+        )
+        _plan_diag["ledger_outcome"] = _plan_claim.outcome
+
+        async def _run_plan_synthesis() -> None:
+            # No dispose-first needed here anymore: ``_TaskEventLoop``
+            # disposes the shared async engine at loop entry, so any
+            # connection checked out inside this loop is already bound
+            # to it (see the __enter__ docblock).
             async with _async_session_factory() as async_db:
                 synthesizer = ActionPlanSynthesizer()
                 # Re-fetch the tenant + interaction from the async
@@ -1876,7 +2040,23 @@ def _run_pipeline_impl(
                     _result.chosen_domain,
                 )
 
-        _loop.run(_run_plan_synthesis())
+        if _plan_claim.outcome == _StepClaim.ACQUIRED:
+            try:
+                _loop.run(_run_plan_synthesis())
+            except Exception as _plan_run_exc:
+                _pl_fail_step(
+                    session, _plan_claim.run_id,
+                    error="%s: %s" % (type(_plan_run_exc).__name__, _plan_run_exc),
+                )
+                raise
+            _pl_complete_step(
+                session, _plan_claim.run_id, output_digest="action_plans"
+            )
+        else:
+            logger.info(
+                "Action plan synthesis for interaction %s: ledger says %s — skipping",
+                interaction.id, _plan_claim.outcome,
+            )
     except SynthesisFailedError as _plan_exc:  # type: ignore[name-defined]
         logger.warning(
             "Action plan synthesis failed for interaction %s (non-fatal): %s",
@@ -1911,18 +2091,38 @@ def _run_pipeline_impl(
     # rides along with that same successful commit.
 
     # ── Step 15: Insert interaction scores ───────────────────────────
-    for sc in scorecard_results:
-        score_row = InteractionScore(
-            interaction_id=interaction.id,
-            template_id=uuid.UUID(sc["template_id"]),
-            tenant_id=tenant.id,
-            total_score=sc.get("total_score"),
-            criterion_scores=sc.get("criterion_scores", []),
-        )
-        session.add(score_row)
+    # Moved into step 10: score rows insert in the same commit that
+    # flips the scorecards ledger row to succeeded (persist-after-pay).
 
     # ── Step 16: Insert interaction snippets ─────────────────────────
+    # Idempotent re-derivation: snippets are recomputed from insights on
+    # every run, so a retry replaces the machine-written rows instead of
+    # duplicating them. Library-curated rows (in_library=True) survive;
+    # a recomputed snippet that collides with a surviving library row
+    # (same span + type) is skipped rather than duplicated.
+    _library_snippets = (
+        session.query(InteractionSnippet)
+        .filter(
+            InteractionSnippet.interaction_id == interaction.id,
+            InteractionSnippet.in_library == True,  # noqa: E712
+        )
+        .all()
+    )
+    _library_keys = {
+        (s.start_time, s.end_time, s.snippet_type) for s in _library_snippets
+    }
+    session.query(InteractionSnippet).filter(
+        InteractionSnippet.interaction_id == interaction.id,
+        InteractionSnippet.in_library == False,  # noqa: E712
+    ).delete(synchronize_session=False)
     for sn in snippet_dicts:
+        _sn_key = (
+            _coerce_seconds(sn.get("start_time")),
+            _coerce_seconds(sn.get("end_time")),
+            sn.get("snippet_type"),
+        )
+        if _sn_key in _library_keys:
+            continue
         snippet_row = InteractionSnippet(
             interaction_id=interaction.id,
             tenant_id=tenant.id,
@@ -2348,71 +2548,140 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
                 tenant_features.get("paralinguistic_analysis", True)
             )
 
-            try:
-                if (
-                    interaction.audio_url
-                    and engine == "deepgram"
-                    and not want_paralinguistic
-                ):
-                    # URL mode: Deepgram fetches directly, we never stage.
-                    segments = asyncio.run(
-                        svc.transcribe(
-                            audio_url=interaction.audio_url,
-                            engine="deepgram",
-                            language=language,
-                            keyterms=keyterms,
-                            model=deepgram_model,
-                            tenant_features=tenant_features_for_engine,
-                        )
+            # Exactly-once claim for the paid Deepgram/Whisper call. The
+            # transcript is already persisted+committed the moment
+            # transcription returns (below), so retries short-circuit via
+            # the pre-populated-transcript branch above; the claim closes
+            # the remaining hole — two *concurrent* deliveries both
+            # observing an empty transcript and both paying to transcribe.
+            from backend.app.services.pipeline_ledger import (
+                STEP_TRANSCRIPTION,
+                StepClaim,
+                claim_step,
+                complete_step,
+                compute_input_hash,
+                fail_step,
+            )
+
+            _tr_run_id: Optional[uuid.UUID] = None
+            _tr_claim = claim_step(
+                session,
+                tenant_id=tenant.id,
+                interaction_id=interaction.id,
+                step_key=STEP_TRANSCRIPTION,
+                input_hash=compute_input_hash(
+                    interaction.audio_s3_key,
+                    interaction.audio_url,
+                    engine,
+                    deepgram_model,
+                    language,
+                ),
+                worker_id=_worker_id(),
+            )
+            if _tr_claim.outcome == StepClaim.HELD:
+                raise StepHeldError(
+                    "transcription for interaction %s held by another worker"
+                    % interaction_id
+                )
+            if _tr_claim.outcome == StepClaim.REUSED:
+                session.refresh(interaction)
+                if interaction.transcript and len(interaction.transcript) > 0:
+                    segments_dicts = interaction.transcript
+                    logger.info(
+                        "Reusing persisted transcript (%d segments) for "
+                        "interaction %s (ledger)",
+                        len(segments_dicts), interaction_id,
                     )
                 else:
-                    # Need a local path — from S3 staging, or download the
-                    # URL first (Whisper + paralinguistic both want bytes).
-                    if interaction.audio_s3_key:
-                        staged_key = interaction.audio_s3_key
-                        staged_path = s3_audio.download_to_tempfile(staged_key)
-                    else:
-                        import httpx
-                        import tempfile
-
-                        tmp = tempfile.NamedTemporaryFile(
-                            prefix="linda-audio-", suffix=".bin", delete=False
-                        )
-                        try:
-                            with httpx.Client(timeout=60.0) as client:
-                                resp = client.get(interaction.audio_url)
-                                resp.raise_for_status()
-                                tmp.write(resp.content)
-                        finally:
-                            tmp.close()
-                        staged_path = tmp.name
-
-                    segments = asyncio.run(
-                        svc.transcribe(
-                            audio_path=staged_path,
-                            engine=engine,
-                            language=language,
-                            keyterms=keyterms,
-                            model=deepgram_model,
-                            tenant_features=tenant_features_for_engine,
-                        )
+                    logger.warning(
+                        "Transcription ledger run %s for interaction %s is "
+                        "'succeeded' but no transcript persisted — "
+                        "re-transcribing without a claim",
+                        _tr_claim.run_id, interaction_id,
                     )
-                segments_dicts = _segments_to_dicts(segments)
-                interaction.transcript = segments_dicts
-                # Persist duration_seconds from the last segment if not set.
-                if not interaction.duration_seconds and segments:
-                    interaction.duration_seconds = int(segments[-1].end)
-                session.commit()
-            except Exception:
-                logger.exception(
-                    "Transcription failed for interaction %s", interaction_id
-                )
-                interaction.status = "transcription_failed"
-                session.commit()
-                # Clean up staged bytes on transcription failure too —
-                # the rest of the pipeline won't run.
-                _cleanup_staged_audio(session, interaction, staged_path, staged_key)
-                raise
+            else:
+                _tr_run_id = _tr_claim.run_id
+
+            if segments_dicts is None:
+                try:
+                    if (
+                        interaction.audio_url
+                        and engine == "deepgram"
+                        and not want_paralinguistic
+                    ):
+                        # URL mode: Deepgram fetches directly, we never stage.
+                        segments = asyncio.run(
+                            svc.transcribe(
+                                audio_url=interaction.audio_url,
+                                engine="deepgram",
+                                language=language,
+                                keyterms=keyterms,
+                                model=deepgram_model,
+                                tenant_features=tenant_features_for_engine,
+                            )
+                        )
+                    else:
+                        # Need a local path — from S3 staging, or download the
+                        # URL first (Whisper + paralinguistic both want bytes).
+                        if interaction.audio_s3_key:
+                            staged_key = interaction.audio_s3_key
+                            staged_path = s3_audio.download_to_tempfile(staged_key)
+                        else:
+                            import httpx
+                            import tempfile
+
+                            tmp = tempfile.NamedTemporaryFile(
+                                prefix="linda-audio-", suffix=".bin", delete=False
+                            )
+                            try:
+                                with httpx.Client(timeout=60.0) as client:
+                                    resp = client.get(interaction.audio_url)
+                                    resp.raise_for_status()
+                                    tmp.write(resp.content)
+                            finally:
+                                tmp.close()
+                            staged_path = tmp.name
+
+                        segments = asyncio.run(
+                            svc.transcribe(
+                                audio_path=staged_path,
+                                engine=engine,
+                                language=language,
+                                keyterms=keyterms,
+                                model=deepgram_model,
+                                tenant_features=tenant_features_for_engine,
+                            )
+                        )
+                    segments_dicts = _segments_to_dicts(segments)
+                    interaction.transcript = segments_dicts
+                    # Persist duration_seconds from the last segment if not set.
+                    if not interaction.duration_seconds and segments:
+                        interaction.duration_seconds = int(segments[-1].end)
+                    # Persist-after-pay: transcript + succeeded ledger row
+                    # land in the same commit.
+                    if _tr_run_id is not None:
+                        complete_step(
+                            session, _tr_run_id,
+                            output_digest="interaction.transcript",
+                            commit=False,
+                        )
+                    session.commit()
+                except Exception as _tr_exc:
+                    logger.exception(
+                        "Transcription failed for interaction %s", interaction_id
+                    )
+                    interaction.status = "transcription_failed"
+                    if _tr_run_id is not None:
+                        fail_step(
+                            session, _tr_run_id,
+                            error="%s: %s" % (type(_tr_exc).__name__, _tr_exc),
+                            commit=False,
+                        )
+                    session.commit()
+                    # Clean up staged bytes on transcription failure too —
+                    # the rest of the pipeline won't run.
+                    _cleanup_staged_audio(session, interaction, staged_path, staged_key)
+                    raise
         else:
             logger.warning(
                 "Interaction %s has no transcript, audio_s3_key, or audio_url",
@@ -2454,6 +2723,15 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
+    except StepHeldError as exc:
+        # Another worker holds the analysis lease (duplicate delivery /
+        # double enqueue). Not a failure: leave status + insights alone
+        # and check back after the lease holder has had time to finish.
+        session.rollback()
+        logger.info(
+            "Voice pipeline deferring interaction %s: %s", interaction_id, exc
+        )
+        raise self.retry(exc=exc, countdown=120)
     except Exception as exc:
         session.rollback()
         logger.exception(
@@ -2529,26 +2807,92 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
         if interaction.transcript and len(interaction.transcript) > 0:
             segments_dicts = interaction.transcript
         elif interaction.raw_text:
+            from backend.app.services.pipeline_ledger import (
+                STEP_SEGMENTATION,
+                StepClaim,
+                claim_step,
+                complete_step,
+                compute_input_hash,
+                fail_step,
+            )
             from backend.app.services.text_segmenter import segments_from_text
 
-            # Release the DB connection back to the pool before this
-            # call — segments_from_text may invoke a 30-60s Haiku LLM
-            # round-trip for un-tagged inputs, and holding the
-            # connection idle during that time triggers Neon's
-            # server-side idle-cutoff (TCP keepalives at the OS layer
-            # aren't propagated through Neon's proxy). Committing now
-            # is safe — at this point we've only done READ queries.
-            session.commit()
-            segments_dicts = segments_from_text(
-                interaction.raw_text,
-                duration_seconds=interaction.duration_seconds,
+            # Exactly-once claim for the segmenter's possible 30-60s Haiku
+            # call. The claim's commit also releases the DB connection
+            # before the LLM round-trip (Neon kills idle connections —
+            # this replaces the bare session.commit() that lived here).
+            # Committing here is safe — only READ queries so far.
+            _seg_run_id: Optional[uuid.UUID] = None
+            _seg_claim = claim_step(
+                session,
+                tenant_id=tenant.id,
+                interaction_id=interaction.id,
+                step_key=STEP_SEGMENTATION,
+                input_hash=compute_input_hash(
+                    interaction.raw_text, interaction.duration_seconds
+                ),
+                worker_id=_worker_id(),
             )
+            if _seg_claim.outcome == StepClaim.HELD:
+                raise StepHeldError(
+                    "segmentation for interaction %s held by another worker"
+                    % interaction_id
+                )
+            segments_dicts = None
+            if _seg_claim.outcome == StepClaim.REUSED:
+                session.refresh(interaction)
+                if interaction.transcript and len(interaction.transcript) > 0:
+                    segments_dicts = interaction.transcript
+                    logger.info(
+                        "Reusing persisted segmentation for interaction %s (ledger)",
+                        interaction_id,
+                    )
+                else:
+                    logger.warning(
+                        "Segmentation ledger run %s for interaction %s is "
+                        "'succeeded' but no transcript persisted — re-running "
+                        "without a claim",
+                        _seg_claim.run_id, interaction_id,
+                    )
+            else:
+                _seg_run_id = _seg_claim.run_id
+
+            if segments_dicts is None:
+                try:
+                    segments_dicts = segments_from_text(
+                        interaction.raw_text,
+                        duration_seconds=interaction.duration_seconds,
+                    )
+                except Exception as _seg_exc:
+                    if _seg_run_id is not None:
+                        fail_step(
+                            session, _seg_run_id,
+                            error="%s: %s" % (type(_seg_exc).__name__, _seg_exc),
+                        )
+                    raise
+                if segments_dicts:
+                    # Persist-after-pay: transcript + succeeded ledger row
+                    # in one commit, so a later-step failure never re-pays
+                    # the segmenter.
+                    interaction.transcript = segments_dicts
+                    if _seg_run_id is not None:
+                        complete_step(
+                            session, _seg_run_id,
+                            output_digest="interaction.transcript",
+                            commit=False,
+                        )
+                    session.commit()
             if not segments_dicts:
                 logger.error(
                     "Text segmenter returned empty for interaction %s",
                     interaction_id,
                 )
                 interaction.status = "failed"
+                if _seg_run_id is not None:
+                    fail_step(
+                        session, _seg_run_id, error="empty segmentation",
+                        commit=False,
+                    )
                 session.commit()
                 return {"status": "error", "detail": "Empty raw_text"}
         else:
@@ -2573,6 +2917,13 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             pass
         return {"status": "analyzed", "interaction_id": interaction_id}
 
+    except StepHeldError as exc:
+        # See the voice-task handler: defer, don't fail.
+        session.rollback()
+        logger.info(
+            "Text pipeline deferring interaction %s: %s", interaction_id, exc
+        )
+        raise self.retry(exc=exc, countdown=120)
     except Exception as exc:
         session.rollback()
         logger.exception(
@@ -3038,89 +3389,272 @@ def tenant_insights_weekly() -> Dict[str, Any]:
         session.close()
 
 
-@celery_app.task(name="support_trend_scan")
-def support_trend_scan() -> Dict[str, Any]:
-    """Daily AI-driven cross-customer trend scan.
+def _all_tenant_ids() -> List[str]:
+    """Snapshot tenant ids on a short-lived session (dispatcher helper)."""
+    from backend.app.models import Tenant
 
-    Embeds any missing SupportCase subjects, clusters by similarity,
-    and persists alerts + recommendations for clusters that are
-    actually growing (not just hard-count thresholds). Per-tenant
-    failures land in the logger; the rest of the run continues.
+    session = _get_sync_session()
+    try:
+        return [str(t.id) for t in session.query(Tenant.id).all()]
+    finally:
+        session.close()
+
+
+@celery_app.task(name="_log_scan_aggregate")
+def _log_scan_aggregate(
+    results: List[Optional[Dict[str, Any]]], scan_name: str
+) -> Dict[str, Any]:
+    """Chord callback: the single honest aggregate for a fan-out scan.
+
+    Runs only after every per-tenant subtask finished, so it reports
+    *real* outcomes — unlike the old sync-wait dispatchers, which
+    reported "0 processed / all failed" whenever the wait timed out.
     """
-    import asyncio
+    ok = 0
+    failed: List[str] = []
+    for r in results or []:
+        if isinstance(r, dict) and not r.get("error"):
+            ok += 1
+        elif isinstance(r, dict):
+            failed.append(str(r.get("tenant_id") or "unknown"))
+        else:
+            failed.append("unknown")
+    summary = {
+        "scan": scan_name,
+        "tenants_processed": ok,
+        "failed_tenants": failed,
+    }
+    log = logger.warning if failed else logger.info
+    log(
+        "%s aggregate: %d tenants processed, %d failed (%s)",
+        scan_name, ok, len(failed), ",".join(failed) or "-",
+    )
+    return summary
 
+
+@celery_app.task(name="support_trend_scan_tenant")
+def support_trend_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the support trend scan — own session, own
+    event loop, so one slow tenant can't delay the others."""
     from backend.app.models import Tenant
     from backend.app.services.support_trend_detector import run_for_tenant
 
     session = _get_sync_session()
-    by_tenant: Dict[str, Dict[str, Any]] = {}
     try:
-        tenants = (
-            session.execute(__import__("sqlalchemy").select(Tenant))
-        ).scalars().all()
-
-        async def _run_for_one(t: Tenant) -> Tuple[str, Dict[str, Any]]:
-            try:
-                result = await run_for_tenant(session, t)
-                return str(t.id), result
-            except Exception:
-                logger.exception(
-                    "Support trend scan failed for tenant %s", t.id
-                )
-                return str(t.id), {"error": 1}
-
-        async def _run_all() -> List[Tuple[str, Dict[str, Any]]]:
-            # Sequential under one loop, not parallel — the shared sync
-            # ``session`` is not safe for concurrent use. The win is
-            # eliminating the per-tenant loop spin-up cost (~100-500ms
-            # each from httpx / asyncpg pool reinit) by keeping the same
-            # event loop and HTTP client pools warm across tenants.
-            results: List[Tuple[str, Dict[str, Any]]] = []
-            for t in tenants:
-                results.append(await _run_for_one(t))
-                # rollback any failed-tenant txn before the next one
-                if results[-1][1].get("error"):
-                    session.rollback()
-            return results
-
-        for tid, result in asyncio.run(_run_all()):
-            by_tenant[tid] = result
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = _run_async(lambda: run_for_tenant(session, tenant))
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("Support trend scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
     finally:
         session.close()
-    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
 
 
-@celery_app.task(name="cohort_recommendation_scan")
-def cohort_recommendation_scan() -> Dict[str, Any]:
-    """Daily cohort detectors -> ManagerRecommendation inserts.
+@celery_app.task(name="support_trend_scan")
+def support_trend_scan() -> Dict[str, Any]:
+    """Daily AI-driven cross-customer trend scan — dispatcher.
 
-    Wraps ``cohort_recommendations.run_for_tenant`` for every tenant.
-    Per-tenant failures land in the logger; the rest of the run
-    continues. Returns per-tenant counts so observability can correlate
-    a missing recommendation with a tenant-level failure.
+    Fans out one subtask per tenant (each with its own session + loop;
+    the old version ran all tenants sequentially under one shared sync
+    session) and returns a dispatch receipt immediately. The chord
+    callback logs the honest aggregate once every tenant finished.
     """
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(support_trend_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("support_trend_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="cohort_recommendation_scan_tenant")
+def cohort_recommendation_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the cohort recommendation scan."""
     from backend.app.models import Tenant
     from backend.app.services.cohort_recommendations import run_for_tenant
 
     session = _get_sync_session()
-    by_tenant: Dict[str, Dict[str, int]] = {}
     try:
-        tenants = (
-            session.execute(__import__("sqlalchemy").select(Tenant))
-        ).scalars().all()
-        for t in tenants:
-            try:
-                by_tenant[str(t.id)] = run_for_tenant(session, t)
-            except Exception:
-                logger.exception(
-                    "Cohort recommendation scan failed for tenant %s",
-                    t.id,
-                )
-                session.rollback()
-                by_tenant[str(t.id)] = {"error": 1}
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        counts = run_for_tenant(session, tenant)
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(counts or {})
+        return out
+    except Exception:
+        logger.exception(
+            "Cohort recommendation scan failed for tenant %s", tenant_id
+        )
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
     finally:
         session.close()
-    return {"tenants_processed": len(by_tenant), "by_tenant": by_tenant}
+
+
+@celery_app.task(name="cohort_recommendation_scan")
+def cohort_recommendation_scan() -> Dict[str, Any]:
+    """Daily cohort detectors → ManagerRecommendation inserts — dispatcher.
+
+    Same fan-out shape as ``support_trend_scan``: per-tenant subtasks,
+    immediate dispatch receipt, honest aggregate in the chord callback.
+    """
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(cohort_recommendation_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("cohort_recommendation_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="reconcile_orphan_interactions")
+def reconcile_orphan_interactions(
+    batch_size: int = 50, lookback_days: int = 30
+) -> Dict[str, Any]:
+    """Detect-and-heal for orphaned interactions (docs/complexity/01 §3c).
+
+    Entity resolution is best-effort in the pipeline: a failure lands
+    the interaction as ``analyzed`` with no customer linkage. The step
+    ledger makes that state discoverable — this sweeper scans for
+    interactions whose entity_resolution run is ``failed``, re-claims
+    each run through the ledger (atomic, so a racing sweeper or a
+    concurrent pipeline retry loses cleanly), and re-runs resolution
+    against the persisted insights + transcript.
+
+    A ``succeeded`` run with no linkage means "genuinely nobody to
+    resolve" and is intentionally left alone.
+    """
+    from datetime import timedelta
+
+    from backend.app.models import Interaction, InteractionStepRun, Tenant
+    from backend.app.services.pipeline_ledger import (
+        STEP_ENTITY_RESOLUTION,
+        StepClaim,
+        claim_step,
+        complete_step,
+        fail_step,
+    )
+
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    session = _get_sync_session()
+    scanned = 0
+    healed = 0
+    failed = 0
+    try:
+        pairs = (
+            session.query(Interaction, InteractionStepRun)
+            .join(
+                InteractionStepRun,
+                (InteractionStepRun.interaction_id == Interaction.id)
+                & (InteractionStepRun.step_key == STEP_ENTITY_RESOLUTION),
+            )
+            .filter(
+                Interaction.status == "analyzed",
+                Interaction.customer_id.is_(None),
+                InteractionStepRun.status == "failed",
+                Interaction.created_at >= cutoff,
+            )
+            .order_by(Interaction.created_at.asc())
+            .limit(batch_size)
+            .all()
+        )
+        if not pairs:
+            return {"scanned": 0, "healed": 0, "failed": 0}
+
+        tenants: Dict[Any, Any] = {}
+        with _TaskEventLoop() as _loop:
+            for interaction, run in pairs:
+                scanned += 1
+                tenant = tenants.get(interaction.tenant_id)
+                if tenant is None:
+                    tenant = (
+                        session.query(Tenant)
+                        .filter(Tenant.id == interaction.tenant_id)
+                        .first()
+                    )
+                    tenants[interaction.tenant_id] = tenant
+                if tenant is None:
+                    continue
+
+                claim = claim_step(
+                    session,
+                    tenant_id=tenant.id,
+                    interaction_id=interaction.id,
+                    step_key=STEP_ENTITY_RESOLUTION,
+                    input_hash=run.input_hash,
+                    worker_id=_worker_id(),
+                )
+                if claim.outcome != StepClaim.ACQUIRED:
+                    # Healed by a pipeline retry, or another sweeper is
+                    # on it right now — either way, not ours.
+                    continue
+
+                # Rebuild the compressed transcript from the persisted
+                # segments — good enough for the resolver's name/context
+                # matching (the original compression only drops filler).
+                transcript = interaction.transcript or []
+                compressed = "\n".join(
+                    "%s: %s" % (s.get("speaker_id") or "?", s.get("text") or "")
+                    for s in transcript
+                    if isinstance(s, dict)
+                )
+                try:
+                    from backend.app.services.entity_resolution import (
+                        resolve_interaction_entities,
+                    )
+
+                    resolution = _loop.run(
+                        resolve_interaction_entities(
+                            session=session,
+                            interaction=interaction,
+                            tenant=tenant,
+                            insights=dict(interaction.insights or {}),
+                            compressed_transcript=compressed,
+                        )
+                    )
+                except Exception as exc:
+                    fail_step(
+                        session, claim.run_id,
+                        error="%s: %s" % (type(exc).__name__, exc),
+                    )
+                    failed += 1
+                    logger.warning(
+                        "Orphan reconciliation failed again for interaction %s "
+                        "(will retry next sweep)",
+                        interaction.id, exc_info=True,
+                    )
+                    continue
+
+                if resolution.suggestions:
+                    meta = dict(getattr(interaction, "insights", None) or {})
+                    meta["entity_resolution_suggestions"] = resolution.suggestions
+                    interaction.insights = meta
+                complete_step(
+                    session, claim.run_id,
+                    output_digest="customer_id=%s" % (interaction.customer_id,),
+                )
+                healed += 1
+                logger.info(
+                    "Orphan reconciliation healed interaction %s (action=%s)",
+                    interaction.id, resolution.customer_action,
+                )
+    finally:
+        session.close()
+    return {"scanned": scanned, "healed": healed, "failed": failed}
 
 
 @celery_app.task(
@@ -3278,25 +3812,35 @@ def _aggregate_orchestration(results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 baselines_refreshed += 1
         else:
             failed.append(str(r.get("tenant_id") or "unknown"))
-    return {
+    summary = {
         "tenants_processed": processed,
         "profile_updates": totals,
         "paralinguistic_baselines_refreshed": baselines_refreshed,
         "failed_tenants": failed,
     }
+    # The dispatcher no longer sync-waits on this chord, so this log line
+    # IS the run's aggregate record — keep it structured and loud.
+    log = logger.warning if failed else logger.info
+    log(
+        "orchestrator_daily aggregate: %d tenants processed, %d failed (%s)",
+        processed, len(failed), ",".join(failed) or "-",
+    )
+    return summary
 
 
 @celery_app.task(name="orchestrator_daily_all_tenants")
 def orchestrator_daily_all_tenants() -> Dict[str, Any]:
     """Daily consolidation of delta reports into profile versions.
 
-    Fans out one task per tenant via a Celery chord so per-tenant work
-    runs in parallel across workers. The callback reduces the per-tenant
-    results back into the aggregate shape the beat-schedule consumer
-    expects (tenants_processed, profile_updates, paralinguistic_baselines_refreshed).
+    Fans out one task per tenant via a Celery chord and returns a
+    dispatch receipt immediately (no sync-wait — see the comment at the
+    dispatch site). The chord callback ``_aggregate_orchestration``
+    reduces the per-tenant results into the aggregate
+    (tenants_processed, profile_updates, paralinguistic_baselines_refreshed)
+    and logs it — that log line is the run's record.
 
-    Failure semantics: a single tenant's exception no longer halts the
-    rest — it surfaces in ``failed_tenants`` instead.
+    Failure semantics: a single tenant's exception never halts the rest —
+    it surfaces in the aggregate's ``failed_tenants``.
     """
     from celery import chord, group
 
@@ -3309,31 +3853,17 @@ def orchestrator_daily_all_tenants() -> Dict[str, Any]:
         session.close()
 
     if not tenant_ids:
-        return {
-            "tenants_processed": 0,
-            "profile_updates": {},
-            "paralinguistic_baselines_refreshed": 0,
-            "failed_tenants": [],
-        }
+        return {"dispatched_tenants": 0}
 
+    # Dispatch and return immediately. The old version sync-waited here
+    # (``.get(timeout=3600)``) — pinning a worker slot for up to 1h and,
+    # on timeout, reporting "0 processed / all tenants failed" even when
+    # every per-tenant subtask succeeded. The chord callback
+    # (``_aggregate_orchestration``) is now the single honest aggregate:
+    # it runs only after all subtasks finish and logs real outcomes.
     header = group(_orchestrate_one_tenant.s(tid) for tid in tenant_ids)
     async_result = chord(header)(_aggregate_orchestration.s())
-    # Block on the chord so the beat consumer still gets the aggregate
-    # dict it always returned. Timeout = generous; per-tenant tasks each
-    # have their own internal try/except, so the chord only stalls when
-    # workers are saturated.
-    try:
-        return async_result.get(disable_sync_subtasks=False, timeout=3600)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "orchestrator chord aggregation failed; returning partial state"
-        )
-        return {
-            "tenants_processed": 0,
-            "profile_updates": {},
-            "paralinguistic_baselines_refreshed": 0,
-            "failed_tenants": tenant_ids,
-        }
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
 def _refresh_paralinguistic_baselines(session: Session, tenant: Any) -> bool:
@@ -3435,6 +3965,11 @@ def _aggregate_orchestration_weekly(per_tenant: List[Dict[str, Any]]) -> Dict[st
             processed += 1
         else:
             failed.append(str(r.get("tenant_id") or "unknown"))
+    log = logger.warning if failed else logger.info
+    log(
+        "orchestrator_weekly aggregate: %d tenants processed, %d failed (%s)",
+        processed, len(failed), ",".join(failed) or "-",
+    )
     return {"tenants_processed": processed, "failed_tenants": failed}
 
 
@@ -3459,17 +3994,12 @@ def orchestrator_weekly_all_tenants() -> Dict[str, Any]:
         session.close()
 
     if not tenant_ids:
-        return {"tenants_processed": 0, "failed_tenants": []}
+        return {"dispatched_tenants": 0}
 
+    # Non-blocking dispatch — see the daily orchestrator's comment.
     header = group(_orchestrate_one_tenant_weekly.s(tid) for tid in tenant_ids)
     async_result = chord(header)(_aggregate_orchestration_weekly.s())
-    try:
-        return async_result.get(disable_sync_subtasks=False, timeout=3600)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "weekly orchestrator chord aggregation failed; partial state"
-        )
-        return {"tenants_processed": 0, "failed_tenants": tenant_ids}
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
 # ── Outcomes backfill & calibration ──────────────────────────────────────

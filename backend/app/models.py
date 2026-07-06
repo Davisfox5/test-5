@@ -3544,6 +3544,60 @@ class LLMCeilingRecommendation(Base):
     )
 
 
+class InteractionStepRun(Base):
+    """Durable per-step run ledger for the interaction pipeline.
+
+    One row per (interaction, step, input-hash): the exactly-once backbone
+    from docs/complexity/01-pipeline-exactly-once.md. A paid / non-idempotent
+    pipeline step atomically claims its row before running (INSERT under the
+    unique constraint; concurrent duplicates lose with IntegrityError), so
+    retries and duplicate deliveries resume instead of re-running — a
+    succeeded row means the step's output is already persisted and must be
+    reused, never re-paid. Leases (``lease_expires_at``) let a takeover
+    happen when the claiming worker died mid-step; ``attempt`` counts
+    takeovers. All claim logic lives in ``services/pipeline_ledger.py`` —
+    write through it, not directly.
+    """
+
+    __tablename__ = "interaction_step_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE"), index=True
+    )
+    # e.g. transcription | segmentation | analysis | scorecards |
+    # entity_resolution | plan_synthesis — constants in pipeline_ledger.py.
+    step_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # sha256 hex of the step's canonical inputs; a changed input is a new run.
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # running | succeeded | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(128))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Optional digest/pointer describing where the output landed (the payload
+    # itself stays on its natural home, e.g. Interaction.insights).
+    output_digest: Mapped[Optional[str]] = mapped_column(String(256))
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "interaction_id", "step_key", "input_hash", name="uq_step_run_key"
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_step_run_status",
+        ),
+        Index("ix_step_runs_tenant_step_status", "tenant_id", "step_key", "status"),
+    )
+
+
 # Wire the tenant-config cache invalidation listener once models are loaded.
 # Importing at module bottom avoids a circular import (tenant_cache itself
 # imports ``Tenant`` from this module).
