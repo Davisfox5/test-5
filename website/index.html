@@ -31,18 +31,19 @@
             <div class="nav-links" id="navLinks">
                 <a href="#features" class="nav-link">Features</a>
                 <a href="#how-it-works" class="nav-link">How It Works</a>
-                <a href="#preview-program" class="nav-link">The Preview</a>
                 <a href="#integrations" class="nav-link">Integrations</a>
+                <a href="#onboarding" class="nav-link">Onboarding</a>
                 <a href="demo.html" class="nav-link nav-link-demo">Live Demo</a>
+                <!-- Mobile-only actions inside the off-canvas drawer -->
+                <a href="/app/sign-in" class="nav-link nav-cta-mobile">Sign in</a>
+                <a href="/app/signup" class="btn btn-primary nav-cta-mobile-primary">Start free trial</a>
             </div>
             <div class="nav-actions">
                 <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">
                     <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
                     <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
                 </button>
-                <a href="demo.html" class="btn btn-ghost">Try Demo</a>
                 <a href="/app/sign-in" class="btn btn-ghost">Sign in</a>
-                <a href="#contact" class="btn btn-ghost">Book my Preview</a>
                 <a href="/app/signup" class="btn btn-primary btn-sm">Start free trial</a>
             </div>
             <button class="nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="navLinks">
@@ -64,23 +65,23 @@
             <div class="hero-content">
                 <div class="hero-badge">
                     <span class="badge-dot"></span>
-                    <span>Built for white-label partners</span>
+                    <span>Free 14-day sandbox — live on your own calls</span>
                 </div>
                 <h1 class="hero-title">
-                    Turn Every Call Into
-                    <span class="hero-gradient-text">Actionable Intelligence</span>
+                    Every Customer Call,
+                    <span class="hero-gradient-text">Turned Into Your Next Move</span>
                 </h1>
                 <p class="hero-subtitle">
-                    AI-powered call transcription, sentiment analysis, and automated coaching for sales and support teams. Never miss an insight again.
+                    Linda listens to every sales and support call, then hands your team the summary, the follow-ups, and the coaching — automatically. Nothing slips through the cracks.
                 </p>
                 <div class="hero-ctas">
-                    <a href="#contact" class="btn btn-primary btn-lg">
-                        <span>Book my 45-Day Preview</span>
+                    <a href="/app/signup" class="btn btn-primary btn-lg">
+                        <span>Start free — 14-day sandbox</span>
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10H16M16 10L11 5M16 10L11 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </a>
                     <a href="demo.html" class="btn btn-outline btn-lg">
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><polygon points="8,5 16,10 8,15" fill="currentColor"/></svg>
-                        <span>See it on my calls</span>
+                        <span>Watch the 2-minute demo</span>
                     </a>
                 </div>
                 <div class="hero-stats">
@@ -162,26 +163,14 @@
     <!-- ======== TRUSTED BY / LOGOS ======== -->
     <section class="trust-bar" aria-label="Integration partners">
         <div class="container">
-            <p class="trust-label">Integrates with your existing tools</p>
+            <p class="trust-label">Works with the tools your team already uses</p>
             <div class="trust-logos">
-                <span class="trust-logo" aria-label="Twilio">
-                    <svg viewBox="0 0 120 28" fill="currentColor" aria-hidden="true"><circle cx="14" cy="14" r="14" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="9.5" cy="9.5" r="2.2"/><circle cx="18.5" cy="9.5" r="2.2"/><circle cx="9.5" cy="18.5" r="2.2"/><circle cx="18.5" cy="18.5" r="2.2"/><text x="34" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700" letter-spacing="0.5">Twilio</text></svg>
-                </span>
-                <span class="trust-logo" aria-label="SignalWire">
-                    <svg viewBox="0 0 140 28" fill="currentColor" aria-hidden="true"><path d="M2 12a10 10 0 0 1 20 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M5 12a7 7 0 0 1 14 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="1.8"/><text x="30" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">SignalWire</text></svg>
-                </span>
-                <span class="trust-logo" aria-label="Salesforce">
-                    <svg viewBox="0 0 150 28" fill="currentColor" aria-hidden="true"><path d="M10 16c0-3 2.5-5 5.5-5 2 0 3.5 1 4.3 2.5.8-.8 2-1.3 3.3-1.3 2.8 0 5 2.2 5 5s-2.2 5-5 5c-.7 0-1.4-.1-2-.4-.8 1.4-2.3 2.3-4 2.3-1.5 0-2.8-.7-3.6-1.8-.6.3-1.3.4-2 .4-2.5 0-4.5-2-4.5-4.5 0-1.3.6-2.5 1.5-3.3-.3-.6-.5-1.3-.5-2z" fill="currentColor"/><text x="36" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">Salesforce</text></svg>
-                </span>
-                <span class="trust-logo" aria-label="HubSpot">
-                    <svg viewBox="0 0 130 28" fill="currentColor" aria-hidden="true"><circle cx="14" cy="14" r="6" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="14" cy="4" r="2.2"/><path d="M14 8v3M14 20v3M8 14H5M23 14h-3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><text x="32" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">HubSpot</text></svg>
-                </span>
-                <span class="trust-logo" aria-label="Slack">
-                    <svg viewBox="0 0 110 28" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="6" height="14" rx="3" fill="currentColor"/><rect x="10" y="18" width="14" height="6" rx="3" fill="currentColor"/><rect x="18" y="10" width="6" height="14" rx="3" fill="currentColor" opacity="0.7"/><rect x="4" y="10" width="14" height="6" rx="3" fill="currentColor" opacity="0.5"/><text x="34" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">Slack</text></svg>
-                </span>
-                <span class="trust-logo" aria-label="Microsoft Teams">
-                    <svg viewBox="0 0 160 28" fill="currentColor" aria-hidden="true"><rect x="3" y="6" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2.2"/><text x="9" y="19" font-family="Inter,system-ui" font-size="13" font-weight="800" fill="currentColor">T</text><text x="26" y="19" font-family="Inter,system-ui" font-size="15" font-weight="700">Microsoft Teams</text></svg>
-                </span>
+                <span class="trust-logo" aria-label="Salesforce"><img src="assets/logos/salesforce.svg" alt="Salesforce" loading="lazy"></span>
+                <span class="trust-logo" aria-label="HubSpot"><img src="assets/logos/hubspot.svg" alt="HubSpot" loading="lazy"></span>
+                <span class="trust-logo" aria-label="Slack"><img src="assets/logos/slack.svg" alt="Slack" loading="lazy"></span>
+                <span class="trust-logo" aria-label="Twilio"><img src="assets/logos/twilio.svg" alt="Twilio" loading="lazy"></span>
+                <span class="trust-logo" aria-label="Zoom"><img src="assets/logos/zoom.svg" alt="Zoom" loading="lazy"></span>
+                <span class="trust-logo" aria-label="Gmail"><img src="assets/logos/gmail.svg" alt="Gmail" loading="lazy"></span>
             </div>
         </div>
     </section>
@@ -200,11 +189,11 @@
                 </span>
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    AES-256 <span class="compliance-chip-label">encryption</span>
+                    Bank-level <span class="compliance-chip-label">encryption</span>
                 </span>
                 <span class="compliance-chip">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 12l2 2 4-4"/></svg>
-                    Tenant API keys <span class="compliance-chip-label">scoped, rotatable</span>
+                    Your data <span class="compliance-chip-label">fully isolated</span>
                 </span>
             </div>
         </div>
@@ -245,7 +234,7 @@
                         </div>
                     </div>
                     <h3 class="feature-title">Real-Time Transcription</h3>
-                    <p class="feature-desc">Powered by Deepgram Nova-3 with Whisper large-v3 fallback. Get 98.5% accurate transcriptions with speaker diarization as the call happens.</p>
+                    <p class="feature-desc">Watch the conversation turn into text as it happens — 98.5% accurate, and clearly labeled by who's speaking on every line.</p>
                 </div>
                 <!-- 3. AI-Powered Insights -->
                 <div class="feature-card" id="feature-ai-insights">
@@ -315,7 +304,7 @@
                         </div>
                     </div>
                     <h3 class="feature-title">Call Metrics</h3>
-                    <p class="feature-desc">Talk/listen ratio, filler word tracking, speech rate, interruptions, and monologue detection. Zero AI cost — computed from transcripts.</p>
+                    <p class="feature-desc">See who talked more, how often reps were interrupted, filler words, pace, and where someone rambled — the habits that quietly make or break a deal.</p>
                 </div>
                 <!-- 10. Full-Text Search (NEW) -->
                 <div class="feature-card" id="feature-search">
@@ -334,8 +323,8 @@
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                         </div>
                     </div>
-                    <h3 class="feature-title">Predictive Analytics</h3>
-                    <p class="feature-desc">Churn risk, upsell signals, escalation prediction, and agent burnout detection. AI flags what's coming before it happens.</p>
+                    <h3 class="feature-title">See Problems Coming</h3>
+                    <p class="feature-desc">Linda flags which customers are at risk of leaving, which are ready to buy more, and which calls are heading toward an escalation — so you can step in while it still matters.</p>
                 </div>
                 <!-- 12. Contact Intelligence (NEW) -->
                 <div class="feature-card" id="feature-contact-intel">
@@ -344,8 +333,8 @@
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                         </div>
                     </div>
-                    <h3 class="feature-title">Contact Intelligence</h3>
-                    <p class="feature-desc">Phone number matching, mid-call name recognition, and two-way CRM sync against HubSpot, Salesforce, and Pipedrive contact records.</p>
+                    <h3 class="feature-title">Customer Memory</h3>
+                    <p class="feature-desc">Every customer gets a living profile — past calls, promises made, and how the relationship is trending — kept in sync both ways with Salesforce, HubSpot, and Pipedrive.</p>
                 </div>
                 <!-- 13. White-Label Ready (large) -->
                 <div class="feature-card feature-card-large" id="feature-whitelabel">
@@ -369,8 +358,8 @@
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                         </div>
                     </div>
-                    <h3 class="feature-title">API-First Architecture</h3>
-                    <p class="feature-desc">Full read/write REST API for every data object. Webhooks for every event. Built for MSPs who integrate, not just dashboards.</p>
+                    <h3 class="feature-title">Connects to Everything</h3>
+                    <p class="feature-desc">Everything Linda learns is available to your other systems through a modern API and instant notifications — so your tools stay in sync without anyone copy-pasting.</p>
                     <div class="feature-visual">
                         <div style="padding:1.5rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--text-main);line-height:1.8;text-align:left;width:100%;">
                             <span style="color:var(--primary);font-weight:700;">GET</span> /api/v1/calls<br>
@@ -397,7 +386,7 @@
                     <div class="step-number">01</div>
                     <div class="step-content">
                         <h3>Capture</h3>
-                        <p>Connect your phone system through Twilio, SignalWire, or Telnyx Media Streams, or upload recordings directly. Audio is transcribed and discarded — never stored long-term.</p>
+                        <p>Connect the phone system you already run — Twilio, Telnyx, SignalWire, Zoom Phone, Webex, or RingCentral — or simply upload recordings. Audio is transcribed and then discarded, never stored long-term.</p>
                     </div>
                     <div class="step-visual">
                         <div class="step-icon-large">
@@ -410,7 +399,7 @@
                     <div class="step-number">02</div>
                     <div class="step-content">
                         <h3>Transcribe</h3>
-                        <p>Deepgram Nova-3 for live and batch ASR, with self-hosted faster-whisper and pyannote.audio diarization as a fallback. Speaker diarization labels who said what.</p>
+                        <p>Every word is captured with 98.5% accuracy, live or from a recording — and Linda automatically labels who said what, so you always know which side of the call it came from.</p>
                     </div>
                     <div class="step-visual">
                         <div class="step-icon-large">
@@ -457,21 +446,37 @@
                 <p class="section-subtitle">Connect with the tools your team already uses. No workflow disruption.</p>
             </div>
             <div class="integrations-grouped">
-                <!-- Telephony -->
+                <!-- Phone systems -->
                 <div class="integration-group">
-                    <h4 class="integration-group-label">Telephony</h4>
+                    <h4 class="integration-group-label">Phone systems</h4>
                     <div class="integrations-grid">
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1A10 10 0 0 1 4.9 4.9"/><path d="M8.5 16.5a5 5 0 0 1 0-9"/><circle cx="12" cy="12" r="2"/><path d="M16.5 7.5a5 5 0 0 1 0 9"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/></svg></div>
-                            <span>Telnyx</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/twilio.svg" alt="" loading="lazy"></div>
                             <span>Twilio</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12a10 10 0 0 1 20 0"/><path d="M5 12a7 7 0 0 1 14 0"/><path d="M8 12a4 4 0 0 1 8 0"/><circle cx="12" cy="12" r="1.5"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/telnyx.svg" alt="" loading="lazy"></div>
+                            <span>Telnyx</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/signalwire.svg" alt="" loading="lazy"></div>
                             <span>SignalWire</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/zoom.svg" alt="" loading="lazy"></div>
+                            <span>Zoom Phone</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/webex.svg" alt="" loading="lazy"></div>
+                            <span>Webex</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon integration-icon-text" aria-hidden="true"><span>RC</span></div>
+                            <span>RingCentral</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V8a5 5 0 0 1 10 0v3"/><circle cx="12" cy="16" r="1.5"/></svg></div>
+                            <span>Enterprise SIP recording</span>
                         </div>
                     </div>
                 </div>
@@ -481,67 +486,81 @@
                     <h4 class="integration-group-label">CRM</h4>
                     <div class="integrations-grid">
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/salesforce.svg" alt="" loading="lazy"></div>
                             <span>Salesforce</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="14" r="4"/><circle cx="12" cy="4" r="2"/><path d="M12 6v4M6 14H3M21 14h-3M7 8l-2-2M17 8l2-2"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/hubspot.svg" alt="" loading="lazy"></div>
                             <span>HubSpot</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><path d="M7 8h6a4 4 0 0 1 0 8H7"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/pipedrive.svg" alt="" loading="lazy"></div>
                             <span>Pipedrive</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- Communication -->
+                <!-- Email & chat -->
                 <div class="integration-group">
-                    <h4 class="integration-group-label">Communication</h4>
+                    <h4 class="integration-group-label">Email &amp; chat</h4>
                     <div class="integrations-grid">
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/gmail.svg" alt="" loading="lazy"></div>
                             <span>Gmail</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 7 9 6 9-6"/><circle cx="12" cy="13" r="3"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/outlook.svg" alt="" loading="lazy"></div>
                             <span>Outlook</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="14" rx="3"/><rect x="10" y="16" width="14" height="6" rx="3" transform="translate(-6 0)"/><rect x="14" y="10" width="6" height="14" rx="3" transform="translate(0 -6)"/><rect x="4" y="10" width="14" height="6" rx="3" transform="translate(0 -6)"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/slack.svg" alt="" loading="lazy"></div>
                             <span>Slack</span>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Sign-on & identity -->
+                <div class="integration-group">
+                    <h4 class="integration-group-label">Sign-on &amp; user management</h4>
+                    <div class="integrations-grid">
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-                            <span>Microsoft Teams</span>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/okta.svg" alt="" loading="lazy"></div>
+                            <span>Okta</span>
                         </div>
-                        <!-- WhatsApp intentionally omitted while messaging is stubbed. -->
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/entra.svg" alt="" loading="lazy"></div>
+                            <span>Microsoft Entra ID</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/workspace.svg" alt="" loading="lazy"></div>
+                            <span>Google Workspace</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Knowledge Base -->
                 <div class="integration-group">
-                    <h4 class="integration-group-label">Knowledge Base</h4>
+                    <h4 class="integration-group-label">Company knowledge</h4>
                     <div class="integrations-grid">
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/google-drive.svg" alt="" loading="lazy"></div>
                             <span>Google Drive / Docs</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg></div>
-                            <span>OneDrive / SharePoint</span>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/onedrive.svg" alt="" loading="lazy"></div>
+                            <span>OneDrive</span>
                         </div>
                         <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/sharepoint.svg" alt="" loading="lazy"></div>
+                            <span>SharePoint</span>
+                        </div>
+                        <div class="integration-card">
+                            <div class="integration-icon" aria-hidden="true"><img src="assets/logos/confluence.svg" alt="" loading="lazy"></div>
                             <span>Confluence</span>
                         </div>
                         <div class="integration-card">
                             <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
-                            <span>MCP server pull</span>
-                        </div>
-                        <div class="integration-card">
-                            <div class="integration-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-                            <span>Generic API push</span>
+                            <span>Your own API</span>
                         </div>
                     </div>
                 </div>
@@ -550,12 +569,12 @@
     </section>
 
     <!-- ======== PREVIEW PROGRAM ======== -->
-    <section class="preview-program" id="preview-program">
+    <section class="preview-program" id="onboarding">
         <div class="container">
             <div class="section-header">
-                <span class="section-tag">The Preview Program</span>
-                <h2 class="section-title">We Prove It Works<br><span class="gradient-text">Before You Pay Anything</span></h2>
-                <p class="section-subtitle">No generic demos. No black-box promises. We build a custom service tuned to your operation, test it against your real data, and integrate it into your systems — then you decide.</p>
+                <span class="section-tag">Guided Onboarding</span>
+                <h2 class="section-title">Want It Fully Wired Into<br><span class="gradient-text">Your Business? We'll Build It</span></h2>
+                <p class="section-subtitle">The free sandbox lets you try Linda on your own calls in minutes. When you're ready for the real thing, our 45-day guided onboarding tailors Linda to your operation and connects it to your phone system, CRM, and tools — done with you, not just handed over. It's a paid engagement with a one-time setup fee, quoted to your scope.</p>
             </div>
             <div class="preview-timeline">
                 <div class="preview-phase">
@@ -627,12 +646,12 @@
                         <div class="phase-number">05</div>
                     </div>
                     <div class="phase-content">
-                        <h3 class="phase-title">You Decide</h3>
-                        <p class="phase-desc">We present the full software and a custom pricing proposal based on your actual usage and integration scope. At that point, you have 45 days of real results in hand. You accept the deal, or you don't — no pressure, no lock-in.</p>
+                        <h3 class="phase-title">Go Live</h3>
+                        <p class="phase-desc">You finish onboarding with Linda fully tuned to your business and running inside your systems, plus a clear plan for your team. From here it's your production tool — with an ongoing subscription sized to your usage, and no long-term lock-in.</p>
                         <div class="phase-tags">
-                            <span class="phase-tag">Full software presentation</span>
-                            <span class="phase-tag">Custom pricing proposal</span>
-                            <span class="phase-tag">No obligation</span>
+                            <span class="phase-tag">Fully integrated & live</span>
+                            <span class="phase-tag">Team enablement</span>
+                            <span class="phase-tag">Simple ongoing pricing</span>
                         </div>
                     </div>
                 </div>
@@ -640,10 +659,10 @@
 
             <div class="preview-cta-bar">
                 <div class="preview-cta-text">
-                    <strong>Ready to see what your calls are actually telling you?</strong>
-                    <span>Applications are reviewed individually. We take a limited number of preview partners at a time.</span>
+                    <strong>Ready to roll Linda out across your team?</strong>
+                    <span>Tell us about your operation and we'll scope your onboarding. We take on a limited number of new teams at a time.</span>
                 </div>
-                <a href="#contact" class="btn btn-primary btn-lg">Book my Preview</a>
+                <a href="#contact" class="btn btn-primary btn-lg">Talk to us about onboarding</a>
             </div>
         </div>
     </section>
@@ -657,24 +676,44 @@
             </div>
             <div class="security-grid">
                 <div class="security-item">
+                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><path d="M17 17v4M15 19h4"/></svg></div>
+                    <h4>Your Data Stays Yours</h4>
+                    <p>Every customer's data is sealed off from every other's — enforced deep in the database, not just the app. No one else can ever see your calls.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a2 2 0 0 1 2 2m4 0a6 6 0 0 1-7.7 5.7L11 17H9v2H7v2H4a1 1 0 0 1-1-1v-2.6a1 1 0 0 1 .3-.7l6-6A6 6 0 1 1 21 9z"/></svg></div>
+                    <h4>Sign On With Your Company Login</h4>
+                    <p>Okta, Microsoft, and Google single sign-on. Add or remove someone in your own system and Linda stays in sync automatically — no orphaned accounts.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><path d="m4 4 16 16"/></svg></div>
+                    <h4>Sensitive Details Hidden</h4>
+                    <p>Card numbers and personal information are automatically detected and masked, so private details never sit in a transcript in the clear.</p>
+                </div>
+                <div class="security-item">
+                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg></div>
+                    <h4>Every Action Logged</h4>
+                    <p>A complete record of who accessed what and when — the audit trail your security and compliance teams will ask for.</p>
+                </div>
+                <div class="security-item">
                     <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></div>
                     <h4>SOC 2 Ready</h4>
-                    <p>Designed to meet SOC 2 Type II controls for security, availability &amp; confidentiality.</p>
+                    <p>Built to meet SOC 2 Type II controls for security, availability, and confidentiality.</p>
                 </div>
                 <div class="security-item">
                     <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
-                    <h4>AES-256 Encryption</h4>
-                    <p>All data encrypted at rest and in transit with TLS 1.3.</p>
+                    <h4>Encrypted End to End</h4>
+                    <p>Bank-level encryption protects your data both while it's stored and while it's moving between systems.</p>
                 </div>
                 <div class="security-item">
                     <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-                    <h4>GDPR-Ready Architecture</h4>
-                    <p>Full data export, right-to-deletion, and data processing agreements available.</p>
+                    <h4>GDPR-Ready</h4>
+                    <p>Full data export, the right to be forgotten, and data-processing agreements — all available out of the box.</p>
                 </div>
                 <div class="security-item">
-                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 8.15-8.15"/><path d="m18 5 3 3"/><path d="m15 8 3 3"/></svg></div>
-                    <h4>Scoped API Keys</h4>
-                    <p>Per-tenant API keys with role-based access (agent / manager / admin) and per-session JWTs.</p>
+                    <div class="security-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11l-3 3-1.5-1.5"/></svg></div>
+                    <h4>The Right Access For Everyone</h4>
+                    <p>Agents, managers, and admins each see exactly what they should — nothing more — with permissions you control.</p>
                 </div>
             </div>
         </div>
@@ -685,8 +724,8 @@
         <div class="container">
             <div class="cta-card">
                 <div class="cta-content">
-                    <h2>Book my 45-Day Preview</h2>
-                    <p>Tell us about your operation. We'll review your application and reach out within 2 business days.</p>
+                    <h2>Talk to us about onboarding</h2>
+                    <p>Tell us about your operation and we'll scope a guided rollout for your team. We'll reach out within 2 business days. Prefer to explore first? <a href="/app/signup" class="cta-inline-link">Start a free 14-day sandbox</a> — no setup required.</p>
                     <form class="cta-form" id="contactForm" novalidate aria-describedby="formStatus">
                         <div class="form-row">
                             <div class="form-field">
@@ -717,11 +756,11 @@
                             </div>
                         </div>
                         <button type="submit" class="btn btn-primary btn-lg btn-block">
-                            Book my Preview
+                            Request onboarding
                         </button>
                         <div class="form-status" id="formStatus" hidden role="status" aria-live="polite"></div>
                     </form>
-                    <p class="cta-fine-print">No commitment · No upfront cost · Limited spots available</p>
+                    <p class="cta-fine-print">One-time setup fee, quoted to your scope · Ongoing pricing sized to your usage · Limited spots</p>
                 </div>
             </div>
         </div>
@@ -748,9 +787,9 @@
                 <div class="footer-links">
                     <h4>Product</h4>
                     <a href="#features">Features</a>
-                    <a href="#preview-program">The Preview</a>
-                    <a href="demo.html">Live Demo</a>
                     <a href="#integrations">Integrations</a>
+                    <a href="#onboarding">Onboarding</a>
+                    <a href="demo.html">Live Demo</a>
                     <a href="/app/sign-in">Sign in</a>
                     <a href="/app/signup">Start free trial</a>
                 </div>
