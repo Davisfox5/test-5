@@ -14,17 +14,14 @@ Retry policy: 5 attempts with exponential backoff (10s, 1m, 5m, 30m, 2h).
 After the 5th failure the row is marked ``dead_letter`` and the webhook's
 ``consecutive_failures`` counter is incremented for the admin UI.
 
-Signatures: every delivery carries two schemes during the migration
-window (see ``docs/webhooks.md``):
-
-- Legacy — ``X-Linda-Signature: sha256=<hex>``, HMAC-SHA256 over the
-  literal request body. Verifiable but replayable; will be dropped once
-  consumers have moved to v2.
-- v2 (replay-protected) — ``X-Linda-Timestamp: <unix seconds>`` plus
-  ``X-Linda-Signature-V2: t=<unix seconds>,v1=<hex>`` where the hex is
-  ``HMAC_SHA256(secret, f"{timestamp}.{body}")``. Consumers should
-  recompute the HMAC from the header timestamp + raw body and reject
-  deliveries whose timestamp is more than ±5 minutes from their clock.
+Signature (replay-protected, see ``docs/webhooks.md``):
+``X-Linda-Timestamp: <unix seconds>`` plus
+``X-Linda-Signature-V2: t=<unix seconds>,v1=<hex>`` where the hex is
+``HMAC_SHA256(secret, f"{timestamp}.{body}")``. Consumers recompute the
+HMAC from the header timestamp + raw body and reject deliveries whose
+timestamp is more than ±5 minutes from their clock. (The legacy
+body-only ``X-Linda-Signature`` header was removed after the v2
+migration window — it verified forever, i.e. was replayable.)
 
 Event filtering: each Webhook row's ``events`` list either contains
 ``"*"`` (receive everything) or an explicit list of event names. We
@@ -391,18 +388,16 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
     # time. ``decrypt_token`` returns legacy plaintext unchanged for any
     # rows that predate the encryption rollout.
     plaintext_secret = decrypt_token(webhook.secret) or webhook.secret
-    # Dual signatures during the v2 migration window: legacy body-only
-    # (replayable — consumers still on it keep working) plus the
-    # timestamped v2 scheme. See docs/webhooks.md for the verification
-    # contract and the ±5 minute tolerance.
+    # v2 (timestamped) signature only — the legacy body-only
+    # X-Linda-Signature was dropped once known consumers verified v2;
+    # it was replayable by design. See docs/webhooks.md for the
+    # verification contract and the ±5 minute tolerance.
     timestamp = int(now.timestamp())
-    signature = sign_payload(payload_str, plaintext_secret)
     signature_v2 = sign_payload_v2(payload_str, plaintext_secret, timestamp)
 
     headers = {
         "Content-Type": "application/json",
         "X-Linda-Event": delivery.event,
-        "X-Linda-Signature": f"sha256={signature}",
         "X-Linda-Timestamp": str(timestamp),
         "X-Linda-Signature-V2": f"t={timestamp},v1={signature_v2}",
         "X-Linda-Delivery": str(delivery.id),
