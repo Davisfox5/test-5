@@ -573,7 +573,9 @@ def _on_task_postrun(
 
 # ── Synchronous SQLAlchemy session for Celery tasks ──────────────────────
 
-_sync_db_url = settings.DATABASE_URL
+# Same non-owner role as the API engine when APP_DATABASE_URL is set —
+# table owners bypass RLS, so Celery must not run as the owner either.
+_sync_db_url = settings.APP_DATABASE_URL or settings.DATABASE_URL
 # Ensure we use the synchronous driver (psycopg2) rather than asyncpg.
 if _sync_db_url.startswith("postgresql+asyncpg://"):
     _sync_db_url = _sync_db_url.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -2284,6 +2286,20 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
     logger.info("Starting voice pipeline for interaction %s", interaction_id)
     session = _get_sync_session()
 
+    # RLS: resolve the interaction's tenant (SECURITY DEFINER bootstrap —
+    # the row itself is invisible until the context is bound) and scope
+    # every query in this task run to it.
+    from backend.app.tenant_ctx import (
+        reset_current_tenant,
+        resolve_tenant_for_interaction,
+        set_current_tenant,
+    )
+
+    _rls_token = None
+    _resolved_tid = resolve_tenant_for_interaction(session, interaction_id)
+    if _resolved_tid is not None:
+        _rls_token = set_current_tenant(_resolved_tid)
+
     try:
         # ── Step 1: Load interaction ─────────────────────────────────
         interaction = (
@@ -2484,6 +2500,8 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
     finally:
+        if _rls_token is not None:
+            reset_current_tenant(_rls_token)
         session.close()
 
 
@@ -2499,6 +2517,18 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
 
     logger.info("Starting text pipeline for interaction %s", interaction_id)
     session = _get_sync_session()
+
+    # RLS: same tenant bootstrap as the voice pipeline above.
+    from backend.app.tenant_ctx import (
+        reset_current_tenant,
+        resolve_tenant_for_interaction,
+        set_current_tenant,
+    )
+
+    _rls_token = None
+    _resolved_tid = resolve_tenant_for_interaction(session, interaction_id)
+    if _resolved_tid is not None:
+        _rls_token = set_current_tenant(_resolved_tid)
 
     try:
         # ── Step 1: Load interaction ─────────────────────────────────
@@ -2599,6 +2629,8 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
     finally:
+        if _rls_token is not None:
+            reset_current_tenant(_rls_token)
         session.close()
 
 

@@ -9,8 +9,11 @@ from backend.app.config import get_settings
 
 settings = get_settings()
 
+# Runtime engines connect as the non-owner ``linda_app`` role when
+# APP_DATABASE_URL is set — table owners bypass RLS, so the owner DSN
+# (DATABASE_URL) is reserved for Alembic/admin. See backend/app/rls.py.
 # Convert postgres:// to postgresql+asyncpg:// and handle sslmode for asyncpg
-_db_url = settings.DATABASE_URL
+_db_url = settings.APP_DATABASE_URL or settings.DATABASE_URL
 if _db_url.startswith("postgres://"):
     _db_url = _db_url.replace("postgres://", "postgresql+asyncpg://", 1)
 elif _db_url.startswith("postgresql://"):
@@ -44,6 +47,12 @@ engine = create_async_engine(
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# Registers the global after_begin listener that re-arms the tenant GUC
+# (app.current_tenant) on every Postgres transaction — the plumbing the
+# RLS policies key on. Import for side effect; must come after engine
+# creation so no session can exist before the listener does.
+import backend.app.tenant_ctx  # noqa: E402,F401
 
 
 class Base(DeclarativeBase):

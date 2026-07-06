@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -47,6 +47,13 @@ class Settings(BaseSettings):
 
     # ── Database (Neon PostgreSQL) ────────────────────────
     DATABASE_URL: str
+    # Non-owner role DSN for the runtime engines (API + Celery). Postgres
+    # table owners bypass row-level security, so the app must NOT connect
+    # as the owner once RLS is live — set this to the ``linda_app`` role's
+    # DSN in staging/production. Falls back to DATABASE_URL (owner) when
+    # unset, which disables the RLS backstop; main.py logs a loud warning
+    # at startup in that case. Migrations/admin keep using DATABASE_URL.
+    APP_DATABASE_URL: Optional[str] = None
 
     # ── Redis (ElastiCache) ──────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
