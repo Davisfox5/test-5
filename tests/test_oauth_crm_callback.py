@@ -43,6 +43,10 @@ def fake_db():
     class DB:
         def __init__(self) -> None:
             self.added = []
+            # bind_tenant_async reads .bind to decide whether to SET the
+            # RLS GUC; unset (like an unconfigured/non-Postgres session)
+            # means it just no-ops that part and still binds the ContextVar.
+            self.bind = None
 
         def add(self, obj) -> None:
             self.added.append(obj)

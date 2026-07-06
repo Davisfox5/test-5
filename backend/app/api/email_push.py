@@ -39,6 +39,7 @@ from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import EmailSyncCursor, Integration
 from backend.app.services.push_rate_limiter import get_limiter
+from backend.app.tenant_ctx import bind_tenant_async
 
 # Rate limits:
 #   Gmail Pub/Sub delivers one notification per mailbox-change, retry on
@@ -135,7 +136,11 @@ async def gmail_push(
 
     integration = (await db.execute(
         select(Integration)
-        .join(User, User.id == Integration.user_id)
+        .join(
+            User,
+            (User.id == Integration.user_id)
+            & (User.tenant_id == Integration.tenant_id),
+        )
         .where(
             Integration.provider == "google",
             User.email == account_email,
@@ -144,6 +149,10 @@ async def gmail_push(
     if integration is None:
         logger.info("Pub/Sub for %s — no Google integration on file", account_email)
         return Response(status_code=204)
+
+    # Now that the tenant is known, bind it before any tenant-scoped work
+    # (the lookup above is bootstrap-readable, but nothing after it is).
+    await bind_tenant_async(db, integration.tenant_id)
 
     # Dispatch Celery task with the integration id + new historyId.
     try:
@@ -211,6 +220,11 @@ async def graph_webhook(
         if cursor is None:
             logger.info("Graph notification for unknown subscription %s", subscription_id)
             continue
+
+        # A single batch can carry notifications for cursors owned by
+        # different tenants — (re)bind per notification rather than once
+        # for the whole loop.
+        await bind_tenant_async(db, cursor.tenant_id)
 
         try:
             from backend.app.tasks import email_push_process_graph

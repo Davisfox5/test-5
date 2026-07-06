@@ -181,7 +181,17 @@ def consume_batch(session: Session, max_messages: int = 500) -> Dict[str, Any]:
                     ack_ids.append(msg_id)
                     continue
                 fb = FeedbackEvent(**row)
-                session.add(fb)
+                # RLS: events in one batch span tenants; bind + flush per
+                # message so each INSERT's WITH CHECK evaluates under its
+                # own tenant (the trailing commit is tenant-agnostic).
+                from backend.app.tenant_ctx import tenant_context
+
+                with tenant_context(row["tenant_id"], session):
+                    session.add(fb)
+                    session.flush()
+                    # Fan out to enterprise webhooks (best-effort) — reads
+                    # the tenant's Webhook rows, so it needs the context.
+                    fanned += _dispatch_webhook(session, row)
                 ingested += 1
                 ack_ids.append(msg_id)
                 # Bump Prometheus counter (no-op if prometheus_client missing).
@@ -209,8 +219,6 @@ def consume_batch(session: Session, max_messages: int = 500) -> Dict[str, Any]:
                         ).inc()
                 except Exception:
                     pass
-                # Fan out to enterprise webhooks (best-effort).
-                fanned += _dispatch_webhook(session, row)
             except Exception:
                 logger.exception("Failed to persist feedback event %s", msg_id)
                 # Don't ack — let the next poll re-deliver.

@@ -29,6 +29,7 @@ from backend.app.models import (
     Experiment,
     InsightQualityScore,
     PromptVariant,
+    Tenant,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,16 +37,54 @@ logger = logging.getLogger(__name__)
 REGRESSION_THRESHOLD = 0.05  # 5%
 
 
-def _avg_score_for_variant(
-    session: Session, variant_id: _uuid.UUID, since: datetime
-) -> float:
-    avg = (
-        session.query(func.avg(InsightQualityScore.score))
+def _sum_count_for_variant(
+    session: Session,
+    tenant_id: _uuid.UUID,
+    variant_id: _uuid.UUID,
+    since: datetime,
+    until: Any = None,
+) -> Any:
+    """(sum, count) of quality scores for one variant, scoped to one tenant."""
+    q = (
+        session.query(
+            func.sum(InsightQualityScore.score), func.count(InsightQualityScore.score)
+        )
+        .filter(InsightQualityScore.tenant_id == tenant_id)
         .filter(InsightQualityScore.prompt_variant_id == variant_id)
         .filter(InsightQualityScore.created_at >= since)
-        .scalar()
     )
-    return float(avg) if avg is not None else 0.0
+    if until is not None:
+        q = q.filter(InsightQualityScore.created_at < until)
+    total, count = q.one()
+    return (float(total) if total is not None else 0.0), int(count or 0)
+
+
+def _avg_score_for_variant(
+    session: Session,
+    tenants: List[Tenant],
+    variant_id: _uuid.UUID,
+    since: datetime,
+    until: Any = None,
+) -> float:
+    """Average quality score for one variant across every tenant.
+
+    ``PromptVariant``/``Experiment`` are global, so a variant's scores can
+    span tenants — ``InsightQualityScore`` is tenant-scoped (RLS-protected),
+    so each tenant's rows are read under its own bound context and combined
+    as a count-weighted mean.
+    """
+    from backend.app.tenant_ctx import tenant_context
+
+    total = 0.0
+    count = 0
+    for tenant in tenants:
+        with tenant_context(tenant.id, session):
+            t_total, t_count = _sum_count_for_variant(
+                session, tenant.id, variant_id, since, until
+            )
+            total += t_total
+            count += t_count
+    return total / count if count else 0.0
 
 
 def check_all_active_rollouts(session: Session) -> Dict[str, Any]:
@@ -60,19 +99,15 @@ def check_all_active_rollouts(session: Session) -> Dict[str, Any]:
         .filter(PromptVariant.status.in_(("shadow", "canary", "active")))
         .all()
     )
+    tenants = session.query(Tenant).all()
     alerts = 0
     suspended = 0
     rolled_back = 0
     for variant in variants:
-        recent = _avg_score_for_variant(session, variant.id, last_24h)
-        baseline_avg = (
-            session.query(func.avg(InsightQualityScore.score))
-            .filter(InsightQualityScore.prompt_variant_id == variant.id)
-            .filter(InsightQualityScore.created_at >= last_7d_start)
-            .filter(InsightQualityScore.created_at < last_7d_end)
-            .scalar()
+        recent = _avg_score_for_variant(session, tenants, variant.id, last_24h)
+        baseline = _avg_score_for_variant(
+            session, tenants, variant.id, last_7d_start, last_7d_end
         )
-        baseline = float(baseline_avg) if baseline_avg is not None else 0.0
         if baseline <= 0:
             continue  # not enough data yet
         drop = baseline - recent

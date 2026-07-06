@@ -315,6 +315,7 @@ def rollup_all_tenants_weekly(
     Returns the number of tenants processed.
     """
     from backend.app.models import Tenant
+    from backend.app.tenant_ctx import tenant_context
 
     if as_of is None:
         as_of = datetime.utcnow()
@@ -326,13 +327,14 @@ def rollup_all_tenants_weekly(
     for tenant in session.query(Tenant).all():
         tid = str(tenant.id)
         try:
-            rollup_tenant(session, tid, period_start, period_end)
-            # Commit per tenant so one tenant's failure can't poison the
-            # rest. Without this, a failing query leaves the transaction in
-            # an aborted state and EVERY subsequent tenant fails with
-            # ``InFailedSqlTransaction: current transaction is aborted`` —
-            # the rollback below is what actually clears that state.
-            session.commit()
+            with tenant_context(tenant.id, session):
+                rollup_tenant(session, tid, period_start, period_end)
+                # Commit per tenant so one tenant's failure can't poison the
+                # rest. Without this, a failing query leaves the transaction in
+                # an aborted state and EVERY subsequent tenant fails with
+                # ``InFailedSqlTransaction: current transaction is aborted`` —
+                # the rollback below is what actually clears that state.
+                session.commit()
             processed += 1
         except Exception:  # noqa: BLE001 — per-tenant isolation
             logger.exception("Failed rollup for tenant %s", tid)

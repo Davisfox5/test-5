@@ -47,6 +47,7 @@ from backend.app.services.telephony.audiohook.server import (
     AudiohookSessionState,
 )
 from backend.app.services.token_crypto import decrypt_token
+from backend.app.tenant_ctx import reset_current_tenant, set_current_tenant
 
 
 logger = logging.getLogger(__name__)
@@ -291,63 +292,74 @@ async def audiohook_endpoint(
         await websocket.close(code=1008)
         return
 
-    async with async_session() as db:
-        secret = await _resolve_audiohook_secret(tenant_uuid, db)
-    if secret is None:
-        # No tenant integration → reject without leaking detail.
-        await websocket.close(code=1008)
-        return
-
-    # Reconstruct request target / authority for signature base.
-    method = "GET"
-    target_path = websocket.url.path
-    if websocket.url.query:
-        target_path = f"{target_path}?{websocket.url.query}"
-    authority = headers.get("host") or websocket.url.netloc
-
+    # DB sessions here are opened per-operation (a fresh ``async_session``
+    # for the secret lookup, another for the persistence callbacks), so
+    # there's no single AsyncSession to bind_tenant_async on. Instead we
+    # bind the ContextVar once, for the lifetime of this connection's
+    # asyncio task — the ``after_begin`` listener arms every subsequent
+    # transaction (on either session) from it. Reset on every exit path
+    # so the token doesn't leak into whatever task runs next.
+    token = set_current_tenant(tenant_uuid)
     try:
-        verify_audiohook_signature(
-            method=method,
-            target_path=target_path,
-            authority=authority,
-            headers=headers,
-            client_secret=secret,
-        )
-    except SignatureVerificationError as exc:
-        logger.info(
-            "AudioHook signature rejected for tenant=%s: %s", tenant_id, exc
-        )
-        await websocket.close(code=1008)
-        return
+        async with async_session() as db:
+            secret = await _resolve_audiohook_secret(tenant_uuid, db)
+        if secret is None:
+            # No tenant integration → reject without leaking detail.
+            await websocket.close(code=1008)
+            return
 
-    await websocket.accept()
+        # Reconstruct request target / authority for signature base.
+        method = "GET"
+        target_path = websocket.url.path
+        if websocket.url.query:
+            target_path = f"{target_path}?{websocket.url.query}"
+        authority = headers.get("host") or websocket.url.netloc
 
-    sink = (sink_factory or _LiveTranscriptionSink)()
-    transport = _FastAPITransport(websocket)
+        try:
+            verify_audiohook_signature(
+                method=method,
+                target_path=target_path,
+                authority=authority,
+                headers=headers,
+                client_secret=secret,
+            )
+        except SignatureVerificationError as exc:
+            logger.info(
+                "AudioHook signature rejected for tenant=%s: %s", tenant_id, exc
+            )
+            await websocket.close(code=1008)
+            return
 
-    # Open per-call DB session for the persistence callbacks. We use
-    # a long-lived ``async_session`` because AudioHook sessions can
-    # be hours long; the SQLAlchemy session object is reusable and
-    # we commit on each callback so there's no buildup of pending
-    # state.
-    async with async_session() as db:
+        await websocket.accept()
 
-        async def _persist_open_cb(state: AudiohookSessionState) -> uuid.UUID:
-            return await _persist_open(state, db)
+        sink = (sink_factory or _LiveTranscriptionSink)()
+        transport = _FastAPITransport(websocket)
 
-        async def _persist_close_cb(
-            state: AudiohookSessionState, persisted_id: Optional[uuid.UUID]
-        ) -> None:
-            await _persist_close(state, persisted_id, db)
+        # Open per-call DB session for the persistence callbacks. We use
+        # a long-lived ``async_session`` because AudioHook sessions can
+        # be hours long; the SQLAlchemy session object is reusable and
+        # we commit on each callback so there's no buildup of pending
+        # state.
+        async with async_session() as db:
 
-        session = AudiohookSession(
-            transport=transport,
-            sink=sink,
-            tenant_id=tenant_id,
-            persist_open=_persist_open_cb,
-            persist_close=_persist_close_cb,
-        )
-        await session.handle()
+            async def _persist_open_cb(state: AudiohookSessionState) -> uuid.UUID:
+                return await _persist_open(state, db)
+
+            async def _persist_close_cb(
+                state: AudiohookSessionState, persisted_id: Optional[uuid.UUID]
+            ) -> None:
+                await _persist_close(state, persisted_id, db)
+
+            session = AudiohookSession(
+                transport=transport,
+                sink=sink,
+                tenant_id=tenant_id,
+                persist_open=_persist_open_cb,
+                persist_close=_persist_close_cb,
+            )
+            await session.handle()
+    finally:
+        reset_current_tenant(token)
 
 
 __all__ = ["router"]

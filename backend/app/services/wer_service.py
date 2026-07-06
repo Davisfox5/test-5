@@ -63,53 +63,62 @@ def _wer_for_pair(original: str, corrected: str) -> float:
 
 def compute_weekly(session: Session) -> Dict[str, Any]:
     """Aggregate the prior 7 days of corrections per (tenant, engine, channel)."""
+    from backend.app.tenant_ctx import tenant_context
+
     period_end = date.today()
     period_start = period_end - timedelta(days=7)
     cutoff = datetime.combine(period_start, datetime.min.time())
 
-    # Join corrections to interactions so we can group by engine + channel.
-    rows = (
-        session.query(
-            TranscriptCorrection.tenant_id,
-            Interaction.engine,
-            Interaction.channel,
-            TranscriptCorrection.original_text,
-            TranscriptCorrection.corrected_text,
-        )
-        .join(Interaction, Interaction.id == TranscriptCorrection.interaction_id)
-        .filter(TranscriptCorrection.created_at >= cutoff)
-        .all()
-    )
-
-    buckets: Dict[Tuple[Any, str, str], Tuple[int, float]] = {}
-    for tenant_id, engine, channel, original, corrected in rows:
-        key = (tenant_id, engine or "unknown", channel or "unknown")
-        wer = _wer_for_pair(original or "", corrected or "")
-        n, total = buckets.get(key, (0, 0.0))
-        buckets[key] = (n + 1, total + wer)
-
+    tenants_processed = set()
     written = 0
     breached = 0
-    for (tenant_id, engine, channel), (n, total) in buckets.items():
-        wer_avg = total / n
-        session.add(
-            WerMetric(
-                tenant_id=tenant_id,
-                asr_engine=engine,
-                channel=channel,
-                sample_size=n,
-                word_error_rate=round(wer_avg, 4),
-                period_start=period_start,
-                period_end=period_end,
+    for tenant in session.query(Tenant).all():
+        with tenant_context(tenant.id, session):
+            # Join corrections to interactions so we can group by engine + channel.
+            rows = (
+                session.query(
+                    TranscriptCorrection.tenant_id,
+                    Interaction.engine,
+                    Interaction.channel,
+                    TranscriptCorrection.original_text,
+                    TranscriptCorrection.corrected_text,
+                )
+                .join(Interaction, Interaction.id == TranscriptCorrection.interaction_id)
+                .filter(
+                    TranscriptCorrection.tenant_id == tenant.id,
+                    TranscriptCorrection.created_at >= cutoff,
+                )
+                .all()
             )
-        )
-        written += 1
-        if wer_avg > WER_VOCAB_REVIEW_THRESHOLD:
-            breached += 1
-            _alert_high_wer(session, tenant_id, engine, channel, wer_avg)
-    session.commit()
+
+            buckets: Dict[Tuple[Any, str, str], Tuple[int, float]] = {}
+            for tenant_id, engine, channel, original, corrected in rows:
+                key = (tenant_id, engine or "unknown", channel or "unknown")
+                wer = _wer_for_pair(original or "", corrected or "")
+                n, total = buckets.get(key, (0, 0.0))
+                buckets[key] = (n + 1, total + wer)
+
+            for (tenant_id, engine, channel), (n, total) in buckets.items():
+                wer_avg = total / n
+                session.add(
+                    WerMetric(
+                        tenant_id=tenant_id,
+                        asr_engine=engine,
+                        channel=channel,
+                        sample_size=n,
+                        word_error_rate=round(wer_avg, 4),
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+                )
+                written += 1
+                tenants_processed.add(tenant_id)
+                if wer_avg > WER_VOCAB_REVIEW_THRESHOLD:
+                    breached += 1
+                    _alert_high_wer(session, tenant_id, engine, channel, wer_avg)
+            session.commit()
     return {
-        "tenants_processed": len({k[0] for k in buckets.keys()}),
+        "tenants_processed": len(tenants_processed),
         "buckets_written": written,
         "high_wer_alerts": breached,
         "period_start": period_start.isoformat(),

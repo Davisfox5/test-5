@@ -43,6 +43,7 @@ from backend.app.models import (
     CustomerCommitment,
     CustomerConcern,
     Interaction,
+    Tenant,
 )
 
 logger = logging.getLogger(__name__)
@@ -311,30 +312,37 @@ def sweep_dormant_concerns(
     ``active`` after the customer moved on."""
     from datetime import timedelta
 
+    from backend.app.tenant_ctx import tenant_context
+
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=DORMANT_AFTER_DAYS)
-    rows = (
-        session.execute(
-            select(CustomerConcern).where(
-                CustomerConcern.status.in_(("active", "monitoring")),
-                CustomerConcern.last_seen_at < cutoff,
+    transitioned = 0
+    for tenant in session.execute(select(Tenant)).scalars().all():
+        with tenant_context(tenant.id, session):
+            rows = (
+                session.execute(
+                    select(CustomerConcern).where(
+                        CustomerConcern.tenant_id == tenant.id,
+                        CustomerConcern.status.in_(("active", "monitoring")),
+                        CustomerConcern.last_seen_at < cutoff,
+                    )
+                )
+                .scalars()
+                .all()
             )
-        )
-        .scalars()
-        .all()
-    )
-    for r in rows:
-        # Compare in the same tz shape as the row stores (SQLite tests
-        # drop tz; Postgres keeps it). Helper avoids the
-        # naive-vs-aware compare blow-up the QBR scanner had.
-        last = r.last_seen_at
-        if last is not None and last.tzinfo is None:
-            cmp_cutoff = cutoff.replace(tzinfo=None)
-        else:
-            cmp_cutoff = cutoff
-        if last is None or last < cmp_cutoff:
-            r.status = "dormant"
-            r.status_changed_at = now
-    if rows:
+            for r in rows:
+                # Compare in the same tz shape as the row stores (SQLite tests
+                # drop tz; Postgres keeps it). Helper avoids the
+                # naive-vs-aware compare blow-up the QBR scanner had.
+                last = r.last_seen_at
+                if last is not None and last.tzinfo is None:
+                    cmp_cutoff = cutoff.replace(tzinfo=None)
+                else:
+                    cmp_cutoff = cutoff
+                if last is None or last < cmp_cutoff:
+                    r.status = "dormant"
+                    r.status_changed_at = now
+            transitioned += len(rows)
+    if transitioned:
         session.flush()
-    return len(rows)
+    return transitioned

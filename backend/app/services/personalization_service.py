@@ -319,11 +319,14 @@ def _promote_for_tenant(session: Session, tenant: Tenant) -> int:
 
 def refresh_pools_all_tenants(session: Session) -> Dict[str, Any]:
     """Nightly Celery Beat entrypoint."""
+    from backend.app.tenant_ctx import tenant_context
+
     tenants = session.query(Tenant).all()
     total = 0
     for tenant in tenants:
         try:
-            total += _promote_for_tenant(session, tenant)
+            with tenant_context(tenant.id, session):
+                total += _promote_for_tenant(session, tenant)
         except Exception:
             logger.exception("Few-shot promotion failed for tenant %s", tenant.id)
     session.commit()

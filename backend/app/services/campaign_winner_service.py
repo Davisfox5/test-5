@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend.app.models import Campaign, CampaignEvent, Experiment
+from backend.app.models import Campaign, CampaignEvent, Experiment, Tenant
 from backend.app.services.stats import wilson_interval
 
 logger = logging.getLogger(__name__)
@@ -52,92 +52,99 @@ def decide_active_campaigns(session: Session) -> Dict[str, Any]:
     ended.  Idempotent — won't write a duplicate Experiment row for a group
     that's already been decided.
     """
-    candidates = (
-        session.query(Campaign)
-        .filter(Campaign.variant.isnot(None))
-        .filter(Campaign.ended_at.isnot(None))
-        .all()
-    )
+    from backend.app.tenant_ctx import tenant_context
 
-    # Group by (tenant_id, name).
+    # Campaign/CampaignEvent are tenant-scoped (RLS-protected); read each
+    # tenant's candidates under its own bound context, then group.
     groups: Dict[Tuple[Any, str], List[Campaign]] = {}
-    for c in candidates:
-        groups.setdefault((c.tenant_id, c.name), []).append(c)
+    tenants = session.query(Tenant).all()
+    for tenant in tenants:
+        with tenant_context(tenant.id, session):
+            candidates = (
+                session.query(Campaign)
+                .filter(Campaign.tenant_id == tenant.id)
+                .filter(Campaign.variant.isnot(None))
+                .filter(Campaign.ended_at.isnot(None))
+                .all()
+            )
+            for c in candidates:
+                groups.setdefault((c.tenant_id, c.name), []).append(c)
 
     decided = 0
     skipped = 0
 
     for (tenant_id, name), siblings in groups.items():
-        if len({s.variant for s in siblings}) < 2:
-            skipped += 1
-            continue
-        # Skip if we already have an Experiment row for this group.
-        existing = (
-            session.query(Experiment)
-            .filter(Experiment.type == "campaign_variant")
-            .filter(Experiment.name == f"campaign:{tenant_id}:{name}")
-            .first()
-        )
-        if existing is not None:
-            skipped += 1
-            continue
-
-        per_variant: List[Tuple[str, int, float, float, Campaign]] = []
-        for c in siblings:
-            sent, pos, rate = _engagement_rate(session, c)
-            rate_lower_bound, _upper = wilson_interval(pos, sent)
-            per_variant.append((c.variant, sent, rate, rate_lower_bound, c))
-
-        # Only variants with enough sends are eligible to win — otherwise a
-        # tiny, lucky sample (e.g. 1/1) could outrank a well-tested one.
-        eligible = [r for r in per_variant if r[1] >= MIN_SENDS_PER_VARIANT]
-        excluded = len(per_variant) - len(eligible)
-        if len(eligible) < 2:
-            skipped += 1
-            continue
-
-        # Pick the variant with the highest engagement rate we can be
-        # confident in (Wilson lower bound), tiebreaker: most-sent.
-        eligible.sort(key=lambda r: (r[3], r[1]), reverse=True)
-        winner = eligible[0]
-        result = {
-            "winner_variant": winner[0],
-            "winner_sent": winner[1],
-            "winner_rate": round(winner[2], 4),
-            "winner_rate_lower_bound": round(winner[3], 4),
-            "all_variants": [
-                {
-                    "variant": v,
-                    "sent": s,
-                    "rate": round(r, 4),
-                    "rate_lower_bound": round(lb, 4),
-                }
-                for v, s, r, lb, _c in per_variant
-            ],
-        }
-        conclusion = (
-            f"Variant '{winner[0]}' had the highest engagement rate we can be "
-            f"confident in ({winner[3]:.2%} at a 95% confidence level, "
-            f"raw rate {winner[2]:.2%}) on a sample of {winner[1]} sends."
-        )
-        if excluded:
-            conclusion += (
-                f" {excluded} variant(s) were excluded for having fewer than "
-                f"{MIN_SENDS_PER_VARIANT} sends — not enough data yet to trust them."
+        with tenant_context(tenant_id, session):
+            if len({s.variant for s in siblings}) < 2:
+                skipped += 1
+                continue
+            # Skip if we already have an Experiment row for this group.
+            existing = (
+                session.query(Experiment)
+                .filter(Experiment.type == "campaign_variant")
+                .filter(Experiment.name == f"campaign:{tenant_id}:{name}")
+                .first()
             )
-        session.add(
-            Experiment(
-                name=f"campaign:{tenant_id}:{name}",
-                type="campaign_variant",
-                status="concluded",
-                hypothesis=f"Find the best-performing variant for campaign '{name}'.",
-                start_date=min(s.started_at for s in siblings if s.started_at) or datetime.utcnow(),
-                end_date=max(s.ended_at for s in siblings if s.ended_at) or datetime.utcnow(),
-                result_summary=result,
-                conclusion=conclusion,
+            if existing is not None:
+                skipped += 1
+                continue
+
+            per_variant: List[Tuple[str, int, float, float, Campaign]] = []
+            for c in siblings:
+                sent, pos, rate = _engagement_rate(session, c)
+                rate_lower_bound, _upper = wilson_interval(pos, sent)
+                per_variant.append((c.variant, sent, rate, rate_lower_bound, c))
+
+            # Only variants with enough sends are eligible to win — otherwise a
+            # tiny, lucky sample (e.g. 1/1) could outrank a well-tested one.
+            eligible = [r for r in per_variant if r[1] >= MIN_SENDS_PER_VARIANT]
+            excluded = len(per_variant) - len(eligible)
+            if len(eligible) < 2:
+                skipped += 1
+                continue
+
+            # Pick the variant with the highest engagement rate we can be
+            # confident in (Wilson lower bound), tiebreaker: most-sent.
+            eligible.sort(key=lambda r: (r[3], r[1]), reverse=True)
+            winner = eligible[0]
+            result = {
+                "winner_variant": winner[0],
+                "winner_sent": winner[1],
+                "winner_rate": round(winner[2], 4),
+                "winner_rate_lower_bound": round(winner[3], 4),
+                "all_variants": [
+                    {
+                        "variant": v,
+                        "sent": s,
+                        "rate": round(r, 4),
+                        "rate_lower_bound": round(lb, 4),
+                    }
+                    for v, s, r, lb, _c in per_variant
+                ],
+            }
+            conclusion = (
+                f"Variant '{winner[0]}' had the highest engagement rate we can be "
+                f"confident in ({winner[3]:.2%} at a 95% confidence level, "
+                f"raw rate {winner[2]:.2%}) on a sample of {winner[1]} sends."
             )
-        )
-        decided += 1
+            if excluded:
+                conclusion += (
+                    f" {excluded} variant(s) were excluded for having fewer than "
+                    f"{MIN_SENDS_PER_VARIANT} sends — not enough data yet to trust them."
+                )
+            session.add(
+                Experiment(
+                    name=f"campaign:{tenant_id}:{name}",
+                    type="campaign_variant",
+                    status="concluded",
+                    hypothesis=f"Find the best-performing variant for campaign '{name}'.",
+                    start_date=min(s.started_at for s in siblings if s.started_at) or datetime.utcnow(),
+                    end_date=max(s.ended_at for s in siblings if s.ended_at) or datetime.utcnow(),
+                    result_summary=result,
+                    conclusion=conclusion,
+                )
+            )
+            decided += 1
 
     if decided:
         session.commit()

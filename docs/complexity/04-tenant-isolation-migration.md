@@ -220,9 +220,38 @@ The evolution is additive: route the triggering tenant to its own database behin
 application code, keeping pooled+RLS for everyone else. **Pooled+RLS forecloses none of this** —
 which is exactly why it's safe to commit to now. Revisit this ADR if any trigger appears.
 
-## 9. Implementation increments
+## 9. Decisions resolved 2026-07-05 (owner sign-off)
 
-_To be sequenced from §7 → §8 once the spike lands. Each increment: red tests first → implement →
-verify. Rough order: (1) one-table RLS spike + GUC plumbing, (2) scoping test guard, (3) roll RLS to
-all tenant-scoped tables + global allow-list, (4) Qdrant choke point + test, (5) ES/Redis
-verification, (6) action-model cutover (4b)._
+- **(a) GUC plumbing:** non-owner `linda_app` role for the runtime engines (`APP_DATABASE_URL`);
+  the owner DSN stays for Alembic/admin — the DB-enforced bypass path. The GUC rides a dedicated
+  ContextVar (set only from authenticated state, never the `X-Tenant-Id` header) re-armed on every
+  transaction by a global `after_begin` listener (`backend/app/tenant_ctx.py`). Auth-bootstrap
+  tables (`api_keys`, `users`, + webhook-correlation `integrations`, `email_sync_cursors`) are
+  SELECT-able while the GUC is unset; writes always require a matching tenant.
+- **(b) Qdrant:** shared collection + mandatory payload filter (the industry-standard Qdrant
+  multitenancy pattern), consolidated behind `services/kb/vector_store.py` as the single client;
+  the orphaned per-tenant implementation in `kb_document_retrieval.py` is retired.
+- **(c) ES/Redis:** ES verified index-per-tenant (no work); Redis verified except the diarization
+  cache key, now `diarization:{tenant_id}:{sha256}` (no tenant bound → no caching).
+- **(d) 4b action-model cutover:** bundled into the same branch/PR as isolation.
+
+### Ops runbook — activating the backstop (staging/production)
+1. Create the role: `CREATE ROLE linda_app LOGIN PASSWORD '…'` (no ownership, no BYPASSRLS).
+2. Run migrations (`rls_001` + `rls_002` apply policies + grants; they warn if the role is absent).
+3. Set the Fly secret `APP_DATABASE_URL` to the linda_app DSN for api + worker + beat.
+4. Verify: startup logs must NOT show "RLS BACKSTOP INACTIVE"; `tests/test_rls_isolation.py`
+   runs the same policies against a real Postgres in CI (service container in ci-cd.yml).
+
+## 10. Implementation increments (status)
+
+1. ✅ One-table RLS spike + GUC plumbing through both engines (`rls_001`, `tenant_ctx.py`,
+   auth arming, Celery prerun auto-binding; 17 integration tests incl. mid-request commit
+   survival, WITH CHECK, fail-closed no-context, owner bypass).
+2. ✅ Scoping guard test (`tests/test_rls_scoping_guard.py`) + LindaChatConversation ORM/DB
+   drift fix (found broken in verification).
+3. ✅ RLS on all tenant-scoped tables (`rls_002`) + global allow-list + nullable-hybrid
+   handling + per-tenant context wiring across Celery all-tenant loops, alt-auth/webhook
+   endpoints, and WebSocket handlers.
+4. 🔵 Qdrant choke point + cross-tenant vector test + offboarding cleanup.
+5. ✅ ES verified / Redis diarization key fix.
+6. 🔵 Action-model cutover (4b).

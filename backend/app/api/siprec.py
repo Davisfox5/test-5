@@ -45,6 +45,7 @@ from backend.app.services.telephony.siprec import (
     get_bridge,
 )
 from backend.app.services.token_crypto import decrypt_token, encrypt_token
+from backend.app.tenant_ctx import bind_tenant_async
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,13 @@ async def siprec_event(
     event was applied. The SRS retries on non-2xx responses, so this
     endpoint is idempotent on ``recording_session_id``.
     """
+
+    # Bind as soon as the payload's tenant_id is known — the Integration
+    # read in _verify_srs_secret is bootstrap-readable, but every write
+    # downstream (bridge.handle_started/stopped/handle_audio) touches
+    # tenant-scoped tables under RLS.
+    if payload.tenant_id is not None:
+        await bind_tenant_async(db, payload.tenant_id)
 
     await _verify_srs_secret(
         payload.recording_session_id, payload.tenant_id, x_srs_token, db

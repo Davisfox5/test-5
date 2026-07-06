@@ -106,14 +106,21 @@ def rls_database():
             conn.execute(text(stmt))
         for stmt in rls.bootstrap_statements():
             conn.execute(text(stmt))
-        for stmt in rls.rls_statements(tables=["interactions"]):
+        # Full rollout — the same statement set migration rls_002 applies.
+        for stmt in rls.rls_statements():
             conn.execute(text(stmt))
 
-    # Seed two tenants with one interaction each, as the owner (bypasses
-    # RLS). ORM so Python-side column defaults apply.
+    # Seed two tenants, each with one interaction and one user, plus a
+    # NULL-tenant (global) reference set — as the owner (bypasses RLS).
+    # ORM so Python-side column defaults apply.
     from sqlalchemy.orm import sessionmaker
 
-    from backend.app.models import Interaction, Tenant
+    from backend.app.models import (
+        EvaluationReferenceSet,
+        Interaction,
+        Tenant,
+        User,
+    )
 
     factory = sessionmaker(bind=owner, expire_on_commit=False)
     with factory() as session:
@@ -123,7 +130,17 @@ def rls_database():
         session.flush()
         inter_row_a = Interaction(tenant_id=tenant_row_a.id, channel="voice")
         inter_row_b = Interaction(tenant_id=tenant_row_b.id, channel="voice")
-        session.add_all([inter_row_a, inter_row_b])
+        session.add_all(
+            [
+                inter_row_a,
+                inter_row_b,
+                User(tenant_id=tenant_row_a.id, email="a@rls.test"),
+                User(tenant_id=tenant_row_b.id, email="b@rls.test"),
+                EvaluationReferenceSet(
+                    tenant_id=None, name="global-rls-ref", surface="analysis"
+                ),
+            ]
+        )
         session.commit()
         tenant_a, tenant_b = tenant_row_a.id, tenant_row_b.id
         inter_a, inter_b = inter_row_a.id, inter_row_b.id
@@ -362,6 +379,86 @@ def test_owner_connection_bypasses_rls(rls_database):
         with factory() as session:
             rows = session.execute(select(Interaction)).scalars().all()
             assert len(rows) >= 2  # sees both tenants' rows
+    finally:
+        engine.dispose()
+
+
+def test_bootstrap_tables_readable_pre_auth_but_write_locked(rls_database):
+    """users/api_keys/integrations/email_sync_cursors: SELECT works with NO
+    tenant bound (auth + webhook correlation need it), scoped once bound,
+    and writes always require a matching tenant."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.exc import DBAPIError, ProgrammingError
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.models import User
+    from backend.app.tenant_ctx import tenant_context
+
+    tenant_a, tenant_b, inter_a, inter_b = rls_database
+    engine = create_engine(_app_role_url(TEST_POSTGRES_URL, "postgresql"))
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as session:
+            # Pre-auth: both tenants' users are visible (credential lookup).
+            emails = {
+                u.email for u in session.execute(select(User)).scalars().all()
+            }
+            assert {"a@rls.test", "b@rls.test"} <= emails
+            session.rollback()
+
+            # Bound: scoped to the tenant.
+            with tenant_context(str(tenant_a)):
+                emails = {
+                    u.email
+                    for u in session.execute(select(User)).scalars().all()
+                }
+                assert "a@rls.test" in emails and "b@rls.test" not in emails
+            session.rollback()
+
+            # Unbound write: rejected — the pre-auth window is read-only.
+            session.add(User(tenant_id=tenant_a, email="smuggled@rls.test"))
+            with pytest.raises((DBAPIError, ProgrammingError)):
+                session.flush()
+            session.rollback()
+    finally:
+        engine.dispose()
+
+
+def test_nullable_tenant_rows_are_global_reads_only(rls_database):
+    """NULL-tenant rows on intentionally-hybrid tables are readable by
+    every tenant; writing a NULL-tenant row through the app role is not."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.exc import DBAPIError, ProgrammingError
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.models import EvaluationReferenceSet
+    from backend.app.tenant_ctx import tenant_context
+
+    tenant_a, tenant_b, inter_a, inter_b = rls_database
+    engine = create_engine(_app_role_url(TEST_POSTGRES_URL, "postgresql"))
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as session:
+            for tid in (tenant_a, tenant_b):
+                with tenant_context(str(tid)):
+                    names = {
+                        r.name
+                        for r in session.execute(
+                            select(EvaluationReferenceSet)
+                        ).scalars().all()
+                    }
+                    assert "global-rls-ref" in names
+                session.rollback()
+
+            with tenant_context(str(tenant_a)):
+                session.add(
+                    EvaluationReferenceSet(
+                        tenant_id=None, name="smuggled-global", surface="analysis"
+                    )
+                )
+                with pytest.raises((DBAPIError, ProgrammingError)):
+                    session.flush()
+                session.rollback()
     finally:
         engine.dispose()
 

@@ -697,11 +697,9 @@ async def _arm_tenant_rls(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     the transaction that is already open — the credential lookup began it
     before the tenant was known. Idempotent; safe to call more than once.
     """
-    from backend.app.tenant_ctx import SET_TENANT_GUC_SQL, set_current_tenant
+    from backend.app.tenant_ctx import bind_tenant_async
 
-    set_current_tenant(tenant_id)
-    if db.bind is not None and db.bind.dialect.name == "postgresql":
-        await db.execute(SET_TENANT_GUC_SQL, {"tenant_id": str(tenant_id)})
+    await bind_tenant_async(db, tenant_id)
 
 
 async def get_current_principal(

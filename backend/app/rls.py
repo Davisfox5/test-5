@@ -41,9 +41,18 @@ GLOBAL_TABLES = frozenset(
     }
 )
 
-# Read *before* auth resolves a tenant; SELECT is allowed with the GUC
-# unset, writes are not.
-AUTH_BOOTSTRAP_TABLES = frozenset({"api_keys", "users"})
+# Read *before* a tenant is resolved; SELECT is allowed with the GUC
+# unset, writes are not. Two families:
+# - credential lookup: get_current_principal must find the api key / user
+#   before it knows the tenant;
+# - webhook correlation: provider callbacks (Gmail/Graph push) locate the
+#   integration / sync cursor from provider-side identifiers (account
+#   email, subscription id) that don't carry our tenant id. Handlers bind
+#   the tenant immediately after this first lookup.
+# Every other tenant-scoped table stays strict: no GUC → zero rows.
+AUTH_BOOTSTRAP_TABLES = frozenset(
+    {"api_keys", "users", "integrations", "email_sync_cursors"}
+)
 
 # The GUC as a nullable uuid: NULL when unset or empty.
 _TENANT_EXPR = "NULLIF(current_setting('{guc}', true), '')::uuid".format(guc=GUC_NAME)
@@ -132,22 +141,36 @@ def rls_statements(tables: Optional[Iterable[str]] = None) -> List[str]:
     return stmts
 
 
-# Celery tasks receive an interaction_id but no tenant — and RLS won't let
-# them read the interaction row to find out whose it is. This SECURITY
-# DEFINER function is the narrow bootstrap: it maps interaction id →
-# tenant id (one owner-privileged indexed lookup, nothing else) so the
-# task can enter tenant_context() and do everything else under RLS.
-TENANT_RESOLVER_DDL = (
-    "CREATE OR REPLACE FUNCTION app_tenant_of_interaction(iid uuid) "
-    "RETURNS uuid "
-    "LANGUAGE sql STABLE SECURITY DEFINER "
-    "SET search_path = public "
-    "AS $$ SELECT tenant_id FROM interactions WHERE id = iid $$"
-)
+# Celery tasks receive a row id (interaction, integration, backfill job…)
+# but no tenant — and RLS won't let them read that row to find out whose
+# it is. These SECURITY DEFINER functions are the narrow bootstrap: each
+# maps one id → tenant id (one owner-privileged indexed lookup, nothing
+# else) so the task can enter tenant_context() and do everything else
+# under RLS. Keyed by table; the function name is app_tenant_of_<singular>.
+TENANT_RESOLVER_FUNCTIONS = {
+    "interactions": "app_tenant_of_interaction",
+    "integrations": "app_tenant_of_integration",
+    "email_backfill_jobs": "app_tenant_of_email_backfill_job",
+    "support_cases": "app_tenant_of_support_case",
+    "manager_recommendations": "app_tenant_of_manager_recommendation",
+    "webhook_deliveries": "app_tenant_of_webhook_delivery",
+    "live_sessions": "app_tenant_of_live_session",
+}
 
 
 def bootstrap_statements() -> List[str]:
-    return [TENANT_RESOLVER_DDL]
+    stmts = []  # type: List[str]
+    for table, func_name in sorted(TENANT_RESOLVER_FUNCTIONS.items()):
+        stmts.append(
+            "CREATE OR REPLACE FUNCTION {f}(iid uuid) "
+            "RETURNS uuid "
+            "LANGUAGE sql STABLE SECURITY DEFINER "
+            "SET search_path = public "
+            "AS $$ SELECT tenant_id FROM {t} WHERE id = iid $$".format(
+                f=func_name, t=table
+            )
+        )
+    return stmts
 
 
 def runtime_bypasses_rls(sync_connection) -> Optional[str]:

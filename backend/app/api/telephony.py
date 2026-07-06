@@ -44,6 +44,7 @@ from backend.app.services.telephony.twilio import (
     validate_twilio_signature,
 )
 from backend.app.services.token_crypto import decrypt_token
+from backend.app.tenant_ctx import bind_tenant_async, resolve_tenant_via_async
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,11 @@ async def twilio_voice_webhook(
     """
     form = await request.form()
     form_dict: Dict[str, str] = {k: str(v) for k, v in form.multi_items()}
+
+    # tenant_id is a query param here, known up front — bind before the
+    # Integration read in _twilio_creds (bootstrap-readable) so the
+    # LiveSession insert below runs with the GUC armed.
+    await bind_tenant_async(db, tenant_id)
 
     creds = await _twilio_creds(tenant_id, db)
     if creds.auth_token:
@@ -211,6 +217,20 @@ async def twilio_media_stream(websocket: WebSocket, session_id: str):
     live_para_window = None
     try:
         async with async_session() as db:
+            # Only session_id is known here (no tenant on the path/query) —
+            # resolve it via the SECURITY DEFINER function first (it works
+            # RLS-blind and ends the transaction with rollback), then bind
+            # before the LiveSession/Tenant loads that follow.
+            resolved_tenant_id = await resolve_tenant_via_async(
+                db, "live_sessions", uuid.UUID(session_id)
+            )
+            if resolved_tenant_id is None:
+                if LIVE_SESSIONS is not None:
+                    LIVE_SESSIONS.labels(provider="twilio").dec()
+                await websocket.close(code=1008)
+                return
+            await bind_tenant_async(db, resolved_tenant_id)
+
             sess = await db.get(LiveSession, uuid.UUID(session_id))
             if sess is not None:
                 sess.status = "live"

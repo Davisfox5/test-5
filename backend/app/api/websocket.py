@@ -42,6 +42,7 @@ from backend.app.services.ws_tickets import (
     consume_ticket,
     enforce_new_connection_quota,
 )
+from backend.app.tenant_ctx import reset_current_tenant, set_current_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -117,188 +118,230 @@ async def live_transcription(websocket: WebSocket, session_id: str):
         except Exception:  # noqa: BLE001
             pass
 
-    await websocket.accept()
-    logger.info(
-        "Agent WebSocket connected for session %s (tenant=%s)",
-        session_id, ticket.tenant_id,
-    )
-
-    coaching_service = LiveCoachingService()
-    retrieval_service = RetrievalService()
-
-    # Tracking state for coaching triggers.
-    last_coaching_time: float = time.time()
-    words_since_coaching: int = 0
-
-    # Deterministic-feature state (per-connection, no external deps).
-    feature_window = LiveFeatureWindow(window_sec=60.0)
-    lf_scanner = LFTriggerScanner(cooldown_sec=30.0)
-    last_features_emit_at: float = 0.0
-    finals_since_features_emit: int = 0
-    FEATURES_MIN_INTERVAL_SEC = 5.0
-    FEATURES_EVERY_N_FINALS = 3
-
-    # Tenant + contact context for tenant-scoped retrieval + pin-aware exclusions.
-    (
-        tenant_id,
-        contact_id,
-        question_keyterms,
-        tenant_context,
-        customer_brief,
-        features_enabled,
-    ) = await _resolve_session_context(session_id)
-
-    # Rehydrate pinned KB cards for this contact so the agent sees them
-    # immediately when the call connects.
-    if contact_id is not None and tenant_id is not None:
-        pins = await _load_pinned_cards(tenant_id, contact_id)
-        for pin_payload in pins:
-            await _safe_send(websocket, pin_payload)
-
+    # The ticket already carries tenant_id (validated above) — bind the
+    # ContextVar for the lifetime of this connection's task. Every
+    # transaction opened on any AsyncSession this task creates (here or
+    # in the helpers below) gets armed by the after_begin listener.
+    # Reset on every exit path so the token doesn't leak into whatever
+    # task runs next.
+    token = set_current_tenant(ticket.tenant_id)
     try:
-        redis = _get_redis()
-
-        # ── Deepgram live transcription setup ────────────────────
-        dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
-
-        # Live Deepgram defaults to nova-2 for the same cost reason as
-        # batch (see _transcribe_deepgram). Tenants that need nova-3 set
-        # ``features_enabled["deepgram_model"]="nova-3"``. interim_results
-        # is only useful when the agent UI surfaces partial transcripts
-        # (the live coaching feature) — gated behind a tenant flag so
-        # tenants who don't render interims aren't billed for them.
-        tenant_model = (features_enabled or {}).get("deepgram_model")
-        live_model = tenant_model if tenant_model in {"nova-2", "nova-3"} else "nova-2"
-        want_interims = bool(
-            (features_enabled or {}).get("live_coaching", True)
+        await websocket.accept()
+        logger.info(
+            "Agent WebSocket connected for session %s (tenant=%s)",
+            session_id, ticket.tenant_id,
         )
 
-        dg_options = {
-            "model": live_model,
-            "diarize": True,
-            "interim_results": want_interims,
-            "utterance_end_ms": "1000",
-        }
+        coaching_service = LiveCoachingService()
+        retrieval_service = RetrievalService()
 
-        # Tenant-opt-in: only send keyterms when the tenant has configured them.
-        # Deepgram bills keyterm prompting as a ~$0.0013/min add-on, so we
-        # leave it off for tenants that haven't opted in. Local substring
-        # detection inside _contains_keyterm still runs for free either way.
-        if question_keyterms:
-            dg_options["keyterm"] = question_keyterms
+        # Tracking state for coaching triggers.
+        last_coaching_time: float = time.time()
+        words_since_coaching: int = 0
 
-        dg_connection = dg_client.listen.live.v("1")
+        # Deterministic-feature state (per-connection, no external deps).
+        feature_window = LiveFeatureWindow(window_sec=60.0)
+        lf_scanner = LFTriggerScanner(cooldown_sec=30.0)
+        last_features_emit_at: float = 0.0
+        finals_since_features_emit: int = 0
+        FEATURES_MIN_INTERVAL_SEC = 5.0
+        FEATURES_EVERY_N_FINALS = 3
 
-        # ── Deepgram event handlers ─────────────────────────────
+        # Tenant + contact context for tenant-scoped retrieval + pin-aware exclusions.
+        (
+            tenant_id,
+            contact_id,
+            question_keyterms,
+            tenant_context,
+            customer_brief,
+            features_enabled,
+        ) = await _resolve_session_context(session_id)
 
-        async def on_transcript(
-            _self: Any, result: Any, **kwargs: Any
-        ) -> None:
-            """Handle incoming Deepgram transcript events."""
-            nonlocal last_coaching_time, words_since_coaching
+        # Rehydrate pinned KB cards for this contact so the agent sees them
+        # immediately when the call connects.
+        if contact_id is not None and tenant_id is not None:
+            pins = await _load_pinned_cards(tenant_id, contact_id)
+            for pin_payload in pins:
+                await _safe_send(websocket, pin_payload)
 
-            alt = result.channel.alternatives[0] if result.channel.alternatives else None
-            if alt is None or not alt.transcript:
-                return
+        try:
+            redis = _get_redis()
 
-            text = alt.transcript
-            speaker = None
-            if alt.words:
-                speaker = alt.words[0].speaker
+            # ── Deepgram live transcription setup ────────────────────
+            dg_client = DeepgramClient(settings.DEEPGRAM_API_KEY)
 
-            ts = time.time()
+            # Live Deepgram defaults to nova-2 for the same cost reason as
+            # batch (see _transcribe_deepgram). Tenants that need nova-3 set
+            # ``features_enabled["deepgram_model"]="nova-3"``. interim_results
+            # is only useful when the agent UI surfaces partial transcripts
+            # (the live coaching feature) — gated behind a tenant flag so
+            # tenants who don't render interims aren't billed for them.
+            tenant_model = (features_enabled or {}).get("deepgram_model")
+            live_model = tenant_model if tenant_model in {"nova-2", "nova-3"} else "nova-2"
+            want_interims = bool(
+                (features_enabled or {}).get("live_coaching", True)
+            )
 
-            if result.is_final:
-                payload = {
-                    "type": "final",
-                    "text": text,
-                    "speaker": speaker,
-                    "timestamp": ts,
-                }
-                await _safe_send(websocket, payload)
+            dg_options = {
+                "model": live_model,
+                "diarize": True,
+                "interim_results": want_interims,
+                "utterance_end_ms": "1000",
+            }
 
-                # Publish to monitor channel so managers can follow along.
-                if redis is not None:
-                    await redis.publish(
-                        f"live:{session_id}:events",
-                        json.dumps(payload),
-                    )
+            # Tenant-opt-in: only send keyterms when the tenant has configured them.
+            # Deepgram bills keyterm prompting as a ~$0.0013/min add-on, so we
+            # leave it off for tenants that haven't opted in. Local substring
+            # detection inside _contains_keyterm still runs for free either way.
+            if question_keyterms:
+                dg_options["keyterm"] = question_keyterms
 
-                # Append to session buffer in Redis. Guard with an EXPIRE
-                # so a crashed / half-closed WebSocket can't leak the
-                # whole transcript into Redis forever — the normal
-                # _dispatch_batch_analysis path deletes the key on
-                # clean shutdown; this is the safety net.
-                segment = json.dumps({
-                    "text": text,
-                    "speaker": speaker,
-                    "timestamp": ts,
-                })
-                if redis is not None:
-                    buffer_key = f"live:{session_id}:buffer"
-                    pipe = redis.pipeline(transaction=False)
-                    pipe.rpush(buffer_key, segment)
-                    pipe.expire(buffer_key, _LIVE_BUFFER_TTL_SECONDS)
-                    await pipe.execute()
+            dg_connection = dg_client.listen.live.v("1")
 
-                words_since_coaching += _word_count(text)
+            # ── Deepgram event handlers ─────────────────────────────
 
-                # ── Deterministic live features (zero-LLM path) ───
-                word_count = _word_count(text)
-                est_duration = max(0.3, word_count * 0.4)
-                turn = LiveTurn(
-                    speaker_id=str(speaker) if speaker is not None else "customer",
-                    text=text,
-                    start=ts,
-                    end=ts + est_duration,
-                    is_agent=(speaker == 0),
-                )
-                feature_window.push(turn)
+            async def on_transcript(
+                _self: Any, result: Any, **kwargs: Any
+            ) -> None:
+                """Handle incoming Deepgram transcript events."""
+                nonlocal last_coaching_time, words_since_coaching
 
-                try:
-                    alerts = lf_scanner.push(turn, feature_window)
-                except Exception:
-                    logger.exception("LF scanner raised for session %s", session_id)
-                    alerts = []
-                for alert in alerts:
-                    alert_payload = {"type": "alert", **alert.to_wire()}
-                    await _safe_send(websocket, alert_payload)
+                alt = result.channel.alternatives[0] if result.channel.alternatives else None
+                if alt is None or not alt.transcript:
+                    return
+
+                text = alt.transcript
+                speaker = None
+                if alt.words:
+                    speaker = alt.words[0].speaker
+
+                ts = time.time()
+
+                if result.is_final:
+                    payload = {
+                        "type": "final",
+                        "text": text,
+                        "speaker": speaker,
+                        "timestamp": ts,
+                    }
+                    await _safe_send(websocket, payload)
+
+                    # Publish to monitor channel so managers can follow along.
                     if redis is not None:
                         await redis.publish(
                             f"live:{session_id}:events",
-                            json.dumps(alert_payload),
+                            json.dumps(payload),
                         )
 
-                finals_since_features_emit += 1
-                features_elapsed = ts - last_features_emit_at
-                if (
-                    finals_since_features_emit >= FEATURES_EVERY_N_FINALS
-                    and features_elapsed >= FEATURES_MIN_INTERVAL_SEC
-                ):
-                    snapshot_payload = {
-                        "type": "features",
-                        **feature_window.snapshot().to_wire(),
-                    }
-                    await _safe_send(websocket, snapshot_payload)
-                    last_features_emit_at = ts
-                    finals_since_features_emit = 0
+                    # Append to session buffer in Redis. Guard with an EXPIRE
+                    # so a crashed / half-closed WebSocket can't leak the
+                    # whole transcript into Redis forever — the normal
+                    # _dispatch_batch_analysis path deletes the key on
+                    # clean shutdown; this is the safety net.
+                    segment = json.dumps({
+                        "text": text,
+                        "speaker": speaker,
+                        "timestamp": ts,
+                    })
+                    if redis is not None:
+                        buffer_key = f"live:{session_id}:buffer"
+                        pipe = redis.pipeline(transaction=False)
+                        pipe.rpush(buffer_key, segment)
+                        pipe.expire(buffer_key, _LIVE_BUFFER_TTL_SECONDS)
+                        await pipe.execute()
 
-                # ── Event-driven retrieval (caller turns only) ───
-                if speaker not in (None, 0, "0"):
-                    asyncio.create_task(
-                        _run_kb_lookup(
-                            websocket=websocket,
-                            redis=redis,
-                            session_id=session_id,
-                            retrieval_service=retrieval_service,
-                            tenant_id=tenant_id,
-                            contact_id=contact_id,
-                            caller_text=text,
-                            keyterm_hit=_contains_keyterm(text, question_keyterms),
-                        )
+                    words_since_coaching += _word_count(text)
+
+                    # ── Deterministic live features (zero-LLM path) ───
+                    word_count = _word_count(text)
+                    est_duration = max(0.3, word_count * 0.4)
+                    turn = LiveTurn(
+                        speaker_id=str(speaker) if speaker is not None else "customer",
+                        text=text,
+                        start=ts,
+                        end=ts + est_duration,
+                        is_agent=(speaker == 0),
                     )
+                    feature_window.push(turn)
 
-                # ── Coaching trigger (30s heartbeat) ─────────────
+                    try:
+                        alerts = lf_scanner.push(turn, feature_window)
+                    except Exception:
+                        logger.exception("LF scanner raised for session %s", session_id)
+                        alerts = []
+                    for alert in alerts:
+                        alert_payload = {"type": "alert", **alert.to_wire()}
+                        await _safe_send(websocket, alert_payload)
+                        if redis is not None:
+                            await redis.publish(
+                                f"live:{session_id}:events",
+                                json.dumps(alert_payload),
+                            )
+
+                    finals_since_features_emit += 1
+                    features_elapsed = ts - last_features_emit_at
+                    if (
+                        finals_since_features_emit >= FEATURES_EVERY_N_FINALS
+                        and features_elapsed >= FEATURES_MIN_INTERVAL_SEC
+                    ):
+                        snapshot_payload = {
+                            "type": "features",
+                            **feature_window.snapshot().to_wire(),
+                        }
+                        await _safe_send(websocket, snapshot_payload)
+                        last_features_emit_at = ts
+                        finals_since_features_emit = 0
+
+                    # ── Event-driven retrieval (caller turns only) ───
+                    if speaker not in (None, 0, "0"):
+                        asyncio.create_task(
+                            _run_kb_lookup(
+                                websocket=websocket,
+                                redis=redis,
+                                session_id=session_id,
+                                retrieval_service=retrieval_service,
+                                tenant_id=tenant_id,
+                                contact_id=contact_id,
+                                caller_text=text,
+                                keyterm_hit=_contains_keyterm(text, question_keyterms),
+                            )
+                        )
+
+                    # ── Coaching trigger (30s heartbeat) ─────────────
+                    elapsed = ts - last_coaching_time
+                    if elapsed >= 30 or words_since_coaching >= 200:
+                        await _run_coaching(
+                            websocket,
+                            redis,
+                            session_id,
+                            coaching_service,
+                            retrieval_service,
+                            tenant_id,
+                            contact_id,
+                            tenant_context,
+                            customer_brief,
+                            features_enabled,
+                        )
+                        last_coaching_time = time.time()
+                        words_since_coaching = 0
+                else:
+                    # Interim / partial result.
+                    payload = {
+                        "type": "partial",
+                        "text": text,
+                        "speaker": speaker,
+                        "timestamp": ts,
+                    }
+                    await _safe_send(websocket, payload)
+
+            async def on_utterance_end(
+                _self: Any, result: Any, **kwargs: Any
+            ) -> None:
+                """Handle Deepgram utterance-end marker."""
+                nonlocal last_coaching_time, words_since_coaching
+
+                # Utterance end can also trigger coaching if thresholds met.
+                ts = time.time()
                 elapsed = ts - last_coaching_time
                 if elapsed >= 30 or words_since_coaching >= 200:
                     await _run_coaching(
@@ -310,94 +353,62 @@ async def live_transcription(websocket: WebSocket, session_id: str):
                         tenant_id,
                         contact_id,
                         tenant_context,
-                        customer_brief,
-                        features_enabled,
                     )
                     last_coaching_time = time.time()
                     words_since_coaching = 0
-            else:
-                # Interim / partial result.
-                payload = {
-                    "type": "partial",
-                    "text": text,
-                    "speaker": speaker,
-                    "timestamp": ts,
-                }
-                await _safe_send(websocket, payload)
 
-        async def on_utterance_end(
-            _self: Any, result: Any, **kwargs: Any
-        ) -> None:
-            """Handle Deepgram utterance-end marker."""
-            nonlocal last_coaching_time, words_since_coaching
+            async def on_error(
+                _self: Any, error: Any, **kwargs: Any
+            ) -> None:
+                logger.error("Deepgram error for session %s: %s", session_id, error)
 
-            # Utterance end can also trigger coaching if thresholds met.
-            ts = time.time()
-            elapsed = ts - last_coaching_time
-            if elapsed >= 30 or words_since_coaching >= 200:
-                await _run_coaching(
-                    websocket,
-                    redis,
-                    session_id,
-                    coaching_service,
-                    retrieval_service,
-                    tenant_id,
-                    contact_id,
-                    tenant_context,
-                )
-                last_coaching_time = time.time()
-                words_since_coaching = 0
+            dg_connection.on("Results", on_transcript)
+            dg_connection.on("UtteranceEnd", on_utterance_end)
+            dg_connection.on("Error", on_error)
 
-        async def on_error(
-            _self: Any, error: Any, **kwargs: Any
-        ) -> None:
-            logger.error("Deepgram error for session %s: %s", session_id, error)
+            # Start the Deepgram connection.
+            await dg_connection.start(dg_options)
 
-        dg_connection.on("Results", on_transcript)
-        dg_connection.on("UtteranceEnd", on_utterance_end)
-        dg_connection.on("Error", on_error)
+            # ── Main receive loop ────────────────────────────────────
+            while True:
+                data = await websocket.receive()
 
-        # Start the Deepgram connection.
-        await dg_connection.start(dg_options)
+                if "bytes" in data:
+                    # Binary audio chunk — forward to Deepgram.
+                    await dg_connection.send(data["bytes"])
+                elif "text" in data:
+                    # Text message from agent (e.g., control commands).
+                    try:
+                        msg = json.loads(data["text"])
+                        msg_type = msg.get("type")
+                        if msg_type == "ping":
+                            await _safe_send(websocket, {"type": "pong"})
+                    except json.JSONDecodeError:
+                        pass
 
-        # ── Main receive loop ────────────────────────────────────
-        while True:
-            data = await websocket.receive()
-
-            if "bytes" in data:
-                # Binary audio chunk — forward to Deepgram.
-                await dg_connection.send(data["bytes"])
-            elif "text" in data:
-                # Text message from agent (e.g., control commands).
+        except WebSocketDisconnect:
+            logger.info("Agent WebSocket disconnected for session %s", session_id)
+        except Exception:
+            logger.exception("Error in live transcription for session %s", session_id)
+        finally:
+            # ── Cleanup ──────────────────────────────────────────────
+            if dg_connection is not None:
                 try:
-                    msg = json.loads(data["text"])
-                    msg_type = msg.get("type")
-                    if msg_type == "ping":
-                        await _safe_send(websocket, {"type": "pong"})
-                except json.JSONDecodeError:
-                    pass
+                    await dg_connection.finish()
+                except Exception:
+                    logger.exception("Error closing Deepgram connection for %s", session_id)
 
-    except WebSocketDisconnect:
-        logger.info("Agent WebSocket disconnected for session %s", session_id)
-    except Exception:
-        logger.exception("Error in live transcription for session %s", session_id)
+            # Dispatch batch analysis from the accumulated buffer.
+            if redis is not None:
+                try:
+                    await _dispatch_batch_analysis(redis, session_id)
+                except Exception:
+                    logger.exception("Error dispatching batch analysis for %s", session_id)
+                await redis.aclose()
+
+            logger.info("Cleanup complete for session %s", session_id)
     finally:
-        # ── Cleanup ──────────────────────────────────────────────
-        if dg_connection is not None:
-            try:
-                await dg_connection.finish()
-            except Exception:
-                logger.exception("Error closing Deepgram connection for %s", session_id)
-
-        # Dispatch batch analysis from the accumulated buffer.
-        if redis is not None:
-            try:
-                await _dispatch_batch_analysis(redis, session_id)
-            except Exception:
-                logger.exception("Error dispatching batch analysis for %s", session_id)
-            await redis.aclose()
-
-        logger.info("Cleanup complete for session %s", session_id)
+        reset_current_tenant(token)
 
 
 # ---------------------------------------------------------------------------

@@ -485,6 +485,74 @@ def _on_task_prerun(sender: Any = None, task_id: str = "", args=None, kwargs=Non
     else:
         bind_context(**values)
 
+    # RLS: bind the task's tenant context from its arguments so every DB
+    # query the task runs is scoped (fail closed otherwise). Tasks whose
+    # tenant isn't derivable from arguments (all-tenant orchestrators)
+    # bind per iteration in their own bodies instead.
+    try:
+        rls_token = _rls_binding_for_task(sender, args, kwargs)
+    except Exception:
+        logger.exception(
+            "RLS tenant binding failed for task %s — task will run "
+            "UNSCOPED and see zero tenant-scoped rows",
+            getattr(sender, "name", sender),
+        )
+        rls_token = None
+    if task_request is not None:
+        task_request.linda_rls_token = rls_token
+
+
+# Task argument names whose value identifies the tenant indirectly; each
+# maps to the table whose SECURITY DEFINER resolver turns it into a
+# tenant id (see backend.app.rls.TENANT_RESOLVER_FUNCTIONS).
+_RLS_ARG_RESOLVERS = (
+    ("interaction_id", "interactions"),
+    ("interaction_id_str", "interactions"),
+    ("integration_id", "integrations"),
+    ("job_id", "email_backfill_jobs"),
+    ("case_id", "support_cases"),
+    ("rec_id", "manager_recommendations"),
+    ("delivery_id", "webhook_deliveries"),
+)
+
+
+def _rls_binding_for_task(sender: Any, args, kwargs) -> Optional[Any]:
+    """Bind the tenant ContextVar from task arguments; return the reset
+    token (None when no tenant is derivable from the signature)."""
+    import inspect
+
+    from backend.app.tenant_ctx import resolve_tenant_via, set_current_tenant
+
+    run = getattr(sender, "run", None)
+    if run is None:
+        return None
+    try:
+        params = list(inspect.signature(run).parameters)
+    except (TypeError, ValueError):
+        return None
+    if params and params[0] == "self":
+        params = params[1:]
+    bound: Dict[str, Any] = dict(zip(params, args or ()))
+    bound.update(kwargs or {})
+
+    tenant_id = bound.get("tenant_id")
+    if tenant_id:
+        return set_current_tenant(str(tenant_id))
+
+    for arg_name, table in _RLS_ARG_RESOLVERS:
+        row_id = bound.get(arg_name)
+        if not row_id:
+            continue
+        session = _get_sync_session()
+        try:
+            resolved = resolve_tenant_via(session, table, row_id)
+        finally:
+            session.close()
+        if resolved is not None:
+            return set_current_tenant(resolved)
+        return None  # row not found — the task body will report it
+    return None
+
 
 @task_failure.connect
 def _on_task_failure(
@@ -541,6 +609,15 @@ def _on_task_postrun(
     tokens = getattr(task_request, "linda_context_tokens", None) if task_request else None
     if tokens:
         reset_context(tokens)
+
+    rls_token = getattr(task_request, "linda_rls_token", None) if task_request else None
+    if rls_token is not None:
+        try:
+            from backend.app.tenant_ctx import reset_current_tenant
+
+            reset_current_tenant(rls_token)
+        except Exception:
+            logger.debug("RLS token reset failed", exc_info=True)
 
     # Metrics — task name is the Celery-registered name, not the Python
     # function name (matters for aliased tasks).
@@ -2284,21 +2361,10 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
     from backend.app.models import Interaction, Tenant
 
     logger.info("Starting voice pipeline for interaction %s", interaction_id)
+    # RLS: the task_prerun hook already bound this interaction's tenant
+    # (resolved via the SECURITY DEFINER bootstrap) — every query below is
+    # tenant-scoped.
     session = _get_sync_session()
-
-    # RLS: resolve the interaction's tenant (SECURITY DEFINER bootstrap —
-    # the row itself is invisible until the context is bound) and scope
-    # every query in this task run to it.
-    from backend.app.tenant_ctx import (
-        reset_current_tenant,
-        resolve_tenant_for_interaction,
-        set_current_tenant,
-    )
-
-    _rls_token = None
-    _resolved_tid = resolve_tenant_for_interaction(session, interaction_id)
-    if _resolved_tid is not None:
-        _rls_token = set_current_tenant(_resolved_tid)
 
     try:
         # ── Step 1: Load interaction ─────────────────────────────────
@@ -2500,8 +2566,6 @@ def process_voice_interaction(self, interaction_id: str) -> Dict[str, Any]:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
     finally:
-        if _rls_token is not None:
-            reset_current_tenant(_rls_token)
         session.close()
 
 
@@ -2516,19 +2580,8 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
     from backend.app.models import Interaction, Tenant
 
     logger.info("Starting text pipeline for interaction %s", interaction_id)
+    # RLS: tenant bound by the task_prerun hook, same as the voice pipeline.
     session = _get_sync_session()
-
-    # RLS: same tenant bootstrap as the voice pipeline above.
-    from backend.app.tenant_ctx import (
-        reset_current_tenant,
-        resolve_tenant_for_interaction,
-        set_current_tenant,
-    )
-
-    _rls_token = None
-    _resolved_tid = resolve_tenant_for_interaction(session, interaction_id)
-    if _resolved_tid is not None:
-        _rls_token = set_current_tenant(_resolved_tid)
 
     try:
         # ── Step 1: Load interaction ─────────────────────────────────
@@ -2629,8 +2682,6 @@ def process_text_interaction(self, interaction_id: str) -> Dict[str, Any]:
             logger.exception("Failed to update interaction status to 'failed'")
         raise self.retry(exc=exc, countdown=60)
     finally:
-        if _rls_token is not None:
-            reset_current_tenant(_rls_token)
         session.close()
 
 
@@ -2862,6 +2913,8 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
     # lifetime — re-registering earlier just burns Google / Microsoft API
     # calls (verified against the audit's ~$5/month leak estimate).
     renew_horizon = now + timedelta(hours=24)
+    from backend.app.tenant_ctx import tenant_context
+
     try:
         integrations = (
             session.query(Integration)
@@ -2869,91 +2922,92 @@ def email_push_renew_subscriptions() -> Dict[str, Any]:
             .all()
         )
         for integ in integrations:
-            # Already flagged dead → don't re-hit the token endpoint.
-            if (integ.provider_config or {}).get("needs_reauth"):
-                skipped += 1
-                continue
-            try:
-                access_token = refresh_if_expired_sync(session, integ)
-            except IntegrationAuthError as exc:
-                # Non-retryable auth failure: WARNING (not ERROR) so it
-                # doesn't flood Sentry, and flag for re-auth.
-                logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
-                session.rollback()
-                mark_needs_reauth(session, integ)
-                skipped += 1
-                continue
-            except Exception:
-                failed += 1
-                logger.exception("Refresh failed for integration %s", integ.id)
-                session.rollback()
-                continue
+            with tenant_context(integ.tenant_id, session):
+                # Already flagged dead → don't re-hit the token endpoint.
+                if (integ.provider_config or {}).get("needs_reauth"):
+                    skipped += 1
+                    continue
+                try:
+                    access_token = refresh_if_expired_sync(session, integ)
+                except IntegrationAuthError as exc:
+                    # Non-retryable auth failure: WARNING (not ERROR) so it
+                    # doesn't flood Sentry, and flag for re-auth.
+                    logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
+                    session.rollback()
+                    mark_needs_reauth(session, integ)
+                    skipped += 1
+                    continue
+                except Exception:
+                    failed += 1
+                    logger.exception("Refresh failed for integration %s", integ.id)
+                    session.rollback()
+                    continue
 
-            cursor = (
-                session.query(EmailSyncCursor)
-                .filter(EmailSyncCursor.integration_id == integ.id)
-                .first()
-            )
-            if cursor is None:
-                cursor = EmailSyncCursor(
-                    integration_id=integ.id,
-                    tenant_id=integ.tenant_id,
-                    provider=integ.provider,
+                cursor = (
+                    session.query(EmailSyncCursor)
+                    .filter(EmailSyncCursor.integration_id == integ.id)
+                    .first()
                 )
-                session.add(cursor)
-                session.flush()
-
-            # Skip if the existing subscription is still healthy. NULL
-            # expires_at means "never registered" → always renew.
-            existing_expiry = cursor.push_subscription_expires_at
-            if existing_expiry is not None and existing_expiry > renew_horizon:
-                skipped += 1
-                continue
-
-            try:
-                if integ.provider == "google" and s.GMAIL_PUBSUB_TOPIC:
-                    resp = watch_gmail(access_token, s.GMAIL_PUBSUB_TOPIC)
-                    # Persist the watch's historyId so the first push
-                    # notification has something to diff against.
-                    cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
-                    # Gmail returns expiration as epoch milliseconds (string).
-                    raw_exp = resp.get("expiration")
-                    if raw_exp:
-                        try:
-                            cursor.push_subscription_expires_at = (
-                                datetime.fromtimestamp(int(raw_exp) / 1000, tz=timezone.utc)
-                            )
-                        except (TypeError, ValueError):
-                            pass
-                    gmail_ok += 1
-                elif integ.provider == "microsoft" and s.GRAPH_CLIENT_STATE:
-                    notification_url = (
-                        f"{base_url}{s.API_V1_PREFIX}/email-push/graph"
+                if cursor is None:
+                    cursor = EmailSyncCursor(
+                        integration_id=integ.id,
+                        tenant_id=integ.tenant_id,
+                        provider=integ.provider,
                     )
-                    resp = subscribe_graph_mailbox(
-                        access_token,
-                        notification_url=notification_url,
-                        client_state=s.GRAPH_CLIENT_STATE,
+                    session.add(cursor)
+                    session.flush()
+
+                # Skip if the existing subscription is still healthy. NULL
+                # expires_at means "never registered" → always renew.
+                existing_expiry = cursor.push_subscription_expires_at
+                if existing_expiry is not None and existing_expiry > renew_horizon:
+                    skipped += 1
+                    continue
+
+                try:
+                    if integ.provider == "google" and s.GMAIL_PUBSUB_TOPIC:
+                        resp = watch_gmail(access_token, s.GMAIL_PUBSUB_TOPIC)
+                        # Persist the watch's historyId so the first push
+                        # notification has something to diff against.
+                        cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
+                        # Gmail returns expiration as epoch milliseconds (string).
+                        raw_exp = resp.get("expiration")
+                        if raw_exp:
+                            try:
+                                cursor.push_subscription_expires_at = (
+                                    datetime.fromtimestamp(int(raw_exp) / 1000, tz=timezone.utc)
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                        gmail_ok += 1
+                    elif integ.provider == "microsoft" and s.GRAPH_CLIENT_STATE:
+                        notification_url = (
+                            f"{base_url}{s.API_V1_PREFIX}/email-push/graph"
+                        )
+                        resp = subscribe_graph_mailbox(
+                            access_token,
+                            notification_url=notification_url,
+                            client_state=s.GRAPH_CLIENT_STATE,
+                        )
+                        # Reuse delta_link as a handle to the subscription id —
+                        # the notification endpoint looks it up there.
+                        cursor.delta_link = resp.get("id") or cursor.delta_link
+                        # Graph returns ISO-8601 expirationDateTime.
+                        raw_exp = resp.get("expirationDateTime")
+                        if raw_exp:
+                            try:
+                                cursor.push_subscription_expires_at = (
+                                    datetime.fromisoformat(raw_exp.replace("Z", "+00:00"))
+                                )
+                            except ValueError:
+                                pass
+                        graph_ok += 1
+                except Exception:
+                    failed += 1
+                    logger.exception(
+                        "Push subscription failed for integration %s (%s)",
+                        integ.id, integ.provider,
                     )
-                    # Reuse delta_link as a handle to the subscription id —
-                    # the notification endpoint looks it up there.
-                    cursor.delta_link = resp.get("id") or cursor.delta_link
-                    # Graph returns ISO-8601 expirationDateTime.
-                    raw_exp = resp.get("expirationDateTime")
-                    if raw_exp:
-                        try:
-                            cursor.push_subscription_expires_at = (
-                                datetime.fromisoformat(raw_exp.replace("Z", "+00:00"))
-                            )
-                        except ValueError:
-                            pass
-                    graph_ok += 1
-            except Exception:
-                failed += 1
-                logger.exception(
-                    "Push subscription failed for integration %s (%s)",
-                    integ.id, integ.provider,
-                )
         session.commit()
     finally:
         session.close()
@@ -3092,8 +3146,11 @@ def support_trend_scan() -> Dict[str, Any]:
         ).scalars().all()
 
         async def _run_for_one(t: Tenant) -> Tuple[str, Dict[str, Any]]:
+            from backend.app.tenant_ctx import tenant_context
+
             try:
-                result = await run_for_tenant(session, t)
+                with tenant_context(t.id, session):
+                    result = await run_for_tenant(session, t)
                 return str(t.id), result
             except Exception:
                 logger.exception(
@@ -3140,9 +3197,12 @@ def cohort_recommendation_scan() -> Dict[str, Any]:
         tenants = (
             session.execute(__import__("sqlalchemy").select(Tenant))
         ).scalars().all()
+        from backend.app.tenant_ctx import tenant_context
+
         for t in tenants:
             try:
-                by_tenant[str(t.id)] = run_for_tenant(session, t)
+                with tenant_context(t.id, session):
+                    by_tenant[str(t.id)] = run_for_tenant(session, t)
             except Exception:
                 logger.exception(
                     "Cohort recommendation scan failed for tenant %s",
@@ -3198,30 +3258,33 @@ def qbr_overdue_scan() -> Dict[str, Any]:
     notifications_sent = 0
     tenants_processed = 0
     try:
+        from backend.app.tenant_ctx import tenant_context
+
         tenants = session.execute(__import__("sqlalchemy").select(Tenant)).scalars().all()
         for tenant in tenants:
             try:
-                candidates = find_qbr_overdue_customers(session, tenant.id)
-                for customer in candidates:
-                    if not should_fire_qbr_overdue(session, customer):
-                        continue
-                    owner_id = customer.strongest_connection_user_id
-                    if owner_id is None:
-                        continue
-                    n = Notification(
-                        tenant_id=tenant.id,
-                        user_id=owner_id,
-                        kind="qbr_overdue",
-                        title=f"QBR overdue: {customer.name}",
-                        body=(
-                            f"No CS interaction in 90+ days. Schedule a "
-                            f"check-in with {customer.name}."
-                        ),
-                        link_url=f"/cs/accounts/{customer.id}",
-                    )
-                    session.add(n)
-                    notifications_sent += 1
-                session.commit()
+                with tenant_context(tenant.id, session):
+                    candidates = find_qbr_overdue_customers(session, tenant.id)
+                    for customer in candidates:
+                        if not should_fire_qbr_overdue(session, customer):
+                            continue
+                        owner_id = customer.strongest_connection_user_id
+                        if owner_id is None:
+                            continue
+                        n = Notification(
+                            tenant_id=tenant.id,
+                            user_id=owner_id,
+                            kind="qbr_overdue",
+                            title=f"QBR overdue: {customer.name}",
+                            body=(
+                                f"No CS interaction in 90+ days. Schedule a "
+                                f"check-in with {customer.name}."
+                            ),
+                            link_url=f"/cs/accounts/{customer.id}",
+                        )
+                        session.add(n)
+                        notifications_sent += 1
+                    session.commit()
                 tenants_processed += 1
             except Exception:
                 logger.exception(
@@ -3517,9 +3580,12 @@ def outcomes_backfill_all_tenants() -> Dict[str, Any]:
     totals: Dict[str, int] = {}
     tenants_done = 0
     try:
+        from backend.app.tenant_ctx import tenant_context
+
         for tenant in session.query(Tenant).all():
             try:
-                counts = run_all(session, tenant.id)
+                with tenant_context(tenant.id, session):
+                    counts = run_all(session, tenant.id)
                 for k, v in counts.items():
                     totals[k] = totals.get(k, 0) + v
                 tenants_done += 1
@@ -3542,9 +3608,12 @@ def calibration_fit_all_tenants() -> Dict[str, Any]:
     activated = 0
     skipped = 0
     try:
+        from backend.app.tenant_ctx import tenant_context
+
         for tenant in session.query(Tenant).all():
             try:
-                results = fit_all_scorers(session, tenant.id)
+                with tenant_context(tenant.id, session):
+                    results = fit_all_scorers(session, tenant.id)
                 for r in results:
                     if r.activated:
                         activated += 1
@@ -3568,9 +3637,12 @@ def irt_fit_all_tenants() -> Dict[str, Any]:
     session = _get_sync_session()
     summary: Dict[str, int] = {"templates_fit": 0, "items_fit": 0, "items_retired": 0}
     try:
+        from backend.app.tenant_ctx import tenant_context
+
         for tenant in session.query(Tenant).all():
             try:
-                results = fit_all_templates_for_tenant(session, tenant.id)
+                with tenant_context(tenant.id, session):
+                    results = fit_all_templates_for_tenant(session, tenant.id)
                 summary["templates_fit"] += len(results)
                 for r in results:
                     summary["items_fit"] += r.n_items_fitted
@@ -3591,9 +3663,12 @@ def churn_train_all_tenants() -> Dict[str, Any]:
     session = _get_sync_session()
     summary = {"trained": 0, "insufficient_data": 0}
     try:
+        from backend.app.tenant_ctx import tenant_context
+
         for tenant in session.query(Tenant).all():
             try:
-                result = train_for_tenant(session, tenant.id)
+                with tenant_context(tenant.id, session):
+                    result = train_for_tenant(session, tenant.id)
                 if result.status == "ok":
                     summary["trained"] += 1
                 else:
@@ -4016,10 +4091,13 @@ def crm_sync_daily() -> Dict[str, Any]:
                 (uuid.UUID(str(t)), p) for (t, p) in rows.all()
             }
 
+            from backend.app.tenant_ctx import tenant_context_async
+
             results: List[Dict[str, Any]] = []
             for tenant_id, provider in pairs:
                 try:
-                    summary = await sync_crm_for_tenant(db, tenant_id, provider)
+                    async with tenant_context_async(tenant_id, db):
+                        summary = await sync_crm_for_tenant(db, tenant_id, provider)
                     results.append(
                         {
                             "tenant_id": str(tenant_id),
@@ -4207,6 +4285,13 @@ def tenant_restore_from_s3(s3_key: str) -> Dict[str, Any]:
                 # column that was dropped since.
                 allowed = {c.name for c in table.columns}
                 row = {k: v for k, v in row.items() if k in allowed}
+                # RLS: exports are single-tenant bundles; bind the tenant
+                # from the first row that carries one so every INSERT's
+                # WITH CHECK evaluates under that tenant.
+                if row.get("tenant_id"):
+                    from backend.app.tenant_ctx import bind_tenant_async
+
+                    await bind_tenant_async(db, row["tenant_id"])
                 stmt = pg_insert(table).values(**row)
                 pk_cols = [c.name for c in table.primary_key]
                 if pk_cols:
@@ -4355,6 +4440,7 @@ def trial_expiry_daily() -> Dict[str, Any]:
 
     from backend.app.db import async_session
     from backend.app.models import Tenant, TenantDataOpsLog
+    from backend.app.tenant_ctx import tenant_context_async
 
     async def _runner() -> Dict[str, Any]:
         emitted = {"warned_3d": 0, "warned_1d": 0, "expired": 0}
@@ -4368,66 +4454,68 @@ def trial_expiry_daily() -> Dict[str, Any]:
             tenants = list((await db.execute(stmt)).scalars().all())
 
             for tenant in tenants:
-                ends = tenant.trial_ends_at
-                if ends is None:
-                    continue
-                seconds_left = (ends - now).total_seconds()
-                days_left = seconds_left / 86_400
+                async with tenant_context_async(tenant.id, db):
+                    ends = tenant.trial_ends_at
+                    if ends is None:
+                        continue
+                    seconds_left = (ends - now).total_seconds()
+                    days_left = seconds_left / 86_400
 
-                # Pick the first matching bucket. The thresholds are
-                # left-closed: anything in (1, 3] days fires the 3d
-                # bucket so the warning lands well before the 1d one.
-                bucket: Optional[str] = None
-                if seconds_left <= 0:
-                    bucket = "expired"
-                elif days_left <= 1:
-                    bucket = "warned_1d"
-                elif days_left <= 3:
-                    bucket = "warned_3d"
-                if bucket is None:
-                    continue
+                    # Pick the first matching bucket. The thresholds are
+                    # left-closed: anything in (1, 3] days fires the 3d
+                    # bucket so the warning lands well before the 1d one.
+                    bucket: Optional[str] = None
+                    if seconds_left <= 0:
+                        bucket = "expired"
+                    elif days_left <= 1:
+                        bucket = "warned_1d"
+                    elif days_left <= 3:
+                        bucket = "warned_3d"
+                    if bucket is None:
+                        continue
 
-                # Idempotency guard — skip if we already logged this
-                # bucket today.
-                day_key = now.strftime("%Y-%m-%d")
-                reason_key = f"trial_{bucket}:{day_key}"
-                already = (
-                    await db.execute(
-                        select(TenantDataOpsLog.id)
-                        .where(
-                            TenantDataOpsLog.tenant_id == tenant.id,
-                            TenantDataOpsLog.operation == "trial_notice",
-                            TenantDataOpsLog.reason == reason_key,
+                    # Idempotency guard — skip if we already logged this
+                    # bucket today.
+                    day_key = now.strftime("%Y-%m-%d")
+                    reason_key = f"trial_{bucket}:{day_key}"
+                    already = (
+                        await db.execute(
+                            select(TenantDataOpsLog.id)
+                            .where(
+                                TenantDataOpsLog.tenant_id == tenant.id,
+                                TenantDataOpsLog.operation == "trial_notice",
+                                TenantDataOpsLog.reason == reason_key,
+                            )
+                            .limit(1)
                         )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if already is not None:
-                    continue
+                    ).scalar_one_or_none()
+                    if already is not None:
+                        continue
 
-                if bucket == "expired":
-                    if (
-                        getattr(tenant, "subscription_status", None)
-                        != "expired"
-                    ):
-                        tenant.subscription_status = "expired"
-                logger.info(
-                    "trial_expiry_daily: tenant=%s bucket=%s ends_at=%s",
-                    tenant.id,
-                    bucket,
-                    ends.isoformat(),
-                )
-                db.add(
-                    TenantDataOpsLog(
-                        tenant_id=tenant.id,
-                        operation="trial_notice",
-                        status="success",
-                        reason=reason_key,
-                        counts={"days_left": round(days_left, 2)},
+                    if bucket == "expired":
+                        if (
+                            getattr(tenant, "subscription_status", None)
+                            != "expired"
+                        ):
+                            tenant.subscription_status = "expired"
+                    logger.info(
+                        "trial_expiry_daily: tenant=%s bucket=%s ends_at=%s",
+                        tenant.id,
+                        bucket,
+                        ends.isoformat(),
                     )
-                )
-                emitted[bucket] = emitted.get(bucket, 0) + 1
+                    db.add(
+                        TenantDataOpsLog(
+                            tenant_id=tenant.id,
+                            operation="trial_notice",
+                            status="success",
+                            reason=reason_key,
+                            counts={"days_left": round(days_left, 2)},
+                        )
+                    )
+                    emitted[bucket] = emitted.get(bucket, 0) + 1
 
+                    await db.flush()
             await db.commit()
         return emitted
 
@@ -4565,15 +4653,26 @@ def manager_anomaly_scan_all_tenants() -> Dict[str, Any]:
         from backend.app.models import ManagerAlert
 
         cutoff = _dt.now(_tz.utc) - _td(seconds=60)
-        fresh = (
-            session.execute(
-                _select(ManagerAlert).where(ManagerAlert.created_at >= cutoff)
-            )
-            .scalars()
-            .all()
-        )
-        fanout(session, fresh)
-        session.commit()
+        # Per tenant under its RLS context — an unscoped scan would see
+        # zero rows now that the policies are live.
+        from backend.app.models import Tenant
+        from backend.app.tenant_ctx import tenant_context
+
+        for tenant in session.query(Tenant).all():
+            with tenant_context(tenant.id, session):
+                fresh = (
+                    session.execute(
+                        _select(ManagerAlert).where(
+                            ManagerAlert.created_at >= cutoff,
+                            ManagerAlert.tenant_id == tenant.id,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if fresh:
+                    fanout(session, fresh)
+                    session.commit()
         return result
     finally:
         session.close()
