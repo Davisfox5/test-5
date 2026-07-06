@@ -126,6 +126,23 @@ async def hard_delete_tenant(
 
     await db.execute(delete(Tenant).where(Tenant.id == tenant_id))
     deleted_counts["tenants"] = 1
+
+    # The vector store is NOT relational cleanup: with the Qdrant backend
+    # the tenant's points (chunk text in payloads) would otherwise outlive
+    # the tenant in the shared collection. Best-effort — an unreachable
+    # vector store must not resurrect an already-deleted tenant.
+    try:
+        from backend.app.services.kb.vector_store import get_vector_store
+
+        await get_vector_store().purge_tenant(db, tenant_id)
+        deleted_counts["_vector_store"] = 1
+    except Exception:
+        logger.exception(
+            "Vector-store purge failed for tenant %s — orphaned vectors "
+            "remain; re-run purge_tenant manually",
+            tenant_id,
+        )
+
     return {
         "tenant_id": str(tenant_id),
         "deleted": deleted_counts,

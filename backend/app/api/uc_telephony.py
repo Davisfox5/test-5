@@ -51,6 +51,7 @@ from backend.app.services.telephony.uc.base import (
     get_provider,
 )
 from backend.app.services.telephony.uc.zoom_phone import ZoomPhoneProvider
+from backend.app.tenant_ctx import bind_tenant_async
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -91,6 +92,11 @@ async def _resolve_integration(
     delivery (wrong tenant in the URL) should fail loudly enough that
     the operator notices.
     """
+    # Single choke point for all three vendor webhooks — bind the
+    # path tenant_id before the Tenant/Integration reads (both
+    # bootstrap-readable) so the later UcRecordingJob upsert, which
+    # runs on this same session, has the GUC armed.
+    await bind_tenant_async(db, tenant_id)
     tenant = await db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="Unknown tenant")

@@ -508,13 +508,33 @@ def _audio_content_hash(audio_path: str) -> Optional[str]:
         return None
 
 
+def _diarization_cache_key(audio_hash: str) -> Optional[str]:
+    """Tenant-scoped cache key, or ``None`` when no tenant context is bound.
+
+    Keying on audio bytes alone let two tenants who upload byte-identical
+    audio share cached speaker labels (cross-tenant leak, 4c audit). The
+    pipeline binds the RLS tenant context before transcription, so the
+    tenant is in scope here; a path that hasn't bound one gets no caching
+    rather than a shared bucket.
+    """
+    from backend.app.tenant_ctx import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id()
+    if tenant_id is None:
+        return None
+    return "diarization:{0}:{1}".format(tenant_id, audio_hash)
+
+
 def _diarization_cache_get(audio_hash: str) -> Optional[List[_DiarTurn]]:
     try:
+        key = _diarization_cache_key(audio_hash)
+        if key is None:
+            return None
         import json as _json
         import redis as _redis_lib  # type: ignore
 
         r = _redis_lib.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
-        raw = r.get(f"diarization:{audio_hash}")
+        raw = r.get(key)
         if not raw:
             return None
         return [
@@ -528,12 +548,15 @@ def _diarization_cache_get(audio_hash: str) -> Optional[List[_DiarTurn]]:
 
 def _diarization_cache_set(audio_hash: str, turns: List[_DiarTurn]) -> None:
     try:
+        key = _diarization_cache_key(audio_hash)
+        if key is None:
+            return
         import json as _json
         import redis as _redis_lib  # type: ignore
 
         r = _redis_lib.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
         r.set(
-            f"diarization:{audio_hash}",
+            key,
             _json.dumps(
                 [{"start": t.start, "end": t.end, "speaker": t.speaker} for t in turns]
             ),

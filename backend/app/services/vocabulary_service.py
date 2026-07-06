@@ -171,11 +171,14 @@ def _discover_for_tenant(session: Session, tenant: Tenant) -> int:
 
 
 def discover_candidates_all_tenants(session: Session) -> Dict[str, Any]:
+    from backend.app.tenant_ctx import tenant_context
+
     tenants = session.query(Tenant).all()
     total = 0
     for tenant in tenants:
         try:
-            total += _discover_for_tenant(session, tenant)
+            with tenant_context(tenant.id, session):
+                total += _discover_for_tenant(session, tenant)
         except Exception:
             logger.exception("Vocabulary discovery failed for tenant %s", tenant.id)
     session.commit()

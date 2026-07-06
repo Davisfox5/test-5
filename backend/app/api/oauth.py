@@ -56,6 +56,7 @@ from backend.app.models import (
     Tenant,
 )
 from backend.app.services.token_crypto import decrypt_token, encrypt_token
+from backend.app.tenant_ctx import bind_tenant_async
 
 router = APIRouter()
 settings = get_settings()
@@ -1065,6 +1066,11 @@ async def oauth_callback(
     tenant_id = uuid.UUID(state_payload["tenant_id"])
     user_id_raw = state_payload.get("user_id")
     user_id = uuid.UUID(user_id_raw) if user_id_raw else None
+
+    # State comes from Redis (via _pop_state), not the DB — bind as soon
+    # as it's known, before any provider branch below touches
+    # tenant-scoped rows (_upsert_integration and friends).
+    await bind_tenant_async(db, tenant_id)
 
     # Use the redirect_uri stashed at authorize time — defends against
     # host-header injection that would otherwise let a misconfigured

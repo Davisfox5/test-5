@@ -21,6 +21,25 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # Real Postgres for the RLS isolation tests (tests/test_rls_isolation.py)
+    # — row-level security doesn't exist in the SQLite fixtures. The suite
+    # auto-skips those tests when this service is absent, so removing it
+    # silently disables the tenant-isolation gate. Don't.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: linda_owner
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: linda_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U linda_owner -d linda_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       OPENAI_API_KEY_DECLAN: ${{ secrets.OPENAI_API_KEY_DECLAN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -32,6 +51,8 @@ jobs:
       INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
       # Stub envs so backend modules import without talking to real services.
       DATABASE_URL: "postgresql://stub:stub@stub:5432/stub"
+      # Owner DSN for the RLS isolation tests (matches the service above).
+      TEST_POSTGRES_URL: "postgresql://linda_owner:test@localhost:55432/linda_test"
       ANTHROPIC_API_KEY: "sk-ant-stub"
       JWT_SECRET: "stub"
       REDIS_URL: "redis://localhost:6379/0"

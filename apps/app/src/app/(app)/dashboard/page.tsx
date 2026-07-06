@@ -8,11 +8,10 @@ import {
     sentimentLabel,
     useDashboardSummary,
     useInteractions,
-    useOpenActionItems,
-    type ActionItemOut,
     type DashboardPeriod,
     type InteractionOut,
 } from "@/lib/interactions";
+import { useActionPlans, type ActionStep } from "@/lib/action-plans";
 import {
     useBusinessHealth,
     useCoachingInsights,
@@ -38,16 +37,10 @@ function callHref(row: { id: string; customer_id: string | null }): string {
     return `/interactions/${row.id}`;
 }
 
-// Same idea for action items — anchor to the Action items tab.
-function actionItemHref(item: {
-    id: string;
-    interaction_id: string;
-    customer_id: string | null;
-}): string {
-    if (item.customer_id) {
-        return `/customers/${item.customer_id}?tab=action_items&focus=action-${item.id}`;
-    }
-    return `/interactions/${item.interaction_id}`;
+// Same idea for open action-plan steps — steps don't have their own
+// route, so land on the parent plan's detail page.
+function actionPlanHref(planId: string): string {
+    return `/action-plans/${planId}`;
 }
 
 const PERIODS: { value: DashboardPeriod; label: string }[] = [
@@ -57,6 +50,13 @@ const PERIODS: { value: DashboardPeriod; label: string }[] = [
     { value: "60d", label: "60d" },
     { value: "90d", label: "90d" },
 ];
+
+// Pipeline dual-write into the legacy ActionItem table is retired —
+// the dashboard widget now flattens the ActionPlan DAG directly.
+// ActionItem stays alive only for manually created tasks elsewhere in
+// the app. These are the step states a rep can actually act on right
+// now (blocked/done/skipped/deleted are excluded).
+const ACTIONABLE_STEP_STATES = new Set(["ready", "in_progress", "awaiting_response"]);
 
 export default function DashboardPage() {
     const me = useMe();
@@ -84,7 +84,7 @@ export default function DashboardPage() {
             refetchOnWindowFocus: true,
         },
     );
-    const actionItems = useOpenActionItems(5);
+    const openPlans = useActionPlans({ status: "active" });
     const oauth = useOAuthStatus();
     const [uploadOpen, setUploadOpen] = useState(false);
     const [inviteOpen, setInviteOpen] = useState(false);
@@ -115,6 +115,21 @@ export default function DashboardPage() {
     // averaged weighted by per-channel call count. MUST stay above the
     // early-return guards so the hook count is stable across renders.
     const trendPoints = useMemoTrendPoints(trends.data);
+
+    // Flatten active plans down to their first few actionable steps.
+    // Order follows the API's created_at desc plan ordering, then each
+    // plan's own step order. MUST stay above the early-return guards.
+    const openSteps = useMemo(() => {
+        const out: ActionStep[] = [];
+        for (const plan of openPlans.data?.items ?? []) {
+            for (const step of plan.steps) {
+                if (ACTIONABLE_STEP_STATES.has(step.state)) {
+                    out.push(step);
+                }
+            }
+        }
+        return out.slice(0, 5);
+    }, [openPlans.data]);
 
     if (me.isLoading) return <p className="text-text-muted">Loading…</p>;
     if (me.error || !me.data)
@@ -442,14 +457,14 @@ export default function DashboardPage() {
                         </Link>
                     }
                 >
-                    {actionItems.isLoading ? (
+                    {openPlans.isLoading ? (
                         <RowSkeleton rows={3} />
-                    ) : actionItems.error ? (
+                    ) : openPlans.error ? (
                         <ErrorRow message="Couldn't load action items." />
-                    ) : actionItems.data && actionItems.data.length > 0 ? (
+                    ) : openSteps.length > 0 ? (
                         <ul className="divide-y divide-border">
-                            {actionItems.data.map((item) => (
-                                <ActionItemRow key={item.id} item={item} />
+                            {openSteps.map((step) => (
+                                <ActionStepRow key={step.id} step={step} />
                             ))}
                         </ul>
                     ) : (
@@ -1230,26 +1245,26 @@ function RecentCallRow({ row }: { row: InteractionOut }) {
     );
 }
 
-function ActionItemRow({ item }: { item: ActionItemOut }) {
+function ActionStepRow({ step }: { step: ActionStep }) {
     return (
         <li>
             <Link
-                href={actionItemHref(item)}
+                href={actionPlanHref(step.plan_id)}
                 className="flex items-center justify-between gap-3 rounded-md px-3 py-3 hover:bg-bg-card-hover"
             >
                 <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">
-                        {item.title}
+                        {step.title}
                     </div>
                     <div className="mt-0.5 text-xs text-text-subtle">
-                        {item.priority} · due{" "}
-                        {item.due_date
-                            ? new Date(item.due_date).toLocaleDateString()
+                        {step.priority} · due{" "}
+                        {step.due_date
+                            ? new Date(step.due_date).toLocaleDateString()
                             : "-"}
                     </div>
                 </div>
                 <span className="text-xs uppercase tracking-wide text-text-subtle">
-                    {item.status}
+                    {step.state}
                 </span>
             </Link>
         </li>

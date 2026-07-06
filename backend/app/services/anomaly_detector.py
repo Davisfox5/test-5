@@ -120,12 +120,15 @@ def scan_tenant(session: Session, tenant: Tenant) -> List[ManagerAlert]:
 def scan_all_tenants(session: Session) -> Dict[str, Any]:
     """Beat-task entrypoint. Iterates every tenant, collects per-tenant
     inserted-alert counts, never lets one failure abort the batch."""
+    from backend.app.tenant_ctx import tenant_context
+
     tenants = session.execute(select(Tenant)).scalars().all()
     by_tenant: Dict[str, int] = {}
     total = 0
     for tenant in tenants:
         try:
-            inserted = scan_tenant(session, tenant)
+            with tenant_context(tenant.id, session):
+                inserted = scan_tenant(session, tenant)
             by_tenant[str(tenant.id)] = len(inserted)
             total += len(inserted)
         except Exception:
@@ -144,18 +147,23 @@ def resolve_stale(session: Session, *, dry_run: bool = False) -> int:
     recent 24h window. Releases the partial-unique slot so a recurring
     spike can re-fire.
     """
+    from backend.app.tenant_ctx import tenant_context
+
     now = datetime.now(timezone.utc)
-    stmt = select(ManagerAlert).where(
-        ManagerAlert.resolved_at.is_(None),
-        ManagerAlert.opened_at < now - timedelta(hours=12),
-    )
-    rows = session.execute(stmt).scalars().all()
     resolved = 0
-    for alert in rows:
-        if _still_active(session, alert):
-            continue
-        alert.resolved_at = now
-        resolved += 1
+    for tenant in session.execute(select(Tenant)).scalars().all():
+        with tenant_context(tenant.id, session):
+            stmt = select(ManagerAlert).where(
+                ManagerAlert.tenant_id == tenant.id,
+                ManagerAlert.resolved_at.is_(None),
+                ManagerAlert.opened_at < now - timedelta(hours=12),
+            )
+            rows = session.execute(stmt).scalars().all()
+            for alert in rows:
+                if _still_active(session, alert):
+                    continue
+                alert.resolved_at = now
+                resolved += 1
     if resolved and not dry_run:
         session.commit()
     return resolved

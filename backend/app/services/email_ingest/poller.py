@@ -233,6 +233,7 @@ def poll_all(session: Session) -> dict:
     ``settings.EMAIL_POLL_FORCE_ALL = True`` in the env.
     """
     from backend.app.config import get_settings
+    from backend.app.tenant_ctx import tenant_context
 
     settings = get_settings()
     force_all = bool(getattr(settings, "EMAIL_POLL_FORCE_ALL", False))
@@ -299,14 +300,16 @@ def poll_all(session: Session) -> dict:
                 summary["skipped_healthy_push"] += 1
                 continue
         try:
-            count = poll_integration(session, integ)
+            with tenant_context(integ.tenant_id, session):
+                count = poll_integration(session, integ)
         except IntegrationAuthError as exc:
             # Expected, non-retryable: log at WARNING (not ERROR, so the
             # Sentry logging integration doesn't turn it into an event)
             # and flag the integration so we stop polling it.
             logger.warning("Integration %s needs re-auth: %s", integ.id, exc)
             session.rollback()
-            mark_needs_reauth(session, integ)
+            with tenant_context(integ.tenant_id, session):
+                mark_needs_reauth(session, integ)
             summary["needs_reauth"] += 1
             continue
         except Exception:

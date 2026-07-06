@@ -64,6 +64,7 @@ A single FastAPI application plus a Celery worker/beat, sharing the same code an
 | `api/` | One module per router group (`interactions.py`, `manager.py`, `knowledge_base.py`, `scorecards.py`, `action_plans.py`, `telephony.py`, `sso_provisioning.py`, `scim.py`, `stripe_webhook.py`, `siprec.py`, `uc_telephony.py`, `teams_recording.py`, `audiohook.py`, `websocket.py`, …) |
 | `services/` | ~100 service modules + subpackages (`action_plan/`, `audio/`, `crm/`, `email/`, `email_ingest/`, `kb/`, `meeting_scheduler/`, `telephony/`, `teams_recording/`). Business logic lives here; routers stay thin. |
 | `auth.py` | API-key + per-user auth, tenant scoping, scope checks |
+| `rls.py`, `tenant_ctx.py` | **Tenant isolation backstop.** Postgres row-level security on every tenant-scoped table (fail closed: no tenant GUC → zero rows). `rls.py` owns the table classification + policy DDL (shared by migrations and tests); `tenant_ctx.py` re-arms `app.current_tenant` on every transaction from a ContextVar set by auth / Celery task binding / webhook handlers. Runtime engines connect as the non-owner `linda_app` role via `APP_DATABASE_URL`; the owner DSN (`DATABASE_URL`) is the bypass path for Alembic/admin. New table? Follow the checklist in `tests/test_rls_scoping_guard.py`. |
 | `config.py` | Pydantic-settings `Settings`; all env-driven config |
 | `db.py` | SQLAlchemy engine/session setup (async for the API, sync engine for Celery tasks) |
 | `observability.py`, `logging_setup.py` | Sentry (optional) + structured logging |
@@ -75,10 +76,11 @@ A single FastAPI application plus a Celery worker/beat, sharing the same code an
 `InteractionScore` / `InteractionSnippet` / `InteractionComment`, knowledge base
 (`KBDocument` / `KBChunk`), CRM (`CrmDealRecord` / `CrmSyncLog`), and the action model.
 
-> **Action model is mid-migration.** `ActionItem` (`action_items`) is the **legacy** flat-list
-> shape; the current shape is the DAG of `ActionPlan` → `ActionStep` (`action_plans` /
-> `action_steps`, plus `StepArtifact` / `StepResponse`). Both coexist during cutover — see
-> `models.py` for the authoritative status before assuming either is dead.
+> **Action model: the DAG is canonical (4b cutover, 2026-07).** The analysis pipeline writes
+> only `ActionPlan` → `ActionStep` (`action_plans` / `action_steps`, plus `StepArtifact` /
+> `StepResponse`); the raw LLM suggestions also land in `Interaction.insights['action_items']`.
+> `ActionItem` (`action_items`) remains **only** for manually created tasks (POST
+> /action-items, Linda chat proposals, manager triage) — the pipeline no longer dual-writes it.
 
 ### 2.2 Async pipeline & scheduled work
 
@@ -117,7 +119,7 @@ what runs and when.**
 
 | System | Used for |
 |---|---|
-| **Postgres** | Primary datastore (SQLAlchemy 2.0, migrations via Alembic in `backend/alembic/`) |
+| **Postgres** | Primary datastore (SQLAlchemy 2.0, migrations via Alembic in `backend/alembic/`). Row-level security enforces tenant isolation on every tenant-scoped table — see `backend/app/rls.py` and §2. |
 | **Redis** | Celery broker, pub/sub, sessions, rate limiting |
 | **Qdrant** | Knowledge-base RAG vectors |
 | **Elasticsearch** | Full-text transcript search |

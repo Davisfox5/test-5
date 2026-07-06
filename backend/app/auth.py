@@ -639,6 +639,10 @@ async def _principal_from_clerk(
     if user is None:
         return None
 
+    # Tenant known — arm RLS before the JIT block below, which reads
+    # tenant-scoped provisioning rules and may update the user row.
+    await _arm_tenant_rls(db, user.tenant_id)
+
     # JIT motion-scope provisioning. When the JWT carries an IDP groups
     # claim, apply matching ``motion_provisioning_rule`` rows so changes
     # at the IDP (group add/remove) reflect on the next login without
@@ -685,6 +689,19 @@ async def _principal_from_clerk(
     )
 
 
+async def _arm_tenant_rls(db: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Bind the authenticated tenant for row-level security.
+
+    Sets the ContextVar (so ``tenant_ctx`` re-arms the ``app.current_tenant``
+    GUC on every later transaction in this request) AND issues set_config on
+    the transaction that is already open — the credential lookup began it
+    before the tenant was known. Idempotent; safe to call more than once.
+    """
+    from backend.app.tenant_ctx import bind_tenant_async
+
+    await bind_tenant_async(db, tenant_id)
+
+
 async def get_current_principal(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -707,6 +724,11 @@ async def get_current_principal(
         principal = await _principal_from_clerk(request, db)
     if principal is None:
         raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+    # RLS: from here on, every query in this request is scoped to the
+    # authenticated tenant (the _principal_from_* helpers arm earlier when
+    # they read tenant-scoped tables themselves).
+    await _arm_tenant_rls(db, principal.tenant.id)
 
     # Comped-account detection (the owner's own app — full free access).
     # Resolved once here and stamped on the tenant so the sync plan helpers

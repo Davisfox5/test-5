@@ -34,6 +34,25 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
 
+    # RLS posture check: if the runtime connection is the table owner (or
+    # holds BYPASSRLS), every tenant-isolation policy is silently skipped.
+    # Expected in dev; in staging/production it means APP_DATABASE_URL
+    # wasn't set and the backstop is OFF. Warn loudly — never block boot.
+    try:
+        from backend.app.rls import runtime_bypasses_rls
+
+        async with engine.connect() as conn:
+            bypass_reason = await conn.run_sync(runtime_bypasses_rls)
+        if bypass_reason:
+            logging.getLogger("backend.app.main").warning(
+                "RLS BACKSTOP INACTIVE: %s — the app is connecting with a "
+                "role that bypasses row-level security. Set APP_DATABASE_URL "
+                "to the non-owner linda_app role's DSN.",
+                bypass_reason,
+            )
+    except Exception:  # pragma: no cover — posture check must never block boot
+        pass
+
     # SIPREC idle reaper: finalises sessions whose Redis state
     # expired because the SRS died without recording.stopped. Runs in
     # every worker; reaping is idempotent so the overlap is harmless.

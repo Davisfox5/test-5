@@ -461,3 +461,52 @@ def test_white_label_tenant_gets_404_on_ping_confirm_cancel():
     with pytest.raises(HTTPException) as exc3:
         asyncio.run(chat_module.cancel_proposal(uuid.uuid4(), tenant=wl_tenant, db=session))
     assert exc3.value.status_code == 404
+
+
+# ── get_or_create_conversation against a real mapper ──────────────────────
+#
+# Regression: LindaChatConversation was an id-only stub for a while (the DB
+# table had tenant_id/user_id/title from migration a1b2c3d4e5f6 but the
+# model didn't), so this function raised AttributeError in production.
+# Runs against the shared SQLite fixtures — a scripted-mock session would
+# not have caught the mapper drift.
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_conversation_round_trips(test_session, test_tenant):
+    from backend.app.services.linda_agent import get_or_create_conversation
+
+    convo = await get_or_create_conversation(
+        test_session, test_tenant, None, conversation_id=None
+    )
+    await test_session.commit()
+    assert convo.tenant_id == test_tenant.id
+
+    again = await get_or_create_conversation(
+        test_session, test_tenant, None, conversation_id=convo.id
+    )
+    assert again.id == convo.id
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_conversation_ignores_foreign_tenants_id(
+    test_session, test_tenant
+):
+    from backend.app.models import Tenant
+    from backend.app.services.linda_agent import get_or_create_conversation
+
+    other = Tenant(name="Other", slug=f"other-{uuid.uuid4().hex[:8]}")
+    test_session.add(other)
+    await test_session.commit()
+
+    theirs = await get_or_create_conversation(
+        test_session, other, None, conversation_id=None
+    )
+    await test_session.commit()
+
+    # Asking for their conversation id under OUR tenant must not return it.
+    mine = await get_or_create_conversation(
+        test_session, test_tenant, None, conversation_id=theirs.id
+    )
+    assert mine.id != theirs.id
+    assert mine.tenant_id == test_tenant.id

@@ -51,6 +51,8 @@ def _format_message(tenant: Tenant, candidates: List[VocabularyCandidate]) -> st
 
 def send_vocabulary_digests(session: Session) -> Dict[str, Any]:
     """Iterate every tenant with a configured Slack webhook + pending candidates."""
+    from backend.app.tenant_ctx import tenant_context
+
     tenants = session.query(Tenant).all()
     notif = NotificationService()
     sent = 0
@@ -58,12 +60,13 @@ def send_vocabulary_digests(session: Session) -> Dict[str, Any]:
         webhook = (tenant.features_enabled or {}).get("slack_vocab_digest_webhook")
         if not webhook:
             continue
-        cands = _candidates_for_tenant(session, tenant.id)
-        if not cands:
-            continue
-        try:
-            asyncio.run(notif.notify_slack(webhook, _format_message(tenant, cands)))
-            sent += 1
-        except Exception:
-            logger.exception("Vocab digest send failed for tenant %s", tenant.id)
+        with tenant_context(tenant.id, session):
+            cands = _candidates_for_tenant(session, tenant.id)
+            if not cands:
+                continue
+            try:
+                asyncio.run(notif.notify_slack(webhook, _format_message(tenant, cands)))
+                sent += 1
+            except Exception:
+                logger.exception("Vocab digest send failed for tenant %s", tenant.id)
     return {"tenants_notified": sent}

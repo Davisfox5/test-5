@@ -1,6 +1,7 @@
 # 04 — Multi-tenant isolation + mid-flight action-model migration
 
-**Status:** 🟢 Plan agreed (isolation) · 🟡 Discussing (action-model cutover)
+**Status:** 🔵 Implemented on `claude/tenant-isolation-rls` (isolation + 4b cutover) — pending
+review/merge; backstop goes live in staging/prod via the §9 ops runbook (role + APP_DATABASE_URL).
 **Owner:** _tbd_ · **Working doc — evolves as we design.**
 
 > **Pre-launch lens (2026-07).** Zero tenants, zero production data. This is the *cheapest
@@ -13,7 +14,8 @@
 ## 1. The problem in one sentence
 
 Tenant isolation — the core guarantee of a white-label B2B product — is enforced only by
-**213 hand-written `.tenant_id == …` filters across 44 API files**, with no runtime backstop,
+**215 hand-written `.tenant_id == …` filters across 44 API files** (recounted 2026-07-05;
+was 213 when first written), with no runtime backstop,
 and the same logical-filter-only pattern repeats in the vector store; a single forgotten filter
 in any current or future code path silently leaks one customer's data to another. Separately,
 the action model is mid-cutover with **non-atomic dual writes** that can leave records
@@ -32,18 +34,41 @@ deal-ending. There's no partial credit: 212 correct filters and one miss is a br
 - Auth/authz **is** centralized: `auth.py` `get_current_principal` resolves the tenant;
   `require_role` / `require_scope` gate access. This part is strong.
 - But **row-level data scoping is manual**: the dep hands you `principal.tenant.id`; each query
-  must filter on it by hand. **213 occurrences of `.tenant_id ==` across 44 files**
-  (`api/contacts.py` 29, `api/manager.py` 14, `api/admin.py` 12, `api/action_plans.py` 9, …).
+  must filter on it by hand. **215 occurrences of `.tenant_id ==` across 44 files**
+  (`api/contacts.py` 29, `api/manager.py` 14, `api/admin.py` 12, `api/action_items.py` 11, …).
 - **No runtime backstop:** no Postgres RLS, no SQLAlchemy `with_loader_criteria`/global filter.
   Verified by grep — nothing enforces tenant scope if a query omits the filter.
-- **The schema is already RLS-ready:** `tenant_id` is present and consistent across ~84
-  tenant-scoped tables via CASCADE FKs, so adding policies is mechanical rather than a redesign.
+- **The schema is already RLS-ready:** 90 tables total; **83 carry a `tenant_id` column** in the
+  ORM (plus one more in the DB only — see the drift bug below), so adding policies is mechanical
+  rather than a redesign.
+- **ORM/DB drift bug (found in verification, 2026-07-05):** the `linda_chat_conversations`
+  *table* has `tenant_id` / `user_id` / `title` columns (migration `a1b2c3d4e5f6`), but the
+  `LindaChatConversation` *model* is a stub with only `id` — so
+  `get_or_create_conversation` (`services/linda_agent.py:610`, called from `api/chat.py:239`)
+  raises `AttributeError` at runtime. Must be fixed as part of this work: the RLS roll-out and
+  the scoping guard test are driven off ORM metadata.
 
 ### The legitimately-global tables (must be exempt from any blanket rule)
+Verified 2026-07-05 — the complete no-`tenant_id` set is **7 tables**:
+- `tenants` — the root table itself.
 - `PromptVariant` (`models.py:2491`) — versioned prompts, cross-tenant by design.
-- `CrossTenantAnalytic` (`models.py:2599`) — aggregate metrics, "no tenant_id by design."
-- `EvaluationReferenceSet` (`models.py:2548`) — `tenant_id` nullable; global reference sets.
-- Also: the synthetic **API-key admin principal** and any reseller/admin cross-tenant surface.
+- `CrossTenantAnalytic` (`models.py:2602`) — aggregate metrics, "no tenant_id by design."
+- `Experiment` (`models.py:2561`) — global experiment catalog.
+- `LLMCeilingRecommendation` — system-level LLM telemetry aggregate.
+- `DemoEmailCapture` — marketing lead capture, pre-tenant (`converted_tenant_id` only).
+- `linda_chat_conversations` — **not** actually global; tenant-scoped in the DB but the ORM
+  stub hides it (drift bug above).
+
+Nullable-`tenant_id` tables (NULL = global row; policies must handle both):
+`category_taxonomy`, `scorer_versions`, `evaluation_reference_sets` (`models.py:2548`),
+`dropped_outcome_events`, `llm_call_telemetry`.
+
+**Correction (verified):** there is **no cross-tenant/admin principal** today. The synthetic
+API-key principal (`auth.py:471-523`) is *tenant-scoped* admin (`role="admin"`, `user=None`),
+and no API surface legitimately queries across tenants (the Stripe webhook resolves a single
+tenant by `stripe_customer_id`). The only cross-tenant actors are **Celery beat orchestration**
+(jobs that iterate all tenants) and **Alembic migrations** — the bypass path needs to serve
+those two, not the API.
 
 ### Enforcement options (defense-in-depth menu)
 - **RLS (Postgres row-level security).** Per-request `SET LOCAL app.current_tenant`; policies on
@@ -66,7 +91,9 @@ These compose. The chosen posture (see §8) is **RLS as the runtime backstop + a
 Legacy `ActionItem` (flat ~79-col list) and the new `ActionPlan → ActionStep →
 StepArtifact/StepResponse` DAG both write on every interaction. Plan synthesis runs in a
 *separate* AsyncSession with an independent commit outside the sync transaction and "never blocks
-the pipeline — on any error we log and continue" (`tasks.py:1737–1869`, esp. `:1742`). So an
+the pipeline — on any error we log and continue" (`tasks.py:1673–1901` as of 2026-07-05: ActionItem
+rows commit at `:1775`, plan synthesis commits independently at `:1869`, log-and-continue at
+`:1742` and `:1880-1900`). So an
 `ActionItem` can exist with no `ActionPlan`: not atomic, dual-read schema skew for clients, no
 deprecation timeline. **Pre-launch, with nothing to migrate, we can simply finish the cutover:**
 pick the DAG as canonical, stop dual-writing, retire the legacy path. Tracked here; sequenced as a
@@ -78,12 +105,12 @@ fast follow after isolation (§8).
 today it relies on the same logical-filter pattern elsewhere — so the backstop work is incomplete
 if it stops at the database. Surface inventory:
 
-| Store | Used for | Current scoping | Risk |
+| Store | Used for | Current scoping (verified 2026-07-05) | Risk |
 |---|---|---|---|
-| **Qdrant** | KB / RAG vectors | **Single shared collection** (`vector_store.py:225`), payload filter at query time | **High** — same "forget the filter → cross-tenant RAG leakage" pattern as Postgres, no backstop |
-| **S3** | Call audio | Tenant-prefixed key `recordings/{tenant_id}/…` (`s3_audio.py:65`); IAM scoping deferred | Medium — isolation by app convention, not enforced by the storage layer |
-| **Elasticsearch** | Transcript full-text search | **Unverified** — index-per-tenant vs shared-index-with-filter | Unknown — must confirm |
-| **Redis** | Broker, cache, sessions, rate-limit | Tenant-config cache namespaced (`tenant_cache.py`); session/rate-limit keys unverified | Low–Medium — mostly ephemeral, but verify session/key scoping |
+| **Qdrant** | KB / RAG vectors | **Single shared collection** `kb_chunks` (`vector_store.py:195-334`), payload filter hardcoded into `search`/`delete_doc`. **But:** `VECTOR_BACKEND` defaults to `pgvector` (in-Postgres, so RLS covers it); Qdrant is flag-activated. **And** a second, orphaned per-tenant-collection implementation (`kb_document_retrieval.py:137-273`) is still called by `email_reply.py:276` + `personalization_service.py` — its vector path queries `kb_tenant_{id}` collections that ingestion never populates, so it dead-ends into the (tenant-scoped) SQL keyword ranker. Tenant hard-delete (`tenant_dataops.py`) never cleans Qdrant. | **Medium-High** — no structural backstop when the qdrant backend is active; two client implementations = the choke point doesn't exist yet; orphaned vectors survive offboarding |
+| **S3** | Call audio | **Verified:** tenant-prefixed key `recordings/{tenant_id}/…` (`s3_audio.py:65`); keys are read back only from DB columns, never accepted from clients; local-dir fallback flattens paths (no traversal). IAM scoping deferred. | Medium — isolation by app convention, not enforced by the storage layer |
+| **Elasticsearch** | Transcript full-text search | **Verified: index-per-tenant** (`linda-interactions-{tenant_id}`, `search_service.py:27,68,109`) — cross-tenant search is structurally impossible | Low — scoped by design |
+| **Redis** | Broker, cache, sessions, rate-limit | **Verified:** tenant-scoped keys throughout (`tenant:cfg:v1:{tid}`, `notif:{tid}:{uid}`, chat rate-limit, KB debounce; OAuth state via single-use random token). **One gap:** diarization cache keyed `diarization:{audio_hash}` only (`transcription.py:517`) — identical audio uploaded by two tenants shares the cached speaker labels. | Low — one key needs a tenant prefix |
 
 Also note a **second scoping layer *below* tenant**: `kb_documents.customer_id` (nullable →
 tenant-wide vs customer-only) and `user.agent_domains` / `manager_domains` (JSONB, not
@@ -92,8 +119,10 @@ application-enforced and needs its own test coverage.
 
 **Highest-leverage move here:** funnel Qdrant access through a single search wrapper that *always*
 injects the tenant payload filter (a choke point, like RLS is for Postgres), plus a test that a
-cross-tenant vector search returns nothing. Consider per-tenant collections only if the shared
-collection becomes a scale or blast-radius concern.
+cross-tenant vector search returns nothing. Concretely that means **retiring the orphaned
+`kb_document_retrieval.py` QdrantStore** (pointing its two callers at the `vector_store.py`
+choke point) and adding **tenant offboarding cleanup** for vectors. Consider per-tenant
+collections only if the shared collection becomes a scale or blast-radius concern.
 
 ## 6. The pre-launch advantage (why now)
 
@@ -111,6 +140,27 @@ a cross-tenant read returns zero rows through **both** the async and sync engine
 single make-or-break question (does the per-connection tenant GUC work cleanly with our pooling +
 sync/async split?) cheaply. Pair it with a **scoping test guard** that inventories tenant-scoped
 tables so we can measure the gap and prevent regressions immediately.
+
+### Constraints discovered in verification (2026-07-05) that shape the spike
+- **Owner bypasses RLS.** The app connects as the single Neon user that *owns* the tables;
+  plain `ENABLE ROW LEVEL SECURITY` would be silently ignored for it. Either `FORCE ROW LEVEL
+  SECURITY` (owner subject too; migrations/beat then need an explicit escape hatch) or a
+  separate non-owner `linda_app` role for the runtime engines (owner URL stays the natural
+  BYPASSRLS path for Alembic/admin).
+- **`SET LOCAL` is transaction-scoped and handlers commit mid-request**, so the GUC must be
+  re-armed on *every* transaction begin — a SQLAlchemy `after_begin` session event reading a
+  ContextVar, attached to both engines, not a one-shot `SET` in `get_db`. The ContextVar plumbing
+  half-exists: `tenant_id_var` (`logging_setup.py`) is bound to the *authenticated* tenant in
+  `get_current_principal` (`auth.py:727`); Celery's `task_prerun` binds request/interaction ids
+  but **not** tenant.
+- **Auth bootstrap:** `get_current_principal` must read `tenants` / `api_keys` / `users` *before*
+  any tenant is known — those lookups can't sit behind a tenant-GUC policy unmodified.
+- **Beat jobs iterate all tenants inside one sync session** (e.g. trend/cohort scans in
+  `tasks.py`), so the Celery context must support switching tenant per loop iteration, and a
+  forgotten GUC must fail *loud*, not as silent zero-row scans.
+- **CI runs the suite on in-memory SQLite** (`tests/db_fixtures.py`) — RLS is untestable there.
+  RLS integration tests need real Postgres: Docker locally, a `postgres` service container in
+  `ci-cd.yml`, and an auto-skip marker when no Postgres is reachable.
 
 ## 8. Chosen approach — Architecture Decision Record
 
@@ -171,9 +221,43 @@ The evolution is additive: route the triggering tenant to its own database behin
 application code, keeping pooled+RLS for everyone else. **Pooled+RLS forecloses none of this** —
 which is exactly why it's safe to commit to now. Revisit this ADR if any trigger appears.
 
-## 9. Implementation increments
+## 9. Decisions resolved 2026-07-05 (owner sign-off)
 
-_To be sequenced from §7 → §8 once the spike lands. Each increment: red tests first → implement →
-verify. Rough order: (1) one-table RLS spike + GUC plumbing, (2) scoping test guard, (3) roll RLS to
-all tenant-scoped tables + global allow-list, (4) Qdrant choke point + test, (5) ES/Redis
-verification, (6) action-model cutover (4b)._
+- **(a) GUC plumbing:** non-owner `linda_app` role for the runtime engines (`APP_DATABASE_URL`);
+  the owner DSN stays for Alembic/admin — the DB-enforced bypass path. The GUC rides a dedicated
+  ContextVar (set only from authenticated state, never the `X-Tenant-Id` header) re-armed on every
+  transaction by a global `after_begin` listener (`backend/app/tenant_ctx.py`). Auth-bootstrap
+  tables (`api_keys`, `users`, + webhook-correlation `integrations`, `email_sync_cursors`) are
+  SELECT-able while the GUC is unset; writes always require a matching tenant.
+- **(b) Qdrant:** shared collection + mandatory payload filter (the industry-standard Qdrant
+  multitenancy pattern), consolidated behind `services/kb/vector_store.py` as the single client;
+  the orphaned per-tenant implementation in `kb_document_retrieval.py` is retired.
+- **(c) ES/Redis:** ES verified index-per-tenant (no work); Redis verified except the diarization
+  cache key, now `diarization:{tenant_id}:{sha256}` (no tenant bound → no caching).
+- **(d) 4b action-model cutover:** bundled into the same branch/PR as isolation.
+
+### Ops runbook — activating the backstop (staging/production)
+1. Create the role: `CREATE ROLE linda_app LOGIN PASSWORD '…'` (no ownership, no BYPASSRLS).
+2. Run migrations (`rls_001` + `rls_002` apply policies + grants; they warn if the role is absent).
+3. Set the Fly secret `APP_DATABASE_URL` to the linda_app DSN for api + worker + beat.
+4. Verify: startup logs must NOT show "RLS BACKSTOP INACTIVE"; `tests/test_rls_isolation.py`
+   runs the same policies against a real Postgres in CI (service container in ci-cd.yml).
+
+## 10. Implementation increments (status)
+
+1. ✅ One-table RLS spike + GUC plumbing through both engines (`rls_001`, `tenant_ctx.py`,
+   auth arming, Celery prerun auto-binding; 17 integration tests incl. mid-request commit
+   survival, WITH CHECK, fail-closed no-context, owner bypass).
+2. ✅ Scoping guard test (`tests/test_rls_scoping_guard.py`) + LindaChatConversation ORM/DB
+   drift fix (found broken in verification).
+3. ✅ RLS on all tenant-scoped tables (`rls_002`) + global allow-list + nullable-hybrid
+   handling + per-tenant context wiring across Celery all-tenant loops, alt-auth/webhook
+   endpoints, and WebSocket handlers.
+4. ✅ Qdrant choke point (orphaned second client retired; `query_points` API fix;
+   `purge_tenant` on offboarding; cross-tenant vector tests against a real in-process engine).
+5. ✅ ES verified / Redis diarization key fix.
+6. ✅ Action-model cutover (4b): the pipeline no longer writes legacy ActionItem rows — the
+   ActionPlan DAG is canonical; CRM write-back reads open ActionSteps (the old ActionItem
+   filter used status values the pipeline never wrote, so activity write-back had been
+   silently dark); the dashboard widget reads active plans; `ActionItem` remains only for
+   manually created tasks. The non-atomic dual-write (§4) is gone.

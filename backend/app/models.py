@@ -791,6 +791,15 @@ class Interaction(Base):
 
 
 class ActionItem(Base):
+    """A manually created task (POST /action-items, Linda chat proposals,
+    manager triage).
+
+    4b cutover (2026-07): the analysis pipeline no longer writes rows here
+    — the ActionPlan → ActionStep DAG is the canonical action model for
+    interaction follow-ups. The LLM's raw suggestions remain available in
+    ``Interaction.insights['action_items']``.
+    """
+
     __tablename__ = "action_items"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -2242,9 +2251,27 @@ class Conversation(Base):
 
 
 class LindaChatConversation(Base):
+    """An Ask-Linda chat thread. Columns mirror migration a1b2c3d4e5f6 —
+    this model was a bare id-only stub for a while, which broke
+    ``get_or_create_conversation`` at runtime (AttributeError on
+    ``tenant_id``) and hid the table from the RLS scoping guard."""
+
     __tablename__ = "linda_chat_conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    title: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────

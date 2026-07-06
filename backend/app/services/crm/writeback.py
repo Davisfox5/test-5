@@ -26,7 +26,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import (
-    ActionItem,
+    ActionPlan,
+    ActionStep,
     Contact,
     CrmDealRecord,
     Integration,
@@ -125,16 +126,16 @@ async def write_back_interaction(
 
         if features.get(WRITE_BACK_ACTIVITY_FLAG):
             try:
-                items = await _open_action_items(db, interaction_id)
+                steps = await _open_action_steps(db, interaction_id)
                 activity_ids: List[str] = []
-                for item in items:
+                for step in steps:
                     activity_id = await adapter.create_activity(
-                        subject=_truncate(item.title or "Follow-up", 255),
+                        subject=_truncate(step.title or "Follow-up", 255),
                         activity_type="task",
                         due_date=(
-                            item.due_at.date().isoformat() if item.due_at else None
+                            step.due_date.isoformat() if step.due_date else None
                         ),
-                        note=item.description,
+                        note=step.description,
                         deal_external_id=deal.external_id if deal else None,
                         contact_external_id=(
                             contact.crm_id if contact and contact.crm_id else None
@@ -329,16 +330,27 @@ def _customer_external_id(contact: Optional[Contact]) -> Optional[str]:
     return None
 
 
-async def _open_action_items(
+async def _open_action_steps(
     db: AsyncSession, interaction_id: uuid.UUID
-) -> List[ActionItem]:
+) -> List[ActionStep]:
+    """Open steps of the interaction's Action Plan — the CRM task source.
+
+    4b cutover note: this used to read legacy ActionItem rows filtered on
+    status IN ('pending','in_progress') — values the pipeline never wrote
+    (it wrote 'open'), so CRM activity write-back was silently dark. The
+    DAG is canonical now and the state vocabulary below matches the
+    ActionStep state machine.
+    """
     stmt = (
-        select(ActionItem)
+        select(ActionStep)
+        .join(ActionPlan, ActionPlan.id == ActionStep.plan_id)
         .where(
-            ActionItem.interaction_id == interaction_id,
-            ActionItem.status.in_(("pending", "in_progress")),
+            ActionPlan.interaction_id == interaction_id,
+            ActionStep.state.in_(
+                ("blocked", "ready", "in_progress", "awaiting_response")
+            ),
         )
-        .order_by(ActionItem.created_at.asc())
+        .order_by(ActionStep.created_at.asc())
     )
     return list((await db.execute(stmt)).scalars().all())
 

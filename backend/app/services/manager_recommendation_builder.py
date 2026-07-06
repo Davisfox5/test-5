@@ -245,11 +245,14 @@ def _build_for_tenant_domain(
 
 
 def build_for_all_tenants(session: Session) -> Dict[str, Any]:
+    from backend.app.tenant_ctx import tenant_context
+
     tenants = session.execute(select(Tenant)).scalars().all()
     counts: Dict[str, int] = {}
     for tenant in tenants:
         try:
-            rows = build_for_tenant(session, tenant)
+            with tenant_context(tenant.id, session):
+                rows = build_for_tenant(session, tenant)
             counts[str(tenant.id)] = len(rows)
         except Exception:
             logger.exception(
@@ -262,22 +265,29 @@ def build_for_all_tenants(session: Session) -> Dict[str, Any]:
 def expire_old(session: Session) -> int:
     """Sweep recommendations whose expires_at has passed. Status flips to
     ``expired`` (audit trail preserved). Called daily at 03:00 UTC."""
+    from backend.app.tenant_ctx import tenant_context
+
     now = datetime.now(timezone.utc)
-    rows = (
-        session.execute(
-            select(ManagerRecommendation).where(
-                ManagerRecommendation.status == "open",
-                ManagerRecommendation.expires_at <= now,
+    total = 0
+    for tenant in session.execute(select(Tenant)).scalars().all():
+        with tenant_context(tenant.id, session):
+            rows = (
+                session.execute(
+                    select(ManagerRecommendation).where(
+                        ManagerRecommendation.tenant_id == tenant.id,
+                        ManagerRecommendation.status == "open",
+                        ManagerRecommendation.expires_at <= now,
+                    )
+                )
+                .scalars()
+                .all()
             )
-        )
-        .scalars()
-        .all()
-    )
-    for r in rows:
-        r.status = "expired"
-    if rows:
+            for r in rows:
+                r.status = "expired"
+            total += len(rows)
+    if total:
         session.commit()
-    return len(rows)
+    return total
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
