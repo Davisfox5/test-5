@@ -19,7 +19,7 @@ statements the isolation tests prove. If you change a predicate in rls.py,
 add a new re-apply migration.
 
 Revision ID: rls_001_interactions
-Revises: fx_001_outcome_customer_id
+Revises: sr_001_interaction_step_runs
 """
 
 import logging
@@ -30,7 +30,9 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "rls_001_interactions"
-down_revision = "fx_001_outcome_customer_id"
+# Re-parented onto sr_001 when this branch merged main: #164's step-run
+# ledger landed as a sibling of fx_001 and two heads block every deploy.
+down_revision = "sr_001_interaction_step_runs"
 branch_labels = None
 depends_on = None
 

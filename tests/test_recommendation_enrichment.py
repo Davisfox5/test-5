@@ -77,7 +77,9 @@ async def seeded(engine_factory):
         customer = Customer(
             tenant_id=tenant.id,
             name="Northwind",
-            renewal_date=date.today() + timedelta(days=30),
+            # UTC date to match the service clock — local date.today() is a
+            # day behind UTC in US evenings, shifting days_to_renewal by one.
+            renewal_date=datetime.now(timezone.utc).date() + timedelta(days=30),
             health_score=62.0,
             onboarding_status="stalled",
         )

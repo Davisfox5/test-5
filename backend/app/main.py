@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -38,14 +39,12 @@ async def lifespan(app: FastAPI):
     # Expected in dev; in staging/production it means APP_DATABASE_URL
     # wasn't set and the backstop is OFF. Warn loudly — never block boot.
     try:
-        import logging as _logging
-
         from backend.app.rls import runtime_bypasses_rls
 
         async with engine.connect() as conn:
             bypass_reason = await conn.run_sync(runtime_bypasses_rls)
         if bypass_reason:
-            _logging.getLogger("backend.app.main").warning(
+            logging.getLogger("backend.app.main").warning(
                 "RLS BACKSTOP INACTIVE: %s — the app is connecting with a "
                 "role that bypasses row-level security. Set APP_DATABASE_URL "
                 "to the non-owner linda_app role's DSN.",
@@ -54,9 +53,30 @@ async def lifespan(app: FastAPI):
     except Exception:  # pragma: no cover — posture check must never block boot
         pass
 
+    # SIPREC idle reaper: finalises sessions whose Redis state
+    # expired because the SRS died without recording.stopped. Runs in
+    # every worker; reaping is idempotent so the overlap is harmless.
+    import asyncio as _asyncio
+
+    async def _siprec_reap_loop() -> None:
+        from backend.app.services.telephony.siprec.bridge import get_bridge
+
+        log = logging.getLogger(__name__)
+        while True:
+            await _asyncio.sleep(60.0)
+            try:
+                reaped = await get_bridge().reap_stale_sessions()
+                if reaped:
+                    log.warning("SIPREC reaper finalised %d stale sessions", reaped)
+            except Exception:
+                log.exception("SIPREC reap loop iteration failed")
+
+    reap_task = _asyncio.get_event_loop().create_task(_siprec_reap_loop())
+
     yield
 
     # ── Shutdown ──
+    reap_task.cancel()
     await engine.dispose()
 
 

@@ -1,5 +1,13 @@
 # Flex console integration hardening — LINDA-side work items
 
+> **Status (2026-07-05): items 1–6 SHIPPED** in PR #156 (plus #157 for an
+> alembic two-heads fix), deployed to `linda-staging` + `linda-staging-app`.
+> Item 7 deliberately deferred. Remaining coordination: the Flex-side
+> follow-ups for items 1 and 3 (verify `X-Linda-Signature-V2` per
+> [webhooks.md](webhooks.md); pass `customer_id` on outcome events), then
+> a LINDA-side PR to drop the legacy body-only signature header once all
+> consumers are on v2.
+
 **Origin:** A 2026-07-02 bug sweep of the Flex platform (the gym-SaaS repo whose
 `/super-admin/prospects` console dogfoods LINDA) fixed everything fixable on the
 consumer side. The items below are the remainder: they need changes in THIS

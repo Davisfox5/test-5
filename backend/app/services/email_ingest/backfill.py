@@ -136,7 +136,9 @@ def fetch_window_gmail(
 
     Error posture (mirrors the Graph fetcher): a failed list call logs
     and abandons that folder, preserving the rest of the job; a failed
-    per-message get logs and skips just that message. A 401 means the
+    per-message get or normalize logs and skips just that message —
+    otherwise one poison payload would abort the whole job and every
+    retry would die on it again. A 401 means the
     access token died mid-run and is raised as
     :class:`IntegrationAuthError` so the job can surface an actionable
     "reconnect" error instead of an opaque provider trace.
@@ -238,9 +240,16 @@ def fetch_window_gmail(
                         "Gmail backfill get failed message=%s (skipping)", mid
                     )
                     continue
-                yield gmail_fetcher.normalize_message(
-                    raw, agent_email, direction, service=attachment_service
-                )
+                try:
+                    email = gmail_fetcher.normalize_message(
+                        raw, agent_email, direction, service=attachment_service
+                    )
+                except Exception:  # noqa: BLE001 — a poison payload skips, not aborts
+                    logger.exception(
+                        "Gmail backfill normalize failed message=%s (skipping)", mid
+                    )
+                    continue
+                yield email
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -260,7 +269,9 @@ def fetch_window_graph(
     Graph list responses already carry full bodies, so the dedupe skip
     here mostly saves the per-message attachment listing and the
     classifier hand-off. A 401 raises :class:`IntegrationAuthError`
-    (token died mid-run); other HTTP errors abandon the folder.
+    (token died mid-run); other HTTP errors abandon the folder; a
+    message that fails normalization is logged and skipped so one
+    poison payload can't abort the job.
     """
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
@@ -310,9 +321,16 @@ def fetch_window_graph(
                     if mid and mid in known:
                         yield SkippedRef(mid)
                         continue
-                    yield graph_fetcher.normalize_message(
-                        raw, agent_email, direction, access_token=access_token
-                    )
+                    try:
+                        email = graph_fetcher.normalize_message(
+                            raw, agent_email, direction, access_token=access_token
+                        )
+                    except Exception:  # noqa: BLE001 — a poison payload skips, not aborts
+                        logger.exception(
+                            "Graph backfill normalize failed message=%s (skipping)", mid
+                        )
+                        continue
+                    yield email
                 url = data.get("@odata.nextLink")
 
 

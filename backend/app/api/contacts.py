@@ -647,7 +647,11 @@ async def list_customers(
 
 @router.get("/customers/list", response_model=CustomerListResponse)
 async def list_customers_rich(
-    limit: int = Query(50, le=200),
+    # 500-per-page so consumers paging a full pipeline (Flex reads up to
+    # 1,000) need 2 round trips instead of 10. Per-row cost is bounded
+    # (one base query + per-tenant aggregates), so the wider page is
+    # aggregate-bound, not row-bound.
+    limit: int = Query(50, le=500),
     offset: int = Query(0, ge=0),
     name: Optional[str] = Query(
         None,

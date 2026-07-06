@@ -18,10 +18,10 @@ and a sequenced set of increments we both agree on.
 
 | # | Challenge | Class | Primary risk | Status |
 |---|-----------|-------|--------------|--------|
-| 1 | [Exactly-once correctness in the async LLM pipeline](01-pipeline-exactly-once.md) | Distributed-systems correctness | Double-charged LLM calls, orphaned interactions, crash-on-stale-loop | 🟡 Discussing |
-| 2 | Soft-real-time media + live coaching under a latency budget | Real-time / concurrency | Dropped audio, misaligned diarization, stalled live coaching | ⚪ Not started |
+| 1 | [Exactly-once correctness in the async LLM pipeline](01-pipeline-exactly-once.md) | Distributed-systems correctness | Double-charged LLM calls, orphaned interactions, crash-on-stale-loop | ✅ Implemented (pending merge) |
+| 2 | [Soft-real-time media + live coaching under a latency budget](02-realtime-media.md) | Real-time / concurrency | Dropped audio, misaligned diarization, stalled live coaching | 🔵 In implementation |
 | 3 | Model-agnostic LLM infra: cost, quality & context-rot governance | LLM infrastructure | Model-deprecation blast radius, cost/quality drift, context rot | ⚪ Not started |
-| 4 | [Multi-tenant isolation (90 tables) + mid-flight action-model migration](04-tenant-isolation-migration.md) | Data correctness & security | Cross-tenant leakage (215 manual filters, no backstop), non-atomic dual writes | 🔵 In implementation |
+| 4 | [Multi-tenant isolation (90 tables) + mid-flight action-model migration](04-tenant-isolation-migration.md) | Data correctness & security | Cross-tenant leakage (215 manual filters, no backstop), non-atomic dual writes | ✅ Implemented (pending merge) |
 | 5 | [Per-tenant ML + RAG under data scarcity (cold-start)](05-cold-start-ml-rag.md) | Statistical / retrieval | Cold-start models dark at launch; embedding drift & manual scale-out (deferred) | ⚪ Parked (doc drafted) |
 
 **Honorable mention (breadth, not depth):** the external-integration surface — bidirectional
