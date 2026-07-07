@@ -1,0 +1,52 @@
+# Fly.io config — LINDA dashboard SPA, production (Next.js).
+#
+# Mirrors apps/app/fly.toml (staging) pointed at the production backend.
+# Deploy (from apps/app/):
+#   flyctl deploy --remote-only --config fly.production.toml --app linda-prod-app
+#
+# NOTE: the Clerk publishable key below is still the pk_test instance the
+# whole platform runs on today. When a production Clerk instance is
+# provisioned, swap the key here (build-time!) and CLERK_SECRET_KEY /
+# CLERK_PUBLISHABLE_KEY in the linda-prod backend secrets together.
+
+app = "linda-prod-app"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+  # NEXT_PUBLIC_* and LINDA_BACKEND_URL are inlined at build time (see
+  # the staging fly.toml for the full story) — the backend URL baked
+  # here is what next.config.mjs rewrites /api/* to.
+  [build.args]
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Z2xhZC1jaWNhZGEtMS5jbGVyay5hY2NvdW50cy5kZXYk"
+    LINDA_BACKEND_URL = "https://linda-prod.fly.dev"
+
+[deploy]
+  release_command = "echo 'spa release ok'"
+
+[env]
+  NODE_ENV = "production"
+  LINDA_BACKEND_URL = "https://linda-prod.fly.dev"
+  NEXT_PUBLIC_CLERK_SIGN_IN_URL = "/sign-in"
+  NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up"
+  NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL = "/dashboard"
+  NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL = "/dashboard"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
