@@ -10,6 +10,7 @@ Providers implemented here:
 * :mod:`gdrive` — Google Drive + Google Docs (Workspace & Enterprise).
 * :mod:`onedrive` — OneDrive + SharePoint via Microsoft Graph.
 * :mod:`confluence` — Atlassian Confluence Cloud + Server REST API.
+* :mod:`notion` — Notion API v1 (public/internal integration token).
 
 Third-party direct-ingest paths (generic API push, MCP servers) don't
 need adapters — they call ``ingest_document`` directly from the API

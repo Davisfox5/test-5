@@ -35,7 +35,7 @@ from backend.app.services.token_crypto import decrypt_token, encrypt_token
 logger = logging.getLogger(__name__)
 
 
-SUPPORTED_PROVIDERS = {"gdrive", "onedrive", "sharepoint", "confluence"}
+SUPPORTED_PROVIDERS = {"gdrive", "onedrive", "sharepoint", "confluence", "notion"}
 
 
 @dataclass
@@ -207,4 +207,11 @@ async def _build_provider(
             personal_access_token=access_token if cfg.get("auth_mode") == "bearer" else None,
             space_keys=cfg.get("space_keys") or [],
         )
+    if source_type == "notion":
+        from backend.app.services.kb.providers.notion import NotionProvider
+
+        # OAuth access token (or a pasted internal-integration secret)
+        # lives in access_token; Notion tokens don't expire, so there's
+        # no refresh callback to thread through.
+        return NotionProvider(access_token=access_token)
     raise ValueError(f"Unhandled KB provider: {source_type}")

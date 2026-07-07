@@ -862,7 +862,15 @@ def get_bridge() -> SiprecBridge:
                 get_settings().REDIS_URL, decode_responses=True
             )
 
+        # Real transcription sink: Deepgram live → Redis buffer → the
+        # shared voice pipeline. Without this the bridge falls back to
+        # _NullDispatch and silently discards every SIPREC audio frame.
+        from backend.app.services.telephony.siprec.dispatch import (
+            DeepgramSiprecDispatch,
+        )
+
         _singleton = SiprecBridge(
+            dispatch=DeepgramSiprecDispatch(),
             session_factory=async_session,
             redis_factory=_redis_factory,
         )
