@@ -268,6 +268,11 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   # ── Manual promote to production ──────────────────────────────
+  # Mirrors deploy_staging but requires explicit workflow_dispatch with
+  # deploy_env=production so it never fires by accident. Deploys BOTH
+  # apps — the always-deploy-both invariant applies to production too.
+  # Provisioned 2026-07-07: linda-prod (api/worker/beat, Neon linda_prod
+  # DB behind the RLS backstop) + linda-prod-app (SPA).
   deploy_production:
     if: github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'production'
     needs: build
@@ -281,14 +286,17 @@ jobs:
       - name: "Check out code"
         uses: actions/checkout@v4
 
-      - name: "Invoke production deploy hook"
-        if: env.PRODUCTION_DEPLOY_HOOK != ''
-        run: |
-          curl -fsS -X POST "$PRODUCTION_DEPLOY_HOOK" \
-               -H 'Content-Type: application/json' \
-               -d "{\"release\":\"${{ needs.build.outputs.image_tag }}\",\"commit\":\"${GITHUB_SHA}\"}"
+      - name: "Set up flyctl"
+        if: env.FLY_API_TOKEN != ''
+        uses: superfly/flyctl-actions/setup-flyctl@master
         env:
-          PRODUCTION_DEPLOY_HOOK: ${{ secrets.PRODUCTION_DEPLOY_HOOK }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Deploy to Fly production"
+        if: env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only --config fly.production.toml --app linda-prod
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: "Wait for production /ready/deep"
         if: env.PRODUCTION_URL != ''
@@ -307,8 +315,55 @@ jobs:
           PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
 
       - name: "Production deploy stub notice"
-        if: env.PRODUCTION_DEPLOY_HOOK == ''
+        if: env.FLY_API_TOKEN == ''
         run: |
-          echo "::notice::PRODUCTION_DEPLOY_HOOK secret unset — deploy step is a no-op."
+          echo "::notice::FLY_API_TOKEN secret unset — production deploy is a no-op."
         env:
-          PRODUCTION_DEPLOY_HOOK: ${{ secrets.PRODUCTION_DEPLOY_HOOK }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy_spa_production:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'production'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_SPA_URL }}
+    steps:
+      - name: "Check out code"
+        uses: actions/checkout@v4
+
+      - name: "Set up flyctl"
+        if: env.FLY_API_TOKEN != ''
+        uses: superfly/flyctl-actions/setup-flyctl@master
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Deploy SPA to Fly production"
+        if: env.FLY_API_TOKEN != ''
+        working-directory: apps/app
+        run: flyctl deploy --remote-only --config fly.production.toml --app linda-prod-app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: "Smoke check SPA root"
+        if: env.PRODUCTION_SPA_URL != ''
+        run: |
+          for _ in $(seq 1 18); do
+            code=$(curl -fsS -o /dev/null -w "%{http_code}" "$PRODUCTION_SPA_URL/" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "SPA production is serving 200 at /"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::SPA did not serve 200 within 3 minutes"
+          exit 1
+        env:
+          PRODUCTION_SPA_URL: ${{ vars.PRODUCTION_SPA_URL }}
+
+      - name: "SPA deploy stub notice"
+        if: env.FLY_API_TOKEN == ''
+        run: |
+          echo "::notice::FLY_API_TOKEN secret unset — skipping SPA production deploy."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

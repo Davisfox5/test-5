@@ -1,0 +1,92 @@
+# Fly.io config — LINDA production (backend: api / worker / beat).
+#
+# Mirrors fly.toml (staging) with the production app name, environment,
+# and always-on posture. External services: Postgres on Neon (the
+# ``linda_prod`` database; runtime connects as the non-owner ``linda_app``
+# role via the APP_DATABASE_URL secret — the RLS backstop), Redis on
+# Upstash (``linda-prod-redis``), audio on Tigris.
+#
+# Deploy: flyctl deploy --remote-only --config fly.production.toml --app linda-prod
+# (the CI deploy_production job runs exactly that on manual dispatch).
+#
+# The SIPREC SRS process group stays disabled here just like staging —
+# see fly.toml for the commented blocks to resurrect when a customer
+# needs RFC 7866 ingest.
+
+app = "linda-prod"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  release_command = "alembic -c backend/alembic.ini upgrade head"
+  strategy = "rolling"
+
+[env]
+  ENVIRONMENT = "production"
+  LOG_FORMAT = "json"
+  LOG_LEVEL = "INFO"
+  # No model-cache volume yet (same as staging) — pyannote/SpeechBrain
+  # load lazily on the first audio task rather than at worker boot.
+  LINDA_WORKER_WARMUP = "0"
+  PYTHONPATH = "/home/linda/app"
+  PROMETHEUS_MULTIPROC_DIR = "/tmp/prometheus_multiproc"
+
+[processes]
+  api    = "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=*"
+  worker = "celery -A backend.app.tasks:celery_app worker --loglevel=INFO --concurrency=2 -Q priority,default,batch --without-mingle --without-gossip"
+  beat   = "celery -A backend.app.tasks:celery_app beat --loglevel=INFO --schedule=/data/celerybeat-schedule"
+
+# Persistent storage for celerybeat-schedule (created via:
+#   flyctl volumes create linda_beat_data -r iad -s 1 -a linda-prod)
+[[mounts]]
+  source      = "linda_beat_data"
+  destination = "/data"
+  processes   = ["beat"]
+
+[[restart]]
+  policy    = "on-failure"
+  retries   = 10
+  processes = ["worker", "beat"]
+
+# NOTE: unlike staging, do NOT scale production workers to 0 off-hours —
+# tasks would pile up on the broker with nothing draining them.
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Pre-launch cost posture: allow the api machine to stop when idle,
+  # same as staging. Flip auto_stop_machines to "off" (and bump
+  # min_machines_running) when real customers arrive — cold starts add
+  # seconds to the first request after idle.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["api"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "60s"
+    method = "GET"
+    path = "/api/v1/health"
+
+[[metrics]]
+  port = 8000
+  path = "/metrics"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"
+  processes = ["api"]
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "4gb"
+  processes = ["worker"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  processes = ["beat"]
