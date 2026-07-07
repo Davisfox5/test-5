@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     CLERK_SECRET_KEY: str = ""
     CLERK_PUBLISHABLE_KEY: str = ""
 
+    # Just-in-time provisioning for enterprise SSO. When a Clerk-brokered
+    # SSO login (Okta/Entra/Workspace via a Clerk enterprise connection)
+    # presents a valid JWT for a user with no local row yet, auto-create /
+    # link the User on the tenant resolved from the token's org id or email
+    # domain. Off by default — an operator opts in after mapping tenants in
+    # ``tenants.features_enabled['sso']`` (see docs/sso-setup.md). Without
+    # this, a net-new SSO user authenticates at Clerk but is rejected here.
+    SSO_JIT_PROVISIONING_ENABLED: bool = False
+
     # ── Session JWTs (native per-user login) ─────────────
     # HMAC secret for signing browser session tokens. Must be ≥32 chars in
     # production. In DEBUG we fall back to an ephemeral value.
@@ -170,6 +179,12 @@ class Settings(BaseSettings):
     ZOHO_CLIENT_SECRET: str = ""
     MICROSOFT_DYNAMICS_CLIENT_ID: str = ""
     MICROSOFT_DYNAMICS_CLIENT_SECRET: str = ""
+
+    # ── Knowledge sources ────────────────────────────────
+    # Notion public-integration OAuth app. The KB provider is fully
+    # wired; the connect button stays gated until these are set.
+    NOTION_CLIENT_ID: str = ""
+    NOTION_CLIENT_SECRET: str = ""
 
     # ── Contact Enrichment ───────────────────────────────
     PDL_API_KEY: str = ""

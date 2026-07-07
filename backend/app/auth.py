@@ -637,7 +637,32 @@ async def _principal_from_clerk(
     )
     user = (await db.execute(stmt)).scalar_one_or_none()
     if user is None:
-        return None
+        # Net-new SSO user: no local row yet. Try just-in-time provisioning
+        # (link an invited/SCIM user, or create one on the tenant mapped
+        # from the token) so Clerk-brokered enterprise SSO actually lands.
+        # Gated + fail-closed — returns False → same rejection as before.
+        try:
+            from backend.app.services.sso_jit import (
+                resolve_or_provision_clerk_user,
+            )
+
+            provisioned = await resolve_or_provision_clerk_user(
+                db, payload, clerk_user_id
+            )
+        except Exception:
+            logger.exception(
+                "SSO JIT provisioning raised for clerk user %s (non-fatal)",
+                clerk_user_id,
+            )
+            provisioned = False
+        if not provisioned:
+            return None
+        # Re-load through the exact happy path so tenant + roles + domains
+        # are eager-loaded identically to an existing user. The JIT step
+        # armed the tenant GUC, so this SELECT now matches under RLS.
+        user = (await db.execute(stmt)).scalar_one_or_none()
+        if user is None:
+            return None
 
     # Tenant known — arm RLS before the JIT block below, which reads
     # tenant-scoped provisioning rules and may update the user row.

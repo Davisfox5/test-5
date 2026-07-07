@@ -231,6 +231,27 @@ OAUTH_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "client_secret_key": "ZOOM_PHONE_CLIENT_SECRET",
         "certified": False,
     },
+    # ── Knowledge sources ──────────────────────────────────────────────
+    # Notion. Unlike the CRM/UC providers, Notion's token endpoint wants
+    # client credentials via HTTP Basic auth and a JSON body (not the
+    # form-encoded ``client_id``/``client_secret`` the generic exchange
+    # sends) — ``token_auth_style``/``token_body_style`` drive that.
+    # Notion has no per-request scopes (capabilities are configured on the
+    # integration itself) and requires ``owner=user`` on the authorize
+    # URL. Tokens are long-lived with no refresh grant. The KB provider is
+    # complete, so this is certified — the runtime gate still requires the
+    # operator to set NOTION_CLIENT_ID/SECRET before the button lights up.
+    "notion": {
+        "authorize_url": "https://api.notion.com/v1/oauth/authorize",
+        "token_url": "https://api.notion.com/v1/oauth/token",
+        "scopes": [],
+        "scope_sep": " ",
+        "client_id_key": "NOTION_CLIENT_ID",
+        "client_secret_key": "NOTION_CLIENT_SECRET",
+        "token_auth_style": "basic",
+        "token_body_style": "json",
+        "authorize_extra": {"owner": "user"},
+    },
 }
 
 
@@ -718,9 +739,16 @@ async def _build_provider_authorize_url(
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": spec["scope_sep"].join(scopes),
         "state": state,
     }
+    # Omit ``scope`` entirely when the provider has none (Notion configures
+    # capabilities on the integration, not per-request) — an empty scope
+    # param trips some authorize endpoints.
+    joined_scope = spec["scope_sep"].join(scopes)
+    if joined_scope:
+        params["scope"] = joined_scope
+    # Static per-provider authorize params (e.g. Notion's ``owner=user``).
+    params.update(spec.get("authorize_extra") or {})
     if spec.get("use_pkce"):
         params["code_challenge"] = payload["pkce_challenge"]
         params["code_challenge_method"] = "S256"
@@ -1031,9 +1059,12 @@ async def oauth_authorize(
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": spec["scope_sep"].join(spec["scopes"]),
         "state": state,
     }
+    joined_scope = spec["scope_sep"].join(spec["scopes"])
+    if joined_scope:
+        params["scope"] = joined_scope
+    params.update(spec.get("authorize_extra") or {})
     auth_url = f"{spec['authorize_url']}?{urlencode(params)}"
     return RedirectResponse(url=auth_url)
 
@@ -1179,9 +1210,14 @@ async def oauth_callback(
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
-        "client_id": client_id,
-        "client_secret": client_secret,
     }
+    # Most providers accept client credentials in the request body. Some
+    # (Notion) require HTTP Basic auth and reject body credentials — the
+    # spec's ``token_auth_style`` selects which.
+    basic_auth = spec.get("token_auth_style") == "basic"
+    if not basic_auth:
+        token_data["client_id"] = client_id
+        token_data["client_secret"] = client_secret
     if spec.get("use_pkce"):
         verifier = state_payload.get("pkce_verifier")
         if not verifier:
@@ -1191,12 +1227,19 @@ async def oauth_callback(
             )
         token_data["code_verifier"] = verifier
 
+    post_kwargs: Dict[str, Any] = {}
+    if spec.get("token_body_style") == "json":
+        post_kwargs["json"] = token_data
+    else:
+        post_kwargs["data"] = token_data
+        post_kwargs["headers"] = {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    if basic_auth:
+        post_kwargs["auth"] = (client_id, client_secret)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            token_url,
-            data=token_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        resp = await client.post(token_url, **post_kwargs)
         if resp.status_code >= 400:
             raise HTTPException(
                 status_code=400,
@@ -1218,6 +1261,13 @@ async def oauth_callback(
                 provider_config["api_domain"] = body["api_domain"].rstrip("/")
         if provider == "microsoft_dynamics" and state_payload.get("org_url"):
             provider_config["org_url"] = state_payload["org_url"]
+        if provider == "notion":
+            # Notion returns the connected workspace + bot identity in the
+            # token response — persist for "connected as <workspace>" and
+            # to dedupe re-connects of the same workspace.
+            for k in ("workspace_id", "workspace_name", "bot_id"):
+                if body.get(k):
+                    provider_config[k] = body[k]
 
         # Look up the third-party user identity so the SPA can render
         # "connected as <name>" and so we can dedupe future re-authorizes
