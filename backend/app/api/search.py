@@ -1,4 +1,4 @@
-"""Search API — full-text search over interactions via Elasticsearch."""
+"""Search API — full-text search over interactions via Postgres FTS."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
+from backend.app.db import get_db
 from backend.app.models import Tenant
 from backend.app.services.search_service import SearchService
 
@@ -56,6 +58,7 @@ async def search_interactions(
     agent_id: Optional[str] = Query(None, description="Filter by agent UUID"),
     limit: int = Query(20, ge=1, le=100, description="Max results to return"),
     tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
     service: SearchService = Depends(get_search_service),
 ) -> SearchResponse:
     """Full-text search across interactions for the current tenant.
@@ -63,6 +66,7 @@ async def search_interactions(
     Returns matching interactions with highlighted transcript excerpts.
     """
     hits = await service.search(
+        db=db,
         tenant_id=str(tenant.id),
         query=q,
         channel=channel,

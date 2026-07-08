@@ -12,8 +12,8 @@ want:
   traffic. A soft-dep failure still returns 200 but annotates the
   payload so dashboards can surface degradation.
 * ``GET /ready/deep`` — same as ``/ready`` but also exercises the
-  Elasticsearch transcript index + Qdrant collection. Used by the
-  warmup script after a deploy; too slow for a per-request probe.
+  Postgres full-text search index that backs transcript search. Used by
+  the warmup script after a deploy; too slow for a per-request probe.
 
 Shape is ``{status, hard, soft, checks: [{name, healthy, latency_ms,
 error}]}`` so humans can read it and Prometheus scrapers can ingest it
@@ -218,24 +218,32 @@ async def _probe_voyage() -> Optional[dict]:
     return {"configured": True}
 
 
-async def _probe_elasticsearch() -> Optional[dict]:
-    """Cluster health. Soft dep — transcript search still falls back
-    to Postgres full-text when ES is down, but it's slow."""
-    settings = get_settings()
-    url = getattr(settings, "ELASTICSEARCH_URL", None) or ""
-    if not url:
-        return {"configured": False}
-    import httpx
+async def _probe_search() -> Optional[dict]:
+    """Exercise the Postgres full-text search machinery that backs
+    transcript search: confirm the ``interactions.search_vector`` GIN
+    index exists and that a tsquery round-trips. Deep dep — heavier than
+    a plain ``SELECT 1``, so it lives on ``/ready/deep``."""
+    from backend.app.db import async_session
+    from backend.app.search_ddl import SEARCH_INDEX_NAME
 
-    async with httpx.AsyncClient(timeout=2.5) as client:
-        resp = await client.get(f"{url.rstrip('/')}/_cluster/health")
-    if resp.status_code >= 400:
-        raise RuntimeError(f"status {resp.status_code}")
-    body = resp.json() if resp.content else {}
-    return {
-        "configured": True,
-        "cluster_status": body.get("status"),
-    }
+    async with async_session() as db:
+        indexed = (
+            await db.execute(
+                text("SELECT to_regclass(:name) IS NOT NULL"),
+                {"name": SEARCH_INDEX_NAME},
+            )
+        ).scalar()
+        matched = (
+            await db.execute(
+                text(
+                    "SELECT to_tsvector('english', 'linda health ping') "
+                    "@@ websearch_to_tsquery('english', 'ping')"
+                )
+            )
+        ).scalar()
+    if not indexed:
+        raise RuntimeError(f"missing FTS index {SEARCH_INDEX_NAME}")
+    return {"configured": True, "index": SEARCH_INDEX_NAME, "tsquery_ok": bool(matched)}
 
 
 _HARD_PROBES: list[tuple[str, Callable[[], Awaitable[Optional[dict]]]]] = [
@@ -252,7 +260,7 @@ _SOFT_PROBES: list[tuple[str, Callable[[], Awaitable[Optional[dict]]]]] = [
 ]
 
 _DEEP_PROBES: list[tuple[str, Callable[[], Awaitable[Optional[dict]]]]] = [
-    ("elasticsearch", _probe_elasticsearch),
+    ("search", _probe_search),
 ]
 
 
@@ -286,7 +294,8 @@ async def readiness_check(response: Response):
 @router.get("/ready/deep")
 async def readiness_check_deep(response: Response):
     """Full probe set — call from deploy hooks, not from every load
-    balancer tick. Includes Elasticsearch, which is slower."""
+    balancer tick. Includes the Postgres FTS index check, which is
+    heavier than the per-request probes."""
     hard, soft, deep = await asyncio.gather(
         _run_probes(_HARD_PROBES),
         _run_probes(_SOFT_PROBES),

@@ -1,56 +1,34 @@
-"""Elasticsearch-backed full-text search for interactions."""
+"""Postgres full-text search over interactions.
+
+Replaces the former Elasticsearch client. Search runs against the
+generated ``search_vector`` tsvector column + GIN index (see
+``backend/app/search_ddl.py``) and is scoped to the tenant explicitly, so
+it rides the RLS backstop rather than maintaining a per-tenant ES index.
+
+Because ``search_vector`` is a STORED generated column derived from the
+interaction row itself, there is no separate indexing step: writing the
+row is what updates the index. ``index_interaction`` / ``ensure_index``
+are therefore no-ops, kept only so existing call sites don't need to know
+the backend changed.
+"""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from elasticsearch import AsyncElasticsearch
-
-from backend.app.config import get_settings
-
-settings = get_settings()
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class SearchService:
-    """Async Elasticsearch client for indexing and searching interactions."""
+    """Full-text search over interactions, backed by Postgres."""
 
-    def __init__(self) -> None:
-        self.es = AsyncElasticsearch(hosts=[settings.ELASTICSEARCH_URL])
-
-    def _index_name(self, tenant_id: str) -> str:
-        return f"linda-interactions-{tenant_id}"
-
-    # ── Index management ────────────────────────────────────
+    # ── Index management (no-ops under Postgres FTS) ─────────
 
     async def ensure_index(self, tenant_id: str) -> None:
-        """Create the tenant index with proper mappings if it doesn't exist."""
-        index = self._index_name(tenant_id)
-        exists = await self.es.indices.exists(index=index)
-        if exists:
-            return
-
-        mappings = {
-            "properties": {
-                "interaction_id": {"type": "keyword"},
-                "transcript_text": {"type": "text", "analyzer": "standard"},
-                "summary": {"type": "text"},
-                "topics": {"type": "keyword"},
-                "contact_name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-                "company": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-                "agent_name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-                "agent_id": {"type": "keyword"},
-                "channel": {"type": "keyword"},
-                "sentiment_score": {"type": "float"},
-                "created_at": {"type": "date"},
-            }
-        }
-
-        await self.es.indices.create(
-            index=index,
-            body={"mappings": mappings},
-        )
-
-    # ── Indexing ────────────────────────────────────────────
+        """No-op. The ``search_vector`` column + GIN index are created by
+        the ``pg_fts_001`` migration and maintained by Postgres."""
+        return None
 
     async def index_interaction(
         self,
@@ -58,41 +36,16 @@ class SearchService:
         tenant_id: str,
         data: dict,
     ) -> None:
-        """Index an interaction document.
-
-        ``data`` should contain keys like transcript_segments (list of dicts
-        with a ``text`` field), summary, topics, contact_name, company,
-        agent_name, agent_id, channel, sentiment_score, created_at.
-        """
-        await self.ensure_index(tenant_id)
-        index = self._index_name(tenant_id)
-
-        # Join transcript segment texts into a single searchable string
-        segments = data.get("transcript_segments", [])
-        transcript_text = " ".join(
-            seg.get("text", "") for seg in segments if isinstance(seg, dict)
-        )
-
-        doc: Dict[str, object] = {
-            "interaction_id": interaction_id,
-            "transcript_text": transcript_text or data.get("transcript_text", ""),
-            "summary": data.get("summary", ""),
-            "topics": data.get("topics", []),
-            "contact_name": data.get("contact_name", ""),
-            "company": data.get("company", ""),
-            "agent_name": data.get("agent_name", ""),
-            "agent_id": data.get("agent_id", ""),
-            "channel": data.get("channel", ""),
-            "sentiment_score": data.get("sentiment_score"),
-            "created_at": data.get("created_at"),
-        }
-
-        await self.es.index(index=index, id=interaction_id, body=doc)
+        """No-op. ``search_vector`` is a generated column derived from the
+        interaction row, so the row write already updated the index. Kept
+        for call-site compatibility with the analysis pipeline."""
+        return None
 
     # ── Search ──────────────────────────────────────────────
 
     async def search(
         self,
+        db: AsyncSession,
         tenant_id: str,
         query: str,
         channel: Optional[str] = None,
@@ -101,83 +54,83 @@ class SearchService:
         agent_id: Optional[str] = None,
         limit: int = 20,
     ) -> List[dict]:
-        """Full-text search with highlight on transcript_text, filtered by tenant.
+        """Full-text search with a highlighted transcript excerpt, scoped
+        to ``tenant_id``.
 
-        Returns list of dicts with keys: interaction_id, score, highlights,
-        summary, channel, created_at.
+        Returns a list of dicts with keys: interaction_id, score,
+        highlights, summary, channel, created_at.
         """
-        index = self._index_name(tenant_id)
-
-        # Check if index exists; return empty results if not
-        exists = await self.es.indices.exists(index=index)
-        if not exists:
+        q = (query or "").strip()
+        if not q:
             return []
+        limit = max(1, min(int(limit), 100))
 
-        # Build bool query
-        must = [
-            {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["transcript_text^3", "summary^2", "topics", "contact_name", "company"],
-                }
-            }
+        # websearch_to_tsquery accepts free-form user input (quotes, OR,
+        # leading -) and never raises on syntax, unlike to_tsquery.
+        # NB: use CAST(:bind AS type), not ":bind::type" — SQLAlchemy's
+        # text() bind parser chokes on a bind immediately followed by the
+        # "::" cast operator ("syntax error at or near :").
+        conditions = [
+            "tenant_id = CAST(:tenant_id AS uuid)",
+            "search_vector @@ websearch_to_tsquery('english', :q)",
         ]
+        params: Dict[str, Any] = {"tenant_id": tenant_id, "q": q, "limit": limit}
 
-        filters: List[dict] = []
         if channel:
-            filters.append({"term": {"channel": channel}})
+            conditions.append("channel = :channel")
+            params["channel"] = channel
         if agent_id:
-            filters.append({"term": {"agent_id": agent_id}})
-        if date_from or date_to:
-            range_filter: Dict[str, str] = {}
-            if date_from:
-                range_filter["gte"] = date_from
-            if date_to:
-                range_filter["lte"] = date_to
-            filters.append({"range": {"created_at": range_filter}})
+            conditions.append("agent_id = CAST(:agent_id AS uuid)")
+            params["agent_id"] = agent_id
+        if date_from:
+            conditions.append("created_at >= CAST(:date_from AS timestamptz)")
+            params["date_from"] = date_from
+        if date_to:
+            conditions.append("created_at <= CAST(:date_to AS timestamptz)")
+            params["date_to"] = date_to
 
-        body: dict = {
-            "query": {
-                "bool": {
-                    "must": must,
-                    "filter": filters,
-                }
-            },
-            "highlight": {
-                "fields": {
-                    "transcript_text": {
-                        "fragment_size": 200,
-                        "number_of_fragments": 3,
-                    }
-                },
-                "pre_tags": ["<em>"],
-                "post_tags": ["</em>"],
-            },
-            "size": limit,
-            "_source": ["interaction_id", "summary", "channel", "created_at"],
-        }
+        where = " AND ".join(conditions)
+        sql = text(
+            f"""
+            SELECT
+                id,
+                insights,
+                channel,
+                created_at,
+                ts_rank(search_vector, websearch_to_tsquery('english', :q)) AS rank,
+                ts_headline(
+                    'english',
+                    coalesce(raw_text, ''),
+                    websearch_to_tsquery('english', :q),
+                    'StartSel="<em>", StopSel="</em>", MaxFragments=3, '
+                    'MinWords=5, MaxWords=30'
+                ) AS highlight
+            FROM interactions
+            WHERE {where}
+            ORDER BY rank DESC, created_at DESC
+            LIMIT :limit
+            """
+        )
 
-        resp = await self.es.search(index=index, body=body)
-        hits = resp.get("hits", {}).get("hits", [])
+        rows = (await db.execute(sql, params)).mappings().all()
 
         results: List[dict] = []
-        for hit in hits:
-            source = hit.get("_source", {})
-            highlights = hit.get("highlight", {}).get("transcript_text", [])
+        for r in rows:
+            insights = r["insights"] if isinstance(r["insights"], dict) else {}
+            highlight = r["highlight"]
+            created = r["created_at"]
             results.append(
                 {
-                    "interaction_id": source.get("interaction_id"),
-                    "score": hit.get("_score"),
-                    "highlights": highlights,
-                    "summary": source.get("summary", ""),
-                    "channel": source.get("channel", ""),
-                    "created_at": source.get("created_at"),
+                    "interaction_id": str(r["id"]),
+                    "score": float(r["rank"]) if r["rank"] is not None else None,
+                    "highlights": [highlight] if highlight else [],
+                    "summary": insights.get("summary", "") or "",
+                    "channel": r["channel"] or "",
+                    "created_at": created.isoformat() if created is not None else None,
                 }
             )
-
         return results
 
-    # ── Cleanup ─────────────────────────────────────────────
-
     async def close(self) -> None:
-        await self.es.close()
+        """No-op. No external client to close."""
+        return None
