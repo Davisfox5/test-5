@@ -34,8 +34,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,12 @@ STEP_ANALYSIS = "analysis"
 STEP_SCORECARDS = "scorecards"
 STEP_ENTITY_RESOLUTION = "entity_resolution"
 STEP_PLAN_SYNTHESIS = "plan_synthesis"
+# The governed auto-executor's per-step dispatch marker
+# (services/action_plan/executor.py). Unlike the pipeline steps above,
+# the natural key here is the ActionStep, not the interaction — the
+# input_hash folds the step id + artifact version in so a re-drafted
+# artifact gets a fresh claim.
+STEP_AUTO_EXECUTION_DISPATCH = "auto_execution_dispatch"
 
 # A pipeline run's longest single step is the 30-90s Sonnet analysis;
 # 15 minutes comfortably covers the whole task including retries of
@@ -368,3 +375,141 @@ def fail_step(
     )
     if commit:
         session.commit()
+
+
+# ──────────────────────────────────────────────────────────
+# Async twins — same table, same claim/complete/fail semantics, for
+# callers that hold an AsyncSession (the action-plan machinery is async
+# end to end; the pipeline above is the only sync-session consumer).
+# ──────────────────────────────────────────────────────────
+
+
+async def claim_step_async(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    interaction_id: uuid.UUID,
+    step_key: str,
+    input_hash: str,
+    worker_id: str,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> StepClaim:
+    """Async twin of :func:`claim_step`. Commits, same as the sync version."""
+    from backend.app.models import InteractionStepRun
+
+    now = _utcnow()
+    lease = now + timedelta(seconds=lease_seconds)
+
+    def _select_row():
+        return select(InteractionStepRun).where(
+            InteractionStepRun.interaction_id == interaction_id,
+            InteractionStepRun.step_key == step_key,
+            InteractionStepRun.input_hash == input_hash,
+        )
+
+    row = (await db.execute(_select_row())).scalar_one_or_none()
+
+    if row is None:
+        run = InteractionStepRun(
+            tenant_id=tenant_id,
+            interaction_id=interaction_id,
+            step_key=step_key,
+            input_hash=input_hash,
+            status="running",
+            attempt=1,
+            claimed_by=worker_id,
+            claimed_at=now,
+            lease_expires_at=lease,
+        )
+        db.add(run)
+        try:
+            await db.commit()
+            return StepClaim(StepClaim.ACQUIRED, run.id, attempt=1)
+        except IntegrityError:
+            await db.rollback()
+            row = (await db.execute(_select_row())).scalar_one_or_none()
+            if row is None:  # pragma: no cover — constraint said it exists
+                raise
+
+    if row.status == "succeeded":
+        return StepClaim(
+            StepClaim.REUSED, row.id, attempt=row.attempt,
+            output_digest=row.output_digest,
+        )
+
+    lease_expired = (
+        row.lease_expires_at is None or _as_aware(row.lease_expires_at) <= now
+    )
+    if row.status == "running" and not lease_expired:
+        return StepClaim(StepClaim.HELD, row.id, attempt=row.attempt)
+
+    prior_attempt = row.attempt
+    new_attempt = prior_attempt + 1
+    result = await db.execute(
+        update(InteractionStepRun)
+        .where(
+            InteractionStepRun.id == row.id,
+            InteractionStepRun.attempt == prior_attempt,
+            InteractionStepRun.status == row.status,
+        )
+        .values(
+            status="running",
+            attempt=new_attempt,
+            claimed_by=worker_id,
+            claimed_at=now,
+            lease_expires_at=lease,
+            error=None,
+            finished_at=None,
+        )
+    )
+    await db.commit()
+    if result.rowcount == 1:
+        return StepClaim(StepClaim.ACQUIRED, row.id, attempt=new_attempt)
+    return StepClaim(StepClaim.HELD, row.id, attempt=prior_attempt)
+
+
+async def complete_step_async(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    *,
+    output_digest: Optional[str] = None,
+    commit: bool = True,
+) -> None:
+    """Async twin of :func:`complete_step`."""
+    from backend.app.models import InteractionStepRun
+
+    await db.execute(
+        update(InteractionStepRun)
+        .where(InteractionStepRun.id == run_id)
+        .values(
+            status="succeeded",
+            finished_at=_utcnow(),
+            output_digest=output_digest,
+            error=None,
+        )
+    )
+    if commit:
+        await db.commit()
+
+
+async def fail_step_async(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    *,
+    error: Optional[str] = None,
+    commit: bool = True,
+) -> None:
+    """Async twin of :func:`fail_step`."""
+    from backend.app.models import InteractionStepRun
+
+    await db.execute(
+        update(InteractionStepRun)
+        .where(InteractionStepRun.id == run_id)
+        .values(
+            status="failed",
+            finished_at=_utcnow(),
+            error=(error or "")[:2000] or None,
+        )
+    )
+    if commit:
+        await db.commit()

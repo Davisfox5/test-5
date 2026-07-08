@@ -5285,6 +5285,61 @@ def action_plan_run_due_regenerations(self) -> int:
         return 0
 
 
+@celery_app.task(
+    name="action_plan_run_due_executions", bind=True,
+)
+def action_plan_run_due_executions(self) -> Dict[str, Any]:
+    """Beat-scheduled tick for the governed auto-executor.
+
+    Default-OFF: the very first thing this does is check
+    ``settings.AUTO_EXECUTION_ENABLED`` and return a no-op without
+    touching the database when it's False (today's — and the shipped —
+    default). When on, fans out per tenant under that tenant's RLS
+    context (``tenant_context_async``) so each tenant's policy only ever
+    sees its own steps, same wiring style as ``trial_expiry_daily``.
+    """
+
+    async def _runner() -> Dict[str, Any]:
+        if not settings.AUTO_EXECUTION_ENABLED:
+            return {"enabled": False, "tenants": 0}
+
+        from sqlalchemy import select as _select
+
+        from backend.app.db import async_session as _async_session_factory
+        from backend.app.models import Tenant as _Tenant
+        from backend.app.services.action_plan.executor import run_due_executions
+        from backend.app.tenant_ctx import tenant_context_async
+
+        totals: Dict[str, Any] = {"enabled": True, "tenants": 0}
+        async with _async_session_factory() as db:
+            tenant_ids = list(
+                (await db.execute(_select(_Tenant.id))).scalars().all()
+            )
+            for tid in tenant_ids:
+                async with tenant_context_async(tid, db):
+                    try:
+                        result = await run_due_executions(db, tenant_id=tid, limit=100)
+                    except Exception:  # noqa: BLE001 - one tenant's failure doesn't kill the tick
+                        logger.exception(
+                            "action_plan_run_due_executions failed for tenant %s "
+                            "(non-fatal)", tid,
+                        )
+                        continue
+                totals["tenants"] += 1
+                for key, value in result.items():
+                    if key == "enabled":
+                        continue
+                    if isinstance(value, int):
+                        totals[key] = totals.get(key, 0) + value
+        return totals
+
+    try:
+        return _run_async(_runner)
+    except Exception:
+        logger.exception("action_plan_run_due_executions failed (non-fatal)")
+        return {"enabled": settings.AUTO_EXECUTION_ENABLED, "tenants": 0}
+
+
 # ── Manager-view tasks (anomaly scan, recommendations, resolution) ────
 
 
