@@ -11,6 +11,15 @@ The mapping centers each bucket and is deliberately deterministic.
 Downstream classifier work (Phase 4) will train a calibrated model on
 top of evidence features, at which point this mapping becomes the
 cold-start fallback.
+
+Aspect-based sentiment upgrade: the analyzer now ALSO emits
+``sentiment_score_direct``, a continuous 0-10 read of the call that
+isn't derived from the ``sentiment_overall`` bucket. ``sentiment_score``
+prefers that real gradient when it's a valid number in range, and only
+falls back to the bucket anchor above when it's absent or malformed
+(older prompt variant, a flaky response). ``score_engine.py`` and every
+other downstream reader still just consumes ``insights["sentiment_score"]``
+— this module is the only place that needs to know which source won.
 """
 
 from __future__ import annotations
@@ -69,18 +78,37 @@ def map_script_adherence(band: Optional[str]) -> Optional[float]:
     return SCRIPT_ADHERENCE_BAND_TO_SCORE.get(band.lower().strip())
 
 
+def resolve_sentiment_score(insights: Dict[str, Any]) -> Optional[float]:
+    """Resolve the numeric sentiment score for one interaction.
+
+    Prefers ``sentiment_score_direct`` (the continuous 0-10 read the
+    analyzer emits alongside the coarse bucket) when it's present and a
+    valid number in ``[0, 10]``. Falls back to the bucket-anchor map
+    when it's absent, non-numeric, or out of range — the old behavior,
+    kept as the safety net for older rows / prompt variants that never
+    emitted the direct score.
+    """
+    direct = insights.get("sentiment_score_direct")
+    if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+        direct_f = float(direct)
+        if 0.0 <= direct_f <= 10.0:
+            return direct_f
+    return map_sentiment(insights.get("sentiment_overall"))
+
+
 def derive_numeric_scores(insights: Dict[str, Any]) -> Dict[str, Any]:
     """Populate numeric score fields from their bucket counterparts.
 
     Mutates the insights dict in place AND returns it for convenience.
-    Always overwrites the numeric field — the bucket is the source of
-    truth, and the LLM may not even be emitting numerics anymore.
+    Always overwrites the numeric field — the bucket (or the direct
+    score, when valid) is the source of truth, and the LLM may not even
+    be emitting numerics otherwise.
 
-    A bucket without a mapping (model invented a new label) leaves the
-    numeric field at its previous value or unset; we don't guess.
+    A bucket without a mapping (model invented a new label) AND no
+    valid direct score leaves the numeric field at its previous value
+    or unset; we don't guess.
     """
-    sentiment_bucket = insights.get("sentiment_overall")
-    sentiment_score = map_sentiment(sentiment_bucket)
+    sentiment_score = resolve_sentiment_score(insights)
     if sentiment_score is not None:
         insights["sentiment_score"] = sentiment_score
 

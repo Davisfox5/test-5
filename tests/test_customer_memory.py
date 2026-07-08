@@ -254,6 +254,71 @@ def test_short_circuits_without_customer(sync_session, seeded):
     assert counts == {"concerns": 0, "commitments": 0}
 
 
+# ── update_from_interaction: aspect valence on evidence ─────────────────
+
+
+def test_evidence_valence_matches_aspect_by_topic(sync_session, seeded):
+    """A ``sentiment_aspects`` entry whose ``aspect`` lines up with the
+    concern's topic attaches its ``valence`` to the evidence entry."""
+    from backend.app.models import CustomerConcern
+    from backend.app.services.customer_memory import update_from_interaction
+
+    tenant, cust = seeded
+    ix = _add_interaction(sync_session, tenant, cust)
+    update_from_interaction(
+        sync_session,
+        ix,
+        {
+            "concerns_raised": [{"topic": "pricing", "sentiment": "negative"}],
+            "sentiment_score_direct": 6.0,
+            "sentiment_aspects": [
+                {"aspect": "Pricing", "valence": 2.5},
+                {"aspect": "onboarding", "valence": 8.0},
+            ],
+        },
+    )
+    row = (sync_session.execute(select(CustomerConcern))).scalar_one()
+    assert row.evidence[0]["valence"] == 2.5
+
+
+def test_evidence_valence_falls_back_to_call_level_score(sync_session, seeded):
+    """No matching aspect for this topic — fall back to the call's
+    ``sentiment_score_direct``."""
+    from backend.app.models import CustomerConcern
+    from backend.app.services.customer_memory import update_from_interaction
+
+    tenant, cust = seeded
+    ix = _add_interaction(sync_session, tenant, cust)
+    update_from_interaction(
+        sync_session,
+        ix,
+        {
+            "concerns_raised": [{"topic": "pricing", "sentiment": "negative"}],
+            "sentiment_score_direct": 4.5,
+            "sentiment_aspects": [{"aspect": "onboarding", "valence": 8.0}],
+        },
+    )
+    row = (sync_session.execute(select(CustomerConcern))).scalar_one()
+    assert row.evidence[0]["valence"] == 4.5
+
+
+def test_evidence_valence_absent_when_nothing_to_attach(sync_session, seeded):
+    """No aspects, no direct score — ``valence`` is simply absent from
+    the evidence entry rather than guessed."""
+    from backend.app.models import CustomerConcern
+    from backend.app.services.customer_memory import update_from_interaction
+
+    tenant, cust = seeded
+    ix = _add_interaction(sync_session, tenant, cust)
+    update_from_interaction(
+        sync_session,
+        ix,
+        {"concerns_raised": [{"topic": "pricing", "sentiment": "negative"}]},
+    )
+    row = (sync_session.execute(select(CustomerConcern))).scalar_one()
+    assert "valence" not in row.evidence[0]
+
+
 # ── update_from_interaction: customer commitments ──────────────────────
 
 

@@ -17,6 +17,7 @@ from backend.app.services.score_mapping import (
     map_risk,
     map_script_adherence,
     map_sentiment,
+    resolve_sentiment_score,
 )
 
 
@@ -61,6 +62,57 @@ def test_derive_numeric_scores_leaves_unknown_buckets_alone():
     derive_numeric_scores(insights)
     assert "sentiment_score" not in insights
     assert insights["churn_risk"] == 0.85
+
+
+# ── Aspect-sentiment upgrade: sentiment_score_direct resolution ────────
+
+
+def test_resolve_sentiment_score_prefers_direct_score_when_valid():
+    insights = {"sentiment_overall": "negative", "sentiment_score_direct": 7.2}
+    assert resolve_sentiment_score(insights) == 7.2
+
+
+def test_resolve_sentiment_score_falls_back_to_anchor_when_absent():
+    insights = {"sentiment_overall": "positive"}
+    assert resolve_sentiment_score(insights) == 8.5
+
+
+def test_resolve_sentiment_score_falls_back_to_anchor_when_out_of_range():
+    insights = {"sentiment_overall": "mixed", "sentiment_score_direct": 15.0}
+    assert resolve_sentiment_score(insights) == 4.5
+
+    insights_negative_oob = {
+        "sentiment_overall": "neutral",
+        "sentiment_score_direct": -1.0,
+    }
+    assert resolve_sentiment_score(insights_negative_oob) == 6.0
+
+
+def test_resolve_sentiment_score_falls_back_when_direct_is_not_numeric():
+    insights = {"sentiment_overall": "negative", "sentiment_score_direct": "high"}
+    assert resolve_sentiment_score(insights) == 2.5
+
+    # A bare bool is technically an ``int`` subclass in Python but is a
+    # model mistake, not a valid 0/10 reading — must not be accepted.
+    insights_bool = {"sentiment_overall": "negative", "sentiment_score_direct": True}
+    assert resolve_sentiment_score(insights_bool) == 2.5
+
+
+def test_derive_numeric_scores_uses_direct_score_over_bucket_anchor():
+    insights = {
+        "sentiment_overall": "neutral",  # anchor would be 6.0
+        "sentiment_score_direct": 9.1,
+        "churn_risk_signal": "low",
+    }
+    derive_numeric_scores(insights)
+    assert insights["sentiment_score"] == 9.1
+    assert insights["churn_risk"] == 0.25
+
+
+def test_derive_numeric_scores_falls_back_to_anchor_without_direct_score():
+    insights = {"sentiment_overall": "mixed"}
+    derive_numeric_scores(insights)
+    assert insights["sentiment_score"] == 4.5
 
 
 def test_compute_rubric_zero_evidence_is_zero():

@@ -75,6 +75,30 @@ def test_client_trends_exposes_both_numeric_and_categorical_churn():
     assert payload.churn_risk_signal == "medium"
 
 
+def test_aspect_sentiment_row_accepts_full_payload():
+    from backend.app.api.analytics import AspectSentimentRow
+
+    payload = AspectSentimentRow(
+        aspect="pricing",
+        mention_count=12,
+        avg_valence=6.4,
+        sample_quote="The price is great for what we get.",
+    )
+    assert payload.aspect == "pricing"
+    assert payload.mention_count == 12
+    assert payload.avg_valence == 6.4
+
+
+def test_aspect_sentiment_row_allows_null_avg_valence():
+    from backend.app.api.analytics import AspectSentimentRow
+
+    payload = AspectSentimentRow(
+        aspect="migration_effort", mention_count=3, avg_valence=None, sample_quote=None
+    )
+    assert payload.avg_valence is None
+    assert payload.sample_quote is None
+
+
 def test_signal_buckets_defaults_all_keys_present():
     from backend.app.api.analytics import SignalBuckets
 

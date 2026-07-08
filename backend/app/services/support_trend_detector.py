@@ -27,11 +27,22 @@ Pipeline:
 
 Cluster centroids are not persisted — the run is fast enough that
 re-clustering every night is cheaper than maintaining state.
+
+As of the trend-engine extraction, the actual clustering / growth /
+confidence math lives in ``trend_engine.py`` (domain-agnostic; also used
+by the Sales and CS trend callers and cross-customer concern
+aggregation). This module is now a thin SupportCase-shaped adapter over
+that engine: ``cluster_cases`` and ``find_emerging_trends`` convert
+``SupportCase`` rows to/from the engine's generic ``TrendItem`` /
+``Cluster`` / ``EmergingTrend`` shapes so every name this module exposed
+before (``_cosine_similarity``, ``_Cluster``, ``CLUSTER_SIM_THRESHOLD``,
+``cluster_cases``, ``find_emerging_trends``, ``EmergingTrend``,
+``persist_trends``) keeps its exact prior signature and behavior — see
+``tests/test_support_trend_detector.py``.
 """
 from __future__ import annotations
 
 import logging
-import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -46,28 +57,32 @@ from backend.app.models import (
     SupportCase,
     Tenant,
 )
+from backend.app.services import trend_engine
 
 logger = logging.getLogger(__name__)
 
 
 # ── Tunables ───────────────────────────────────────────────────────────
+# Same values as ``trend_engine``'s defaults — re-bound here (rather than
+# imported under a different name) so this module's public constants are
+# unchanged for any existing caller/test.
 
 # Cosine similarity floor for joining an existing cluster. Voyage-2
 # embeddings on short subjects cluster well around 0.78–0.82; pick
 # the conservative end to keep false positives low.
-CLUSTER_SIM_THRESHOLD = 0.78
+CLUSTER_SIM_THRESHOLD = trend_engine.CLUSTER_SIM_THRESHOLD
 
 # Floor on cluster size before we even consider firing. The product
 # direction says hard counts are a FLOOR, not a trigger; this is the
 # floor.
-MIN_CLUSTER_SIZE = 3
+MIN_CLUSTER_SIZE = trend_engine.MIN_CLUSTER_SIZE
 
 # Trailing window vs prior window. Both windows are this many days.
-GROWTH_WINDOW_DAYS = 14
+GROWTH_WINDOW_DAYS = trend_engine.GROWTH_WINDOW_DAYS
 
 # Multiplier on the prior window's count that the trailing window must
 # exceed to fire. 2.0 = doubled.
-GROWTH_RATIO = 2.0
+GROWTH_RATIO = trend_engine.GROWTH_RATIO
 
 # How many cases to embed in one Voyage call. Voyage's batch endpoint
 # tops out around 128; pick a number that keeps the per-call payload
@@ -79,7 +94,12 @@ EMBED_BATCH_SIZE = 64
 class _Cluster:
     """In-memory cluster while we're scanning. Centroid is the
     component-wise mean of the member vectors; updating it
-    incrementally is fine at our N."""
+    incrementally is fine at our N.
+
+    Kept as a SupportCase-shaped wrapper (``.cases``, not the engine's
+    generic ``.items``) so existing callers/tests are untouched; built
+    from / converted to ``trend_engine.Cluster`` internally.
+    """
 
     cases: List[SupportCase] = field(default_factory=list)
     centroid: List[float] = field(default_factory=list)
@@ -97,16 +117,19 @@ class _Cluster:
 
 # ── Math helpers ─────────────────────────────────────────────────────
 
+# Re-exported so existing callers/tests importing ``_cosine_similarity``
+# from this module keep working unchanged.
+_cosine_similarity = trend_engine.cosine_similarity
 
-def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+
+def _case_to_item(case: SupportCase) -> trend_engine.TrendItem:
+    return trend_engine.TrendItem(
+        source_id=case.id,
+        text=case.subject,
+        timestamp=case.opened_at,
+        customer_id=case.customer_id,
+        embedding=case.subject_embedding,
+    )
 
 
 # ── Embedding pass ───────────────────────────────────────────────────
@@ -187,28 +210,25 @@ def cluster_cases(
     Order intentional: newest first, so cluster centroids reflect the
     current language pattern. An older case still matches if it's
     within threshold of a recent cluster's centroid.
+
+    Delegates the actual clustering to ``trend_engine.cluster_items``;
+    this just adapts ``SupportCase`` rows to/from the engine's generic
+    ``TrendItem`` / ``Cluster`` shapes so callers keep seeing ``_Cluster``
+    objects with a ``.cases`` list of ``SupportCase``.
     """
-    embedded = [
+    candidates = [
         c for c in cases if isinstance(c.subject_embedding, list) and c.subject_embedding
     ]
-    embedded.sort(key=lambda c: c.opened_at or datetime.min, reverse=True)
-    clusters: List[_Cluster] = []
-    for c in embedded:
-        vec = c.subject_embedding
-        best_idx = -1
-        best_sim = 0.0
-        for i, cl in enumerate(clusters):
-            sim = _cosine_similarity(vec, cl.centroid)
-            if sim > best_sim:
-                best_sim = sim
-                best_idx = i
-        if best_idx >= 0 and best_sim >= CLUSTER_SIM_THRESHOLD:
-            clusters[best_idx].add(c, vec)
-        else:
-            new_cl = _Cluster()
-            new_cl.add(c, vec)
-            clusters.append(new_cl)
-    return clusters
+    by_id = {c.id: c for c in candidates}
+    items = [_case_to_item(c) for c in candidates]
+    generic_clusters = trend_engine.cluster_items(items, threshold=CLUSTER_SIM_THRESHOLD)
+    return [
+        _Cluster(
+            cases=[by_id[it.source_id] for it in gc.items],
+            centroid=gc.centroid,
+        )
+        for gc in generic_clusters
+    ]
 
 
 @dataclass(frozen=True)
@@ -240,75 +260,41 @@ def find_emerging_trends(
 
     Cohesion proxy: average cosine similarity from cluster centroid to
     members. Higher = tighter cluster = lower false-positive risk.
+
+    Delegates to ``trend_engine.find_emerging_trends``; converts
+    ``_Cluster`` (SupportCase-shaped) to the engine's generic ``Cluster``
+    on the way in, and maps the engine's generic ``EmergingTrend`` back
+    onto this module's ``EmergingTrend`` (``sample_subjects`` /
+    ``sample_case_ids`` instead of ``sample_texts`` / ``sample_ids``) on
+    the way out, so nothing about this module's public shape changes.
     """
-    now = now or datetime.now(timezone.utc)
-    recent_cutoff = now - timedelta(days=GROWTH_WINDOW_DAYS)
-    prior_cutoff = now - timedelta(days=GROWTH_WINDOW_DAYS * 2)
-    trends: List[EmergingTrend] = []
-    for cl in clusters:
-        if len(cl.cases) < MIN_CLUSTER_SIZE:
-            continue
-        recent = [
-            c
-            for c in cl.cases
-            if c.opened_at is not None
-            and _ge(c.opened_at, recent_cutoff)
-        ]
-        prior = [
-            c
-            for c in cl.cases
-            if c.opened_at is not None
-            and _ge(c.opened_at, prior_cutoff)
-            and not _ge(c.opened_at, recent_cutoff)
-        ]
-        if not recent or len(recent) < MIN_CLUSTER_SIZE:
-            continue
-        prior_count = max(len(prior), 1)
-        growth = len(recent) / prior_count
-        # If the prior window was empty AND recent is at floor, also
-        # treat that as a real trend (fresh cluster forming).
-        is_fresh = len(prior) == 0 and len(recent) >= MIN_CLUSTER_SIZE
-        if growth < GROWTH_RATIO and not is_fresh:
-            continue
-        # Cohesion: mean similarity from centroid to members.
-        if cl.cases:
-            sims = [
-                _cosine_similarity(c.subject_embedding, cl.centroid)
-                for c in cl.cases
-            ]
-            cohesion = sum(sims) / len(sims) if sims else 0.0
-        else:
-            cohesion = 0.0
-        # Confidence: weighted mix. Logistic-ish squashing on growth
-        # so a 10x cluster doesn't dominate the same cluster on a 3x.
-        growth_signal = min(growth / 4.0, 1.0)
-        size_signal = min(len(recent) / 8.0, 1.0)
-        confidence = 0.45 * cohesion + 0.35 * growth_signal + 0.20 * size_signal
-        sample_subjects = [c.subject for c in cl.cases[:5] if c.subject]
-        sample_ids = [c.id for c in cl.cases[:5]]
-        customer_set = {c.customer_id for c in cl.cases if c.customer_id is not None}
-        trends.append(
-            EmergingTrend(
-                cluster_id=str(uuid.uuid5(uuid.NAMESPACE_OID, sample_subjects[0] if sample_subjects else "_")),
-                recent_count=len(recent),
-                prior_count=len(prior),
-                growth_ratio=round(growth, 2),
-                confidence=round(min(max(confidence, 0.0), 1.0), 2),
-                sample_subjects=sample_subjects,
-                sample_case_ids=sample_ids,
-                customer_count=len(customer_set),
-            )
+    generic_clusters = [
+        trend_engine.Cluster(
+            items=[_case_to_item(c) for c in cl.cases],
+            centroid=cl.centroid,
         )
-    return trends
-
-
-def _ge(a: datetime, b: datetime) -> bool:
-    """Naive-vs-aware-safe ``>=`` comparison."""
-    if a.tzinfo is None and b.tzinfo is not None:
-        return a >= b.replace(tzinfo=None)
-    if a.tzinfo is not None and b.tzinfo is None:
-        return a >= b.replace(tzinfo=b.tzinfo)  # noop, both aware
-    return a >= b
+        for cl in clusters
+    ]
+    generic_trends = trend_engine.find_emerging_trends(
+        generic_clusters,
+        now=now,
+        min_cluster_size=MIN_CLUSTER_SIZE,
+        growth_window_days=GROWTH_WINDOW_DAYS,
+        growth_ratio=GROWTH_RATIO,
+    )
+    return [
+        EmergingTrend(
+            cluster_id=gt.cluster_id,
+            recent_count=gt.recent_count,
+            prior_count=gt.prior_count,
+            growth_ratio=gt.growth_ratio,
+            confidence=gt.confidence,
+            sample_subjects=gt.sample_texts,
+            sample_case_ids=gt.sample_ids,
+            customer_count=gt.customer_count,
+        )
+        for gt in generic_trends
+    ]
 
 
 # ── Persistence: alert + recommendation ──────────────────────────────

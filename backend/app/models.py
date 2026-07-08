@@ -962,7 +962,12 @@ class ActionStep(Base):
 
     # ── State machine ──
     # 'blocked' | 'ready' | 'in_progress' | 'awaiting_response' | 'done'
-    # | 'skipped' | 'deleted'. The engine transitions these.
+    # | 'skipped' | 'deleted' | 'pending_approval'. The engine transitions
+    # these. 'pending_approval' is set by the governed auto-executor
+    # (services/action_plan/executor.py) when a tenant's action_class
+    # policy is 'approve_then_auto' — a human approves elsewhere, at
+    # which point the step goes back to 'ready' for the next tick to
+    # pick up under 'auto'.
     state: Mapped[str] = mapped_column(
         String, nullable=False, default="ready", server_default="ready"
     )
@@ -1064,7 +1069,7 @@ class ActionStep(Base):
     __table_args__ = (
         CheckConstraint(
             "state IN ('blocked', 'ready', 'in_progress', 'awaiting_response', "
-            "'done', 'skipped', 'deleted')",
+            "'done', 'skipped', 'deleted', 'pending_approval')",
             name="ck_action_steps_state",
         ),
         CheckConstraint(
@@ -1143,7 +1148,9 @@ class StepResponse(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE")
     )
-    # 'inbound_email' | 'manual_note' | 'auto_mark_done' | 'outbound_email_sent'.
+    # 'inbound_email' | 'manual_note' | 'auto_mark_done' |
+    # 'outbound_email_sent' | 'auto_executed' (the governed auto-executor
+    # dispatched or shadow-logged this step; see executor.py).
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     # FK-by-id (not declared FK) to email_messages to keep the schemas
     # weakly coupled — the email_ingest table lives in a separate concern.
@@ -1171,7 +1178,7 @@ class StepResponse(Base):
     __table_args__ = (
         CheckConstraint(
             "source IN ('inbound_email', 'manual_note', 'auto_mark_done', "
-            "'outbound_email_sent')",
+            "'outbound_email_sent', 'auto_executed')",
             name="ck_step_responses_source",
         ),
         Index("ix_step_responses_step_received", "step_id", "received_at"),
@@ -3622,6 +3629,61 @@ class InteractionStepRun(Base):
             name="ck_step_run_status",
         ),
         Index("ix_step_runs_tenant_step_status", "tenant_id", "step_key", "status"),
+    )
+
+
+class AutoExecutionPolicy(Base):
+    """Per-tenant, per-action-class dispatch policy for the governed
+    auto-executor (``services/action_plan/executor.py``).
+
+    Keyed by (tenant_id, action_class). No row for a class means
+    ``manual`` — today's behavior, nothing auto-dispatches. Buckets:
+
+    * ``low_risk``  — note, research, internal system_write.
+    * ``high_risk`` — external email, CRM write (system_write to an
+      external CRM), meeting/phone_call.
+
+    ``mode``:
+      * ``manual``           — default absent; the executor never touches
+        these steps.
+      * ``shadow``           — the executor logs "WOULD dispatch" + writes
+        an audit ``StepResponse`` (``source='auto_executed'``) but
+        performs NO external side effect and does not change step state.
+      * ``approve_then_auto`` — the executor moves the step to
+        ``pending_approval`` and stops; a human approves elsewhere.
+      * ``auto``              — the executor dispatches for real, through
+        the same code path as the manual endpoints.
+    """
+
+    __tablename__ = "auto_execution_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    # 'low_risk' | 'high_risk' — see the class docstring for the bucket.
+    action_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 'manual' | 'shadow' | 'approve_then_auto' | 'auto'.
+    mode: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="manual", server_default="manual"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "action_class", name="uq_auto_execution_policy_class"
+        ),
+        CheckConstraint(
+            "action_class IN ('low_risk', 'high_risk')",
+            name="ck_auto_execution_policy_action_class",
+        ),
+        CheckConstraint(
+            "mode IN ('manual', 'shadow', 'approve_then_auto', 'auto')",
+            name="ck_auto_execution_policy_mode",
+        ),
     )
 
 

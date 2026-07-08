@@ -208,6 +208,27 @@ ANALYSIS_SYSTEM_PROMPT_TERSE = (
         "scheduled the next step; no objections were left unresolved.'). "
         "The rep reads this directly in a tooltip; write plain English.\n"
         "- sentiment_trajectory: list of {time: str, score: float 0-10}\n"
+        "- sentiment_score_direct: float 0-10. Your own calibrated read of "
+        "the call's OVERALL sentiment, independent of the sentiment_overall "
+        "bucket above. Use the real gradient, not just the 2.5/4.5/6.0/8.5 "
+        "anchors those buckets round to. 10 = extremely positive (customer "
+        "delighted, zero friction). 0 = extremely negative (customer angry, "
+        "relationship at risk). Weigh how the call actually ended and the "
+        "overall tone, not just whether one objection came up.\n"
+        "- sentiment_aspects: list of {aspect: str, valence: float 0-10, "
+        "evidence_quote: str, confidence: float 0-1}. Each entry is "
+        "sentiment tied to ONE specific thing the customer feels something "
+        "about ('pricing', 'migration effort', 'the product', 'support "
+        "responsiveness', a named competitor). Reuse the same short "
+        "canonical name you'd use for topics/competitor_mentions/"
+        "product_feedback when the aspect overlaps one of those. "
+        "``valence`` is on the same 0-10 scale as sentiment_score_direct "
+        "(10 = very positive about this specific thing). "
+        "``evidence_quote`` is a short verbatim quote grounding the "
+        "reading. ``confidence`` is 0-1: how sure you are this reading "
+        "holds. Only emit aspects you have real evidence for; an empty "
+        "list is correct when the call didn't surface distinct "
+        "aspect-level sentiment. Few aspects only, don't pad.\n"
         "- topics: list of {name: str, relevance: float 0 to 1, "
         "mentions: int}. ``name`` MUST be a GENERAL category that could "
         "match the same theme across many calls in many industries. "
@@ -360,6 +381,17 @@ ANALYSIS_SYSTEM_PROMPT = (
     "sentiment over the call. The trajectory is the only place a numeric "
     "scale is appropriate (it's a within-call shape, not a calibrated "
     "outcome score).\n"
+    "- sentiment_score_direct: float 0-10 — your own calibrated read of the "
+    "call's OVERALL sentiment, independent of the sentiment_overall bucket "
+    "above. Use the real gradient rather than rounding to the bucket's "
+    "anchor value. 10 = extremely positive, 0 = extremely negative.\n"
+    "- sentiment_aspects: list of {aspect: str, valence: float 0-10, "
+    "evidence_quote: str, confidence: float 0-1} — sentiment tied to a "
+    "specific thing the customer feels something about (e.g. 'pricing', "
+    "'migration effort', 'the product'), reusing topic/competitor/"
+    "product_feedback names where they overlap. valence uses the same "
+    "0-10 scale as sentiment_score_direct. Empty list is fine when no "
+    "distinct aspect-level sentiment surfaced.\n"
     "- topics: list of {name: str, relevance: float 0–1, mentions: int}\n"
     "- key_moments: list of {time: str, type: str, description: str, "
     "start_time: str, end_time: str} — descriptions in neutral third person\n"
@@ -522,7 +554,8 @@ ANALYSIS_SYSTEM_PROMPT_CS = (
     "advocate internally.\n\n"
     "Analyze the provided transcript and return ONLY valid JSON (no "
     "markdown fences) with the SAME fields as the sales analyzer "
-    "(summary, sentiment_overall, sentiment_trajectory, topics, "
+    "(summary, sentiment_overall, sentiment_trajectory, "
+    "sentiment_score_direct, sentiment_aspects, topics, "
     "key_moments, competitor_mentions, product_feedback, action_items, "
     "coaching, follow_up_email_draft, churn_risk_signal, upsell_signal, "
     "notable_snippets, inline_tags, customer_signals, "
@@ -588,7 +621,8 @@ ANALYSIS_SYSTEM_PROMPT_IT_SUPPORT = (
     "this call/email, or was a follow-up genuinely required.\n\n"
     "Analyze the provided transcript and return ONLY valid JSON (no "
     "markdown fences) with the SAME fields as the sales analyzer "
-    "(summary, sentiment_overall, sentiment_trajectory, topics, "
+    "(summary, sentiment_overall, sentiment_trajectory, "
+    "sentiment_score_direct, sentiment_aspects, topics, "
     "key_moments, competitor_mentions, product_feedback, action_items, "
     "coaching, follow_up_email_draft, churn_risk_signal, upsell_signal, "
     "notable_snippets, inline_tags, customer_signals, "
@@ -931,6 +965,66 @@ def _log_jargon_hits(result: Dict[str, Any], interaction_id: Optional[str] = Non
             len(hits),
             "; ".join(hits[:10]),
         )
+
+
+def _coerce_unit_float(raw: Any, lo: float, hi: float) -> Optional[float]:
+    """Coerce ``raw`` to a float within ``[lo, hi]``, else ``None``.
+
+    Booleans are rejected even though ``bool`` is a ``int`` subclass in
+    Python (``isinstance(True, int) is True``) — a stray boolean in a
+    numeric field is a model mistake, not a valid 0/1 reading.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if lo <= value <= hi:
+        return value
+    return None
+
+
+def _apply_sentiment_depth_defaults(result: Dict[str, Any]) -> None:
+    """Tolerant parsing for the aspect-based sentiment fields.
+
+    ``sentiment_score_direct`` and ``sentiment_aspects`` are new (the
+    continuous-sentiment upgrade); older prompt variants, a flaky
+    response, or a model that just ignores the instruction can omit
+    them or emit malformed values. Never let that crash the pipeline —
+    always leave the keys present with a well-typed, safe value so
+    ``score_mapping`` and the analytics rollup can read them
+    unconditionally.
+
+    Defaults: ``sentiment_score_direct`` -> None (falls back to the
+    bucket anchor in ``score_mapping``), ``sentiment_aspects`` -> [].
+    """
+    result["sentiment_score_direct"] = _coerce_unit_float(
+        result.get("sentiment_score_direct"), 0.0, 10.0
+    )
+
+    aspects_raw = result.get("sentiment_aspects")
+    aspects: List[Dict[str, Any]] = []
+    if isinstance(aspects_raw, list):
+        for item in aspects_raw:
+            if not isinstance(item, dict):
+                continue
+            aspect_name = item.get("aspect")
+            if not isinstance(aspect_name, str) or not aspect_name.strip():
+                continue
+            valence = _coerce_unit_float(item.get("valence"), 0.0, 10.0)
+            if valence is None:
+                # No usable numeric reading — drop the entry rather than
+                # ship an aspect with no sentiment attached to it.
+                continue
+            confidence = _coerce_unit_float(item.get("confidence"), 0.0, 1.0)
+            quote = item.get("evidence_quote")
+            aspects.append(
+                {
+                    "aspect": aspect_name.strip(),
+                    "valence": valence,
+                    "evidence_quote": quote.strip() if isinstance(quote, str) else "",
+                    "confidence": confidence if confidence is not None else 0.5,
+                }
+            )
+    result["sentiment_aspects"] = aspects
 
 
 # Placeholder timestamp values the model emits when the source transcript
@@ -1286,6 +1380,7 @@ class AIAnalysisService:
                 _dedup_action_items(result)
                 _recompute_evidence(result)
                 _scrub_zero_timestamps(result)
+                _apply_sentiment_depth_defaults(result)
                 _log_jargon_hits(result)
                 result.update(stamp)
                 return result
@@ -1308,6 +1403,7 @@ class AIAnalysisService:
                         _dedup_action_items(repaired)
                         _recompute_evidence(repaired)
                         _scrub_zero_timestamps(repaired)
+                        _apply_sentiment_depth_defaults(repaired)
                         _log_jargon_hits(repaired)
                         repaired.update(stamp)
                         return repaired

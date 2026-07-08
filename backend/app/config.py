@@ -253,6 +253,18 @@ class Settings(BaseSettings):
     # local dev + integration tests where setting up push is onerous.
     EMAIL_POLL_FORCE_ALL: bool = False
 
+    # ── Governed auto-executor (action plans) ──────────────
+    # Global kill switch for the auto-executor. Default OFF: the beat
+    # task returns a no-op immediately, regardless of any per-tenant
+    # AutoExecutionPolicy row. A step is only ever auto-dispatched when
+    # BOTH this is True AND the tenant has explicitly set an auto mode
+    # for that step's action_class (default absent = 'manual').
+    AUTO_EXECUTION_ENABLED: bool = False
+    # Conservative per-tenant cap on real/shadow dispatches per beat
+    # tick, so a policy misconfiguration (or a burst of newly-ready
+    # steps) can't fan out unbounded sends in one run.
+    AUTO_EXECUTION_MAX_DISPATCHES_PER_TENANT: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:
