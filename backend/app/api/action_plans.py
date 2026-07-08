@@ -1124,125 +1124,53 @@ async def schedule_meeting_for_step(
     Zoom → Cal.com → stub), creates the event, stamps
     ``step.calendar_event_id`` on success, and returns the join URL or
     the stub's ICS payload.
+
+    Core logic lives in :mod:`backend.app.services.action_plan.dispatch`
+    so the governed auto-executor schedules through the exact same path.
     """
-    from backend.app.services.meeting_scheduler import (
-        MeetingRequest,
-        MeetingScheduler,
-    )
-    from backend.app.services.meeting_scheduler.participant_resolver import (
-        resolve_participants,
-    )
+    from backend.app.services.action_plan.dispatch import dispatch_step_meeting
 
     plan = await _load_plan_or_404(db, tenant, plan_id)
     step = await _load_step_or_404(db, tenant, plan_id, step_id)
 
-    # Pull customer_id from the source interaction so the participant
-    # resolver can scope to that customer's contacts.
-    interaction_stmt = select(Interaction).where(
-        Interaction.id == plan.interaction_id,
-        Interaction.tenant_id == tenant.id,
-    )
-    interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
-    customer_id = interaction.customer_id if interaction else None
-
-    raw_parts = body.override_participants
-    if raw_parts is None:
-        raw_parts = step.participants or []
-    resolved = await resolve_participants(
-        db,
-        tenant_id=tenant.id,
-        customer_id=customer_id,
-        raw_participants=raw_parts,
-    )
-
     organizer_email = (
         principal.user.email if principal.user and principal.user.email
-        else "no-reply@linda.local"
+        else None
     )
+    user_id = principal.user.id if principal.user else None
 
-    subject = body.override_subject or step.title or "Meeting"
-    description_parts = [step.description or ""]
-    if step.channel_reasoning:
-        description_parts.append(f"\n\nWhy meeting: {step.channel_reasoning}")
-    if step.prep_artifacts:
-        description_parts.append("\n\nPrep:")
-        for artifact in step.prep_artifacts:
-            if isinstance(artifact, str) and artifact.strip():
-                description_parts.append(f"\n  - {artifact}")
-    body_text = "".join(description_parts).strip()
-
-    inferred_conference = body.conference_provider
-    inferred_location = body.location
-    if inferred_conference is None and step.recommended_channel == "phone_call":
-        inferred_conference = "none"
-        customer_phone = next(
-            (
-                getattr(p, "phone", None)
-                for p in resolved
-                if (p.side or "").lower() == "customer" and getattr(p, "phone", None)
-            ),
-            None,
-        )
-        if not customer_phone and interaction:
-            customer_phone = getattr(interaction, "caller_phone", None)
-        if customer_phone:
-            inferred_location = inferred_location or f"Phone: {customer_phone}"
-            body_text = f"Call: {customer_phone}\n\n{body_text}"
-
-    request = MeetingRequest(
-        subject=subject,
-        body=body_text,
+    result = await dispatch_step_meeting(
+        db,
+        tenant=tenant,
+        plan=plan,
+        step=step,
+        user_id=user_id,
         organizer_email=organizer_email,
-        participants=resolved,
         start=body.start,
         duration_minutes=body.duration_minutes,
-        conference_provider=inferred_conference,
-        location=inferred_location,
+        location=body.location,
+        override_subject=body.override_subject,
+        override_participants=body.override_participants,
+        conference_provider=body.conference_provider,
     )
-
-    tf = getattr(tenant, "features_enabled", None) or {}
-    preferred = tf.get("calendar_provider") if isinstance(tf, dict) else None
-    user_id = principal.user.id if principal.user else None
-    scheduler = MeetingScheduler(
-        db,
-        tenant_id=tenant.id,
-        user_id=user_id,
-        preferred_provider=preferred,
-    )
-    result_obj = await scheduler.create_meeting(request)
-
-    if result_obj.success and result_obj.event_id:
-        step.calendar_event_id = result_obj.event_id
-
-    # Phone/meeting steps that don't await a response transition to done
-    # on a successful schedule, matching the Sent-on-email semantics.
-    if result_obj.success and step.state in {"ready", "blocked", "in_progress"}:
-        if getattr(step, "awaits_response", False):
-            step.state = "awaiting_response"
-        else:
-            step.state = "done"
-            step.completed_at = datetime.now(timezone.utc)
-            engine = ActionPlanEngine()
-            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
-        step.started_at = step.started_at or datetime.now(timezone.utc)
 
     await db.commit()
     _emit_event(
         tenant=tenant, principal=principal,
         event="action_step.scheduled_meeting",
         plan_id=plan_id, step_id=step_id,
-        extra={"provider": result_obj.provider, "success": result_obj.success},
+        extra={"provider": result.provider, "success": result.success},
     )
 
     return ScheduleMeetingForStepResult(
-        success=result_obj.success,
-        provider=result_obj.provider,
-        event_id=result_obj.event_id,
-        join_url=result_obj.join_url,
-        html_link=result_obj.html_link,
-        ics_payload=result_obj.ics_payload,
-        note=result_obj.note,
-        error=result_obj.error,
+        success=result.success,
+        provider=result.provider,
+        event_id=result.event_id,
+        join_url=result.join_url,
+        html_link=result.html_link,
+        ics_payload=result.ics_payload,
+        note=result.note,
+        error=result.error,
     )
 
 
@@ -1292,175 +1220,56 @@ async def send_email_for_step(
     does: ``awaiting_response`` if ``step.awaits_response``, else
     ``done``. Records an ``email_sends`` row so the inbound matcher
     can tie a reply back to this step via RFC 822 headers.
+
+    Core logic lives in :mod:`backend.app.services.action_plan.dispatch`
+    so the governed auto-executor sends through the exact same path.
     """
-    from backend.app.api.emails import (
-        _build_sender,
-        _close_sender,
-        _principal_email,
-        _resolve_integration,
-    )
-    from backend.app.models import EmailSend
-    from backend.app.services.email.base import (
-        EmailAuthError,
-        EmailSendError,
-    )
-    from backend.app.services.meeting_scheduler.participant_resolver import (
-        resolve_participants,
-    )
+    from backend.app.api.emails import _principal_email
+    from backend.app.services.action_plan.dispatch import dispatch_step_email
 
     plan = await _load_plan_or_404(db, tenant, plan_id)
     step = await _load_step_or_404(db, tenant, plan_id, step_id)
 
-    # Fetch the latest artifact for this step so we have the
-    # synthesizer-drafted subject + body.
-    artifact_stmt = (
-        select(StepArtifact)
-        .where(StepArtifact.step_id == step.id, StepArtifact.tenant_id == tenant.id)
-        .order_by(StepArtifact.generated_at.desc())
-        .limit(1)
-    )
-    artifact = (await db.execute(artifact_stmt)).scalar_one_or_none()
-    if artifact is None or not isinstance(artifact.payload, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Step has no artifact to send. Wait for synthesis to complete or use override fields.",
-        )
-
-    payload = artifact.payload
-    subject = body.subject_override or payload.get("subject") or step.title or ""
-    body_text = body.body_override or payload.get("body") or ""
-    if not subject or not body_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Subject and body required (supply override or wait for artifact).",
-        )
-
-    # Recipient resolution: explicit override > first customer participant > error.
-    to_address = body.to
-    if not to_address:
-        customer_id = None
-        interaction_stmt = select(Interaction).where(
-            Interaction.id == plan.interaction_id,
-            Interaction.tenant_id == tenant.id,
-        )
-        interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
-        if interaction:
-            customer_id = interaction.customer_id
-        resolved = await resolve_participants(
-            db,
-            tenant_id=tenant.id,
-            customer_id=customer_id,
-            raw_participants=step.participants or [],
-        )
-        first_customer = next(
-            (p for p in resolved if (p.side or "").lower() == "customer" and p.email),
-            None,
-        )
-        if first_customer is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "No customer recipient resolved. Either pass `to` "
-                    "explicitly or add the contact to the customer's "
-                    "Contact list with an email."
-                ),
-            )
-        to_address = first_customer.email
-
-    integ = await _resolve_integration(db, tenant.id, body.provider)
-    if integ is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No Gmail or Outlook integration connected. Connect one under Settings.",
-        )
-
-    record = EmailSend(
-        tenant_id=tenant.id,
-        interaction_id=plan.interaction_id,
+    result = await dispatch_step_email(
+        db,
+        tenant=tenant,
+        plan=plan,
+        step=step,
+        to=body.to,
+        cc=body.cc,
+        subject_override=body.subject_override,
+        body_override=body.body_override,
+        provider=body.provider,
         sender_user_id=principal.user.id if principal.user else None,
-        provider=integ.provider,
-        to_address=to_address,
-        cc_address=body.cc,
-        subject=subject,
-        body=body_text,
-        attachments=[],
-        status="pending",
+        principal_email_hint=_principal_email(principal),
     )
-    db.add(record)
-    await db.flush()
-
-    sender = _build_sender(integ, principal_email_hint=_principal_email(principal))
-    try:
-        result = await sender.send(
-            to=[to_address],
-            subject=subject,
-            body=body_text,
-            cc=[body.cc] if body.cc else None,
-        )
-        record.status = "sent"
-        record.provider_message_id = result.provider_message_id or result.message_id
-        record.sent_at = datetime.now(timezone.utc)
-    except EmailAuthError as exc:
-        record.status = "failed"
-        record.error = f"auth: {exc}"[:500]
-        await db.commit()
-        return SendStepEmailResult(
-            success=False, provider=integ.provider, email_send_id=record.id,
-            error=f"auth: {exc}",
-        )
-    except EmailSendError as exc:
-        record.status = "failed"
-        record.error = str(exc)[:500]
-        await db.commit()
-        return SendStepEmailResult(
-            success=False, provider=integ.provider, email_send_id=record.id,
-            error=str(exc),
-        )
-    except Exception as exc:
-        # A sender bug or transport error outside the typed exceptions
-        # would otherwise 500 and roll back the pending row, losing the
-        # outbox audit. Persist the failure and report it in the same
-        # success=False shape the SPA already handles.
-        logger.exception("send_step_email: unexpected provider failure")
-        record.status = "failed"
-        record.error = f"{type(exc).__name__}: {exc}"[:500]
-        await db.commit()
-        return SendStepEmailResult(
-            success=False, provider=integ.provider, email_send_id=record.id,
-            error="Email provider send failed",
-        )
-    finally:
-        await _close_sender(sender)
-
-    # Transition the step like /sent does.
-    new_state = "awaiting_response" if getattr(step, "awaits_response", False) else "done"
-    if step.state in {"ready", "blocked", "in_progress"}:
-        step.state = new_state
-        step.started_at = step.started_at or datetime.now(timezone.utc)
-        if new_state == "done":
-            step.completed_at = datetime.now(timezone.utc)
-            engine = ActionPlanEngine()
-            await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
-
-    response = StepResponse(
-        step_id=step.id,
-        tenant_id=tenant.id,
-        source="outbound_email_sent",
-        outbound_message_id=record.provider_message_id or "",
-    )
-    db.add(response)
     await db.commit()
-    _emit_event(
-        tenant=tenant, principal=principal,
-        event="action_step.email_sent",
-        plan_id=plan_id, step_id=step_id,
-        extra={"provider": integ.provider, "new_state": new_state},
-    )
+
+    if result.success:
+        _emit_event(
+            tenant=tenant, principal=principal,
+            event="action_step.email_sent",
+            plan_id=plan_id, step_id=step_id,
+            extra={"provider": result.provider, "new_state": result.new_state},
+        )
+        return SendStepEmailResult(
+            success=True,
+            provider=result.provider,
+            provider_message_id=result.provider_message_id,
+            email_send_id=result.email_send_id,
+        )
+
+    if result.email_send_id is None:
+        # No EmailSend row was created at all (bad request: no artifact,
+        # no recipient, no integration) — preserve the 400 the endpoint
+        # used to raise in those cases.
+        raise HTTPException(status_code=400, detail=result.error)
+
     return SendStepEmailResult(
-        success=True,
-        provider=integ.provider,
-        provider_message_id=record.provider_message_id,
-        email_send_id=record.id,
+        success=False,
+        provider=result.provider,
+        email_send_id=result.email_send_id,
+        error=result.error,
     )
 
 
@@ -1506,7 +1315,12 @@ async def commit_step(
     ``create_task``).
 
     On success, marks the step done and propagates completion.
+
+    Core logic lives in :mod:`backend.app.services.action_plan.dispatch`
+    so the governed auto-executor writes through the exact same path.
     """
+    from backend.app.services.action_plan.dispatch import dispatch_step_commit
+
     plan = await _load_plan_or_404(db, tenant, plan_id)
     step = await _load_step_or_404(db, tenant, plan_id, step_id)
 
@@ -1521,134 +1335,24 @@ async def commit_step(
             ),
         )
 
-    artifact_stmt = (
-        select(StepArtifact)
-        .where(StepArtifact.step_id == step.id, StepArtifact.tenant_id == tenant.id)
-        .order_by(StepArtifact.generated_at.desc())
-        .limit(1)
+    result = await dispatch_step_commit(
+        db, tenant=tenant, plan=plan, step=step, body_override=body.body_override,
     )
-    artifact = (await db.execute(artifact_stmt)).scalar_one_or_none()
-    if artifact is None or not isinstance(artifact.payload, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Step has no artifact to commit.",
-        )
-
-    payload = artifact.payload
-
-    success = False
-    provider: Optional[str] = None
-    external_id: Optional[str] = None
-    err: Optional[str] = None
-
-    try:
-        from backend.app.services.crm.writeback import (
-            _load_writeback_adapter,
-            _pick_provider_for_writeback,
-        )
-        from backend.app.models import Contact, Customer
-
-        # _pick_provider_for_writeback needs (db, tenant, interaction).
-        # Load the interaction so the picker can prefer the contact's
-        # crm_source over the tenant default.
-        interaction_stmt = select(Interaction).where(
-            Interaction.id == plan.interaction_id,
-            Interaction.tenant_id == tenant.id,
-        )
-        interaction = (await db.execute(interaction_stmt)).scalar_one_or_none()
-        if interaction is None:
-            raise RuntimeError("Plan's source interaction not found.")
-
-        provider = await _pick_provider_for_writeback(db, tenant, interaction)
-        if provider is None:
-            raise RuntimeError(
-                "No CRM integration connected. Connect HubSpot, Salesforce, "
-                "or Pipedrive under Settings."
-            )
-        adapter = await _load_writeback_adapter(db, tenant.id, provider)
-        if adapter is None:
-            raise RuntimeError(f"Failed to instantiate {provider} CRM adapter.")
-
-        # Resolve the contact + customer external IDs so the note
-        # anchors to the right CRM record. Best-effort: when neither
-        # exists, the note is created without an anchor and the rep
-        # can manually associate it.
-        contact_external_id: Optional[str] = None
-        customer_external_id: Optional[str] = None
-        if interaction.contact_id is not None:
-            contact = await db.get(Contact, interaction.contact_id)
-            if contact and contact.crm_id:
-                contact_external_id = contact.crm_id
-            if contact and contact.customer_id is not None:
-                customer = await db.get(Customer, contact.customer_id)
-                if customer and customer.crm_id:
-                    customer_external_id = customer.crm_id
-
-        if step.recommended_channel == "note":
-            note_body = body.body_override or payload.get("body") or ""
-            if not note_body:
-                raise RuntimeError("Note body is empty.")
-            external_id = await adapter.create_note(
-                content=note_body,
-                contact_external_id=contact_external_id,
-                customer_external_id=customer_external_id,
-            )
-        else:  # system_write
-            # The synthesizer's Call C ``system_write`` payload shape:
-            # {integration: 'hubspot', operation: 'create_task',
-            #  payload: {...provider-specific...}}.
-            # Dispatch through the CrmAdapter Protocol's
-            # execute_operation method — the default impl handles
-            # create_task / create_activity / create_note /
-            # update_deal_stage; adapters override for anything custom.
-            operation = (
-                payload.get("operation")
-                or step.integration_operation
-                or ""
-            )
-            op_payload = payload.get("payload") or {}
-            if not isinstance(op_payload, dict):
-                op_payload = {}
-            if not operation:
-                raise RuntimeError(
-                    "system_write step missing 'operation' on artifact payload."
-                )
-            # Pull contact_external_id / customer_external_id from the
-            # synthesizer's op_payload too in case the LLM emitted
-            # custom anchoring; fall back to the interaction's contact
-            # we already resolved above.
-            external_id = await adapter.execute_operation(
-                operation=str(operation),
-                payload=op_payload,
-                contact_external_id=op_payload.get("contact_external_id") or contact_external_id,
-                customer_external_id=op_payload.get("customer_external_id") or customer_external_id,
-                deal_external_id=op_payload.get("deal_external_id"),
-            )
-        try:
-            await adapter.close()
-        except Exception:  # noqa: BLE001
-            pass
-        success = True
-    except Exception as exc:  # noqa: BLE001 — surfaced, not swallowed
-        logger.exception("commit_step failed")
-        err = str(exc)[:500]
-
-    if success and step.state in {"ready", "blocked", "in_progress"}:
-        step.state = "done"
-        step.started_at = step.started_at or datetime.now(timezone.utc)
-        step.completed_at = datetime.now(timezone.utc)
-        engine = ActionPlanEngine()
-        await engine._propagate_completion(db, completed_step=step)  # noqa: SLF001
+    if not result.success and result.error == "Step has no artifact to commit.":
+        raise HTTPException(status_code=400, detail=result.error)
 
     await db.commit()
     _emit_event(
         tenant=tenant, principal=principal,
         event="action_step.committed",
         plan_id=plan_id, step_id=step_id,
-        extra={"provider": provider, "success": success},
+        extra={"provider": result.provider, "success": result.success},
     )
     return CommitStepResult(
-        success=success, provider=provider, external_id=external_id, error=err,
+        success=result.success,
+        provider=result.provider,
+        external_id=result.external_id,
+        error=result.error,
     )
 
 
