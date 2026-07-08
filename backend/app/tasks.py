@@ -151,6 +151,10 @@ celery_app.conf.update(
         "recompute_llm_ceilings": {"queue": "batch"},
         "support_trend_scan": {"queue": "batch"},
         "cohort_recommendation_scan": {"queue": "batch"},
+        "sales_trend_scan": {"queue": "batch"},
+        "cs_trend_scan": {"queue": "batch"},
+        "concern_aggregation_scan": {"queue": "batch"},
+        "broken_commitment_scan": {"queue": "batch"},
         "orchestrator_daily_all_tenants": {"queue": "batch"},
         "orchestrator_weekly_all_tenants": {"queue": "batch"},
         "tenant_insights_weekly": {"queue": "batch"},
@@ -241,6 +245,29 @@ celery_app.conf.update(
         "support-trend-scan": {
             "task": "support_trend_scan",
             "schedule": crontab(minute=0, hour=7),
+        },
+        # Same AI trend-detection idea, generalized to Sales / CS / cross-
+        # customer concerns (see ``trend_engine.py``). Staggered 15 min
+        # apart after the support scan so they don't all hit Voyage/the
+        # DB in the same instant.
+        "sales-trend-scan": {
+            "task": "sales_trend_scan",
+            "schedule": crontab(minute=15, hour=7),
+        },
+        "cs-trend-scan": {
+            "task": "cs_trend_scan",
+            "schedule": crontab(minute=30, hour=7),
+        },
+        "concern-aggregation-scan": {
+            "task": "concern_aggregation_scan",
+            "schedule": crontab(minute=45, hour=7),
+        },
+        # Deterministic, no LLM/Voyage cost — a commitment is "broken"
+        # purely by the clock. Runs after the trend scans, still well
+        # before business hours.
+        "broken-commitment-scan": {
+            "task": "broken_commitment_scan",
+            "schedule": crontab(minute=0, hour=8),
         },
         # ── Email ingestion ───────────────────────────────────────────
         # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
@@ -3552,6 +3579,164 @@ def cohort_recommendation_scan() -> Dict[str, Any]:
         return {"dispatched_tenants": 0}
     header = group(cohort_recommendation_scan_tenant.s(tid) for tid in tenant_ids)
     async_result = chord(header)(_log_scan_aggregate.s("cohort_recommendation_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="sales_trend_scan_tenant")
+def sales_trend_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the sales trend scan — own session, own event
+    loop, same shape as ``support_trend_scan_tenant``."""
+    from backend.app.models import Tenant
+    from backend.app.services.sales_trend_detector import run_for_tenant
+
+    session = _get_sync_session()
+    try:
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = _run_async(lambda: run_for_tenant(session, tenant))
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("Sales trend scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="sales_trend_scan")
+def sales_trend_scan() -> Dict[str, Any]:
+    """Daily AI-driven cross-customer sales trend scan — dispatcher.
+
+    Same fan-out shape as ``support_trend_scan``: per-tenant subtasks,
+    immediate dispatch receipt, honest aggregate in the chord callback.
+    """
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(sales_trend_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("sales_trend_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="cs_trend_scan_tenant")
+def cs_trend_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the CS trend scan."""
+    from backend.app.models import Tenant
+    from backend.app.services.cs_trend_detector import run_for_tenant
+
+    session = _get_sync_session()
+    try:
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = _run_async(lambda: run_for_tenant(session, tenant))
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("CS trend scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="cs_trend_scan")
+def cs_trend_scan() -> Dict[str, Any]:
+    """Daily AI-driven cross-customer CS trend scan — dispatcher."""
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(cs_trend_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("cs_trend_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="concern_aggregation_scan_tenant")
+def concern_aggregation_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the cross-customer concern aggregation scan."""
+    from backend.app.models import Tenant
+    from backend.app.services.concern_aggregation import run_for_tenant
+
+    session = _get_sync_session()
+    try:
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = _run_async(lambda: run_for_tenant(session, tenant))
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("Concern aggregation scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="concern_aggregation_scan")
+def concern_aggregation_scan() -> Dict[str, Any]:
+    """Daily cross-customer concern aggregation scan — dispatcher."""
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(concern_aggregation_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("concern_aggregation_scan"))
+    return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
+
+
+@celery_app.task(name="broken_commitment_scan_tenant")
+def broken_commitment_scan_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Per-tenant slice of the broken-commitment scan. Deterministic, no
+    LLM call, no event loop needed."""
+    from backend.app.models import Tenant
+    from backend.app.services.commitment_detector import detect_and_flag
+
+    session = _get_sync_session()
+    try:
+        tenant = (
+            session.query(Tenant).filter(Tenant.id == uuid.UUID(tenant_id)).first()
+        )
+        if tenant is None:
+            return {"tenant_id": tenant_id, "error": 1, "detail": "tenant_not_found"}
+        result = detect_and_flag(session, tenant)
+        out: Dict[str, Any] = {"tenant_id": tenant_id}
+        out.update(result or {})
+        return out
+    except Exception:
+        logger.exception("Broken-commitment scan failed for tenant %s", tenant_id)
+        session.rollback()
+        return {"tenant_id": tenant_id, "error": 1}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="broken_commitment_scan")
+def broken_commitment_scan() -> Dict[str, Any]:
+    """Daily broken-commitment scan — dispatcher."""
+    from celery import chord, group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    header = group(broken_commitment_scan_tenant.s(tid) for tid in tenant_ids)
+    async_result = chord(header)(_log_scan_aggregate.s("broken_commitment_scan"))
     return {"dispatched_tenants": len(tenant_ids), "chord_id": str(async_result.id)}
 
 
