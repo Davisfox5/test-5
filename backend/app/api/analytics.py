@@ -99,6 +99,17 @@ class ProductFeedbackTheme(BaseModel):
     sample_quote: Optional[str]
 
 
+class AspectSentimentRow(BaseModel):
+    # Raw field names mirror the JSONB shape (``aspect``/``valence``) —
+    # fine here since this is the API contract, not user-facing copy.
+    # Anything rendered to a human must avoid this vocabulary; see the
+    # ``/analytics/aspect-sentiment`` docstring.
+    aspect: str
+    mention_count: int
+    avg_valence: Optional[float]
+    sample_quote: Optional[str]
+
+
 class CoachingInsights(BaseModel):
     avg_script_adherence: Optional[float]
     top_compliance_gaps: List[Dict]
@@ -674,6 +685,63 @@ async def product_feedback(
             negative_count=int(row[2] or 0),
             neutral_count=int(row[3] or 0),
             sample_quote=row[4],
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/analytics/aspect-sentiment",
+    response_model=List[AspectSentimentRow],
+    dependencies=[Depends(require_active_subscription)],
+)
+async def aspect_sentiment(
+    period: str = Query("30d", pattern="^(7d|14d|30d|60d|90d)$"),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Aggregate ``insights['sentiment_aspects']`` by aspect across the
+    tenant's interactions in the period: mention count + average valence.
+
+    Same shape as ``product_feedback`` above, one level deeper — instead
+    of a coarse positive/negative/neutral bucket count, this carries the
+    continuous 0-10 valence the analyzer attaches to each specific thing
+    (pricing, migration effort, the product, ...) the customer had
+    something to say about. The JSON field names here (``aspect``,
+    ``valence``) are the internal contract; any human-readable copy the
+    UI builds from this MUST be plain language ("customers are unhappy
+    about pricing", not "pricing aspect valence is low").
+    """
+    tenant_id = str(tenant.id)
+    since, since_prior = _period_window(period)
+
+    query = text("""
+        SELECT sa->>'aspect' AS aspect,
+               COUNT(*) AS mentions,
+               AVG((sa->>'valence')::float) AS avg_valence,
+               MAX(sa->>'evidence_quote') AS sample_quote
+        FROM interactions,
+             jsonb_array_elements(insights->'sentiment_aspects') AS sa
+        WHERE tenant_id = :tenant_id
+          AND created_at >= :since
+          AND insights ? 'sentiment_aspects'
+          AND jsonb_typeof(insights->'sentiment_aspects') = 'array'
+          AND sa->>'aspect' IS NOT NULL
+        GROUP BY sa->>'aspect'
+        ORDER BY mentions DESC
+        LIMIT 20
+    """)
+    rows = (
+        await db.execute(
+            query, {"tenant_id": tenant_id, "since": since, "since_prior": since_prior}
+        )
+    ).fetchall()
+    return [
+        AspectSentimentRow(
+            aspect=row[0],
+            mention_count=int(row[1] or 0),
+            avg_valence=float(row[2]) if row[2] is not None else None,
+            sample_quote=row[3],
         )
         for row in rows
     ]

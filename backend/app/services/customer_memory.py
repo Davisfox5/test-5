@@ -22,7 +22,9 @@ This service handles persistence + lifecycle:
   stops a single offhand remark from flip-flopping the state and
   corrupting the resolution timeline. Severity follows the highest
   recent reading. The ``evidence`` JSONB column accumulates a
-  provenance trail.
+  provenance trail, including ``valence`` (0-10, the aspect-level or
+  call-level sentiment reading tied to this mention — see
+  ``_match_aspect_valence`` below) when the analyzer emitted one.
 * Commitments are append-only — they're discrete promises with
   their own due dates, not a state machine on the customer.
 
@@ -109,12 +111,16 @@ def update_from_interaction(
 
     concerns_raised = insights.get("concerns_raised")
     customer_commitments = insights.get("customer_commitments")
+    sentiment_aspects = insights.get("sentiment_aspects")
+    sentiment_score_direct = insights.get("sentiment_score_direct")
 
     concerns_n = _upsert_concerns(
         session,
         interaction=interaction,
         motion=motion,
         items=concerns_raised if isinstance(concerns_raised, list) else [],
+        sentiment_aspects=sentiment_aspects if isinstance(sentiment_aspects, list) else [],
+        sentiment_score_direct=sentiment_score_direct,
     )
     commitments_n = _insert_commitments(
         session,
@@ -127,12 +133,47 @@ def update_from_interaction(
 # ── Concerns ───────────────────────────────────────────────────────────
 
 
+def _match_aspect_valence(
+    topic: str, sentiment_aspects: Iterable[Any]
+) -> Optional[float]:
+    """Find the aspect valence that best matches a concern's ``topic``.
+
+    ``topic`` is already normalized (lowercase, underscored) via
+    ``_normalize_topic``. Aspect names go through the same
+    normalization before comparing, so 'Pricing' / 'pricing' / 'the
+    pricing' all line up with a ``pricing`` concern. Match is exact
+    first, then containment either direction (an aspect like
+    'migration effort' should still match a ``migration`` topic).
+    Returns ``None`` when nothing lines up — the caller falls back to
+    the call-level ``sentiment_score_direct``.
+    """
+    exact = None
+    contains = None
+    for item in sentiment_aspects:
+        if not isinstance(item, dict):
+            continue
+        aspect_norm = _normalize_topic(item.get("aspect"))
+        if not aspect_norm:
+            continue
+        valence = item.get("valence")
+        if not isinstance(valence, (int, float)) or isinstance(valence, bool):
+            continue
+        if aspect_norm == topic:
+            exact = float(valence)
+            break
+        if contains is None and (aspect_norm in topic or topic in aspect_norm):
+            contains = float(valence)
+    return exact if exact is not None else contains
+
+
 def _upsert_concerns(
     session: Session,
     *,
     interaction: Interaction,
     motion: Optional[str],
     items: Iterable[Any],
+    sentiment_aspects: Optional[List[Any]] = None,
+    sentiment_score_direct: Any = None,
 ) -> int:
     """Upsert concerns from the analyzer's ``concerns_raised`` list.
 
@@ -142,7 +183,13 @@ def _upsert_concerns(
       last-seen, append evidence, possibly bump severity, transition
       status based on the new mention's sentiment.
     * Otherwise insert a fresh row with status='active'.
+
+    Each mention's ``evidence`` entry also carries ``valence`` (0-10)
+    when we can attach one: the matching ``sentiment_aspects`` entry
+    for this topic, else the call's own ``sentiment_score_direct``.
+    Absent when neither is available — we don't guess.
     """
+    sentiment_aspects = sentiment_aspects or []
     now = datetime.now(timezone.utc)
     changed = 0
     for item in items:
@@ -182,6 +229,14 @@ def _upsert_concerns(
         }
         if quote:
             evidence_item["quote"] = quote[:1000]
+
+        valence = _match_aspect_valence(topic, sentiment_aspects)
+        if valence is None and isinstance(sentiment_score_direct, (int, float)) and not isinstance(
+            sentiment_score_direct, bool
+        ):
+            valence = float(sentiment_score_direct)
+        if valence is not None:
+            evidence_item["valence"] = valence
 
         if existing is None:
             row = CustomerConcern(
