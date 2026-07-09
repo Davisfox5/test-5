@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.search_ddl import SEARCH_VECTOR_EXPR
+
 
 class SearchService:
     """Full-text search over interactions, backed by Postgres."""
@@ -70,9 +72,12 @@ class SearchService:
         # NB: use CAST(:bind AS type), not ":bind::type" — SQLAlchemy's
         # text() bind parser chokes on a bind immediately followed by the
         # "::" cast operator ("syntax error at or near :").
+        # The tsvector is computed inline from the row's columns; the GIN
+        # expression index (ix_interactions_fts, same SEARCH_VECTOR_EXPR)
+        # satisfies this ``@@`` match without a scan.
         conditions = [
             "tenant_id = CAST(:tenant_id AS uuid)",
-            "search_vector @@ websearch_to_tsquery('english', :q)",
+            f"({SEARCH_VECTOR_EXPR}) @@ websearch_to_tsquery('english', :q)",
         ]
         params: Dict[str, Any] = {"tenant_id": tenant_id, "q": q, "limit": limit}
 
@@ -97,7 +102,7 @@ class SearchService:
                 insights,
                 channel,
                 created_at,
-                ts_rank(search_vector, websearch_to_tsquery('english', :q)) AS rank,
+                ts_rank(({SEARCH_VECTOR_EXPR}), websearch_to_tsquery('english', :q)) AS rank,
                 ts_headline(
                     'english',
                     coalesce(raw_text, ''),
