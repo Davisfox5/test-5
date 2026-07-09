@@ -3284,6 +3284,26 @@ def backfill_sentiment_scores(self, tenant_id: str) -> Dict[str, Any]:
     return result
 
 
+@celery_app.task(name="backfill_sentiment_scores_all_tenants")
+def backfill_sentiment_scores_all_tenants() -> Dict[str, Any]:
+    """Dispatcher: repair poisoned sentiment scores across EVERY tenant.
+
+    Fans out one ``backfill_sentiment_scores`` subtask per tenant (each
+    with its own session + loop), the same pattern the trend-scan
+    dispatchers use. Per-tenant work is idempotent — once a row is
+    corrected a re-run is a no-op — so this is safe to invoke more than
+    once. Run it once after the sentiment scale-guard deploys to correct
+    historical rows platform-wide.
+    """
+    from celery import group
+
+    tenant_ids = _all_tenant_ids()
+    if not tenant_ids:
+        return {"dispatched_tenants": 0}
+    group(backfill_sentiment_scores.s(tid) for tid in tenant_ids).apply_async()
+    return {"dispatched_tenants": len(tenant_ids)}
+
+
 @celery_app.task(name="email_push_renew_subscriptions")
 def email_push_renew_subscriptions() -> Dict[str, Any]:
     """(Re-)register Gmail watches and Graph subscriptions.
