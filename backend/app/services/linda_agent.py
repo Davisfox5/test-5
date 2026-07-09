@@ -273,7 +273,6 @@ async def _exec_search_interactions(ctx: AgentContext, args: Dict[str, Any]) -> 
     svc = SearchService()
     try:
         results = await svc.search(
-            db=ctx.db,
             tenant_id=str(ctx.tenant.id),
             query=args["query"],
             channel=args.get("channel"),
@@ -510,6 +509,23 @@ def _repair_tool_pairs(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _next_created_at(after: Optional[datetime] = None) -> datetime:
+    """A strictly-increasing UTC timestamp for chat-message ordering.
+
+    Every row written during one chat turn shares a single DB transaction, so a
+    ``func.now()`` server default stamps them all with the *same* transaction
+    time. Replay then orders by ``created_at`` with no way to break the tie, and
+    a ``tool_use`` turn can come back NOT immediately followed by its
+    ``tool_result`` — the exact shape the Messages API rejects with a 400. We
+    stamp ``created_at`` in Python instead, advancing at least 1µs past the
+    previous row so insertion order within a turn is always recoverable.
+    """
+    now = datetime.now(timezone.utc)
+    if after is not None and now <= after:
+        return after + timedelta(microseconds=1)
+    return now
+
+
 async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Dict[str, Any]]:
     """Replay prior messages in Anthropic message format.
 
@@ -567,7 +583,11 @@ async def run_chat_turn(
     history = _window_history(await _load_history(ctx.db, ctx.conversation_id))
     history.append({"role": "user", "content": user_message})
 
-    # Persist the incoming user message immediately so it's durable even if the stream fails
+    # Persist the incoming user message immediately so it's durable even if the
+    # stream fails. ``created_at`` is stamped in Python (strictly increasing per
+    # row) so the whole turn — user, assistant tool_use, tool_result — replays in
+    # insertion order; see _next_created_at.
+    last_ts = _next_created_at()
     ctx.db.add(
         LindaChatMessage(
             conversation_id=ctx.conversation_id,
@@ -575,6 +595,7 @@ async def run_chat_turn(
             user_id=ctx.user.id if ctx.user is not None else None,
             role="user",
             content=user_message,
+            created_at=last_ts,
         )
     )
     await ctx.db.flush()
@@ -620,6 +641,7 @@ async def run_chat_turn(
 
         history.append({"role": "assistant", "content": final_content})
 
+        last_ts = _next_created_at(last_ts)
         ctx.db.add(
             LindaChatMessage(
                 conversation_id=ctx.conversation_id,
@@ -627,6 +649,7 @@ async def run_chat_turn(
                 role="assistant",
                 content="".join(assistant_text_parts),
                 tool_calls=final_content,
+                created_at=last_ts,
             )
         )
         await ctx.db.flush()
@@ -661,6 +684,7 @@ async def run_chat_turn(
             )
 
         history.append({"role": "user", "content": tool_results})
+        last_ts = _next_created_at(last_ts)
         ctx.db.add(
             LindaChatMessage(
                 conversation_id=ctx.conversation_id,
@@ -668,6 +692,7 @@ async def run_chat_turn(
                 role="tool",
                 content="",
                 tool_calls=tool_results,
+                created_at=last_ts,
             )
         )
         await ctx.db.flush()
