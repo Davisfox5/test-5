@@ -1158,6 +1158,30 @@ class BackfillResponse(BaseModel):
     rows: List[BackfillResultRow]
 
 
+@router.post("/admin/backfill-sentiment-scores")
+async def backfill_sentiment_scores_endpoint(
+    _principal: AuthPrincipal = Depends(require_role("admin")),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Dict[str, Any]:
+    """Repair poisoned sentiment scores for the calling tenant.
+
+    One-shot fix for interactions scored before the sentiment
+    scale-confusion guard: a 0-1-scale direct read that leaked into the
+    0-10 ``sentiment_score`` field (an enthusiastic prospect showing as
+    ~0.7/10). Enqueues a background job scoped to this tenant that
+    re-derives every analyzed row's sentiment and rebuilds contact
+    sentiment trends. Idempotent — safe to re-run.
+    """
+    from backend.app.tasks import backfill_sentiment_scores
+
+    async_result = backfill_sentiment_scores.delay(str(tenant.id))
+    return {
+        "status": "enqueued",
+        "task_id": str(getattr(async_result, "id", "")),
+        "tenant_id": str(tenant.id),
+    }
+
+
 @router.post(
     "/admin/backfill-warnings-commitments",
     response_model=BackfillResponse,

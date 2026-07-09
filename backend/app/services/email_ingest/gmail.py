@@ -214,26 +214,62 @@ def fetch_recent(
     """Yield normalized emails newer than the cursor's historyId (if any)."""
     service = build("gmail", "v1", credentials=build_credentials(access_token), cache_discovery=False)
 
+    # Advance the cursor to Google's current historyId via getProfile only
+    # for the "coarse" paths below (first-run list, or the exception
+    # fallback) — the happy-path incremental read tracks the exact
+    # historyId it observed instead (see below) so we never jump past a
+    # message that arrived mid-read.
+    needs_profile_advance = False
+
     if cursor and cursor.history_id:
-        # Incremental — use history API.
+        # Incremental — use history API, paginated. We track the largest
+        # historyId actually observed while draining pages and advance the
+        # cursor to that (never to a fresh getProfile() taken after the
+        # read) — otherwise a message landing between the last page and
+        # that getProfile call would get a historyId <= the new cursor
+        # and be skipped forever. Mirrors push.fetch_gmail_since_history.
         try:
-            history = (
-                service.users()
-                .history()
-                .list(userId="me", startHistoryId=cursor.history_id, historyTypes=["messageAdded"])
-                .execute()
-            )
-            message_ids = [
-                m["message"]["id"]
-                for h in history.get("history", [])
-                for m in h.get("messagesAdded", [])
-            ]
-            cursor.history_id = history.get("historyId") or cursor.history_id
+            message_ids: List[str] = []
+            seen_ids: set = set()
+            latest_history_id = int(cursor.history_id)
+            page_token: Optional[str] = None
+            while True:
+                history = (
+                    service.users()
+                    .history()
+                    .list(
+                        userId="me",
+                        startHistoryId=cursor.history_id,
+                        historyTypes=["messageAdded"],
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+                for h in history.get("history", []):
+                    for m in h.get("messagesAdded", []):
+                        mid = m["message"]["id"]
+                        if mid not in seen_ids:
+                            seen_ids.add(mid)
+                            message_ids.append(mid)
+                    h_id = h.get("id")
+                    if h_id:
+                        latest_history_id = max(latest_history_id, int(h_id))
+                resp_history_id = history.get("historyId")
+                if resp_history_id:
+                    latest_history_id = max(latest_history_id, int(resp_history_id))
+                page_token = history.get("nextPageToken")
+                if not page_token:
+                    break
+            # Safe even when no new history came back: it reflects the
+            # state we actually just read.
+            cursor.history_id = str(latest_history_id)
         except Exception:
             logger.exception("Gmail history fetch failed; falling back to recent list")
             message_ids = _recent_message_ids(service, max_messages)
+            needs_profile_advance = True
     else:
         message_ids = _recent_message_ids(service, max_messages)
+        needs_profile_advance = True
 
     for mid in message_ids[:max_messages]:
         raw = service.users().messages().get(userId="me", id=mid, format="full").execute()
@@ -241,14 +277,14 @@ def fetch_recent(
         direction = "outbound" if "SENT" in labels else "inbound"
         yield normalize_message(raw, agent_email, direction, service=service)
 
-    # Always advance the historyId to the latest profile value to keep windows tight.
     if cursor is not None:
-        try:
-            profile = service.users().getProfile(userId="me").execute()
-            cursor.history_id = str(profile.get("historyId") or cursor.history_id or "")
-            cursor.last_synced_at = datetime.now(timezone.utc)
-        except Exception:
-            logger.exception("Failed to advance Gmail historyId cursor")
+        if needs_profile_advance:
+            try:
+                profile = service.users().getProfile(userId="me").execute()
+                cursor.history_id = str(profile.get("historyId") or cursor.history_id or "")
+            except Exception:
+                logger.exception("Failed to advance Gmail historyId cursor")
+        cursor.last_synced_at = datetime.now(timezone.utc)
 
 
 def _recent_message_ids(service, limit: int) -> List[str]:

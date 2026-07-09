@@ -130,6 +130,25 @@ class CustomerOwnerOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def _lifecycle_stage(customer: Customer) -> str:
+    """Classify an account as ``"client"`` or ``"prospect"``.
+
+    An account is a client once it shows any post-sale signal — a
+    ``renewal_date`` or an ``onboarding_status`` (both NULL until CRM
+    sync or manual entry populates them; the schema never fabricates
+    them). Everything else is a prospect.
+
+    Churn risk is only meaningful for clients: a prospect can't churn out
+    of a relationship that hasn't started yet, so the "5% churn on a
+    prospect" the customer flagged is nonsensical. Serializers gate the
+    churn number on this and surface an interest signal for prospects
+    instead.
+    """
+    if customer.renewal_date is not None or customer.onboarding_status is not None:
+        return "client"
+    return "prospect"
+
+
 class CustomerListItem(BaseModel):
     """Rich customer row for the list page.
 
@@ -157,9 +176,14 @@ class CustomerListItem(BaseModel):
     latest_interaction_id: Optional[uuid.UUID] = None
     latest_interaction_title: Optional[str] = None
 
+    # Lifecycle — "client" once a post-sale signal exists, else "prospect".
+    # Drives whether churn_risk is meaningful (see _lifecycle_stage).
+    lifecycle_stage: str = "prospect"
+
     # Health
     sentiment_score: Optional[float] = None  # most-recent analyzed call
-    churn_risk: Optional[float] = None       # most-recent analyzed call
+    churn_risk: Optional[float] = None       # clients only; NULL for prospects
+    interest_score: Optional[float] = None   # buying-interest signal (esp. prospects)
     open_action_items: int = 0
 
 
@@ -265,9 +289,13 @@ class CustomerDetail(BaseModel):
     recent_interactions: List[CustomerInteractionSummary] = []
     open_action_items: List[CustomerActionItemSummary] = []
 
+    # Lifecycle — "client" once a post-sale signal exists, else "prospect".
+    lifecycle_stage: str = "prospect"
+
     # Health (latest call)
     sentiment_score: Optional[float] = None
-    churn_risk: Optional[float] = None
+    churn_risk: Optional[float] = None       # clients only; NULL for prospects
+    interest_score: Optional[float] = None   # buying-interest signal (esp. prospects)
     upsell_score: Optional[float] = None
 
     # Customer brief (for the dossier-style layout)
@@ -827,12 +855,14 @@ async def list_customers_rich(
             "at": row.created_at,
             "sentiment_score": ins.get("sentiment_score"),
             "churn_risk": ins.get("churn_risk"),
+            "upsell_score": ins.get("upsell_score"),
         }
 
     # ── Assemble rows ───────────────────────────────────────
     items: List[CustomerListItem] = []
     for c in customers:
         latest = latest_by_customer.get(c.id) or {}
+        stage = _lifecycle_stage(c)
         items.append(
             CustomerListItem(
                 id=c.id,
@@ -847,8 +877,12 @@ async def list_customers_rich(
                 latest_interaction_at=latest.get("at"),
                 latest_interaction_id=latest.get("id"),
                 latest_interaction_title=latest.get("title"),
+                lifecycle_stage=stage,
                 sentiment_score=latest.get("sentiment_score"),
-                churn_risk=latest.get("churn_risk"),
+                # Churn only applies to clients; a prospect has no
+                # relationship to churn out of.
+                churn_risk=latest.get("churn_risk") if stage == "client" else None,
+                interest_score=latest.get("upsell_score"),
                 open_action_items=open_items_by_customer.get(c.id, 0),
             )
         )
@@ -1007,13 +1041,15 @@ async def get_customer_detail(
     ]
 
     # Latest-call health signals
+    stage = _lifecycle_stage(cust)
     latest_health = recent_interactions[0] if recent_interactions else None
     sentiment_score = latest_health.sentiment_score if latest_health else None
     churn_risk = None
     upsell_score = None
     if interaction_rows:
         latest_insights = interaction_rows[0].insights or {}
-        churn_risk = latest_insights.get("churn_risk")
+        # Churn only applies to clients; prospects surface interest instead.
+        churn_risk = latest_insights.get("churn_risk") if stage == "client" else None
         upsell_score = latest_insights.get("upsell_score")
 
     # Phase 4 — active (non-dismissed) Deal Warnings, severity-then-recency.
@@ -1100,8 +1136,10 @@ async def get_customer_detail(
         multithreading_90d=int(multithreading_90d),
         recent_interactions=recent_interactions,
         open_action_items=open_action_items,
+        lifecycle_stage=stage,
         sentiment_score=sentiment_score,
         churn_risk=churn_risk,
+        interest_score=upsell_score,
         upsell_score=upsell_score,
         customer_brief=cust.customer_brief or {},
         warnings=warnings,

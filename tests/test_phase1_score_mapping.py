@@ -115,6 +115,41 @@ def test_derive_numeric_scores_falls_back_to_anchor_without_direct_score():
     assert insights["sentiment_score"] == 4.5
 
 
+# ── Scale-confusion guard: a 0–1-scale direct read leaking into 0–10 ────
+# Regression for the reported "engaged prospect shows 0.7 sentiment /
+# labeled Negative" bug: the analyzer sometimes emits sentiment_score_direct
+# on a 0–1 scale, which passes a naive [0,10] check.
+
+
+def test_direct_score_rescaled_when_subunit_but_bucket_is_positive():
+    # 0.7 with a "positive" bucket is a mis-scaled 0–1 read → ×10 = 7.0.
+    insights = {"sentiment_overall": "positive", "sentiment_score_direct": 0.7}
+    assert resolve_sentiment_score(insights) == 7.0
+
+
+def test_direct_score_rescaled_when_subunit_but_bucket_is_neutral():
+    insights = {"sentiment_overall": "neutral", "sentiment_score_direct": 0.5}
+    assert resolve_sentiment_score(insights) == 5.0
+
+
+def test_direct_score_not_rescaled_when_bucket_agrees_low():
+    # 0.7/10 with a "negative" bucket is internally consistent — a
+    # genuinely bad call. Do NOT rescale it up to 7.0.
+    insights = {"sentiment_overall": "negative", "sentiment_score_direct": 0.7}
+    assert resolve_sentiment_score(insights) == 0.7
+
+
+def test_direct_score_not_rescaled_without_a_bucket_to_cross_check():
+    # No bucket → no basis to declare it mis-scaled; leave it as given.
+    insights = {"sentiment_score_direct": 0.7}
+    assert resolve_sentiment_score(insights) == 0.7
+
+
+def test_direct_score_at_one_with_positive_bucket_rescales_and_clamps():
+    insights = {"sentiment_overall": "positive", "sentiment_score_direct": 1.0}
+    assert resolve_sentiment_score(insights) == 10.0
+
+
 def test_compute_rubric_zero_evidence_is_zero():
     r = compute_rubric({})
     assert r == {

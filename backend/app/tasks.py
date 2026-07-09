@@ -3203,6 +3203,87 @@ def email_backfill_run(self, job_id: str) -> Dict[str, Any]:
         session.close()
 
 
+@celery_app.task(name="backfill_sentiment_scores", bind=True, max_retries=0)
+def backfill_sentiment_scores(self, tenant_id: str) -> Dict[str, Any]:
+    """Re-derive ``insights['sentiment_score']`` on a tenant's analyzed
+    interactions and rebuild each ``Contact.sentiment_trend``.
+
+    Repairs rows scored before the ``resolve_sentiment_score`` scale
+    guard landed: the analyzer occasionally emitted ``sentiment_score_direct``
+    on a 0-1 scale (e.g. ``0.7`` for an enthusiastic call), which passed
+    the old ``0 <= x <= 10`` check and leaked into the 0-10 field — so an
+    engaged prospect rendered as ~0.7/10 and the UI labeled them
+    "Negative". Recomputes from the stored bucket / direct read via the
+    same resolver the live pipeline now uses, so it's idempotent: once a
+    row is corrected, a re-run is a no-op.
+
+    Scoped to one tenant (enqueued by ``POST /admin/backfill-sentiment-scores``).
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from backend.app.models import Contact, Interaction
+    from backend.app.services.score_mapping import resolve_sentiment_score
+    from backend.app.tenant_ctx import tenant_context
+
+    tid = uuid.UUID(str(tenant_id))
+    session = _get_sync_session()
+    scanned = 0
+    updated = 0
+    contacts_rebuilt = 0
+    try:
+        with tenant_context(tid, session):
+            rows = (
+                session.query(Interaction)
+                .filter(Interaction.tenant_id == tid)
+                .order_by(Interaction.created_at.asc())
+                .all()
+            )
+            # Replay corrected per-interaction sentiment into per-contact
+            # trends, in chronological order (matches the live rollup).
+            trends: Dict[uuid.UUID, List[float]] = {}
+            for ix in rows:
+                scanned += 1
+                insights = ix.insights or {}
+                if not insights:
+                    continue
+                corrected = resolve_sentiment_score(insights)
+                if corrected is None:
+                    continue
+                if insights.get("sentiment_score") != corrected:
+                    insights["sentiment_score"] = corrected
+                    ix.insights = insights
+                    flag_modified(ix, "insights")
+                    updated += 1
+                if ix.contact_id is not None:
+                    trends.setdefault(ix.contact_id, []).append(float(corrected))
+
+            if trends:
+                contact_rows = (
+                    session.query(Contact)
+                    .filter(
+                        Contact.tenant_id == tid,
+                        Contact.id.in_(list(trends.keys())),
+                    )
+                    .all()
+                )
+                for c in contact_rows:
+                    series = trends.get(c.id) or []
+                    c.sentiment_trend = series[-CONTACT_SENTIMENT_TREND_CAP:]
+                    contacts_rebuilt += 1
+            session.commit()
+    finally:
+        session.close()
+
+    result = {
+        "tenant_id": str(tid),
+        "scanned": scanned,
+        "updated": updated,
+        "contacts_rebuilt": contacts_rebuilt,
+    }
+    logger.info("backfill_sentiment_scores: %s", result)
+    return result
+
+
 @celery_app.task(name="email_push_renew_subscriptions")
 def email_push_renew_subscriptions() -> Dict[str, Any]:
     """(Re-)register Gmail watches and Graph subscriptions.
