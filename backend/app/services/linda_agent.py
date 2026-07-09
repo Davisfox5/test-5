@@ -9,6 +9,7 @@ real mutator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -85,8 +86,20 @@ PRODUCT_KNOWLEDGE = (
     "- Snippets: short clips of notable moments (pricing pushback, "
     "competitor mention, positive feedback)\n"
     "- Live Coaching: real-time hints during active calls\n"
+    "- Email: when the tenant connects Gmail/Outlook, their emails with "
+    "external contacts are captured as interactions (channel='email', "
+    "direction inbound/outbound) and are searchable with search_interactions. "
+    "You can ALSO read the user's most recent SENT emails live, on demand, "
+    "with search_sent_email.\n"
     "- Integrations: Salesforce, HubSpot, Slack, Gmail, Zoom\n"
-    "- Webhooks: outbound events for tenant systems"
+    "- Webhooks: outbound events for tenant systems\n\n"
+    "## Email visibility — important\n"
+    "You are NOT limited to call/meeting data. When the user asks about "
+    "their sent emails, outbound messages, or whether they emailed someone, "
+    "do NOT reply that you lack access — call search_sent_email (live Gmail) "
+    "and/or search_interactions with channel='email'. Only tell the user "
+    "Gmail is unavailable if a tool result reports the account isn't "
+    "connected (connected=false) or needs re-authorization (auth_error)."
 )
 
 
@@ -153,6 +166,29 @@ TOOLS: List[Dict[str, Any]] = [
                 "interaction_id": {"type": "string", "description": "Interaction UUID."},
             },
             "required": ["interaction_id"],
+        },
+    },
+    {
+        "name": "search_sent_email",
+        "description": (
+            "Read the user's OWN recently SENT emails, live from their connected "
+            "Gmail account. Use this whenever the user asks what they've sent, "
+            "whether they emailed someone, or wants to review outbound follow-ups "
+            "— e.g. \"what did I send to Acme?\", \"did I reply to the pricing "
+            "thread?\", \"show my sent emails this week\". Returns recipient, "
+            "subject, date, and a snippet for each message. If the tenant hasn't "
+            "connected Gmail the result says so — then tell the user to connect "
+            "Gmail under Integrations; do NOT claim you fundamentally can't see "
+            "sent email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Optional keywords to match in the subject or body."},
+                "to": {"type": "string", "description": "Optional recipient filter — an email address or domain, e.g. 'acme.com'."},
+                "newer_than_days": {"type": "integer", "description": "Optional: only messages sent within the last N days."},
+                "limit": {"type": "integer", "description": "Max messages to return (default 10, max 25)."},
+            },
         },
     },
     {
@@ -242,7 +278,12 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
-READ_TOOLS = {"search_interactions", "get_action_items", "get_interaction_detail"}
+READ_TOOLS = {
+    "search_interactions",
+    "get_action_items",
+    "get_interaction_detail",
+    "search_sent_email",
+}
 DRAFT_TOOLS = {
     "propose_action_item",
     "propose_email_draft",
@@ -363,6 +404,158 @@ async def _exec_get_interaction_detail(ctx: AgentContext, args: Dict[str, Any]) 
     }
 
 
+def _fetch_sent_gmail_sync(
+    tenant_id: uuid.UUID,
+    query: Optional[str],
+    to: Optional[str],
+    newer_than_days: Optional[int],
+    limit: int,
+) -> Dict[str, Any]:
+    """Blocking read of a tenant's SENT Gmail folder.
+
+    Reuses the ingest poller's proven auth path — Fernet-decrypt of the stored
+    token plus OAuth refresh via ``refresh_if_expired_sync`` — and a synchronous
+    SQLAlchemy session, so it MUST run in a worker thread (see
+    ``_exec_search_sent_email``), never on the event loop.
+
+    Tenant isolation: the ``Integration`` row is loaded filtered by
+    ``tenant_id``, so a request can only ever reach its own tenant's mailbox.
+    Messages are read with ``format="metadata"`` (headers + Gmail's own snippet)
+    — no full bodies are pulled.
+    """
+    from googleapiclient.discovery import build
+
+    from backend.app.models import Integration
+    from backend.app.services.email_ingest import gmail as gmail_fetcher
+    from backend.app.services.email_ingest.poller import refresh_if_expired_sync
+    from backend.app.tasks import _get_sync_session
+    from backend.app.tenant_ctx import tenant_context
+
+    session = _get_sync_session()
+    try:
+        # RLS: the runtime role (linda_app) enforces row-level security, so every
+        # query/write in this block must run under the tenant's GUC context — the
+        # same wrapper the email-ingest poller uses. Without it, the token-rotation
+        # UPDATE inside refresh_if_expired_sync fails the integrations policy.
+        with tenant_context(tenant_id, session):
+            integration = (
+                session.query(Integration)
+                .filter(
+                    Integration.tenant_id == tenant_id,
+                    Integration.provider == "google",
+                )
+                .first()
+            )
+            if integration is None:
+                return {"connected": False, "provider": "gmail", "messages": []}
+
+            try:
+                access_token = refresh_if_expired_sync(session, integration)
+                # Persist the rotated access token so the next call doesn't re-refresh.
+                session.commit()
+            except Exception as exc:  # includes IntegrationAuthError
+                session.rollback()
+                logger.warning("search_sent_email: token refresh failed: %s", exc)
+                return {
+                    "connected": True,
+                    "provider": "gmail",
+                    "auth_error": True,
+                    "messages": [],
+                }
+
+            agent_email = None
+            if integration.user_id is not None:
+                user = session.query(User).filter(User.id == integration.user_id).first()
+                agent_email = user.email if user is not None else None
+
+        parts: List[str] = []
+        if query:
+            parts.append(query.strip())
+        if to:
+            parts.append("to:%s" % to.strip())
+        if newer_than_days and newer_than_days > 0:
+            parts.append("newer_than:%dd" % int(newer_than_days))
+        q = " ".join(parts)
+
+        service = build(
+            "gmail",
+            "v1",
+            credentials=gmail_fetcher.build_credentials(access_token),
+            cache_discovery=False,
+        )
+        listing = (
+            service.users()
+            .messages()
+            .list(userId="me", labelIds=["SENT"], q=q, maxResults=limit)
+            .execute()
+        )
+        ids = [m["id"] for m in listing.get("messages", [])][:limit]
+
+        messages: List[Dict[str, Any]] = []
+        for mid in ids:
+            raw = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["To", "Cc", "Subject", "Date"],
+                )
+                .execute()
+            )
+            headers = {
+                h["name"]: h["value"]
+                for h in raw.get("payload", {}).get("headers", [])
+            }
+            messages.append(
+                {
+                    "to": headers.get("To"),
+                    "cc": headers.get("Cc"),
+                    "subject": headers.get("Subject"),
+                    "date": headers.get("Date"),
+                    "snippet": raw.get("snippet"),
+                }
+            )
+        return {
+            "connected": True,
+            "provider": "gmail",
+            "mailbox": agent_email,
+            "query": q or None,
+            "count": len(messages),
+            "messages": messages,
+        }
+    finally:
+        session.close()
+
+
+async def _exec_search_sent_email(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        limit = int(args.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 25))
+
+    newer = args.get("newer_than_days")
+    try:
+        newer = int(newer) if newer is not None else None
+    except (TypeError, ValueError):
+        newer = None
+
+    try:
+        return await asyncio.to_thread(
+            _fetch_sent_gmail_sync,
+            ctx.tenant.id,
+            args.get("query"),
+            args.get("to"),
+            newer,
+            limit,
+        )
+    except Exception as exc:
+        logger.exception("search_sent_email failed")
+        return {"error": "sent-email lookup failed: %s" % exc}
+
+
 async def _create_proposal(
     ctx: AgentContext, kind: str, payload: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -396,6 +589,8 @@ async def dispatch_tool(
         return await _exec_get_action_items(ctx, args)
     if name == "get_interaction_detail":
         return await _exec_get_interaction_detail(ctx, args)
+    if name == "search_sent_email":
+        return await _exec_search_sent_email(ctx, args)
     if name in DRAFT_TOOLS:
         return await _create_proposal(ctx, DRAFT_KIND_BY_TOOL[name], args)
     return {"error": f"unknown tool: {name}"}
