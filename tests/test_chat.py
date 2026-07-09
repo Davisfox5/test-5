@@ -138,7 +138,13 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
 
     names = {t["name"] for t in TOOLS}
     assert names == READ_TOOLS | DRAFT_TOOLS
-    assert READ_TOOLS == {"search_interactions", "get_action_items", "get_interaction_detail"}
+    assert READ_TOOLS == {
+        "search_interactions",
+        "get_action_items",
+        "get_interaction_detail",
+        # Live read of the user's connected Gmail SENT folder (search_sent_email).
+        "search_sent_email",
+    }
     assert DRAFT_TOOLS == {
         "propose_action_item",
         "propose_email_draft",
@@ -150,6 +156,82 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
     }
     for tool in TOOLS:
         assert tool["input_schema"]["type"] == "object"
+
+
+# ── search_sent_email (live Gmail read) ────────────────────────────────────
+
+
+def test_search_sent_email_dispatch_returns_messages():
+    # dispatch_tool routes search_sent_email to the executor, which offloads the
+    # blocking Gmail read to a thread. We patch the sync fetch so no real DB or
+    # Gmail is touched, and assert the tool result flows straight back.
+    import backend.app.services.linda_agent as la
+
+    ctx = _ctx(_FakeSession())
+    fake_payload = {
+        "connected": True,
+        "provider": "gmail",
+        "count": 1,
+        "messages": [
+            {"to": "cfo@acme.com", "subject": "Pricing follow-up", "date": "Mon, 7 Jul 2026", "snippet": "As discussed…"}
+        ],
+    }
+
+    captured = {}
+
+    def _fake_sync(tenant_id, query, to, newer_than_days, limit):
+        captured.update(
+            tenant_id=tenant_id, query=query, to=to, newer_than_days=newer_than_days, limit=limit
+        )
+        return fake_payload
+
+    with patch.object(la, "_fetch_sent_gmail_sync", _fake_sync):
+        result = asyncio.run(
+            la.dispatch_tool(
+                ctx,
+                "search_sent_email",
+                {"to": "acme.com", "newer_than_days": 7, "limit": 5},
+            )
+        )
+
+    assert result == fake_payload
+    # Args are coerced and passed through; tenant is scoped to the caller's tenant.
+    assert captured["tenant_id"] == ctx.tenant.id
+    assert captured["to"] == "acme.com"
+    assert captured["newer_than_days"] == 7
+    assert captured["limit"] == 5
+
+
+def test_search_sent_email_limit_is_clamped_and_coerced():
+    import backend.app.services.linda_agent as la
+
+    ctx = _ctx(_FakeSession())
+    captured = {}
+
+    def _fake_sync(tenant_id, query, to, newer_than_days, limit):
+        captured["limit"] = limit
+        captured["newer"] = newer_than_days
+        return {"connected": True, "messages": []}
+
+    with patch.object(la, "_fetch_sent_gmail_sync", _fake_sync):
+        # limit above the cap is clamped to 25; a non-numeric newer_than_days → None.
+        asyncio.run(
+            la.dispatch_tool(ctx, "search_sent_email", {"limit": 999, "newer_than_days": "soon"})
+        )
+
+    assert captured["limit"] == 25
+    assert captured["newer"] is None
+
+
+def test_search_sent_email_not_connected_passes_through():
+    import backend.app.services.linda_agent as la
+
+    ctx = _ctx(_FakeSession())
+    with patch.object(
+        la, "_fetch_sent_gmail_sync", lambda *a, **k: {"connected": False, "provider": "gmail", "messages": []}
+    ):
+        result = asyncio.run(la.dispatch_tool(ctx, "search_sent_email", {}))
+    assert result["connected"] is False
 
 
 # ── Tool dispatch: draft tools create proposals, do not mutate ────────────
