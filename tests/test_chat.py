@@ -277,6 +277,80 @@ def test_repair_tool_pairs_synthesizes_missing_tool_result():
     assert repaired[-1]["content"][0]["tool_use_id"] == "toolu_x"
 
 
+def test_next_created_at_is_strictly_increasing():
+    # All rows in a turn share one DB transaction, so func.now() would stamp
+    # them identically and replay order (ORDER BY created_at) would be undefined.
+    # _next_created_at must advance even when wall-clock returns the same instant.
+    from backend.app.services.linda_agent import _next_created_at
+
+    t0 = _next_created_at()
+    t1 = _next_created_at(t0)
+    t2 = _next_created_at(t1)
+    assert t0 < t1 < t2
+
+
+def test_run_chat_turn_persists_rows_in_strict_time_order():
+    # End-to-end: a tool-using turn must write user < assistant < tool < assistant
+    # by created_at, so the next turn's _load_history replays a valid pairing.
+    import backend.app.services.linda_agent as la
+
+    session = _FakeSession(scripted=[_ScalarResult([])])  # empty prior history
+    ctx = _ctx(session)
+
+    # A fake streaming turn: first call emits a tool_use, second call finishes.
+    calls = {"n": 0}
+
+    class _FakeStream:
+        def __init__(self, final):
+            self._final = final
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        def __aiter__(self):
+            async def _gen():
+                if False:
+                    yield None
+            return _gen()
+        async def get_final_message(self):
+            return self._final
+
+    def _block(**kw):
+        return SimpleNamespace(**kw)
+
+    def _fake_astream(self, req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            final = SimpleNamespace(
+                stop_reason="tool_use",
+                content=[_block(type="tool_use", id="toolu_a", name="get_action_items", input={})],
+            )
+        else:
+            final = SimpleNamespace(
+                stop_reason="end_turn",
+                content=[_block(type="text", text="Here you go.")],
+            )
+        return _FakeStream(final)
+
+    async def _fake_dispatch(ctx, name, args):
+        return {"items": []}
+
+    with patch.object(la, "get_async_anthropic", lambda: MagicMock()), \
+         patch.object(la.ModelRouter, "astream", _fake_astream), \
+         patch.object(la, "dispatch_tool", _fake_dispatch):
+        async def _run():
+            return [ev async for ev in la.run_chat_turn(ctx, "what's open?")]
+        asyncio.run(_run())
+
+    rows = [o for o in session.added if type(o).__name__ == "LindaChatMessage"]
+    roles = [r.role for r in rows]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+    times = [r.created_at for r in rows]
+    assert times == sorted(times) and len(set(times)) == len(times), (
+        "created_at must be strictly increasing so replay order is deterministic"
+    )
+
+
 def test_repair_tool_pairs_drops_dangling_tool_result():
     from backend.app.services.linda_agent import _repair_tool_pairs
 
