@@ -63,7 +63,7 @@ def fts_database():
     from backend.app.db import Base
     import backend.app.models  # noqa: F401 — registers every mapped class
     from backend.app.models import Interaction, Tenant
-    from backend.app.search_ddl import create_statements
+    from backend.app.search_ddl import create_index_plain
 
     owner = create_engine(TEST_POSTGRES_URL, isolation_level="AUTOCOMMIT")
 
@@ -73,9 +73,10 @@ def fts_database():
 
     Base.metadata.create_all(owner)
 
-    # The generated column + GIN index the migration ships.
+    # The GIN expression index the migration ships (plain build — the test
+    # schema is fresh and exclusive, so no need for CONCURRENTLY here).
     with owner.connect() as conn:
-        for stmt in create_statements():
+        for stmt in create_index_plain():
             conn.execute(text(stmt))
 
     factory = sessionmaker(bind=owner, expire_on_commit=False)
@@ -171,3 +172,33 @@ async def test_channel_filter_narrows_results(fts_database):
 async def test_empty_query_returns_empty(fts_database):
     tenant_a, _tenant_b, _inter_a, _inter_b = fts_database
     assert await _search(tenant_a, "   ") == []
+
+
+@pytest.mark.asyncio
+async def test_query_expression_matches_index(fts_database):
+    """The service's WHERE expression must be byte-identical to the index
+    expression, or the planner silently seq-scans. With seqscan disabled,
+    the plan must reference the GIN index — proving they still match."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from backend.app.search_ddl import SEARCH_INDEX_NAME, SEARCH_VECTOR_EXPR
+
+    engine = create_async_engine(_async_url(TEST_POSTGRES_URL))
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            await s.execute(text("SET enable_seqscan = off"))
+            plan = (
+                await s.execute(
+                    text(
+                        f"EXPLAIN SELECT id FROM interactions "
+                        f"WHERE ({SEARCH_VECTOR_EXPR}) "
+                        f"@@ websearch_to_tsquery('english', :q)"
+                    ),
+                    {"q": "refund"},
+                )
+            ).scalars().all()
+    finally:
+        await engine.dispose()
+
+    assert any(SEARCH_INDEX_NAME in line for line in plan), "\n".join(plan)
