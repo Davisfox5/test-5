@@ -192,6 +192,107 @@ def test_unknown_tool_returns_error():
     assert "error" in result
 
 
+# ── History rehydration: tool_use turns must replay with their tool_result ──
+#
+# Regression: `_load_history` dropped every `role="tool"` row, so a conversation
+# whose first turn used a tool replayed the assistant's tool_use blocks with no
+# matching tool_result. Turn 2 then 400s with
+#   "tool_use ids were found without tool_result blocks immediately after".
+# History must reconstruct each tool_use immediately followed by its tool_result.
+
+
+def _msg(role, content=None, tool_calls=None):
+    return SimpleNamespace(role=role, content=content or "", tool_calls=tool_calls)
+
+
+def _assert_tool_pairs_valid(messages):
+    """Every assistant tool_use id is answered by the very next user message."""
+    for idx, m in enumerate(messages):
+        content = m["content"]
+        use_ids = [
+            b["id"]
+            for b in (content if isinstance(content, list) else [])
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if not use_ids:
+            continue
+        assert idx + 1 < len(messages), "tool_use turn has no following message"
+        nxt = messages[idx + 1]
+        assert nxt["role"] == "user"
+        result_ids = {
+            b.get("tool_use_id")
+            for b in nxt["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        }
+        assert set(use_ids) == result_ids
+
+
+def test_load_history_replays_tool_result_after_tool_use():
+    from backend.app.services.linda_agent import _load_history
+
+    conv_id = uuid.uuid4()
+    # A completed tool-using turn as persisted by run_chat_turn: user →
+    # assistant(tool_use) → tool(tool_result) → assistant(text).
+    rows = [
+        _msg("user", content="Who are my prospects?"),
+        _msg(
+            "assistant",
+            tool_calls=[
+                {"type": "tool_use", "id": "toolu_1", "name": "search_interactions", "input": {"q": "prospects"}},
+            ],
+        ),
+        _msg(
+            "tool",
+            tool_calls=[
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "[]"},
+            ],
+        ),
+        _msg("assistant", content="You have three active prospects."),
+    ]
+    session = _FakeSession(scripted=[_ScalarResult(rows)])
+
+    history = asyncio.run(_load_history(session, conv_id))
+
+    # The tool_result turn survived rehydration and pairs with the tool_use.
+    roles = [m["role"] for m in history]
+    assert roles == ["user", "assistant", "user", "assistant"]
+    _assert_tool_pairs_valid(history)
+
+
+def test_repair_tool_pairs_synthesizes_missing_tool_result():
+    # Defensive: an interrupted turn persisted the assistant tool_use but never
+    # the tool row. Replaying the orphan verbatim would 400; repair it instead.
+    from backend.app.services.linda_agent import _repair_tool_pairs
+
+    orphaned = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_x", "name": "search_interactions", "input": {}}],
+        },
+    ]
+    repaired = _repair_tool_pairs(orphaned)
+    _assert_tool_pairs_valid(repaired)
+    assert repaired[-1]["role"] == "user"
+    assert repaired[-1]["content"][0]["tool_use_id"] == "toolu_x"
+
+
+def test_repair_tool_pairs_drops_dangling_tool_result():
+    from backend.app.services.linda_agent import _repair_tool_pairs
+
+    dangling = [
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_gone", "content": "{}"}]},
+        {"role": "assistant", "content": "hello"},
+    ]
+    repaired = _repair_tool_pairs(dangling)
+    # No message may contain a tool_result that isn't answering a tool_use.
+    for m in repaired:
+        if isinstance(m["content"], list):
+            for b in m["content"]:
+                assert not (isinstance(b, dict) and b.get("type") == "tool_result")
+
+
 # ── Rate limiter arithmetic ────────────────────────────────────────────────
 
 

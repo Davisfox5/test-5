@@ -439,8 +439,85 @@ def _window_history(
     return window
 
 
+def _tool_use_ids(content: Any) -> List[str]:
+    """The ids of every ``tool_use`` block in an assistant message's content."""
+    if not isinstance(content, list):
+        return []
+    return [
+        b["id"]
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id")
+    ]
+
+
+def _repair_tool_pairs(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Guarantee the Anthropic tool contract: every assistant ``tool_use`` block
+    is immediately followed by a user message carrying the matching
+    ``tool_result`` (same ``tool_use_id``), and no ``tool_result`` is dangling.
+
+    Real persisted conversations always write a tool row after a tool_use turn,
+    so this is normally a straight pass-through. It is defensive against a turn
+    that was interrupted mid-tool-exchange (assistant row committed, tool row
+    not): rather than replay an orphaned ``tool_use`` — which the Messages API
+    rejects with a 400 — we synthesize a stub error ``tool_result`` so the pair
+    is complete, drop stray results, and drop any tool_result message that has
+    no preceding tool_use.
+    """
+    out: List[Dict[str, Any]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "assistant":
+            use_ids = _tool_use_ids(content)
+            out.append(msg)
+            if use_ids:
+                results: List[Dict[str, Any]] = []
+                # Consume the immediately-following tool_result message, if any.
+                if i + 1 < n:
+                    nxt = messages[i + 1]
+                    if nxt.get("role") == "user" and _is_tool_result_content(
+                        nxt.get("content")
+                    ):
+                        results = [
+                            b
+                            for b in nxt["content"]
+                            if isinstance(b, dict) and b.get("type") == "tool_result"
+                        ]
+                        i += 1
+                have = {b.get("tool_use_id") for b in results}
+                for tid in use_ids:
+                    if tid not in have:
+                        results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tid,
+                                "content": "Tool result was not recorded for this call.",
+                                "is_error": True,
+                            }
+                        )
+                valid = set(use_ids)
+                results = [b for b in results if b.get("tool_use_id") in valid]
+                out.append({"role": "user", "content": results})
+        elif role == "user" and _is_tool_result_content(content):
+            # A tool_result with no preceding tool_use — drop it.
+            pass
+        else:
+            out.append(msg)
+        i += 1
+    return out
+
+
 async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Dict[str, Any]]:
-    """Replay prior messages in Anthropic message format."""
+    """Replay prior messages in Anthropic message format.
+
+    ``role="tool"`` rows hold the ``tool_result`` blocks for the preceding
+    assistant ``tool_use`` turn and MUST be replayed as a user message — omitting
+    them leaves the assistant's tool_use blocks unanswered and the next turn's
+    request 400s. ``_repair_tool_pairs`` then enforces the pairing invariant.
+    """
     rows = (
         await db.execute(
             select(LindaChatMessage)
@@ -450,12 +527,16 @@ async def _load_history(db: AsyncSession, conversation_id: uuid.UUID) -> List[Di
     ).scalars().all()
     messages: List[Dict[str, Any]] = []
     for row in rows:
-        if row.role in ("user", "assistant"):
+        if row.role == "assistant":
+            messages.append(
+                {"role": "assistant", "content": row.tool_calls or row.content}
+            )
+        elif row.role == "tool":
             if row.tool_calls:
-                messages.append({"role": row.role, "content": row.tool_calls})
-            else:
-                messages.append({"role": row.role, "content": row.content})
-    return messages
+                messages.append({"role": "user", "content": row.tool_calls})
+        elif row.role == "user":
+            messages.append({"role": "user", "content": row.content})
+    return _repair_tool_pairs(messages)
 
 
 async def run_chat_turn(
