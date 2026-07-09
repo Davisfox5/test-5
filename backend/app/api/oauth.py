@@ -49,6 +49,7 @@ from backend.app.auth import AuthPrincipal, get_current_principal, get_current_t
 from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import (
+    EmailSyncCursor,
     Integration,
     Interaction,
     InteractionAttachment,
@@ -566,6 +567,65 @@ async def _upsert_integration(
                 "(non-fatal)"
             )
     return result_row
+
+
+async def _register_gmail_watch_if_configured(
+    db: AsyncSession, integration: Integration, access_token: str
+) -> None:
+    """Best-effort: register a live Gmail Pub/Sub watch right after connect.
+
+    Without this, push-based ingestion sits dark until the 12h
+    ``email_push_renew_subscriptions`` task next runs — and if push is
+    the active ingest mode the poller is disabled, so a fresh connect
+    would see no mail for up to 12h. A watch-registration hiccup here
+    must never break the OAuth connect flow, hence the broad except.
+    """
+    if not settings.GMAIL_PUBSUB_TOPIC:
+        return  # Push not configured — the 15-min poller covers it.
+
+    try:
+        stmt = select(EmailSyncCursor).where(
+            EmailSyncCursor.integration_id == integration.id
+        )
+        cursor = (await db.execute(stmt)).scalar_one_or_none()
+        if cursor is None:
+            cursor = EmailSyncCursor(
+                integration_id=integration.id,
+                tenant_id=integration.tenant_id,
+                provider=integration.provider,
+            )
+            db.add(cursor)
+            await db.flush()
+
+        # Don't duplicate a watch that's already live.
+        now = datetime.now(timezone.utc)
+        if cursor.push_subscription_expires_at is not None and (
+            cursor.push_subscription_expires_at > now
+        ):
+            return
+
+        from backend.app.services.email_ingest.push import watch_gmail
+
+        resp = watch_gmail(access_token, settings.GMAIL_PUBSUB_TOPIC)
+        # Persist the watch's historyId so the first push notification
+        # has something to diff against.
+        cursor.history_id = str(resp.get("historyId") or cursor.history_id or "")
+        # Gmail returns expiration as epoch milliseconds (string).
+        raw_exp = resp.get("expiration")
+        if raw_exp:
+            try:
+                cursor.push_subscription_expires_at = datetime.fromtimestamp(
+                    int(raw_exp) / 1000, tz=timezone.utc
+                )
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        logger.warning(
+            "Gmail watch registration on connect failed for integration %s "
+            "(non-fatal — 15-min poller / next renewal cycle will cover it)",
+            integration.id,
+            exc_info=True,
+        )
 
 
 # ── Endpoints ───────────────────────────────────────────
@@ -1141,7 +1201,7 @@ async def oauth_callback(
             flow.code_verifier = stashed_verifier
         flow.fetch_token(code=code)
         creds = flow.credentials
-        await _upsert_integration(
+        integration = await _upsert_integration(
             db,
             tenant_id=tenant_id,
             user_id=user_id,
@@ -1151,6 +1211,7 @@ async def oauth_callback(
             scopes=list(creds.scopes) if creds.scopes else GOOGLE_SCOPES,
             expires_at=creds.expiry,
         )
+        await _register_gmail_watch_if_configured(db, integration, creds.token)
         return _finish_connect(
             provider, state_payload, default=lambda: _spa_redirect(provider)
         )

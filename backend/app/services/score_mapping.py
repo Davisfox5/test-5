@@ -87,13 +87,28 @@ def resolve_sentiment_score(insights: Dict[str, Any]) -> Optional[float]:
     when it's absent, non-numeric, or out of range — the old behavior,
     kept as the safety net for older rows / prompt variants that never
     emitted the direct score.
+
+    Scale-confusion guard: the analyzer occasionally emits the direct
+    score on a **0–1 scale** (e.g. ``0.7`` for an enthusiastic call)
+    instead of 0–10. A naive ``0 <= x <= 10`` check lets that through
+    verbatim, so a genuinely positive prospect renders as ~0.7/10 and
+    the frontend labels them "Negative" — the exact inversion reported
+    for engaged prospects. We cross-check against the coarse bucket:
+    when the direct read is ``<= 1.0`` but the bucket anchor says
+    neutral-or-better (>= 4.0), the direct value is mis-scaled and we
+    rescale ×10. We deliberately do NOT rescale when the bucket agrees
+    the sentiment is low (``negative``), so a legitimately bad call
+    scored ``0.7/10`` is preserved.
     """
+    bucket_anchor = map_sentiment(insights.get("sentiment_overall"))
     direct = insights.get("sentiment_score_direct")
     if isinstance(direct, (int, float)) and not isinstance(direct, bool):
         direct_f = float(direct)
         if 0.0 <= direct_f <= 10.0:
-            return direct_f
-    return map_sentiment(insights.get("sentiment_overall"))
+            if direct_f <= 1.0 and bucket_anchor is not None and bucket_anchor >= 4.0:
+                direct_f *= 10.0
+            return max(0.0, min(10.0, direct_f))
+    return bucket_anchor
 
 
 def derive_numeric_scores(insights: Dict[str, Any]) -> Dict[str, Any]:
