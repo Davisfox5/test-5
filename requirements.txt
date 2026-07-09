@@ -63,7 +63,8 @@ sentry-sdk[fastapi,celery]>=2      # Error monitoring — observability.init_sen
 qdrant-client>=1.9                # Knowledge base RAG
 
 # === Full-Text Search ===
-elasticsearch[async]>=8           # Transcript search across all interactions
+# Transcript search runs on Postgres FTS (generated tsvector column + GIN
+# index; see backend/app/search_ddl.py). No external search cluster.
 
 # === Auth ===
 clerk-backend-api>=1              # Managed auth (transitional)

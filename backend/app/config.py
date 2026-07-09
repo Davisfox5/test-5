@@ -140,8 +140,10 @@ class Settings(BaseSettings):
     GITHUB_ALERT_REPO: str = ""  # e.g., "davisfox5/test-5"
     GITHUB_ALERT_TOKEN: str = ""
 
-    # ── Full-Text Search (Elasticsearch) ─────────────────
-    ELASTICSEARCH_URL: str = "http://localhost:9200"
+    # ── Full-Text Search ─────────────────────────────────
+    # Transcript search runs on Postgres FTS (generated ``search_vector``
+    # column + GIN index; see backend/app/search_ddl.py). No external
+    # search cluster — nothing to configure here.
 
     # ── Telephony ────────────────────────────────────────
     TELNYX_API_KEY: str = ""
