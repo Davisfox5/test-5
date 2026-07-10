@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.models import (
     CampaignEvent,
@@ -193,6 +194,55 @@ def _tenant_domains(
     return out
 
 
+def _learn_internal_domain_from_outbound(
+    session: Session, tenant: Tenant, email: NormalizedEmail
+) -> None:
+    """Self-learn a tenant's internal domain from its OWN outbound mail.
+
+    A SENT-folder message is, by definition, sent by the tenant, so its
+    From domain is the company's own (internal). Persisting it covers the
+    one class of tenant ``_tenant_domains`` can't derive from: API-key-only
+    tenants that have **no seat users** (a login-less console). After their
+    first outbound sync their domain is known and classification works with
+    zero configuration — the truly universal, self-healing path.
+
+    Public providers are skipped (a tenant sending from gmail.com must not
+    mark gmail internal), and we only write when the domain is genuinely
+    new, so steady state is a cheap membership check with no write.
+    """
+    if getattr(email, "direction", None) != "outbound":
+        return
+    dom = _domain_of(email.from_address)
+    if not dom or dom in PUBLIC_EMAIL_PROVIDERS:
+        return
+    if dom in set(_tenant_domains(tenant, session)):
+        return
+
+    feats = dict(tenant.features_enabled or {})
+    configured = feats.get("email_internal_domains") or []
+    if isinstance(configured, str):
+        configured = [d.strip() for d in configured.split(",") if d.strip()]
+    if dom in {d.lower().lstrip("@").strip() for d in configured if d}:
+        return
+
+    feats["email_internal_domains"] = list(configured) + [dom]
+    tenant.features_enabled = feats  # reassignment already marks the row dirty
+    try:
+        flag_modified(tenant, "features_enabled")  # belt-and-suspenders for JSONB
+    except Exception:  # noqa: BLE001 — only fails on non-ORM objects (tests)
+        pass
+    # Drop the per-instance memo so the current run sees the new domain.
+    if hasattr(tenant, "_internal_domains_cache"):
+        try:
+            delattr(tenant, "_internal_domains_cache")
+        except Exception:  # noqa: BLE001
+            pass
+    logger.info(
+        "Learned internal domain %r for tenant %s from outbound email",
+        dom, tenant.id,
+    )
+
+
 def _thread_key(email: NormalizedEmail) -> str:
     """Derive a stable grouping key from thread headers.
 
@@ -329,6 +379,10 @@ async def ingest_email(
         return existing.id
 
     classifier = classifier or EmailClassifier()
+
+    # Before classifying, learn this tenant's own domain from outbound mail
+    # so classification is correct even for login-less (API-key) tenants.
+    _learn_internal_domain_from_outbound(session, tenant, email)
 
     # Prompt-variant routing (A/B) — same selection API the analysis path
     # uses (tasks.py), just the sync flavor since ingest runs off a sync
