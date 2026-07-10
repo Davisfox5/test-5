@@ -161,3 +161,74 @@ def test_graph_poison_message_is_skipped_not_fatal(monkeypatch):
         )
     )
     assert [e.provider_message_id for e in out] == ["g1", "g3", "g4"]
+
+
+# ── Poller fetch_recent: a 404 on messages().get() must be per-message ──
+# Regression for a wedged prod mailbox: history().list() returns a message
+# id that 404s on get() (deleted/moved after the snapshot); the uncaught
+# error crashed the whole poll before the cursor advanced, so every cycle
+# re-hit the same dead id. fetch_recent must skip it and keep going.
+
+
+class _FetchResp:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "Not Found"
+
+
+class _RecentMessages:
+    def __init__(self, http_error_cls):
+        self._exc = http_error_cls  # gmail's actual HttpError class
+
+    def list(self, userId, labelIds, maxResults):
+        ids = {"INBOX": ["m1", "m2", "m3"], "SENT": ["m4"]}.get(labelIds[0], [])
+        return _Req({"messages": [{"id": i} for i in ids]})
+
+    def get(self, userId, id, format):
+        if id == "m2":
+            err = self._exc.__new__(self._exc)  # bypass __init__; fix reads .resp
+            err.resp = _FetchResp(404)
+            raise err
+        return _Req({"id": id, "labelIds": ["SENT"] if id == "m4" else ["INBOX"]})
+
+
+class _RecentService:
+    def __init__(self, http_error_cls):
+        self._messages = _RecentMessages(http_error_cls)
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self._messages
+
+
+def test_fetch_recent_skips_404_message_not_fatal(monkeypatch):
+    # Install the fake googleapiclient first so gmail's module-level imports
+    # resolve even where the real lib isn't present (local sandbox).
+    _install_fake_googleapiclient(monkeypatch, object())
+
+    from backend.app.services.email_ingest import gmail as gmail_fetcher
+
+    # Raise gmail's ACTUAL HttpError class so its `except HttpError` catches it.
+    service = _RecentService(gmail_fetcher.HttpError)
+    monkeypatch.setattr(gmail_fetcher, "build", lambda *a, **k: service)
+    monkeypatch.setattr(gmail_fetcher, "build_credentials", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gmail_fetcher,
+        "normalize_message",
+        lambda raw, agent_email, direction, service=None: types.SimpleNamespace(
+            provider_message_id=raw["id"], direction=direction
+        ),
+    )
+
+    out = list(
+        gmail_fetcher.fetch_recent(
+            integration=types.SimpleNamespace(provider="google"),
+            cursor=None,  # first-run path → _recent_message_ids + get loop
+            access_token="tok",
+            agent_email="agent@example.com",
+        )
+    )
+    # m2 (the 404) is skipped; the rest of INBOX and all of SENT arrive.
+    assert [e.provider_message_id for e in out] == ["m1", "m3", "m4"]
