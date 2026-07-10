@@ -113,13 +113,84 @@ class IngestCaches:
         self.conversations.clear()
 
 
-def _tenant_domains(tenant: Tenant) -> List[str]:
-    """Pull internal-domain list out of tenant.features_enabled/metadata."""
+# Free/public email providers can never be a tenant's "internal" domain —
+# a customer and the tenant's own user can both be on gmail.com. We exclude
+# these when auto-deriving internal domains so we never mark a public
+# provider internal (which would silently drop every prospect on it).
+PUBLIC_EMAIL_PROVIDERS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+    "msn.com", "yahoo.com", "ymail.com", "icloud.com", "me.com", "mac.com",
+    "aol.com", "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.net",
+    "mail.com", "yandex.com", "zoho.com", "fastmail.com", "hey.com",
+    "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "qq.com",
+})
+
+
+def _domain_of(addr: Optional[str]) -> str:
+    addr = (addr or "").lower()
+    if "<" in addr and ">" in addr:
+        addr = addr.split("<", 1)[1].split(">", 1)[0]
+    return addr.split("@")[-1].strip() if "@" in addr else ""
+
+
+def _tenant_domains(
+    tenant: Tenant, session: Optional[Session] = None
+) -> List[str]:
+    """Internal ("our own") email domains for a tenant.
+
+    Union of two sources:
+
+    1. Any domains an admin explicitly set in
+       ``features_enabled['email_internal_domains']``.
+    2. **Auto-derived** from the tenant's own users' email addresses,
+       excluding public providers (see ``PUBLIC_EMAIL_PROVIDERS``).
+
+    Source 2 is why classification works with **zero setup** for every
+    tenant, current and future: the people who log in to a tenant are
+    that company's employees, so their (non-public) email domains are
+    the company's internal domains. Without this, a fresh tenant has no
+    internal domains, the deterministic prefilter can't run, and every
+    email falls back to the LLM — which fails closed on any error. A
+    tenant whose users are all on public providers derives nothing here
+    (same as before — no regression), which is correct: for them
+    "internal vs external" genuinely can't be decided by domain.
+
+    Result is memoized on the tenant instance for the life of the poll
+    (not persisted) so a 50-message batch does one users query, not 50.
+    """
+    cached = getattr(tenant, "_internal_domains_cache", None)
+    if cached is not None:
+        return cached
+
     feats = tenant.features_enabled or {}
-    domains = feats.get("email_internal_domains") or []
-    if isinstance(domains, str):
-        domains = [d.strip() for d in domains.split(",") if d.strip()]
-    return list(domains)
+    configured = feats.get("email_internal_domains") or []
+    if isinstance(configured, str):
+        configured = [d.strip() for d in configured.split(",") if d.strip()]
+    result = {d.lower().lstrip("@").strip() for d in configured if d}
+
+    if session is not None:
+        try:
+            rows = (
+                session.query(User.email)
+                .filter(User.tenant_id == tenant.id, User.email.isnot(None))
+                .all()
+            )
+            for (email,) in rows:
+                dom = _domain_of(email)
+                if dom and dom not in PUBLIC_EMAIL_PROVIDERS:
+                    result.add(dom)
+        except Exception:  # noqa: BLE001 — derivation is best-effort
+            logger.warning(
+                "Failed to derive internal domains from users for tenant %s",
+                tenant.id, exc_info=True,
+            )
+
+    out = sorted(result)
+    try:
+        tenant._internal_domains_cache = out
+    except Exception:  # noqa: BLE001 — caching is opportunistic
+        pass
+    return out
 
 
 def _thread_key(email: NormalizedEmail) -> str:
@@ -280,7 +351,7 @@ async def ingest_email(
             cc_addresses=email.cc_addresses,
             body_preview=email.body_text,
             headers=email.headers,
-            tenant_domains=_tenant_domains(tenant),
+            tenant_domains=_tenant_domains(tenant, session),
         ),
         system_prompt_override=variant.prompt_template,
     )
