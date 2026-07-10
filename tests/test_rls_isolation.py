@@ -463,6 +463,97 @@ def test_nullable_tenant_rows_are_global_reads_only(rls_database):
         engine.dispose()
 
 
+def test_category_taxonomy_global_seed_write_survives_rls(rls_database):
+    """Regression: an action-item category matching a GLOBAL seed
+    (tenant_id IS NULL, e.g. ``follow_up``) used to resolve to the global
+    row and bump its occurrence_count — an UPDATE the write policy rejects
+    from a tenant session (InsufficientPrivilege), poisoning the analysis
+    transaction and failing the interaction. record_occurrence must instead
+    write a TENANT-owned copy, leave the global row untouched, and leave
+    the session healthy enough to mark the interaction analyzed."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.models import CategoryTaxonomy, Interaction
+    from backend.app.services.category_taxonomy import record_occurrence
+    from backend.app.tenant_ctx import tenant_context
+
+    tenant_a, tenant_b, inter_a, inter_b = rls_database
+
+    # Seed the global default the aa1b2c3d4e5f migration ships (the fixture
+    # builds the schema with create_all, which skips migration seed data) —
+    # through the owner, the only path allowed to write NULL-tenant rows.
+    owner = create_engine(TEST_POSTGRES_URL)
+    owner_factory = sessionmaker(bind=owner, expire_on_commit=False)
+    with owner_factory() as session:
+        session.add(
+            CategoryTaxonomy(
+                tenant_id=None,
+                canonical_name="follow_up",
+                aliases=["followup", "follow up"],
+                is_canonical=True,
+                occurrence_count=0,
+            )
+        )
+        session.commit()
+
+    engine = create_engine(_app_role_url(TEST_POSTGRES_URL, "postgresql"))
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as session:
+            with tenant_context(str(tenant_a)):
+                # The exact failing path: the LLM-emitted category matches
+                # the global seed, inside the analysis transaction.
+                assert (
+                    record_occurrence(session, tenant_a, "follow_up")
+                    == "follow_up"
+                )
+
+                # The transaction is still healthy — the write that marks
+                # the interaction analyzed must go through.
+                interaction = session.execute(
+                    select(Interaction).where(Interaction.id == inter_a)
+                ).scalar_one()
+                interaction.status = "analyzed"
+                session.commit()
+
+                # A later occurrence bumps the tenant copy, not the global.
+                assert (
+                    record_occurrence(session, tenant_a, "Follow Up")
+                    == "follow_up"
+                )
+                session.commit()
+
+                tenant_rows = session.execute(
+                    select(CategoryTaxonomy).where(
+                        CategoryTaxonomy.canonical_name == "follow_up",
+                        CategoryTaxonomy.tenant_id.is_not(None),
+                    )
+                ).scalars().all()
+                assert len(tenant_rows) == 1
+                assert str(tenant_rows[0].tenant_id) == str(tenant_a)
+                assert tenant_rows[0].occurrence_count == 2
+
+                refreshed = session.execute(
+                    select(Interaction).where(Interaction.id == inter_a)
+                ).scalar_one()
+                assert refreshed.status == "analyzed"
+            session.rollback()
+    finally:
+        engine.dispose()
+
+    # The global row is byte-identical — verified via the owner (bypasses RLS).
+    with owner_factory() as session:
+        global_row = session.execute(
+            select(CategoryTaxonomy).where(
+                CategoryTaxonomy.canonical_name == "follow_up",
+                CategoryTaxonomy.tenant_id.is_(None),
+            )
+        ).scalar_one()
+        assert global_row.occurrence_count == 0
+    owner.dispose()
+
+
 def test_startup_posture_check_tells_owner_from_app_role(rls_database):
     """The lifespan warning must fire for the owner DSN and stay quiet for
     the enforcing app role."""
