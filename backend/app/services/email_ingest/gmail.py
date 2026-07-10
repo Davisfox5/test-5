@@ -16,6 +16,7 @@ from typing import Iterable, List, Optional
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from backend.app.models import EmailSyncCursor, Integration
 from backend.app.services.email_ingest.ingest import (
@@ -272,7 +273,19 @@ def fetch_recent(
         needs_profile_advance = True
 
     for mid in message_ids[:max_messages]:
-        raw = service.users().messages().get(userId="me", id=mid, format="full").execute()
+        # A message id can come back from history().list() but 404 on get()
+        # if it was deleted/moved (trash, spam, filter) after the history
+        # snapshot. Tolerate it per-message: a single dead id must NOT crash
+        # the whole poll, or the cursor never advances and the mailbox wedges
+        # forever, re-hitting the same 404 every cycle. Skip and continue.
+        try:
+            raw = service.users().messages().get(userId="me", id=mid, format="full").execute()
+        except HttpError as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status in (404, 410):
+                logger.info("Skipping Gmail message %s (no longer accessible: %s)", mid, status)
+                continue
+            raise
         labels = set(raw.get("labelIds", []))
         direction = "outbound" if "SENT" in labels else "inbound"
         yield normalize_message(raw, agent_email, direction, service=service)
