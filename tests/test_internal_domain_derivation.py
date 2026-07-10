@@ -67,3 +67,46 @@ def test_result_is_memoized_on_tenant():
     first = _tenant_domains(t, _FakeSession(["davis@flexonline.net"]))
     # A later call with different data returns the cached first result.
     assert _tenant_domains(t, _FakeSession(["other@acme.com"])) == first
+
+
+# ── Sent-domain learning (covers login-less / API-key tenants) ─────────
+
+from backend.app.services.email_ingest.ingest import (  # noqa: E402
+    _learn_internal_domain_from_outbound,
+)
+
+
+def _email(direction, from_address):
+    return SimpleNamespace(direction=direction, from_address=from_address)
+
+
+def test_learns_domain_from_outbound_when_no_users():
+    t = _tenant()  # no configured domains, no users
+    _learn_internal_domain_from_outbound(
+        _FakeSession([]), t, _email("outbound", "davis@flexonline.net")
+    )
+    assert t.features_enabled["email_internal_domains"] == ["flexonline.net"]
+
+
+def test_does_not_learn_from_inbound():
+    t = _tenant()
+    _learn_internal_domain_from_outbound(
+        _FakeSession([]), t, _email("inbound", "prospect@acme.com")
+    )
+    assert "email_internal_domains" not in t.features_enabled
+
+
+def test_does_not_learn_public_provider_from_outbound():
+    t = _tenant()
+    _learn_internal_domain_from_outbound(
+        _FakeSession([]), t, _email("outbound", "me@gmail.com")
+    )
+    assert "email_internal_domains" not in t.features_enabled
+
+
+def test_learning_is_idempotent_no_duplicate():
+    t = _tenant(configured=["flexonline.net"])
+    _learn_internal_domain_from_outbound(
+        _FakeSession([]), t, _email("outbound", "davis@flexonline.net")
+    )
+    assert t.features_enabled["email_internal_domains"] == ["flexonline.net"]
