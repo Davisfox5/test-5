@@ -255,6 +255,20 @@ class Settings(BaseSettings):
     # local dev + integration tests where setting up push is onerous.
     EMAIL_POLL_FORCE_ALL: bool = False
 
+    # ── Cold outreach (campaign sending) ──────────────────
+    # Per-campaign daily send ceiling used when a campaign's config
+    # doesn't set one. Low by design: 1:1 outreach from a real mailbox,
+    # not bulk marketing — deliverability rides the tenant's own domain.
+    OUTREACH_DEFAULT_DAILY_LIMIT: int = 25
+    # Tenant-wide daily ceiling across ALL outreach campaigns. A second
+    # campaign can't silently double the mailbox's outbound volume past
+    # what its domain reputation can absorb.
+    OUTREACH_TENANT_DAILY_SEND_CAP: int = 100
+    # Max sends per campaign per scheduler tick (10-min beat) — spreads
+    # the daily quota across the send window instead of bursting it all
+    # the moment the window opens.
+    OUTREACH_MAX_SENDS_PER_TICK: int = 5
+
     # ── Governed auto-executor (action plans) ──────────────
     # Global kill switch for the auto-executor. Default OFF: the beat
     # task returns a no-op immediately, regardless of any per-tenant

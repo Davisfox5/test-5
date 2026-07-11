@@ -222,6 +222,36 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "propose_queue_bump_email",
+        "description": (
+            "Propose queueing the next outreach follow-up (bump) email for "
+            "a prospect who hasn't replied to a cold-outreach campaign. "
+            "Returns a proposal preview; on confirm the bump is queued and "
+            "the campaign scheduler sends it inside the campaign's send "
+            "window and daily throttle. Use only for prospects enrolled in "
+            "an outreach campaign."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prospect_id": {
+                    "type": "string",
+                    "description": "The prospect's customer UUID.",
+                },
+                "campaign_id": {
+                    "type": "string",
+                    "description": (
+                        "Outreach campaign UUID (optional — defaults to the "
+                        "prospect's most recent active enrollment)."
+                    ),
+                },
+                "subject": {"type": "string", "description": "Optional draft subject override."},
+                "body": {"type": "string", "description": "Optional draft body override."},
+            },
+            "required": ["prospect_id"],
+        },
+    },
+    {
         "name": "propose_crm_update",
         "description": "Propose a CRM update (Salesforce/HubSpot). Returns a proposal preview with the target object and fields.",
         "input_schema": {
@@ -289,6 +319,7 @@ DRAFT_TOOLS = {
     "propose_email_draft",
     "propose_crm_update",
     "propose_action_plan",
+    "propose_queue_bump_email",
 }
 
 DRAFT_KIND_BY_TOOL = {
@@ -296,6 +327,7 @@ DRAFT_KIND_BY_TOOL = {
     "propose_email_draft": "email_draft",
     "propose_crm_update": "crm_update",
     "propose_action_plan": "action_plan",
+    "propose_queue_bump_email": "queue_bump_email",
 }
 
 

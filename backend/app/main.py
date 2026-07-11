@@ -160,6 +160,7 @@ from backend.app.api.feedback import router as feedback_router  # noqa: E402
 from backend.app.api.evaluation import router as evaluation_router  # noqa: E402
 from backend.app.api.experiments import router as experiments_router  # noqa: E402
 from backend.app.api.campaigns import router as campaigns_router  # noqa: E402
+from backend.app.api.outreach import router as outreach_router  # noqa: E402
 from backend.app.api.admin import router as admin_router  # noqa: E402
 from backend.app.api.admin_motions import router as admin_motions_router  # noqa: E402
 from backend.app.api.support import router as support_router  # noqa: E402
@@ -211,6 +212,7 @@ app.include_router(feedback_router, prefix=settings.API_V1_PREFIX, tags=["feedba
 app.include_router(evaluation_router, prefix=settings.API_V1_PREFIX, tags=["evaluation"])
 app.include_router(experiments_router, prefix=settings.API_V1_PREFIX, tags=["experiments"])
 app.include_router(campaigns_router, prefix=settings.API_V1_PREFIX, tags=["campaigns"])
+app.include_router(outreach_router, prefix=settings.API_V1_PREFIX, tags=["outreach"])
 
 # Every /admin/* endpoint requires an admin principal.
 app.include_router(

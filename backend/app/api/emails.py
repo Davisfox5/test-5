@@ -44,13 +44,15 @@ from backend.app.models import (
 )
 from backend.app.services.email.base import (
     EmailAuthError,
+    EmailError,
     EmailSender,
     EmailSendError,
     OutboundAttachment,
 )
-from backend.app.services.email.gmail import GmailSender
-from backend.app.services.email.outlook import OutlookSender
-from backend.app.services.token_crypto import decrypt_token, encrypt_token
+from backend.app.services.email.outbound import (
+    build_sender as build_outbound_sender,
+    resolve_email_integration,
+)
 
 from backend.app.services import model_catalog
 
@@ -616,29 +618,9 @@ async def _resolve_integration(
     tenant_id: uuid.UUID,
     preferred: Optional[str],
 ) -> Optional[Integration]:
-    """Pick a connected email provider for the tenant.
-
-    When ``preferred`` is given we return only that provider's integration
-    or ``None``. Otherwise we prefer Google (larger install base) before
-    Microsoft, falling back to whichever exists.
-    """
-    providers = [preferred] if preferred else ["google", "microsoft"]
-    for p in providers:
-        if p is None:
-            continue
-        stmt = (
-            select(Integration)
-            .where(
-                Integration.tenant_id == tenant_id,
-                Integration.provider == p,
-            )
-            .order_by(Integration.created_at.desc())
-            .limit(1)
-        )
-        integ = (await db.execute(stmt)).scalar_one_or_none()
-        if integ is not None:
-            return integ
-    return None
+    """Pick a connected email provider for the tenant (shared logic in
+    services/email/outbound.py — the outreach scheduler uses the same)."""
+    return await resolve_email_integration(db, tenant_id, preferred)
 
 
 def _principal_email(principal: AuthPrincipal) -> Optional[str]:
@@ -648,46 +630,12 @@ def _principal_email(principal: AuthPrincipal) -> Optional[str]:
 
 
 def _build_sender(integ: Integration, principal_email_hint: Optional[str]) -> EmailSender:
-    """Decrypt the stored tokens and build the right sender.
-
-    The ``on_token_refresh`` callback re-encrypts + writes refreshed
-    tokens back onto the Integration row so the next send doesn't start
-    stale.
-    """
-    access = decrypt_token(integ.access_token) or ""
-    refresh = decrypt_token(integ.refresh_token)
-
-    async def _on_refresh(
-        new_access: str,
-        new_refresh: Optional[str],
-        expires_in: Optional[int],
-    ) -> None:
-        integ.access_token = encrypt_token(new_access)
-        if new_refresh:
-            integ.refresh_token = encrypt_token(new_refresh)
-        if expires_in:
-            from datetime import timedelta as _td
-
-            integ.expires_at = datetime.now(timezone.utc) + _td(seconds=int(expires_in))
-
-    if integ.provider == "google":
-        return GmailSender(
-            access_token=access,
-            refresh_token=refresh,
-            from_address=principal_email_hint or "",
-            on_token_refresh=_on_refresh,
-        )
-    if integ.provider == "microsoft":
-        return OutlookSender(
-            access_token=access,
-            refresh_token=refresh,
-            from_address=principal_email_hint,
-            on_token_refresh=_on_refresh,
-        )
-    raise HTTPException(
-        status_code=400,
-        detail=f"Unsupported email provider on integration: {integ.provider}",
-    )
+    """Decrypt the stored tokens and build the right sender (shared logic
+    in services/email/outbound.py; unsupported provider → 400)."""
+    try:
+        return build_outbound_sender(integ, principal_email_hint)
+    except EmailError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 async def _close_sender(sender) -> None:

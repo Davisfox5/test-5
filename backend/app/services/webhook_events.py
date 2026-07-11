@@ -50,9 +50,18 @@ WEBHOOK_EVENTS: Dict[str, str] = {
 
     # Action plans
     "action_plan.created":            "A new action plan was created.",
+    "action_plan.updated":            "An action plan's goal/status/steps changed.",
     "action_plan.step_completed":     "An action-plan step was marked complete.",
     "action_plan.step_skipped":       "An action-plan step was skipped.",
     "action_plan.completed":          "An action plan reached its customer endpoint.",
+
+    # Cold outreach (LINDA-originated campaigns; see docs/webhooks.md)
+    "outreach.email.sent":       "An outreach campaign email was sent to a prospect.",
+    "outreach.email.replied":    "A prospect replied to an outreach send.",
+    "outreach.email.bounced":    "An outreach send bounced (DSN detected).",
+    "outreach.email.opted_out":  "A prospect opted out (stop reply or manual DNC).",
+    "prospect.status_changed":   "A prospect moved in the outreach pipeline.",
+    "campaign.completed":        "An outreach campaign has no actionable members left.",
 
     # Support cases
     "support_case.opened":            "A new support case was opened.",
