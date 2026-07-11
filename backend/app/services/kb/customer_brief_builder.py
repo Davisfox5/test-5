@@ -96,6 +96,8 @@ _SYSTEM_PROMPT = (
     '  "churn_signals": ["active risk indicators"],\n'
     '  "upsell_signals": ["active expansion indicators"],\n'
     '  "timeline": [{"when": "ISO date", "note": "one-line moment"}],\n'
+    '  "outreach_recommendation": {"next_step": "...", "timing": "...", '
+    '"stop": bool, "demo_talking_points": ["..."]},\n'
     '  "field_confidences": {\n'
     '    "overview": 0.0-1.0,\n'
     '    "stakeholders": 0.0-1.0,\n'
@@ -121,6 +123,14 @@ _SYSTEM_PROMPT = (
     "fold active ones into objections_raised / churn_signals and mention "
     "unmet customer commitments in the timeline or overview when they "
     "matter.\n"
+    "- ``outreach_recommendation`` is ONLY for accounts with an "
+    "``## Outreach`` evidence block (cold-outreach prospects); omit it "
+    "entirely otherwise. When present: next_step is the single concrete "
+    "recommended move (e.g. 'send the day-4 bump', 'book the demo', "
+    "'call — two opens no reply'); timing is when to do it and why; stop "
+    "is true when further outreach would hurt (bounced, hostile reply, "
+    "6+ touches cold); demo_talking_points lead with the prospect's hook "
+    "and current-software pain from the interaction history.\n"
     "- If a field has no evidence, use empty string or empty array.\n"
     "- Prefer recent signals over old ones when they conflict.\n"
     "- ``current_status`` decision guide: ``churning`` if a churned/at_risk "
@@ -247,9 +257,50 @@ class CustomerBriefBuilder:
             .all()
         )
 
+        # Cold-outreach context: only assembled for pipeline-managed
+        # prospects (pipeline_status set) — clients skip the queries.
+        outreach: Optional[Dict[str, Any]] = None
+        if customer.pipeline_status is not None:
+            from backend.app.models import Campaign, OutreachMember
+
+            member_rows = (
+                await db.execute(
+                    select(OutreachMember, Campaign.name, Campaign.status)
+                    .join(Campaign, Campaign.id == OutreachMember.campaign_id)
+                    .where(
+                        OutreachMember.tenant_id == tenant_id,
+                        OutreachMember.customer_id == customer_id,
+                    )
+                    .order_by(OutreachMember.created_at.desc())
+                    .limit(5)
+                )
+            ).all()
+            outreach = {
+                "pipeline_status": customer.pipeline_status,
+                "do_not_contact": customer.do_not_contact,
+                "status_changed_at": (
+                    customer.pipeline_status_changed_at.isoformat()
+                    if customer.pipeline_status_changed_at
+                    else None
+                ),
+                "metadata": (customer.metadata_ or {}).get("outreach", {}),
+                "campaigns": [
+                    {
+                        "campaign": name,
+                        "campaign_status": status,
+                        "member_state": m.state,
+                        "touches_sent": m.touches_sent,
+                        "last_sent_at": m.last_sent_at.isoformat() if m.last_sent_at else None,
+                        "replied_at": m.replied_at.isoformat() if m.replied_at else None,
+                        "next_send_at": m.next_send_at.isoformat() if m.next_send_at else None,
+                    }
+                    for m, name, status in member_rows
+                ],
+            }
+
         evidence = _build_evidence(
             customer, contacts, interactions, events, notes,
-            concerns=concerns, commitments=commitments,
+            concerns=concerns, commitments=commitments, outreach=outreach,
         )
 
         if not interactions and not events and not notes:
@@ -292,6 +343,13 @@ class CustomerBriefBuilder:
             + (
                 f"\n\n## Agent notes on this customer\n{notes_block}"
                 if notes_block
+                else ""
+            )
+            + (
+                "\n\n## Outreach (cold-outreach pipeline state — produce "
+                "outreach_recommendation)\n"
+                + json.dumps(evidence["outreach"])
+                if evidence.get("outreach")
                 else ""
             )
             + "\n\nReturn the brief as JSON."
@@ -369,8 +427,10 @@ def _build_evidence(
     notes: Optional[List["CustomerNote"]] = None,
     concerns: Optional[List["CustomerConcern"]] = None,
     commitments: Optional[List["CustomerCommitment"]] = None,
+    outreach: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     return {
+        "outreach": outreach,
         "concerns": [
             {
                 "topic": c.topic,
@@ -498,6 +558,22 @@ def _validate_brief(data: Dict[str, Any]) -> Dict[str, Any]:
                 out[key] = default
         elif isinstance(default, str):
             out[key] = str(val)[:2000] if val is not None else default
+
+    # Optional outreach recommendation — only present for cold-outreach
+    # prospects (mixed-type dict, so it can't ride the float-coercing
+    # confidence handler above).
+    rec = data.get("outreach_recommendation")
+    if isinstance(rec, dict):
+        out["outreach_recommendation"] = {
+            "next_step": str(rec.get("next_step") or "")[:500],
+            "timing": str(rec.get("timing") or "")[:300],
+            "stop": bool(rec.get("stop", False)),
+            "demo_talking_points": [
+                str(p)[:300]
+                for p in (rec.get("demo_talking_points") or [])
+                if isinstance(p, (str, int, float))
+            ][:6],
+        }
     return out
 
 

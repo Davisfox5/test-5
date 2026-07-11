@@ -43,6 +43,7 @@ from backend.app.services.email_classifier import (
     EmailClassifier,
     EmailForClassification,
 )
+from backend.app.services.outreach import replies as outreach_replies
 from backend.app.services.prompt_variant_service import (
     merge_variant_insight,
     select_variant_sync,
@@ -411,6 +412,25 @@ async def ingest_email(
     )
 
     if not verdict.is_external:
+        # DSNs (mailer-daemon / undeliverable) are auto-generated and land
+        # here — but a bounce for a tracked outreach send must still halt
+        # the member and notify the consumer, even though it never becomes
+        # an Interaction.
+        if email.direction == "inbound":
+            try:
+                handled = outreach_replies.handle_possible_bounce(
+                    session,
+                    tenant.id,
+                    from_address=email.from_address,
+                    subject=email.subject,
+                    body_text=email.body_text,
+                    in_reply_to=email.in_reply_to,
+                    references=list(email.references or []),
+                )
+                if handled:
+                    session.flush()
+            except Exception:
+                logger.warning("outreach bounce hook failed", exc_info=True)
         logger.info(
             "Skipping internal email msgid=%s reason=%s",
             email.message_id, verdict.reason,
@@ -426,24 +446,27 @@ async def ingest_email(
 
     # Campaign attribution: if this is an inbound reply to a tracked
     # campaign send, link it and record a reply event so campaign
-    # analytics stay fresh without a separate pass.
+    # analytics stay fresh without a separate pass. Matching covers
+    # In-Reply-To, the whole References chain, and (for outreach
+    # campaigns, where Outlook sends never expose their Message-ID) a
+    # sender-address fallback — see find_recipient_for_reply.
     campaign_id = None
-    if email.direction == "inbound" and email.in_reply_to:
-        recipient = (
-            session.query(CampaignRecipient)
-            .filter(
-                CampaignRecipient.tenant_id == tenant.id,
-                CampaignRecipient.rfc822_message_id == email.in_reply_to,
-            )
-            .first()
+    campaign_recipient = None
+    if email.direction == "inbound":
+        campaign_recipient = outreach_replies.find_recipient_for_reply(
+            session,
+            tenant.id,
+            in_reply_to=email.in_reply_to,
+            references=list(email.references or []),
+            from_address=email.from_address,
         )
-        if recipient is not None:
-            campaign_id = recipient.campaign_id
+        if campaign_recipient is not None:
+            campaign_id = campaign_recipient.campaign_id
             session.add(
                 CampaignEvent(
-                    campaign_id=recipient.campaign_id,
+                    campaign_id=campaign_recipient.campaign_id,
                     tenant_id=tenant.id,
-                    recipient_id=recipient.id,
+                    recipient_id=campaign_recipient.id,
                     contact_id=contact.id if contact else None,
                     event_type="reply",
                     metadata_={"message_id": email.message_id},
@@ -492,6 +515,19 @@ async def ingest_email(
     )
     session.add(interaction)
     session.flush()
+
+    # Outreach lifecycle: a reply attributed to an outreach campaign halts
+    # the member's sequence, flips the prospect's pipeline status, honors
+    # opt-out replies, and emits the outreach webhooks. External-kind
+    # campaigns skip this (the handler checks) — they only get the
+    # CampaignEvent recorded above.
+    if campaign_recipient is not None:
+        try:
+            outreach_replies.handle_outreach_reply(
+                session, tenant.id, interaction, campaign_recipient, contact
+            )
+        except Exception:
+            logger.warning("outreach reply hook failed", exc_info=True)
 
     # Persist attachments.  Bytes go to S3 if the store is configured;
     # we always write the row so the UI can show "customer attached X".

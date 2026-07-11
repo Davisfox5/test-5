@@ -35,6 +35,18 @@ scopes:
     - PATCH  /api/v1/customers/{customer_id}
     - DELETE /api/v1/customers/{customer_id}
 
+  campaigns:write:
+    - POST   /api/v1/prospects/import
+    - PATCH  /api/v1/prospects/{prospect_id}
+    - POST   /api/v1/prospects/{prospect_id}/opt-out
+    - POST   /api/v1/outreach/campaigns
+    - POST   /api/v1/outreach/campaigns/{campaign_id}/members
+    - POST   /api/v1/outreach/campaigns/{campaign_id}/generate-drafts
+    - POST   /api/v1/outreach/campaigns/{campaign_id}/approve-drafts
+    - PATCH  /api/v1/outreach/members/{member_id}
+    - POST   /api/v1/outreach/campaigns/{campaign_id}/activate
+    - POST   /api/v1/outreach/campaigns/{campaign_id}/pause
+
   webhooks:write:
     - POST   /api/v1/webhooks
     - PATCH  /api/v1/webhooks/{webhook_id}

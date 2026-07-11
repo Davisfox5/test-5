@@ -219,3 +219,88 @@ Before enabling `paralinguistic_live` for a new tenant:
   - `linda_transcription_failures_total` per engine
   - `linda_live_sessions_active` per provider
   - `linda_crm_writeback_outcomes_total{status="error"}` rate
+
+---
+
+## 11. lindaai.net serving the wrong app (Flex 401s, 2026-07-09)
+
+**Symptom.** Every keyed Flex call to `https://lindaai.net/api/v1/*` returns
+401 while `/api/v1/health` is 200. Diagnosis (2026-07-11): `lindaai.net`'s
+AAAA record is identical to `linda-prod.fly.dev`'s — the domain was moved to
+the production app provisioned in the 2026-07-07 cutover (#168), but the Flex
+tenant, its API keys, webhook registration, and Gmail/Outlook OAuth grants all
+live in the **staging** Neon DB behind `linda-staging`. Fresh `linda_prod` DB
+→ unknown key → 401.
+
+Quick confirmation from any shell:
+
+```bash
+dig +short AAAA lindaai.net linda-prod.fly.dev linda-staging.fly.dev
+# lindaai.net matching linda-prod ⇒ this incident
+```
+
+### Option A — repoint the domain back to linda-staging (fast, reversible)
+
+1. `fly certs add lindaai.net -a linda-staging` (no-op if the cert was never
+   removed from staging; `fly certs list -a linda-staging` to check).
+2. At the DNS provider, point `lindaai.net` back at staging:
+   CNAME/ALIAS → `linda-staging.fly.dev` (or copy the A/AAAA values from
+   `fly ips list -a linda-staging`).
+3. Optionally `fly certs remove lindaai.net -a linda-prod` so the next person
+   isn't confused about which app owns the domain.
+4. Verify (TTL permitting, minutes):
+   `dig +short AAAA lindaai.net` matches `linda-staging.fly.dev`, then run the
+   smoke harness with the Flex tenant key (below).
+
+Flex changes needed: **none** — base URL, API key, and webhook secret all
+keep working exactly as before 2026-07-09.
+
+### Option B — migrate the Flex tenant into linda-prod (the end-state)
+
+Only do this deliberately; it has two hard prerequisites:
+
+- **`TOKEN_ENCRYPTION_KEY` (and any `TOKEN_ENCRYPTION_KEYS_FALLBACK`) on
+  linda-prod must equal staging's**, or the copied OAuth token rows
+  (Gmail/Outlook mailbox grants) will fail to decrypt and every send/poll
+  breaks silently at the first refresh. Same for `SESSION_JWT_SECRET` if any
+  long-lived consoles hold sessions.
+- Prod must have the same Google/Microsoft OAuth client env vars as staging
+  (`GOOGLE_CLIENT_ID/SECRET`, `MICROSOFT_CLIENT_ID/SECRET`), since the stored
+  refresh tokens are bound to those client ids.
+
+Copy the tenant's row-set (owner DSNs, not the RLS-restricted `linda_app`
+role) — tenants row, users, api_keys, customers, contacts, interactions,
+email/oauth/webhook tables, action plans, and every other table where
+`tenant_id = <flex tenant id>`:
+
+There is no first-class copy script yet. The export half exists —
+`GET /api/v1/tenants/{tenant_id}/export` streams the tenant's rows as NDJSON
+(§9) — but nothing imports it. Either write the importer against
+`backend/app/rls.py`'s table classification (so new tables can't be silently
+skipped), or `pg_dump --data-only` the staging DB filtered by `tenant_id`
+into prod using the **owner** DSNs (the `linda_app` role is RLS-restricted
+and will see zero rows).
+
+Then verify with the smoke harness and only afterwards remove the tenant from
+staging (`scripts/cleanup_stray_tenant.py` — dry-run first). Flex changes needed: **none** (same domain, same key, same webhook
+secret — they travel with the DB rows).
+
+### Verify with the Flex tenant key (either option)
+
+```bash
+python scripts/smoke.py \
+    --base-url https://lindaai.net \
+    --api-key $FLEX_TENANT_API_KEY \
+    --skip ingest_recording   # don't burn a Deepgram call for an auth check
+# auth ✓ ⇒ the key resolves to the Flex tenant again; then spot-check:
+curl -sS -H "Authorization: Bearer $FLEX_TENANT_API_KEY" \
+    https://lindaai.net/api/v1/prospects?limit=1
+```
+
+### Interim mitigation (zero-infra, minutes)
+
+If DNS/Fly access isn't at hand, Flex can temporarily set its LINDA base URL
+to `https://linda-staging.fly.dev` — the staging app is up and still holds
+the tenant. Revert once the domain points at the right app again. (Webhooks
+are unaffected either way: LINDA→Flex deliveries originate from the app that
+owns the tenant rows, and only staging is dispatching them today.)

@@ -458,6 +458,37 @@ def _emit_event(
     )
 
 
+async def _emit_plan_updated_webhook(
+    db: AsyncSession,
+    tenant: Tenant,
+    plan: ActionPlan,
+    *,
+    reason: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Outbound ``action_plan.updated`` webhook — the external analogue of
+    the SSE events above, for consumers (Flex console) mirroring plans.
+    Fired on material plan mutations (step edit/delete); creation and
+    step completion keep their dedicated events."""
+    try:
+        from backend.app.services.webhook_dispatcher import emit_event
+
+        payload: Dict[str, Any] = {
+            "plan_id": str(plan.id),
+            "customer_id": str(plan.customer_id) if plan.customer_id else None,
+            "interaction_id": str(plan.interaction_id) if plan.interaction_id else None,
+            "goal": plan.goal,
+            "status": plan.status,
+            "version": plan.version,
+            "reason": reason,
+        }
+        if extra:
+            payload.update(extra)
+        await emit_event(db, tenant.id, "action_plan.updated", payload)
+    except Exception:
+        logger.exception("emit action_plan.updated webhook failed for %s", plan.id)
+
+
 # ──────────────────────────────────────────────────────────
 # Read endpoints
 # ──────────────────────────────────────────────────────────
@@ -898,6 +929,10 @@ async def edit_step(
         plan_id=plan_id, step_id=step_id,
         extra={"changed_keys": changed_keys},
     )
+    await _emit_plan_updated_webhook(
+        db, tenant, plan, reason="step_edited",
+        extra={"step_id": str(step_id), "changed_keys": changed_keys},
+    )
     return await _build_plan_out(db, plan)
 
 
@@ -924,6 +959,9 @@ async def delete_step(
         event="action_step.state_changed",
         plan_id=plan_id, step_id=step_id,
         extra={"new_state": "deleted", "affected_step_ids": [str(s) for s in affected]},
+    )
+    await _emit_plan_updated_webhook(
+        db, tenant, plan, reason="step_deleted", extra={"step_id": str(step_id)}
     )
     return await _build_plan_out(db, plan)
 

@@ -153,6 +153,10 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
         # endpoint's proposal-execution branch in api/chat.py. Mirrors the
         # action-plans REST surface for Linda-initiated single-step plans.
         "propose_action_plan",
+        # propose_queue_bump_email queues the next cold-outreach touch for
+        # an enrolled prospect (send stays with the campaign scheduler's
+        # window + throttle). Executes in api/chat.py's proposal branch.
+        "propose_queue_bump_email",
     }
     for tool in TOOLS:
         assert tool["input_schema"]["type"] == "object"

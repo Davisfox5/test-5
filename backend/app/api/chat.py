@@ -401,6 +401,79 @@ async def _execute_proposal(
         # proposal and return — the scheduler/Celery worker can pick it up.
         return None
 
+    if proposal.kind == "queue_bump_email":
+        # Queue the next outreach touch for a prospect. The actual send
+        # stays with the campaign scheduler (window + daily throttle) —
+        # confirming here only approves/queues it.
+        from backend.app.models import Campaign, Customer, OutreachMember
+
+        try:
+            prospect_uuid = uuid.UUID(str(payload.get("prospect_id")))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="queue_bump_email proposal requires a prospect_id",
+            )
+        customer = await db.get(Customer, prospect_uuid)
+        if customer is None or customer.tenant_id != tenant.id:
+            raise HTTPException(status_code=404, detail="Prospect not found")
+        if customer.do_not_contact or customer.pipeline_status == "do_not_contact":
+            raise HTTPException(
+                status_code=409, detail="Prospect is marked do-not-contact"
+            )
+
+        stmt = (
+            select(OutreachMember)
+            .join(Campaign, Campaign.id == OutreachMember.campaign_id)
+            .where(
+                OutreachMember.tenant_id == tenant.id,
+                OutreachMember.customer_id == prospect_uuid,
+                Campaign.kind == "outreach",
+                Campaign.status.in_(("active", "paused", "draft")),
+                OutreachMember.state.in_(
+                    ("in_sequence", "queued", "needs_approval", "draft_pending", "completed")
+                ),
+            )
+            .order_by(OutreachMember.created_at.desc())
+        )
+        if payload.get("campaign_id"):
+            try:
+                stmt = stmt.where(
+                    OutreachMember.campaign_id == uuid.UUID(str(payload["campaign_id"]))
+                )
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=422, detail="Invalid campaign_id")
+        member = (await db.execute(stmt)).scalars().first()
+        if member is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Prospect has no outreach enrollment a bump can attach to",
+            )
+
+        if payload.get("subject"):
+            member.draft_subject = str(payload["subject"])[:400]
+        if payload.get("body"):
+            member.draft_body = str(payload["body"])
+        if member.draft_subject and member.draft_body:
+            member.draft_status = "approved"
+            member.state = "queued"
+            member.next_send_at = datetime.now(timezone.utc)
+        else:
+            # No draft text yet — put it through the normal generate →
+            # approve flow rather than sending something empty.
+            member.draft_status = None
+            member.state = "draft_pending"
+            from backend.app.tasks import outreach_generate_drafts
+
+            try:
+                outreach_generate_drafts.delay(
+                    str(tenant.id), str(member.campaign_id), [str(member.id)]
+                )
+            except Exception:
+                logger.debug("outreach_generate_drafts enqueue failed", exc_info=True)
+        await db.flush()
+        return member.id
+
     if proposal.kind == "action_plan":
         # Linda-proposed Action Plan: one Plan + one Step + one v1
         # artifact. Pipeline-synthesized plans (Step 14a in tasks.py)

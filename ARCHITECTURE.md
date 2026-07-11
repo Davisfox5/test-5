@@ -76,6 +76,25 @@ A single FastAPI application plus a Celery worker/beat, sharing the same code an
 `InteractionScore` / `InteractionSnippet` / `InteractionComment`, knowledge base
 (`KBDocument` / `KBChunk`), CRM (`CrmDealRecord` / `CrmSyncLog`), and the action model.
 
+> **Cold outreach (out_001, 2026-07).** Prospects ARE `Customer` rows: a non-NULL
+> `Customer.pipeline_status` (new → queued → contacted → replied → demo → won/lost,
+> plus do_not_contact + a sticky `do_not_contact` flag) marks an account as
+> outreach-managed; import/campaign metadata lives under `Customer.metadata['outreach']`.
+> `Campaign` is discriminated by `kind`: the original `external` (passive ESP
+> monitoring) and `outreach` — LINDA-originated 1:1 cold email sent through the
+> tenant's connected Gmail/Outlook OAuth. Per-(campaign, prospect) sequence state
+> (draft → approval → queued → in_sequence → replied/bounced/opted_out/completed)
+> lives in `OutreachMember`; each delivered touch writes an `EmailSend` (audit +
+> daily-throttle counters), a `CampaignRecipient` (RFC-822 Message-ID for reply
+> attribution), and an outbound `Interaction` on the prospect. The email-ingest
+> reply matcher (`services/email_ingest/ingest.py` + `services/outreach/replies.py`)
+> halts sequences on reply, honors stop-keyword opt-outs (CAN-SPAM), and detects
+> DSN bounces. Engine: `services/outreach/`; API: `api/outreach.py` (/prospects,
+> /outreach/campaigns); sending driven by the `outreach_scheduler_tick` beat task
+> (10 min) under per-campaign daily limits + a tenant-wide cap (config.py
+> `OUTREACH_*`). Webhook events: `outreach.email.*`, `prospect.status_changed`,
+> `campaign.completed` — see docs/webhooks.md.
+
 > **Action model: the DAG is canonical (4b cutover, 2026-07).** The analysis pipeline writes
 > only `ActionPlan` → `ActionStep` (`action_plans` / `action_steps`, plus `StepArtifact` /
 > `StepResponse`); the raw LLM suggestions also land in `Interaction.insights['action_items']`.

@@ -368,11 +368,31 @@ class Customer(Base):
     # distinguished from ``in_progress`` so a CS-side detector can fire
     # on stalled onboardings without paging on every account mid-progress.
     onboarding_status: Mapped[Optional[str]] = mapped_column(String(32))
+    # ── Cold-outreach pipeline columns (migration ``out_001``) ──────────
+    # NULL means the account is not outreach-managed (CRM-synced clients,
+    # inbound leads). Set by POST /prospects/import and advanced by
+    # campaign events / manual PATCH. Vocabulary pinned by CHECK below;
+    # ``do_not_contact`` is a separate flag (not just a status) so DNC
+    # survives later status writes — every send path re-checks the flag.
+    pipeline_status: Mapped[Optional[str]] = mapped_column(String(16))
+    pipeline_status_changed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    do_not_contact: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     __table_args__ = (
         Index("ix_customer_tenant_id", "tenant_id"),
         Index("ix_customer_tenant_name", "tenant_id", "name"),
         Index("ix_customers_tenant_renewal_date", "tenant_id", "renewal_date"),
+        Index("ix_customers_tenant_pipeline_status", "tenant_id", "pipeline_status"),
+        CheckConstraint(
+            "pipeline_status IS NULL OR pipeline_status IN "
+            "('new', 'queued', 'contacted', 'replied', 'demo', 'won', 'lost', "
+            "'do_not_contact')",
+            name="ck_customers_pipeline_status",
+        ),
         CheckConstraint(
             "onboarding_status IS NULL OR onboarding_status IN "
             "('not_started', 'in_progress', 'stalled', 'completed')",
@@ -464,11 +484,24 @@ class EmailSend(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # ── Cold-outreach attribution (migration ``out_001``) ──────────────
+    # Set only for campaign-originated sends; NULL for follow-up sends.
+    # campaign_id also backs the daily-throttle counters, so it is
+    # indexed together with created_at.
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
 
     __table_args__ = (
         # Backs the audit/list flows that page email sends in tenant +
         # newest-first order.
         Index("ix_email_send_tenant_created", "tenant_id", "created_at"),
+        # Daily-throttle counters: sends per (tenant|campaign) per day,
+        # keyed on sent_at (the scheduler's logical clock).
+        Index("ix_email_send_campaign_sent", "campaign_id", "sent_at"),
     )
 
 
@@ -2377,6 +2410,21 @@ class EmailBackfillJob(Base):
 
 
 class Campaign(Base):
+    """A tracked email/push campaign.
+
+    Two kinds share the table (discriminated by ``kind``):
+
+    - ``external`` — the original passive shape: an ESP campaign whose
+      metadata/recipients/events are pushed in via /campaigns so analysis
+      can correlate exposure with outcomes. LINDA never sends these.
+    - ``outreach`` — LINDA-originated cold outreach (migration ``out_001``):
+      LINDA drafts, throttles, and sends 1:1 email through the tenant's
+      connected Gmail/Outlook OAuth, tracks per-prospect sequence state in
+      ``outreach_members``, and reuses ``campaign_recipients`` /
+      ``campaign_events`` for send attribution + engagement, so the reply
+      matcher in email_ingest works for both kinds unchanged.
+    """
+
     __tablename__ = "campaigns"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -2393,6 +2441,27 @@ class Campaign(Base):
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     insights: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # ── Outreach columns (migration ``out_001``) ────────────────────────
+    kind: Mapped[str] = mapped_column(String, default="external", server_default="external")
+    # external campaigns stay 'active' (harmless); outreach campaigns walk
+    # draft → active ⇄ paused → completed.
+    status: Mapped[str] = mapped_column(String, default="active", server_default="active")
+    # Outreach config — validated by services/outreach/common.py
+    # ``OutreachConfig`` (template + CAN-SPAM identity, daily_limit,
+    # send_window, steps, max_touches, mode). Kept as JSONB so the
+    # external kind carries an empty dict and config evolves without
+    # migrations; the *validated* shape is the API contract.
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('external', 'outreach')", name="ck_campaigns_kind"
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'paused', 'completed', 'archived')",
+            name="ck_campaigns_status",
+        ),
+    )
 
 
 class CampaignRecipient(Base):
@@ -2406,6 +2475,16 @@ class CampaignRecipient(Base):
     external_message_id: Mapped[Optional[str]] = mapped_column(String)
     rfc822_message_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # ── Outreach columns (migration ``out_001``) ────────────────────────
+    # For outreach sends: one recipient row per delivered touch, so a
+    # reply to *any* touch in the sequence attributes via its own
+    # rfc822_message_id. customer_id short-circuits reply → prospect
+    # resolution without joining through contacts; step is the 0-based
+    # sequence-step index this row delivered.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
+    step: Mapped[Optional[int]] = mapped_column(Integer)
 
 
 class CampaignEvent(Base):
@@ -2419,6 +2498,87 @@ class CampaignEvent(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+
+
+class OutreachMember(Base):
+    """Per-(campaign, prospect) cold-outreach sequence state.
+
+    One row per prospect enrolled in an outreach campaign. Holds the
+    sequence cursor (which step is next, when it's due), the current
+    step's draft + its review state, and the terminal outcome. Delivered
+    touches live in ``campaign_recipients`` (one row per send, keyed by
+    rfc822_message_id for reply attribution) and ``email_sends`` (audit);
+    this row is only the *state machine*.
+
+    States:
+      draft_pending   — enrolled, current step has no draft yet
+      needs_approval  — draft generated, waiting for human review
+      queued          — approved (or auto mode), scheduler may send
+      in_sequence     — ≥1 touch delivered, awaiting reply / next bump
+      replied / bounced / opted_out — terminal, set by the ingest hooks
+      completed       — sequence exhausted (max touches, no reply)
+      failed          — provider send failed hard
+      halted          — stopped manually or by prospect-level DNC
+    """
+
+    __tablename__ = "outreach_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "customer_id", name="uq_outreach_member_campaign_customer"
+        ),
+        # Scheduler scan: due members per campaign per state.
+        Index("ix_outreach_members_campaign_state", "campaign_id", "state"),
+        Index("ix_outreach_members_tenant_state", "tenant_id", "state"),
+        CheckConstraint(
+            "state IN ('draft_pending', 'needs_approval', 'queued', 'in_sequence', "
+            "'replied', 'bounced', 'opted_out', 'completed', 'failed', 'halted')",
+            name="ck_outreach_members_state",
+        ),
+        CheckConstraint(
+            "draft_status IS NULL OR draft_status IN "
+            "('generating', 'ready', 'approved', 'rejected')",
+            name="ck_outreach_members_draft_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL")
+    )
+    state: Mapped[str] = mapped_column(String, default="draft_pending", nullable=False)
+    # 0-based index of the NEXT step to send; touches_sent counts delivered.
+    current_step: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    touches_sent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_send_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    replied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    halt_reason: Mapped[Optional[str]] = mapped_column(String)
+    # Current step's draft. History of what actually went out is in
+    # email_sends; a bump regenerates these fields for the new step.
+    draft_subject: Mapped[Optional[str]] = mapped_column(Text)
+    draft_body: Mapped[Optional[str]] = mapped_column(Text)
+    draft_status: Mapped[Optional[str]] = mapped_column(String)
+    # Snapshot of the personalization inputs the draft was generated from
+    # ({hook, segment, current_software, ...}) so a reviewer can see what
+    # the model saw and regeneration is reproducible.
+    personalization: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Prior touches' RFC-822 Message-IDs, oldest first — threading headers
+    # for bumps (In-Reply-To/References) so the sequence is one thread in
+    # the recipient's mailbox.
+    thread_message_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────

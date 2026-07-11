@@ -165,6 +165,9 @@ celery_app.conf.update(
         # User-triggered but long-running (up to 2000 provider fetches) —
         # keep it off the customer-facing priority lane.
         "email_backfill_run": {"queue": "batch"},
+        # Cold-outreach draft fan-out: one Sonnet call per prospect —
+        # long-running and never latency-sensitive.
+        "outreach_generate_drafts": {"queue": "batch"},
         "refresh_few_shot_pools": {"queue": "batch"},
         "compute_wer_weekly": {"queue": "batch"},
         "discover_vocabulary_candidates": {"queue": "batch"},
@@ -276,6 +279,15 @@ celery_app.conf.update(
         "email-ingest-poll": {
             "task": "email_ingest_poll",
             "schedule": 900.0,  # 15 minutes
+        },
+        # ── Cold outreach ─────────────────────────────────────────────
+        # Sends due, approved campaign email inside each campaign's send
+        # window, respecting the per-campaign daily limit and the tenant-
+        # wide cap. 10 min × OUTREACH_MAX_SENDS_PER_TICK spreads a 25/day
+        # quota across the window instead of bursting it at window open.
+        "outreach-scheduler-tick": {
+            "task": "outreach_scheduler_tick",
+            "schedule": 600.0,
         },
         # Sample Celery queue depths into Prometheus gauges. Previously
         # every 30s, which generated ~5.7K commands/day for a gauge
@@ -3464,6 +3476,59 @@ def email_ingest_poll() -> Dict[str, Any]:
     session = _get_sync_session()
     try:
         return poll_all(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="outreach_scheduler_tick")
+def outreach_scheduler_tick() -> Dict[str, Any]:
+    """Cold-outreach send engine — one pass over every tenant.
+
+    Triggered by Celery Beat every 10 minutes. Walks the (global)
+    tenants table, enters tenant_context per tenant, and for each
+    active outreach campaign sends due approved drafts inside the
+    campaign's send window and daily quota, surfaces due follow-up
+    bumps back into the draft/approval flow, and completes campaigns
+    with no actionable members left. See
+    backend/app/services/outreach/scheduler.py.
+    """
+    from backend.app.services.outreach.scheduler import run_all_tenants
+
+    session = _get_sync_session()
+    try:
+        return run_all_tenants(session)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="outreach_generate_drafts")
+def outreach_generate_drafts(
+    tenant_id: str,
+    campaign_id: str,
+    member_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Fan out per-prospect draft personalization for a campaign.
+
+    Enqueued by POST /outreach/campaigns/{id}/generate-drafts (and by
+    activate when drafts are missing). One Sonnet call per member;
+    commits per member so progress survives a worker restart.
+    """
+    from backend.app.models import Campaign as _Campaign
+    from backend.app.models import Tenant as _Tenant
+    from backend.app.services.outreach.scheduler import generate_drafts_for_campaign
+    from backend.app.tenant_ctx import tenant_context
+
+    session = _get_sync_session()
+    try:
+        with tenant_context(tenant_id, session):
+            campaign = session.get(_Campaign, uuid.UUID(campaign_id))
+            tenant = session.get(_Tenant, uuid.UUID(tenant_id))
+            if campaign is None or tenant is None:
+                return {"error": "campaign_or_tenant_not_found"}
+            ids = [uuid.UUID(m) for m in member_ids] if member_ids else None
+            return generate_drafts_for_campaign(
+                session, tenant, campaign, member_ids=ids
+            )
     finally:
         session.close()
 
