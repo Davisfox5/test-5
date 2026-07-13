@@ -257,6 +257,8 @@ def _template(**overrides) -> OutreachTemplate:
 
 def test_strip_markers():
     assert strip_markers("**bold**, *ital*, _under_") == "bold, ital, under"
+    # Bold+italic nesting collapses to triple asterisks.
+    assert strip_markers("***both***") == "both"
     # Intra-word underscores and spaced asterisks are not formatting.
     assert strip_markers("snake_case_name") == "snake_case_name"
     assert strip_markers("2 * 3 * 4 = 24") == "2 * 3 * 4 = 24"
@@ -273,6 +275,7 @@ def test_render_email_html_markers_paragraphs_and_escaping():
     assert "<b>there</b>" in html
     assert "<i>this</i>" in html
     assert "<u>that</u>" in html
+    assert "<b><i>both</i></b>" in render_email_html("***both***", t)
     # Raw HTML in the body never survives as markup.
     assert "<script>" not in html
     assert "&lt;script&gt;" in html

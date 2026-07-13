@@ -59,6 +59,10 @@ export const NAV: NavItem[] = [
     // the workflow reads top-to-bottom. Manager+ only: agents shouldn't
     // see the whole tenant's outgoing email history.
     { href: "/communications", label: "Communications", minRole: "manager" },
+    // Cold-outreach campaigns are a manager+ concern (they touch the
+    // whole tenant's send quota and prospect pipeline), so it sits right
+    // after Communications in the same manager-tier block.
+    { href: "/outreach", label: "Outreach", minRole: "manager" },
     { href: "/scorecards", label: "Scorecards", minRole: "agent" },
     {
         href: "/knowledge-base",

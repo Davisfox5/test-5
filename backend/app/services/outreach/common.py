@@ -332,7 +332,10 @@ def compose_footer(template: OutreachTemplate) -> str:
 # tags.
 
 # Content must start and end on non-space (so "2 * 3 * 4" and stray
-# underscores never read as formatting).
+# underscores never read as formatting). Triple asterisks — what
+# bold+italic nesting collapses to — must be handled first, or the
+# bold/italic patterns each reject the leftover asterisk.
+_TRIPLE_RE = re.compile(r"\*\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*\*")
 _BOLD_RE = re.compile(r"\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)")
 _UNDERLINE_RE = re.compile(r"(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])")
@@ -340,13 +343,15 @@ _UNDERLINE_RE = re.compile(r"(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])")
 
 def strip_markers(text: str) -> str:
     """Formatting markers removed — the plain-text alternative body."""
-    out = _BOLD_RE.sub(r"\1", text or "")
+    out = _TRIPLE_RE.sub(r"\1", text or "")
+    out = _BOLD_RE.sub(r"\1", out)
     out = _ITALIC_RE.sub(r"\1", out)
     return _UNDERLINE_RE.sub(r"\1", out)
 
 
 def _markers_to_html(escaped: str) -> str:
-    out = _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    out = _TRIPLE_RE.sub(r"<b><i>\1</i></b>", escaped)
+    out = _BOLD_RE.sub(r"<b>\1</b>", out)
     out = _ITALIC_RE.sub(r"<i>\1</i>", out)
     return _UNDERLINE_RE.sub(r"<u>\1</u>", out)
 
