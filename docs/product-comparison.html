@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Product Comparison — LINDA vs CallCabinet vs MiaRec vs SimpleVoIP</title>
+<style>
+  :root {
+    --border: #d6d6d6;
+    --header-bg: #1f2937;
+    --header-fg: #ffffff;
+    --section-bg: #2563eb;
+    --section-fg: #ffffff;
+    --row-alt: #f8fafc;
+    --ours-bg: #ecfdf5;
+    --text: #1f2937;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    margin: 40px;
+    background: #fff;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    table-layout: fixed;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 10px 12px;
+    vertical-align: top;
+    text-align: left;
+    line-height: 1.45;
+  }
+  thead th {
+    background: var(--header-bg);
+    color: var(--header-fg);
+    font-weight: 600;
+    text-align: center;
+    padding: 10px 8px;
+  }
+  thead th.section-col { width: 44px; }
+  thead th.feature-col { width: 18%; text-align: left; }
+  thead th.vendor-col { width: auto; }
+  td.section-label {
+    background: var(--section-bg);
+    color: var(--section-fg);
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-size: 12px;
+    padding: 6px;
+    width: 44px;
+    vertical-align: middle;
+  }
+  td.section-label .rotated {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    display: inline-block;
+    padding: 8px 0;
+  }
+  td.feature { font-weight: 600; }
+  td.ours { background: var(--ours-bg); }
+  tbody tr:nth-child(even) td.feature,
+  tbody tr:nth-child(even) td.vendor:not(.ours) { background: var(--row-alt); }
+  .footnote {
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<p style="max-width:72rem;margin:0.75rem auto 0;padding:0.5rem 1rem;border:1px solid #8a6d1a;border-radius:6px;font-size:0.85rem;opacity:0.85">&#9888; Snapshot from <strong>2026-05-06</strong> (Phase 5B era), recovered from uncommitted work. The product has moved since; for current architecture see <code>ARCHITECTURE.md</code>.</p>
+
+
+<h1>Product Comparison</h1>
+<p class="subtitle">LINDA vs CallCabinet vs MiaRec vs SimpleVoIP — high-level positioning, May 2026</p>
+
+<table>
+  <thead>
+    <tr>
+      <th class="section-col">&nbsp;</th>
+      <th class="feature-col">&nbsp;</th>
+      <th class="vendor-col">CallCabinet</th>
+      <th class="vendor-col">MiaRec</th>
+      <th class="vendor-col">SimpleVoIP</th>
+      <th class="vendor-col">LINDA</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- IDENTITY -->
+    <tr>
+      <td class="section-label" rowspan="3"><span class="rotated">Identity</span></td>
+      <td class="feature">What it is</td>
+      <td>A compliant call-recording vault that&rsquo;s adding a real AI layer on top</td>
+      <td>An AI-driven QA &amp; analytics platform for contact centers</td>
+      <td>A hosted phone system with two AI add-ons stacked on top</td>
+      <td class="ours">A toolkit that turns conversations into data, exposed through an API</td>
+    </tr>
+    <tr>
+      <td class="feature">Who buys it</td>
+      <td>Banks, insurers, hospitals, government, and any Microsoft Teams shop that needs compliant recording. Channel-friendly &mdash; sold heavily through MSPs and resellers.</td>
+      <td>Mid-market contact centers (50&ndash;500 agents); 500+ customers across logistics, finance, healthcare, telecom</td>
+      <td>SMBs in verticals like medical, legal, automotive, home services, retail &mdash; that buy SimpleVoIP for the phone service first and the AI as an upsell</td>
+      <td class="ours">MSPs, vertical SaaS, CPaaS, and mid-market sales &amp; CS teams who want to embed or integrate conversation intelligence</td>
+    </tr>
+    <tr>
+      <td class="feature">Main job</td>
+      <td>Record every call, keep it safe across 100+ regulations, and increasingly mine it for sentiment, journeys, and coaching</td>
+      <td>Auto-score every call, surface CX / revenue insights without surveys, and feed structured coaching back to agents</td>
+      <td>Be the phone service, and on top of that tell you what was promised, what was missed, and what was said</td>
+      <td class="ours">Listen to conversations and pull out useful information &mdash; live during the call and after it &mdash; via APIs you can wire anywhere</td>
+    </tr>
+
+    <!-- EXPERIENCE -->
+    <tr>
+      <td class="section-label" rowspan="3"><span class="rotated">Experience</span></td>
+      <td class="feature">How you use it</td>
+      <td>Their portal &mdash; search recordings, run analytics, ask the &ldquo;AI Agent&rdquo; in natural language, drag-and-drop dashboards, hand to compliance</td>
+      <td>Their dashboard &mdash; auto-QA scores, coaching suggestions, live listen, &ldquo;Ask AI&rdquo; queries, IMetrics CX panels</td>
+      <td>Two-track experience &mdash; <strong>Simple Intelligence</strong> runs in the SimpleVoIP admin console; <strong>SimplyAI</strong> emails per-call summaries straight to the user&rsquo;s inbox, no login required</td>
+      <td class="ours">Plug into your own software via REST APIs and webhooks; LINDA&rsquo;s own UI is intentionally thin</td>
+    </tr>
+    <tr>
+      <td class="feature">What it sells on</td>
+      <td>&ldquo;You won&rsquo;t get fined, and you&rsquo;ll learn from your calls&rdquo;</td>
+      <td>&ldquo;Score 100% of calls automatically &mdash; and get CX, churn, and revenue signals without surveys&rdquo;</td>
+      <td>&ldquo;Track every promise, recover every missed sale &mdash; and get the summary in your inbox&rdquo;</td>
+      <td class="ours">&ldquo;Build whatever you want with our pipes&rdquo;</td>
+    </tr>
+    <tr>
+      <td class="feature">How it&rsquo;s priced</td>
+      <td>Public entry pricing for the Microsoft Teams SaaS package starts around <strong>$14.95 / user / month</strong>; full enterprise &amp; multi-platform tiers are custom and sold via channel</td>
+      <td>Custom per-seat with modular add-ons (call recording, screen recording, Auto-QA bundled into CX or Revenue Intelligence licenses); not publicly listed</td>
+      <td>Bundled with the SimpleVoIP voice subscription; AI products are sold as add-ons, not as standalone SKUs</td>
+      <td class="ours">Per-seat tiers (Starter / Growth / Enterprise) plus a free sandbox; usage add-ons for premium AI &amp; storage</td>
+    </tr>
+
+    <!-- AI PROFILE -->
+    <tr>
+      <td class="section-label" rowspan="3"><span class="rotated">AI&nbsp;Profile</span></td>
+      <td class="feature">Where AI sits in the product</td>
+      <td>On top of a compliance archive &mdash; the archive is still the product; AI is the new value layer being built out (AI Agent today, AI Orchestrator on roadmap)</td>
+      <td>Inside the QA / analytics workflow &mdash; the workflow is the product, AI does the scoring, summarizing, and trend detection</td>
+      <td>Two AI add-ons sitting on top of the phone service &mdash; SI for analytics, SimplyAI for summaries; the phone service itself is still the core product</td>
+      <td class="ours">AI <em>is</em> the product, exposed through APIs; the UI is intentionally thin</td>
+    </tr>
+    <tr>
+      <td class="feature">Real-time vs after-the-call</td>
+      <td>Mostly after-the-call analytics today; agentic / autonomous workflows are roadmap</td>
+      <td>Both &mdash; live agent assist + live listen + post-call coaching</td>
+      <td>Mostly post-call; SI fires real-time <em>alerts</em> on missed opportunities, but no live agent coaching</td>
+      <td class="ours">Both &mdash; live coaching over WebSocket and post-call extraction are both core design goals</td>
+    </tr>
+    <tr>
+      <td class="feature">AI depth (today)</td>
+      <td>Sentiment, AI summary, redaction (audio + text), journey timelines, drag-and-drop QA scorecards, AI Agent for natural-language search; AI Orchestrator (agentic) announced for end-2025</td>
+      <td>Auto-QA scorecards, sentiment, churn detection, buying signals, GenAI coaching suggestions, live agent assist, Custom Insights, Ask AI, AI Prompt Designer, screen recording, IMetrics (real-time CSAT / NPS / NES without surveys)</td>
+      <td><strong>Simple Intelligence:</strong> commitment tracking, opportunity alerts, keyword &amp; trend analysis, frustration detection, market intelligence. <strong>SimplyAI:</strong> transcription, summary, positive / negative / neutral tone, emailed digest. No QA scorecards, no live coaching, no churn modeling.</td>
+      <td class="ours">Live coaching, action items v2, deal warnings &amp; commitments, buying-group entity resolution, Cox-survival churn model, paralinguistic features, multi-LLM tiering (Haiku/Sonnet/Opus), semantic KB retrieval, Elasticsearch full-text search</td>
+    </tr>
+
+    <!-- STRATEGIC POSITION -->
+    <tr>
+      <td class="section-label" rowspan="3"><span class="rotated">Position</span></td>
+      <td class="feature">Biggest strength</td>
+      <td>Trusted compliance archive across 100+ regulations; multi-tenant from day one; channel-led white-label; published, accessible entry pricing for the Teams use case</td>
+      <td>Polished end-to-end AI-QA workflow; broadest AI feature set in the mid-market today; IMetrics &amp; Ask AI lead the &ldquo;survey-less CX&rdquo; story</td>
+      <td>Bundled with the phone service &mdash; simplest path for SMBs who want one vendor; two-product split lets buyers start light (SimplyAI email digests) and graduate to deeper analytics (SI)</td>
+      <td class="ours">API-first, white-label-ready, modern multi-LLM architecture; full lifecycle (live + post-call) on a single stack</td>
+    </tr>
+    <tr>
+      <td class="feature">Biggest weakness</td>
+      <td>Portal-first &mdash; you live in their UI; AI was retrofitted onto a recording archive, not built-in; agentic AI still on roadmap</td>
+      <td>Centered on contact-center QA; not white-labeled; no API-first / headless mode; thin fit for sales / CS teams that aren&rsquo;t shaped like a contact center</td>
+      <td>Locked to the SimpleVoIP voice service; shallow AI depth (no QA scorecards, no live coaching, no churn modeling); no APIs, no white-label, no language breadth advertised</td>
+      <td class="ours">No turnkey supervisor UI; not a compliance archive; thinner prompt-playground UX than MiaRec; no audio-level PII redaction yet</td>
+    </tr>
+    <tr>
+      <td class="feature">Best-fit buyer</td>
+      <td>Regulated business that needs an immutable archive first and AI second &mdash; or a Microsoft Teams shop that wants compliant recording with analytics for ~$15/user/month</td>
+      <td>Mid-market contact center wanting turnkey AI-driven QA + survey-less CX out of the box</td>
+      <td>SMB that wants phone service and a light AI layer from a single vendor &mdash; SimplyAI for the email-summary buyer, SI for the analytics-curious owner-operator</td>
+      <td class="ours">MSP, CPaaS, vertical SaaS, or product team that wants to embed conversation intelligence under their own brand &mdash; or any sales / CS org that needs deeper AI than QA tools provide</td>
+    </tr>
+
+  </tbody>
+</table>
+
+<p class="footnote">
+Sources: callcabinet.com, miarec.com, simplevoip.com (fetched May 2026). LINDA column reflects current shipped state in <code>backend/app/services/</code> and <code>backend/app/api/</code>; competitor cells reflect publicly-marketed positioning. SimpleVoIP&rsquo;s AI surface is two distinct products today: <strong>Simple Intelligence</strong> (analytics) and <strong>SimplyAI</strong> (transcription &amp; summary). &ldquo;Simple Agent&rdquo; appears in their nav but is not a flagship product, and should not be confused with the unrelated VC-backed company &ldquo;Simple AI&rdquo;.
+</p>
+
+</body>
+</html>

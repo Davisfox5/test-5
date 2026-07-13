@@ -61,12 +61,13 @@ Our real competitors are not consumer transcription tools — they are enterpris
                             │
      NICE · Verint          │        Cresta · Balto
      CallMiner · Calabrio   │        Observe.AI · Uniphore
+     CallCabinet            │        MiaRec
                             │
  LEGACY/INCUMBENT ──────────┼──────────── AI-NATIVE/MODERN
                             │
      Genesys · Talkdesk     │     ★ LINDA ★
      AWS Contact Lens       │        Symbl.ai
-     Google CCAI · Nuance   │
+     Google CCAI · Nuance   │        SimpleVoIP
                             │
                     API / EMBEDDABLE LAYER
                             │
@@ -252,27 +253,76 @@ These are full contact center platforms that are adding AI features natively, po
 - **Pricing:** $75–$125/user/month
 - **Our angle:** Talkdesk's AI is tied to their CCaaS. We offer standalone intelligence that any CCaaS — including Talkdesk competitors — can embed.
 
+#### Category F: Call Recording + QA Platforms (Compliance & Mid-Market)
+
+*(research as of 2026-05)*
+
+These are recording-first products that have layered AI conversation analytics on top of long-running compliance archives or QA workflows. They sit between the legacy enterprise speech analytics (Category A) and the AI-native startups (Category B): less expensive than NICE/Verint, more entrenched than Cresta/Balto, and increasingly targeted at the same mid-market we serve.
+
+**CallCabinet (Compliance Cube + AI Conversation Analytics)** — $$$
+- **What they offer:** Cloud call recording vault with a growing AI layer — automated transcription, sentiment, journey timeline visualization, automated PCI/PHI/PII redaction (audio + transcript), QA scorecards with drag-and-drop editor, natural-language "AI Agent" for searching and summarizing across recordings. Multi-tenant from inception. Certified for Microsoft Teams, Cisco Webex, Zoom, and Avaya. Roadmap publishes an "AI Orchestrator" agentic engine targeting end-2025.
+- **White-label/OEM:** Yes — historically channel-first, with a strong reseller program and embedded deployments inside MSP and BPO offerings.
+- **Target:** Regulated industries first (financial services, healthcare, government, insurance) where call retention is mandated; expanding into general contact centers
+- **Pricing:** Custom — typically per-seat or per-recording-channel; not publicly listed. Generally below NICE/Verint, above mid-market AI-native startups.
+- **Strengths:** Trusted compliance archive across 100+ regulatory frameworks (GDPR, HIPAA, PCI DSS, MiFID II, Dodd-Frank), audio-level redaction, multi-platform certification, mature partner channel, multi-tenant from day one
+- **Weaknesses:** AI features are bolted on top of a recording-archive product, not built into the core; no real-time agent assist advertised; no explicit revenue intelligence (buying signals, churn detection); UI-first (the portal is the product)
+- **Our angle:** This is the closest direct overlap with our white-label / multi-tenant positioning. We compete on AI depth (live coaching, deal warnings, churn survival model, multi-LLM tiering) and on API-first openness — CallCabinet customers live in the CallCabinet portal, while LINDA customers can embed the intelligence anywhere. We are *not* a replacement for their compliance archive; that is a deliberate scope decision.
+
+**MiaRec (Conversation Intelligence + Auto-QA)** — $$
+- **What they offer:** AI-driven contact center conversation intelligence with three product lines — Customer Experience (CX) Intelligence, Revenue Intelligence, and Auto Quality Management. Features include automatic transcription, sentiment, call summarization, call-reason and outcome detection, churn-risk detection, buying-signal extraction, fully customizable Auto-QA scorecards, real-time agent assist with live listen, GenAI coaching suggestions after every call, "Ask AI" natural-language querying, "AI Prompt Designer / Playground" for tenant-tunable insights, Auto Redaction of card numbers/SSNs/emails, and synchronized screen recording. 500+ customers across logistics, finance, healthcare, and telecom. Public stance is that AI agent-assist is a transitional category and AI voice agents will absorb it.
+- **White-label/OEM:** Not advertised as a primary motion; integrations exist with major CCaaS and PBX platforms (Cisco, Avaya, Genesys, Zoom Phone) but the product is sold under the MiaRec brand.
+- **Target:** Mid-market and lower-enterprise contact centers (50–500 agents typical)
+- **Pricing:** Custom per-seat; generally accessible to mid-market.
+- **Strengths:** Deepest mid-market AI-QA workflow out of the box, polished supervisor experience (live listen, scorecards, drill-down), explicit revenue-intelligence module (buying signals, objection patterns, sales-lost reasons), screen recording synchronized with audio/transcripts, AI Prompt Designer is a genuinely flexible end-user feature
+- **Weaknesses:** Centered on the contact-center QA workflow — limited fit for sales/CS teams that aren't structured as a contact center; not white-labeled; no API-first / headless mode; no publicly stated agentic AI roadmap; their own messaging frames QA agent-assist as a category being absorbed by voice agents
+- **Our angle:** MiaRec is the strongest mid-market AI-QA story today and the most credible point of comparison on AI feature breadth. We compete on (1) white-label and API-first deployment models — partners can rebrand LINDA, while MiaRec is sold under its own brand; (2) sales / CS use cases beyond the contact center; and (3) modern AI architecture — multi-LLM tiering with prompt caching, Cox survival churn model, paralinguistic acoustic features. We are behind MiaRec on the polished prompt-playground UX and on screen recording.
+
+#### Category G: Hosted VoIP / UCaaS with Bundled AI (SMB & Mid-Market)
+
+*(research as of 2026-05)*
+
+These are voice/phone-service providers — hosted PBX and UCaaS vendors — that have layered AI conversation intelligence on top of their primary communications service. They typically sell to small and mid-sized businesses, including verticals like medical, legal, automotive, and home services. They are not contact-center platforms; they are phone systems that have added analytics. This category will grow as every UCaaS vendor races to add an AI layer (Dialpad Ai, RingCentral, 8x8, Vonage, Zoom Phone all have entries or plans in this space).
+
+**SimpleVoIP (Simple Intelligence + SimplyAI)** — $$
+- **What they offer:** A hosted VoIP / business phone service with two distinct AI products layered on top:
+  - **Simple Intelligence (SI)** — AI-driven call analytics positioned around revenue recovery. Headline capabilities: automatic transcription, commitment / promise tracking with follow-through alerts, opportunity detection (alerts when a customer shows interest but doesn't commit), market-intelligence trend reporting, keyword and trend analysis, customer-frustration detection, and CRM / POS integrations. Marketing emphasizes a sales-recovery case study ("80 sales and $24,000 recovered in 3 days").
+  - **SimplyAI** — A lighter-weight AI transcription and summary service. Captures every phone call, generates a summary with positive / negative / neutral tone analysis, and emails it to designated recipients. Positioned for teams who want a quick post-call digest without logging into another dashboard.
+  
+  Adjacent (non-AI) products in the SimpleVoIP catalog include Caller Insight (real-time caller ID enrichment / screen-pop), Auto Attendant, Mobile App, Microsoft Teams Integration, POTS Replacement (SureDial), and Call Center solutions. A "Simple Agent (Voice AI)" appears in site navigation but is not a flagship offering and should not be confused with the unrelated VC-backed company "Simple AI" that builds voice AI sales agents. SimpleVoIP has published thought-leadership content on agentic AI and conversational intelligence, but agentic workflows are framed as future direction, not a shipped product.
+- **White-label/OEM:** Not advertised. Sold under the SimpleVoIP brand to direct customers; the AI layer is a value-add on the underlying phone service.
+- **Target:** Small and mid-sized businesses — particularly vertical SMBs (medical, legal, automotive, home services, retail) that buy SimpleVoIP for their phone system and adopt the AI features as an upsell. Not a contact-center pitch.
+- **Pricing:** Bundled with the phone service; AI products appear to be sold as add-ons to a SimpleVoIP voice subscription rather than as standalone offerings. Public per-seat pricing for the AI layer is not published; consistent with mid-market UCaaS norms.
+- **Strengths:** Direct integration with the phone service the customer is already paying for — no separate vendor, no new login, captures every call automatically. Two-product split lets buyers choose between a deeper analytics layer (SI) and a lightweight email-digest layer (SimplyAI). Strong fit for SMB owners who want a simple "what was promised, what was missed" dashboard rather than a full QA / coaching workflow. Verticalized go-to-market and good word-of-mouth in served verticals.
+- **Weaknesses:** AI feature depth is shallow vs. dedicated conversation-intelligence platforms — no published auto-QA scorecards, no real-time agent coaching (only real-time *alerts*), no churn / survival modeling, no buying-group entity resolution, no paralinguistic features, no public APIs for embedding or white-label, limited language support advertised, no semantic search across the call corpus. Locked to the SimpleVoIP phone service — moving off SimpleVoIP voice means losing the AI layer.
+- **Our angle:** SimpleVoIP and LINDA are not direct head-to-head competitors — SimpleVoIP wins when the buyer wants their *phone system and* their AI from one SMB-friendly vendor. We win when the buyer (a) already has a phone system they like and wants to add intelligence without switching, (b) needs deeper AI (live coaching, deal warnings, churn prediction, paralinguistic features), or (c) is a partner — a CPaaS, MSP, vertical SaaS, or competing UCaaS — who wants to *embed* conversation intelligence under their own brand rather than refer customers out to SimpleVoIP. SimpleVoIP is also a useful proof point that mid-market and SMB customers will pay for AI conversation intelligence; the gap they leave is API-first, white-label, and AI-depth.
+
 ### 4.3 Competitive Differentiation Matrix
 
-| Capability | LINDA | NICE/Verint/CallMiner | Observe.AI/Cresta/Balto | Symbl.ai | Deepgram/AssemblyAI | AWS/Google/MSFT |
-|-----------|-----------|----------------------|------------------------|----------|--------------------|-----------------|
-| White-label / rebrandable | **Yes** | No | No | Partial (API only) | No (API only) | No |
-| Multi-tenant architecture | **Yes** | No | No | No | No | No |
-| Custom domain support | **Yes** | No | No | No | No | No |
-| Turnkey dashboard + UI | **Yes** | Yes | Yes | No | No | Limited |
-| API-first / headless mode | **Yes** | Limited | Limited | **Yes** | **Yes** | Yes |
-| AI action item extraction | **Yes** | Basic | Yes | Basic | No | Basic |
-| Follow-up email drafts | **Yes** | No | No | No | No | No |
-| Rep coaching / suggestions | **Yes** | Yes | **Yes** | No | No | Limited |
-| Real-time transcription | Yes | Yes | Yes | Yes | **Yes** | Yes |
-| Speaker diarization | Yes | Yes | Yes | Yes | **Yes** | Yes |
-| Sentiment analysis | Yes | **Yes** | Yes | Yes | Add-on | Yes |
-| CRM integrations | Yes | Limited | Yes | No | No | MSFT only |
-| Telephony-agnostic | **Yes** | Partial | Yes | **Yes** | **Yes** | No (platform-locked) |
-| Self-hosted / on-prem option | Yes | Yes | No | No | Yes (Deepgram) | No |
-| Time to deploy | Days | 3–6+ months | 1–3 months | Weeks (dev required) | Hours (STT only) | Weeks–months |
-| Minimum contract | None | $150K+/yr | $50K+/yr | Custom | $0 (pay-as-you-go) | Varies |
-| Mid-market accessible | **Yes** | No | Partial | Yes | Yes | Partial |
+| Capability | LINDA | NICE/Verint/CallMiner | Observe.AI/Cresta/Balto | CallCabinet/MiaRec | SimpleVoIP | Symbl.ai | Deepgram/AssemblyAI | AWS/Google/MSFT |
+|-----------|-----------|----------------------|------------------------|-------------------|------------|----------|--------------------|-----------------|
+| White-label / rebrandable | **Yes** | No | No | Partial (CallCabinet only) | No | Partial (API only) | No (API only) | No |
+| Multi-tenant architecture | **Yes** | No | No | Yes (CallCabinet) | No | No | No | No |
+| Custom domain support | **Yes** | No | No | Limited | No | No | No | No |
+| Turnkey dashboard + UI | **Yes** | Yes | Yes | **Yes** | Yes | No | No | Limited |
+| API-first / headless mode | **Yes** | Limited | Limited | No | No | **Yes** | **Yes** | Yes |
+| AI action item extraction | **Yes** | Basic | Yes | Yes (MiaRec) | Limited (commitments only) | Basic | No | Basic |
+| Follow-up email drafts | **Yes** | No | No | No | No | No | No | No |
+| Rep coaching / suggestions | **Yes** | Yes | **Yes** | Yes (MiaRec live + post-call) | No | No | No | Limited |
+| Real-time agent assist | **Yes** | Yes | **Yes** | Yes (MiaRec) | No (real-time alerts only) | No | No | Limited |
+| Real-time transcription | Yes | Yes | Yes | Yes | Yes | Yes | **Yes** | Yes |
+| Speaker diarization | Yes | Yes | Yes | Yes | Limited | Yes | **Yes** | Yes |
+| Sentiment analysis | Yes | **Yes** | Yes | Yes | Limited (frustration detection) | Yes | Add-on | Yes |
+| Buying signals / revenue intel | Yes | Limited | Yes | Yes (MiaRec only) | Yes (sales recovery framing) | No | No | No |
+| Churn risk modeling | **Yes (Cox survival)** | Limited | Limited | Yes (MiaRec) | No | No | No | No |
+| Paralinguistic / acoustic features | **Yes** | Limited | Limited | Limited | No | No | No | No |
+| Audio PII redaction | Roadmap | Yes | Limited | **Yes (CallCabinet)** | No | No | No | Yes (Contact Lens) |
+| Compliance archive (immutable retention) | No | Yes | No | **Yes (CallCabinet flagship)** | No | No | No | Limited |
+| CRM integrations | Yes (HubSpot/SF/Pipedrive) | Limited | Yes | Limited | Limited | No | No | MSFT only |
+| Telephony-agnostic | **Yes** | Partial | Yes | Yes | No (own VoIP only) | **Yes** | **Yes** | No (platform-locked) |
+| Self-hosted / on-prem option | Partial (cloud-first) | Yes | No | Yes (CallCabinet hybrid) | No | No | Yes (Deepgram) | No |
+| Time to deploy | Days | 3–6+ months | 1–3 months | Weeks–months | Bundled with phone service | Weeks (dev required) | Hours (STT only) | Weeks–months |
+| Minimum contract | None | $150K+/yr | $50K+/yr | Mid-market accessible | SMB-friendly | Custom | $0 (pay-as-you-go) | Varies |
+| Mid-market accessible | **Yes** | No | Partial | Yes | Yes (SMB-first) | Yes | Yes | Partial |
 
 ### 4.4 Key Competitive Insight
 
@@ -280,10 +330,12 @@ The market has a clear gap:
 
 - **Enterprise incumbents** (NICE, Verint, CallMiner) are too expensive, too slow to deploy, and cannot be white-labeled.
 - **AI-native startups** (Observe.AI, Cresta, Balto) are modern but sell branded platforms — they don't enable partners.
+- **Recording + QA platforms** (CallCabinet, MiaRec) bring the closest direct overlap on AI breadth and mid-market accessibility, but each has a structural gap: CallCabinet is portal-first and centered on the compliance archive; MiaRec is sold under its own brand and centered on the contact-center QA workflow. Neither offers a true API-first white-label motion.
+- **Hosted VoIP with bundled AI** (SimpleVoIP and the broader UCaaS pack) wins SMB customers who want their phone system and their AI from one vendor — but the AI layer is shallow, locked to the underlying phone service, and not designed to be embedded by partners.
 - **API providers** (Deepgram, AssemblyAI, Symbl.ai) sell building blocks — customers must build the product themselves.
 - **Hyperscalers** (AWS, Google, Microsoft) lock customers into their cloud ecosystem.
 
-**LINDA occupies the only position that combines a turnkey product (dashboard + workflows + integrations) with true white-label multi-tenancy and API-first embeddability.** No existing player serves this niche.
+**LINDA occupies the only position that combines a turnkey product (dashboard + workflows + integrations) with true white-label multi-tenancy and API-first embeddability.** CallCabinet is the closest comparable on the white-label / multi-tenancy axis but is portal-first; MiaRec is the closest comparable on AI feature breadth but is single-brand and CCaaS-shaped. No existing player combines all three.
 
 ---
 

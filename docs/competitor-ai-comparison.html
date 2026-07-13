@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI Feature Comparison — LINDA vs CallCabinet vs MiaRec vs SimpleVoIP</title>
+<style>
+  :root {
+    --border: #d6d6d6;
+    --header-bg: #1f2937;
+    --header-fg: #ffffff;
+    --section-bg: #2563eb;
+    --section-fg: #ffffff;
+    --row-alt: #f8fafc;
+    --ours-bg: #ecfdf5;
+    --text: #1f2937;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    margin: 40px;
+    background: #fff;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  .legend {
+    margin: 0 0 20px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .legend span { margin-right: 18px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    table-layout: fixed;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    vertical-align: middle;
+    text-align: left;
+  }
+  thead th {
+    background: var(--header-bg);
+    color: var(--header-fg);
+    font-weight: 600;
+    text-align: center;
+    padding: 10px 8px;
+  }
+  thead th.section-col { width: 44px; }
+  thead th.feature-col { width: 28%; text-align: left; }
+  thead th.vendor-col { width: auto; }
+  td.section-label {
+    background: var(--section-bg);
+    color: var(--section-fg);
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-size: 12px;
+    padding: 6px;
+    width: 44px;
+  }
+  td.section-label .rotated {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    display: inline-block;
+    padding: 8px 0;
+  }
+  td.feature { font-weight: 500; }
+  td.vendor { text-align: center; }
+  td.ours { background: var(--ours-bg); }
+  tbody tr:nth-child(even) td.feature,
+  tbody tr:nth-child(even) td.vendor:not(.ours) { background: var(--row-alt); }
+  .footnote {
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<p style="max-width:72rem;margin:0.75rem auto 0;padding:0.5rem 1rem;border:1px solid #8a6d1a;border-radius:6px;font-size:0.85rem;opacity:0.85">&#9888; Snapshot from <strong>2026-05-06</strong> (Phase 5B era), recovered from uncommitted work. The product has moved since; for current architecture see <code>ARCHITECTURE.md</code>.</p>
+
+
+<h1>AI Feature Comparison</h1>
+<p class="subtitle">LINDA vs CallCabinet vs MiaRec vs SimpleVoIP — current capabilities, May 2026</p>
+
+<div class="legend">
+  <span><strong>&#10003;</strong> available</span>
+  <span><strong>&#9679;</strong> partial / limited</span>
+  <span><strong>&#9633;</strong> on roadmap</span>
+  <span><strong>&mdash;</strong> not offered / not advertised</span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th class="section-col">&nbsp;</th>
+      <th class="feature-col">Feature</th>
+      <th class="vendor-col">CallCabinet</th>
+      <th class="vendor-col">MiaRec</th>
+      <th class="vendor-col">SimpleVoIP</th>
+      <th class="vendor-col">LINDA</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- TRANSCRIPTION & SPEECH -->
+    <tr>
+      <td class="section-label" rowspan="3"><span class="rotated">Transcription &amp; Speech</span></td>
+      <td class="feature">Speech-to-text transcription</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003; via SimplyAI</td>
+      <td class="vendor ours">&#10003; Deepgram Nova-3 + Whisper</td>
+    </tr>
+    <tr>
+      <td class="feature">Speaker diarization</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; not advertised</td>
+      <td class="vendor ours">&#10003; Deepgram + pyannote</td>
+    </tr>
+    <tr>
+      <td class="feature">Multilingual support</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+
+    <!-- CONVERSATION INSIGHTS -->
+    <tr>
+      <td class="section-label" rowspan="6"><span class="rotated">Conversation Insights</span></td>
+      <td class="feature">Sentiment analysis</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003; SimplyAI tone (pos/neg/neutral) + SI frustration detection</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">AI call summary</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003; SimplyAI emails summary; SI &ldquo;crystal-clear notes&rdquo;</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">Action items / next steps</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; commitments only</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">Call reason / topic detection</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; keyword &amp; trend analysis</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">Call outcome tagging</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">Key moments / highlights</td>
+      <td class="vendor">&#10003; journey timeline</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; missed-opportunity alerts</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+
+    <!-- QUALITY & COACHING -->
+    <tr>
+      <td class="section-label" rowspan="4"><span class="rotated">Quality &amp; Coaching</span></td>
+      <td class="feature">Auto-QA scorecards</td>
+      <td class="vendor">&#10003; drag-and-drop editor</td>
+      <td class="vendor">&#10003; flagship</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; Haiku, template-based</td>
+    </tr>
+    <tr>
+      <td class="feature">Post-call AI coaching suggestions</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; coaching API + scorecard feedback</td>
+    </tr>
+    <tr>
+      <td class="feature">Real-time / live agent assist</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; real-time alerts, not coaching</td>
+      <td class="vendor ours">&#10003; Claude Haiku, WebSocket</td>
+    </tr>
+    <tr>
+      <td class="feature">Live listen for supervisors</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&mdash;</td>
+    </tr>
+
+    <!-- SEARCH & Q&A -->
+    <tr>
+      <td class="section-label" rowspan="4"><span class="rotated">Search &amp; Q&amp;A</span></td>
+      <td class="feature">Full-text transcript search</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; keyword analysis</td>
+      <td class="vendor ours">&#10003; Elasticsearch</td>
+    </tr>
+    <tr>
+      <td class="feature">Natural-language &ldquo;Ask AI&rdquo; across calls</td>
+      <td class="vendor">&#10003; AI Agent</td>
+      <td class="vendor">&#10003; Ask AI</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; chat API on transcripts + KB</td>
+    </tr>
+    <tr>
+      <td class="feature">Semantic / vector search</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; pgvector + Voyage-3 (KB today)</td>
+    </tr>
+    <tr>
+      <td class="feature">Knowledge-base retrieval</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; pgvector / Qdrant, multi-source</td>
+    </tr>
+
+    <!-- BUSINESS INTELLIGENCE -->
+    <tr>
+      <td class="section-label" rowspan="7"><span class="rotated">Business Intelligence</span></td>
+      <td class="feature">Churn risk detection</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; Cox survival model</td>
+    </tr>
+    <tr>
+      <td class="feature">Buying-group role taxonomy<br>(champion / economic buyer / blocker / coach)</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; entity resolution</td>
+    </tr>
+    <tr>
+      <td class="feature">Paralinguistic / acoustic signals<br>(prosody, pace, emotion)</td>
+      <td class="vendor">&#9679; sentiment only</td>
+      <td class="vendor">&#9679; sentiment only</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; live + replay extraction</td>
+    </tr>
+    <tr>
+      <td class="feature">Buying signals / revenue intelligence</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#10003; sales-recovery framing</td>
+      <td class="vendor ours">&#10003; deal warnings &amp; commitments</td>
+    </tr>
+    <tr>
+      <td class="feature">CSAT / NPS / NES insights</td>
+      <td class="vendor">&#9679; sentiment-based</td>
+      <td class="vendor">&#10003; explicit</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#9679; sentiment-based</td>
+    </tr>
+    <tr>
+      <td class="feature">Custom KPI extraction (custom prompts)</td>
+      <td class="vendor">&#9679;</td>
+      <td class="vendor">&#10003; Custom Insights</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003;</td>
+    </tr>
+    <tr>
+      <td class="feature">AI prompt playground</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&mdash;</td>
+    </tr>
+
+    <!-- PRIVACY & COMPLIANCE -->
+    <tr>
+      <td class="section-label" rowspan="4"><span class="rotated">Privacy &amp; Compliance</span></td>
+      <td class="feature">PII redaction (text)</td>
+      <td class="vendor">&#10003; PCI / PHI / PII</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; Presidio, on by default</td>
+    </tr>
+    <tr>
+      <td class="feature">PII redaction (audio)</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&#9679; not advertised</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#9633; planned</td>
+    </tr>
+    <tr>
+      <td class="feature">Compliance retention / immutable archive</td>
+      <td class="vendor">&#10003; flagship</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#9679; call recording, retention not advertised</td>
+      <td class="vendor ours">&mdash;</td>
+    </tr>
+    <tr>
+      <td class="feature">Regulatory framework coverage<br>(GDPR / HIPAA / PCI / MiFID / Dodd-Frank)</td>
+      <td class="vendor">&#10003; flagship</td>
+      <td class="vendor">&#9679; process adherence</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#9679; redaction only</td>
+    </tr>
+
+    <!-- PLATFORM / EXTENSIBILITY -->
+    <tr>
+      <td class="section-label" rowspan="6"><span class="rotated">Platform &amp; Extensibility</span></td>
+      <td class="feature">AI outputs exposed via public REST API</td>
+      <td class="vendor">&mdash; portal-first</td>
+      <td class="vendor">&mdash; portal-first</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; API-first by design</td>
+    </tr>
+    <tr>
+      <td class="feature">White-label / multi-tenant</td>
+      <td class="vendor">&#10003; channel-led</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; native</td>
+    </tr>
+    <tr>
+      <td class="feature">Telephony-agnostic</td>
+      <td class="vendor">&#10003; Teams / Webex / Zoom / Avaya</td>
+      <td class="vendor">&#10003; CCaaS / PBX integrations</td>
+      <td class="vendor">&mdash; own VoIP only</td>
+      <td class="vendor ours">&#10003; Telnyx / SignalWire; RingCentral planned</td>
+    </tr>
+    <tr>
+      <td class="feature">Multi-LLM tiering (cost / latency)</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&#10003; Haiku / Sonnet / Opus</td>
+    </tr>
+    <tr>
+      <td class="feature">Screen recording AI</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#10003;</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor ours">&mdash;</td>
+    </tr>
+    <tr>
+      <td class="feature">CRM write-back of AI insights</td>
+      <td class="vendor">&#9679; integrations exist</td>
+      <td class="vendor">&#9679; integrations exist</td>
+      <td class="vendor">&#9679; limited integrations</td>
+      <td class="vendor ours">&#10003; HubSpot / Salesforce / Pipedrive</td>
+    </tr>
+    <tr>
+      <td class="section-label" rowspan="1"><span class="rotated">Direction</span></td>
+      <td class="feature">Agentic AI / autonomous workflows</td>
+      <td class="vendor">&#9633; AI Orchestrator (announced)</td>
+      <td class="vendor">&mdash;</td>
+      <td class="vendor">&#9633; stated future direction</td>
+      <td class="vendor ours">&#9633; planned</td>
+    </tr>
+
+  </tbody>
+</table>
+
+<p class="footnote">
+Sources: callcabinet.com/ai-driven-conversation-analytics, miarec.com/miarec-platform, simplevoip.com/simple-intelligence, simplevoip.com/how-simplyai-makes-work-easier-for-you (fetched May 2026).
+LINDA column verified against <code>backend/app/services/</code> and <code>backend/app/api/</code>; planned items are noted explicitly. RingCentral integration is on the roadmap, not yet shipped.
+SimpleVoIP&rsquo;s AI surface today is two distinct products: <strong>Simple Intelligence</strong> (call analytics, commitment tracking, opportunity detection) and <strong>SimplyAI</strong> (transcription, summary, sentiment, emailed insights). &ldquo;Simple Agent&rdquo; appears in their nav but is not a flagship product; not to be confused with the unrelated company &ldquo;Simple AI&rdquo;.
+</p>
+
+</body>
+</html>
