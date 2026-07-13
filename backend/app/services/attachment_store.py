@@ -86,6 +86,25 @@ class AttachmentStore:
             logger.exception("S3 put failed for attachment %s", filename)
             return None
 
+    def put_object(self, key: str, content_type: Optional[str], data: bytes) -> bool:
+        """Upload ``data`` at an exact key (branding assets, campaign
+        uploads — anything not tied to an interaction). Caller owns the
+        key layout and size policy."""
+        if not self.available:
+            return False
+        try:
+            self._client_lazy().put_object(
+                Bucket=self._settings.AWS_S3_BUCKET,
+                Key=key,
+                Body=data,
+                ContentType=content_type or "application/octet-stream",
+                ServerSideEncryption="AES256",
+            )
+            return True
+        except Exception:
+            logger.exception("S3 put failed for key %s", key)
+            return False
+
     def get(self, s3_key: str) -> Optional[Tuple[bytes, Optional[str]]]:
         """Return (bytes, content_type) or None if the object can't be fetched."""
         if not self.available or not s3_key:

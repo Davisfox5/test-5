@@ -453,3 +453,102 @@ def test_reply_never_demotes_advanced_prospect(db, fake_sender):
     )
     db.refresh(customer)
     assert customer.pipeline_status == "demo"  # monotonic — not demoted
+
+
+# ── HTML rendering / logo / attachments in the send path ───────────────
+
+
+class FakeStore:
+    """Stands in for the S3 attachment store at the scheduler seam."""
+
+    def __init__(self, objects=None):
+        self.objects = objects or {}
+
+    def get(self, key):
+        return self.objects.get(key)
+
+
+def test_send_passes_html_alternative_and_strips_markers(db, fake_sender):
+    tenant, campaign, (member,) = _seed(db)
+    member.draft_body = "Hi **Sam**, try *this* and _that_."
+    db.commit()
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    kw = fake_sender.calls[0]
+    # Plain part: markers stripped, footer appended.
+    assert "Hi Sam, try this and that." in kw["body"]
+    assert "**" not in kw["body"]
+    # HTML part: markers rendered, footer + no logo (none uploaded).
+    assert "<b>Sam</b>" in kw["body_html"]
+    assert "<i>this</i>" in kw["body_html"]
+    assert "<u>that</u>" in kw["body_html"]
+    assert "123 Main St" in kw["body_html"]
+    assert "cid:" not in kw["body_html"]
+    assert kw["attachments"] is None
+
+    interaction = db.execute(select(Interaction)).scalars().one()
+    assert "<b>Sam</b>" in interaction.body_html
+
+
+def test_send_embeds_tenant_logo_inline(db, fake_sender, monkeypatch):
+    tenant, campaign, (member,) = _seed(db)
+    logo_key = f"tenants/{tenant.id}/branding/ab12-logo.png"
+    tenant.branding_config = {
+        "email_logo": {
+            "s3_key": logo_key,
+            "filename": "logo.png",
+            "content_type": "image/png",
+        }
+    }
+    db.commit()
+    store = FakeStore({logo_key: (b"\x89PNGDATA", "image/png")})
+    monkeypatch.setattr(scheduler, "get_store", lambda: store)
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    kw = fake_sender.calls[0]
+    (logo,) = kw["attachments"]
+    assert logo.content_id == "tenant-logo"
+    assert logo.data == b"\x89PNGDATA"
+    assert logo.content_type == "image/png"
+    assert 'src="cid:tenant-logo"' in kw["body_html"]
+
+
+def test_send_attaches_campaign_files(db, fake_sender, monkeypatch):
+    tenant, campaign, (member,) = _seed(db)
+    key = f"tenants/{tenant.id}/outreach/ab12-deck.pdf"
+    campaign.config = {
+        **campaign.config,
+        "attachments": [
+            {"s3_key": key, "filename": "deck.pdf", "content_type": "application/pdf"}
+        ],
+    }
+    db.commit()
+    store = FakeStore({key: (b"%PDF", "application/pdf")})
+    monkeypatch.setattr(scheduler, "get_store", lambda: store)
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    (att,) = fake_sender.calls[0]["attachments"]
+    assert att.filename == "deck.pdf" and att.data == b"%PDF"
+    assert att.content_id is None
+
+    send = db.execute(select(EmailSend)).scalars().one()
+    assert send.attachments[0]["filename"] == "deck.pdf"
+
+
+def test_send_fails_member_when_attachment_unavailable(db, fake_sender, monkeypatch):
+    tenant, campaign, (member,) = _seed(db)
+    campaign.config = {
+        **campaign.config,
+        "attachments": [
+            # Wrong tenant prefix — must never be fetched or sent.
+            {"s3_key": "tenants/other/outreach/x-deck.pdf", "filename": "deck.pdf"}
+        ],
+    }
+    db.commit()
+    monkeypatch.setattr(scheduler, "get_store", lambda: FakeStore())
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    assert fake_sender.calls == []
+    db.refresh(member)
+    assert member.state == "failed"
+    assert member.halt_reason == "attachment_unavailable"

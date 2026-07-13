@@ -232,3 +232,134 @@ async def test_outlook_non_202_raises_send_error():
 def test_outlook_requires_access_token():
     with pytest.raises(EmailAuthError):
         OutlookSender(access_token="")
+
+
+# ── Inline (cid:) attachments ──────────────────────────────────────────
+
+
+def test_gmail_build_mime_inline_cid_image():
+    mime = _build_mime(
+        from_address="me@acme.com",
+        to=["sarah@foo.com"],
+        cc=[],
+        bcc=[],
+        subject="Hey",
+        body_text="plain",
+        body_html='<p>hi</p><img src="cid:tenant-logo">',
+        in_reply_to=None,
+        references=None,
+        attachments=[
+            OutboundAttachment(
+                filename="logo.png",
+                content_type="image/png",
+                data=b"\x89PNGDATA",
+                content_id="tenant-logo",
+            ),
+            OutboundAttachment(
+                filename="deck.pdf", content_type="application/pdf", data=b"%PDF"
+            ),
+        ],
+    )
+    rendered = mime.as_string()
+    # The image rides inside a multipart/related wrapper around the HTML
+    # part, referenced by Content-ID; the pdf stays a regular attachment.
+    types = [p.get_content_type() for p in mime.walk()]
+    assert "multipart/related" in types
+    assert "image/png" in types
+    assert "Content-ID: <tenant-logo>" in rendered
+    assert "deck.pdf" in rendered
+    related = next(p for p in mime.walk() if p.get_content_type() == "multipart/related")
+    assert {p.get_content_type() for p in related.get_payload()} == {
+        "text/html",
+        "image/png",
+    }
+
+
+def test_gmail_inline_without_html_degrades_to_regular_attachment():
+    mime = _build_mime(
+        from_address="me@acme.com",
+        to=["sarah@foo.com"],
+        cc=[],
+        bcc=[],
+        subject="Hey",
+        body_text="plain",
+        body_html=None,
+        in_reply_to=None,
+        references=None,
+        attachments=[
+            OutboundAttachment(
+                filename="logo.png",
+                content_type="image/png",
+                data=b"\x89PNGDATA",
+                content_id="tenant-logo",
+            )
+        ],
+    )
+    types = [p.get_content_type() for p in mime.walk()]
+    assert "multipart/related" not in types
+    assert "image/png" in types
+    assert "logo.png" in mime.as_string()
+
+
+@pytest.mark.asyncio
+async def test_outlook_inline_attachment_sets_content_id():
+    sender = OutlookSender(access_token="at")
+
+    captured = {}
+
+    async def capture(url, json=None, headers=None):
+        captured["json"] = json
+        return _http(202, {})
+
+    sender._client.post = AsyncMock(side_effect=capture)
+    await sender.send(
+        to=["s@x.com"],
+        subject="a",
+        body="plain",
+        body_html='<img src="cid:tenant-logo">',
+        attachments=[
+            OutboundAttachment(
+                filename="logo.png",
+                content_type="image/png",
+                data=b"png",
+                content_id="tenant-logo",
+            ),
+            OutboundAttachment(
+                filename="doc.pdf", content_type="application/pdf", data=b"pdf"
+            ),
+        ],
+    )
+    atts = captured["json"]["message"]["attachments"]
+    logo = next(a for a in atts if a["name"] == "logo.png")
+    assert logo["isInline"] is True
+    assert logo["contentId"] == "tenant-logo"
+    doc = next(a for a in atts if a["name"] == "doc.pdf")
+    assert "isInline" not in doc and "contentId" not in doc
+
+
+@pytest.mark.asyncio
+async def test_outlook_inline_without_html_stays_regular():
+    sender = OutlookSender(access_token="at")
+
+    captured = {}
+
+    async def capture(url, json=None, headers=None):
+        captured["json"] = json
+        return _http(202, {})
+
+    sender._client.post = AsyncMock(side_effect=capture)
+    await sender.send(
+        to=["s@x.com"],
+        subject="a",
+        body="plain",
+        attachments=[
+            OutboundAttachment(
+                filename="logo.png",
+                content_type="image/png",
+                data=b"png",
+                content_id="tenant-logo",
+            )
+        ],
+    )
+    att = captured["json"]["message"]["attachments"][0]
+    assert "isInline" not in att and "contentId" not in att

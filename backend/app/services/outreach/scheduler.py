@@ -44,6 +44,8 @@ from backend.app.models import (
     OutreachMember,
     Tenant,
 )
+from backend.app.services.attachment_store import get_store
+from backend.app.services.email.base import OutboundAttachment
 from backend.app.services.email.outbound import (
     build_sender,
     close_sender,
@@ -57,11 +59,41 @@ from backend.app.services.outreach.common import (
     in_send_window,
     local_day_bounds_utc,
     parse_config,
+    render_email_html,
+    strip_markers,
 )
 from backend.app.services.webhook_dispatcher import dispatch_sync
 from backend.app.tenant_ctx import tenant_context
 
 logger = logging.getLogger(__name__)
+
+# cid the HTML body uses to reference the tenant's inline logo.
+_LOGO_CID = "tenant-logo"
+
+
+def _load_email_logo(tenant: Tenant) -> Optional[OutboundAttachment]:
+    """The tenant's uploaded email logo as an inline attachment, or None
+    when no logo is configured / the object can't be fetched (a missing
+    logo never blocks a send — the email just goes out without it)."""
+    meta = (getattr(tenant, "branding_config", None) or {}).get("email_logo") or {}
+    key = meta.get("s3_key")
+    if not key:
+        return None
+    got = get_store().get(key)
+    if got is None:
+        logger.warning(
+            "email logo unavailable for tenant %s (key=%s); sending without it",
+            tenant.id, key,
+        )
+        return None
+    data, fetched_type = got
+    return OutboundAttachment(
+        filename=meta.get("filename") or "logo",
+        content_type=meta.get("content_type") or fetched_type,
+        data=data,
+        content_id=_LOGO_CID,
+    )
+
 
 # Member states the scheduler may still act on.
 ACTIVE_MEMBER_STATES = (
@@ -433,7 +465,52 @@ def _send_member_touch(
         session.commit()
         return False
 
-    body = (member.draft_body or "") + compose_footer(config.template)
+    # Campaign file attachments must resolve before anything sends — a
+    # promised attachment silently missing from a live email is worse
+    # than holding the member back.
+    outbound_attachments: List[OutboundAttachment] = []
+    attachment_meta: List[dict] = []
+    if config.attachments:
+        store = get_store()
+        key_prefix = f"tenants/{tenant.id}/outreach/"
+        for ref in config.attachments:
+            got = store.get(ref.s3_key) if ref.s3_key.startswith(key_prefix) else None
+            if got is None:
+                member.state = "failed"
+                member.halt_reason = "attachment_unavailable"
+                member.next_send_at = None
+                session.commit()
+                logger.warning(
+                    "outreach attachment unavailable member=%s campaign=%s key=%s",
+                    member.id, campaign.id, ref.s3_key,
+                )
+                return False
+            data, fetched_type = got
+            outbound_attachments.append(
+                OutboundAttachment(
+                    filename=ref.filename,
+                    content_type=ref.content_type or fetched_type,
+                    data=data,
+                )
+            )
+            attachment_meta.append(
+                {
+                    "kind": "upload",
+                    "s3_key": ref.s3_key,
+                    "filename": ref.filename,
+                    "content_type": ref.content_type or fetched_type,
+                    "size_bytes": len(data),
+                }
+            )
+    logo = _load_email_logo(tenant) if config.template.include_logo else None
+    if logo is not None:
+        outbound_attachments.append(logo)
+
+    draft_text = member.draft_body or ""
+    body = strip_markers(draft_text) + compose_footer(config.template)
+    body_html = render_email_html(
+        draft_text, config.template, logo_cid=(logo.content_id if logo else None)
+    )
     subject = member.draft_subject or config.template.subject
     prior_ids = list(member.thread_message_ids or [])
     in_reply_to = prior_ids[-1] if prior_ids else None
@@ -445,6 +522,7 @@ def _send_member_touch(
         to_address=contact.email,
         subject=subject,
         body=body,
+        attachments=attachment_meta,
         status="pending",
         campaign_id=campaign.id,
         customer_id=customer.id,
@@ -460,6 +538,8 @@ def _send_member_touch(
                 to=[contact.email],
                 subject=subject,
                 body=body,
+                body_html=body_html,
+                attachments=outbound_attachments or None,
                 in_reply_to=in_reply_to,
                 references=prior_ids or None,
             )
@@ -514,6 +594,7 @@ def _send_member_touch(
         title=subject,
         subject=subject,
         raw_text=body,
+        body_html=body_html,
         to_addresses=[contact.email],
         message_id=send_result.message_id,
         in_reply_to=in_reply_to,

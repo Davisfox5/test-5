@@ -36,6 +36,9 @@ it with the prospect facts — especially the "hook" (why we win against
 their current tooling). Rules:
 
 - Keep it under 140 words. Plain text. No links unless the template has one.
+- The template may use **bold**, *italic*, or _underline_ markers. Keep
+  them on the same phrases where they survive your edit; never add
+  formatting the template doesn't have.
 - Sound like a person writing one email, not a mail merge. Use at most
   ONE prospect-specific detail naturally; don't enumerate their data back
   at them.

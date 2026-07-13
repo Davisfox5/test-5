@@ -187,15 +187,37 @@ def _build_mime(
     if references:
         msg["References"] = " ".join(references)
 
+    # Inline (cid:) attachments hang off the text/html part as
+    # multipart/related children; without an HTML body there is nothing
+    # to reference them, so they degrade to regular attachments.
+    inline = [a for a in attachments or [] if a.content_id and body_html]
+    regular = [a for a in attachments or [] if a not in inline]
+
     msg.set_content(body_text or (_html_to_text(body_html) if body_html else ""))
     if body_html:
         msg.add_alternative(body_html, subtype="html")
+        if inline:
+            html_part = msg.get_payload()[-1]
+            for att in inline:
+                maintype, subtype = _split_content_type(att.content_type)
+                html_part.add_related(
+                    att.data,
+                    maintype=maintype,
+                    subtype=subtype,
+                    cid=f"<{att.content_id}>",
+                    filename=att.filename,
+                )
 
-    for att in attachments or []:
-        maintype, _, subtype = (att.content_type or "application/octet-stream").partition("/")
-        if not subtype:
-            maintype, subtype = "application", "octet-stream"
+    for att in regular:
+        maintype, subtype = _split_content_type(att.content_type)
         msg.add_attachment(
             att.data, maintype=maintype, subtype=subtype, filename=att.filename
         )
     return msg
+
+
+def _split_content_type(content_type: Optional[str]) -> tuple:
+    maintype, _, subtype = (content_type or "application/octet-stream").partition("/")
+    if not subtype:
+        return "application", "octet-stream"
+    return maintype, subtype
