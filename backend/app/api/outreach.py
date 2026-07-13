@@ -29,6 +29,7 @@ Campaigns
 
 Uploads
 - POST   /outreach/uploads     — store a campaign attachment, returns the config ref
+- GET    /outreach/email-logo  — current logo metadata + presigned preview URL
 - POST   /outreach/email-logo  — upload/replace the tenant logo embedded in sends
 - DELETE /outreach/email-logo  — remove the logo
 """
@@ -1396,7 +1397,26 @@ async def upload_outreach_attachment(
 class EmailLogoOut(BaseModel):
     filename: str
     content_type: str
-    size_bytes: int
+    size_bytes: Optional[int] = None
+    # Short-lived presigned URL so the UI can render a preview.
+    url: Optional[str] = None
+
+
+@router.get("/outreach/email-logo", response_model=EmailLogoOut)
+async def get_email_logo(
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    from backend.app.services.attachment_store import get_store
+
+    meta = (getattr(tenant, "branding_config", None) or {}).get("email_logo")
+    if not meta:
+        raise HTTPException(status_code=404, detail="No email logo uploaded")
+    return EmailLogoOut(
+        filename=meta.get("filename") or "logo",
+        content_type=meta.get("content_type") or "application/octet-stream",
+        size_bytes=meta.get("size_bytes"),
+        url=get_store().presigned_url(meta.get("s3_key") or ""),
+    )
 
 
 @router.post("/outreach/email-logo", response_model=EmailLogoOut, status_code=201)
@@ -1446,6 +1466,7 @@ async def upload_email_logo(
         filename=cfg["email_logo"]["filename"],
         content_type=content_type,
         size_bytes=len(data),
+        url=store.presigned_url(key),
     )
 
 
