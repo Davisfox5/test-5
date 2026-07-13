@@ -472,32 +472,38 @@ refit is traceable to the events that produced it via
 
 ## 7. Implementation phases
 
-**Phase A (this PR):**
+> **Status as of 2026-05-06.** Phase A is fully landed. Phase B is largely
+> landed (weak supervision, calibration, proxy outcomes, correction events).
+> Phase C is partially landed (Cox churn model, IRT, paralinguistics suite
+> shipped; mixed-effects leaderboards and PSI dashboards still open).
+> Per-item status noted inline below.
+
+**Phase A (this PR) — ✅ LANDED:**
 - Architecture doc (this file).
 - Migration adding `interaction_features`, `delta_reports`,
   `client_profiles`, `agent_profiles`, `manager_profiles`,
   `business_profiles`.
 - Deterministic-extractor expansion with tests.
 - Statistics library.
-- Score engine framework with factor decomposition.
-- Model router + prompt cache helpers + batch API wrapper.
+- Score engine framework with factor decomposition. (`score_engine.py`)
+- Model router + prompt cache helpers + batch API wrapper. (`model_router.py`)
 - Orchestrator service skeleton with three cadences wired to Celery
-  Beat.
+  Beat. (`orchestrator.py`)
 - Pipeline refactor: features → feature store → delta report enqueue.
 - Presentation endpoints returning `{score, confidence, top_factors,
   recommendations}`.
 
-**Phase B (next PR):**
-- BERTopic pipeline on stored embeddings.
+**Phase B — ✅ LANDED (except BERTopic):**
+- BERTopic pipeline on stored embeddings. — ⏳ deferred
 - Snorkel weak-supervision labelers for cancel-intent, commitment,
-  objection resolution.
-- Proxy-outcome ingestion from CRM integrations.
-- Platt/isotonic calibration jobs.
-- Active-learning correction UX on the web app.
+  objection resolution. — ✅ `weak_supervision.py`
+- Proxy-outcome ingestion from CRM integrations. — ✅ outcomes API + CRM signal fusion
+- Platt/isotonic calibration jobs. — ✅ `calibration.py`
+- Active-learning correction UX on the web app. — ✅ `corrections.py` API + corpora
 
-**Phase C:**
-- Cox survival model for churn, trained on observed cancellations.
-- Mixed-effects leaderboards.
-- IRT rubric calibration with accumulated scorecard history.
-- Vintage cohort + PSI dashboards.
-- Paralinguistic features from retained audio.
+**Phase C — 🟡 PARTIAL:**
+- Cox survival model for churn, trained on observed cancellations. — ✅ `churn_model.py`
+- Mixed-effects leaderboards. — ⏳ open
+- IRT rubric calibration with accumulated scorecard history. — ✅ `irt.py`
+- Vintage cohort + PSI dashboards. — ⏳ open
+- Paralinguistic features from retained audio. — ✅ `paralinguistics.py` + emotion + live + replay + corpus

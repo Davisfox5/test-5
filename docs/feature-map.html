@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LINDA — Feature Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --ink: #d4d4d4;
+    --dim: #6b6b6b;
+    --rule: #2a2a2a;
+
+    --cyan-base: #0891b2;
+    --cyan-bright: #22d3ee;
+    --violet-base: #7c3aed;
+    --violet-bright: #a78bfa;
+    --emerald-base: #059669;
+    --emerald-bright: #34d399;
+    --amber-base: #d97706;
+    --amber-bright: #fbbf24;
+    --rose-base: #9f1239;
+    --rose-bright: #fb7185;
+
+    --edge-base: #4a4a4a;
+    --edge-hover: #e5e5e5;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  header { margin-bottom: 24px; }
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin: 0 0 6px;
+  }
+  h1 .sep { color: var(--dim); margin: 0 10px; }
+  p.sub {
+    color: var(--dim);
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0 0 4px;
+    max-width: 640px;
+  }
+  p.sub b { color: var(--ink); font-weight: 500; }
+
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin: 22px 0 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    border: 1.5px solid currentColor;
+  }
+  .legend .ing  { color: var(--cyan-base); }
+  .legend .proc { color: var(--violet-base); }
+  .legend .data { color: var(--emerald-base); }
+  .legend .out  { color: var(--amber-base); }
+  .legend .gov  { color: var(--rose-base); }
+
+  /* ============= SVG node + edge styling ============= */
+
+  svg.map { display: block; width: 100%; height: auto; margin-top: 18px; }
+
+  .node { cursor: help; }
+  .node circle {
+    fill: transparent;
+    stroke-width: 1.4;
+    transition: stroke 0.18s ease, stroke-width 0.18s ease, filter 0.22s ease;
+  }
+  .node text {
+    fill: var(--ink);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    pointer-events: none;
+    transition: fill 0.18s ease;
+  }
+  .node text.sub {
+    fill: var(--dim);
+    font-size: 10.5px;
+    font-weight: 400;
+  }
+
+  .node.ing  circle { stroke: var(--cyan-base); }
+  .node.proc circle { stroke: var(--violet-base); }
+  .node.data circle { stroke: var(--emerald-base); }
+  .node.out  circle { stroke: var(--amber-base); }
+
+  .node.ing:hover  circle { stroke: var(--cyan-bright);    stroke-width: 2.4; filter: drop-shadow(0 0 10px var(--cyan-bright)); }
+  .node.proc:hover circle { stroke: var(--violet-bright);  stroke-width: 2.4; filter: drop-shadow(0 0 10px var(--violet-bright)); }
+  .node.data:hover circle { stroke: var(--emerald-bright); stroke-width: 2.4; filter: drop-shadow(0 0 10px var(--emerald-bright)); }
+  .node.out:hover  circle { stroke: var(--amber-bright);   stroke-width: 2.4; filter: drop-shadow(0 0 10px var(--amber-bright)); }
+
+  .node:hover text     { fill: #ffffff; }
+  .node:hover text.sub { fill: #cbcbcb; }
+
+  /* edges */
+  .edge-group { cursor: help; }
+  .edge-group .edge {
+    fill: none;
+    stroke: var(--edge-base);
+    stroke-width: 0.9;
+    transition: stroke 0.18s ease, stroke-width 0.18s ease, filter 0.22s ease;
+  }
+  .edge-group:hover .edge {
+    stroke: var(--edge-hover);
+    stroke-width: 1.7;
+    filter: drop-shadow(0 0 6px #93c5fd);
+  }
+  .edge-group:hover marker path { fill: var(--edge-hover); }
+
+  /* governing frame (Billing & Tenancy) */
+  .frame { cursor: help; }
+  .frame rect.outline {
+    fill: none;
+    stroke: var(--rose-base);
+    stroke-width: 1.2;
+    stroke-dasharray: 7 6;
+    opacity: 0.55;
+    transition: stroke 0.2s ease, opacity 0.2s ease, filter 0.2s ease;
+  }
+  .frame:hover rect.outline {
+    stroke: var(--rose-bright);
+    opacity: 1;
+    filter: drop-shadow(0 0 10px var(--rose-bright));
+  }
+  .frame text.frame-label {
+    fill: var(--rose-base);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    pointer-events: none;
+    opacity: 0.7;
+    transition: fill 0.2s ease, opacity 0.2s ease;
+  }
+  .frame:hover text.frame-label { fill: var(--rose-bright); opacity: 1; }
+
+  /* hit areas (transparent, wider, for easier hover targeting) */
+  .hit { stroke: transparent; fill: none; }
+
+  footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    color: var(--dim);
+    font-size: 11.5px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+</style>
+</head>
+<body>
+<p style="max-width:72rem;margin:0.75rem auto 0;padding:0.5rem 1rem;border:1px solid #8a6d1a;border-radius:6px;font-size:0.85rem;opacity:0.85">&#9888; Snapshot from <strong>2026-05-06</strong> (Phase 5B era), recovered from uncommitted work. The product has moved since; for current architecture see <code>ARCHITECTURE.md</code>.</p>
+
+<div class="wrap">
+
+<header>
+  <h1>LINDA <span class="sep">/</span> feature map <span class="sep">/</span> v1.1</h1>
+  <p class="sub">Original twelve features below. Hover any circle for what it does. Hover any line for the mechanism that links the two features. The dashed perimeter is <b>Billing, Tenancy &amp; Access Control</b> — it wraps every other feature. <b>Phase 4 / 5B additions</b> are listed in the addendum panel under the map (not yet wired into the SVG topology).</p>
+
+  <div class="legend">
+    <span class="ing"><i></i>Ingestion / capture</span>
+    <span class="proc"><i></i>Processing / inference</span>
+    <span class="data"><i></i>Data store / context</span>
+    <span class="out"><i></i>Output / consumer</span>
+    <span class="gov"><i></i>Governance</span>
+  </div>
+</header>
+
+<svg class="map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 680">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7a7a7a"/>
+    </marker>
+  </defs>
+
+  <!-- ========================================================== -->
+  <!-- Governing frame: Billing, Tenancy & Access Control          -->
+  <!-- ========================================================== -->
+  <g class="frame">
+    <title>Billing, Tenancy &amp; Access Control — Stripe webhook surface maps price_id → tier; tier rules apply seat limits and feature gates non-retroactively. JWT + RBAC enforce tenant scoping on every request and every Celery task. This surface wraps every other feature on the map.</title>
+    <rect class="outline" x="15" y="55" width="950" height="605" rx="14"/>
+    <text class="frame-label" x="32" y="46">BILLING · TENANCY · ACCESS CONTROL</text>
+    <rect class="hit" x="15" y="55" width="950" height="605" rx="14" pointer-events="all" stroke-width="14"/>
+  </g>
+
+  <!-- ========================================================== -->
+  <!-- Edges (drawn first so circles render on top)                -->
+  <!-- ========================================================== -->
+
+  <!-- 1. Inbound Call Capture → Speech Transcription -->
+  <g class="edge-group">
+    <title>Streaming audio handoff to ASR — live Deepgram WebSocket session for real-time partials, plus async upload of the full recording for offline Whisper.</title>
+    <line class="hit" x1="180" y1="140" x2="320" y2="140" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="180" y1="140" x2="320" y2="140" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 2. Inbound Call Capture → Live Coaching -->
+  <g class="edge-group">
+    <title>WebSocket transcript stream — partial Deepgram results pushed to the live-coaching channel as they arrive.</title>
+    <line class="hit" x1="130" y1="190" x2="130" y2="290" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="130" y1="190" x2="130" y2="290" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 3. Inbound Call Capture → Customer Directory (curved) -->
+  <g class="edge-group">
+    <title>Caller identity resolved against directory — phone number is looked up; a Contact is upserted on first sight and rolled up onto the parent Customer.</title>
+    <path class="hit" d="M 176 159 Q 370 280 564 321" stroke-width="16" pointer-events="stroke"/>
+    <path class="edge" d="M 176 159 Q 370 280 564 321" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 4. Speech Transcription → AI Conversation Analysis -->
+  <g class="edge-group">
+    <title>Celery task chain — process_text_interaction enqueues Claude analysis once the transcript is finalized.</title>
+    <line class="hit" x1="420" y1="140" x2="560" y2="140" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="420" y1="140" x2="560" y2="140" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 5. Knowledge Base → AI Conversation Analysis -->
+  <g class="edge-group">
+    <title>Brief injection into Claude prompt — customer/tenant briefs assembled from KB embeddings are inlined into the analysis prompt.</title>
+    <line class="hit" x1="408" y1="308" x2="572" y2="172" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="408" y1="308" x2="572" y2="172" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 6. Knowledge Base → Live Coaching -->
+  <g class="edge-group">
+    <title>Context retrieval — vector search over tenant KB chunks supplies the in-call coach with the right talking points.</title>
+    <line class="hit" x1="320" y1="340" x2="180" y2="340" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="320" y1="340" x2="180" y2="340" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 7. Customer Directory → AI Conversation Analysis -->
+  <g class="edge-group">
+    <title>Customer brief context — per-contact metadata, sentiment trend, and prior-interaction summary are passed into analysis.</title>
+    <line class="hit" x1="610" y1="290" x2="610" y2="190" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="610" y1="290" x2="610" y2="190" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 8. Customer Directory → Email Send -->
+  <g class="edge-group">
+    <title>Recipient resolution — email address pulled from the Contact record (FK lookup) before the draft is rendered.</title>
+    <line class="hit" x1="572" y1="372" x2="408" y2="508" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="572" y1="372" x2="408" y2="508" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 9. AI Analysis → Performance Profiles -->
+  <g class="edge-group">
+    <title>Real-time delta reports — one Sonnet-generated delta per interaction per touched entity, consumed daily by Opus to synthesize new profile versions.</title>
+    <line class="hit" x1="660" y1="140" x2="800" y2="140" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="660" y1="140" x2="800" y2="140" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 10. AI Analysis → Email Send (curved) -->
+  <g class="edge-group">
+    <title>Suggested draft attached to interaction — follow-up email body is generated alongside insights and stored on Interaction.insights.follow_up_email_draft.</title>
+    <path class="hit" d="M 584 183 Q 450 340 396 497" stroke-width="16" pointer-events="stroke"/>
+    <path class="edge" d="M 584 183 Q 450 340 396 497" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 11. AI Analysis → Analytics -->
+  <g class="edge-group">
+    <title>Metric source — the insights JSON is the canonical input for sentiment, topic, competitive-mention, and feedback dashboards.</title>
+    <line class="hit" x1="648" y1="172" x2="812" y2="308" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="648" y1="172" x2="812" y2="308" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 12. AI Analysis → CRM Sync (curved right) -->
+  <g class="edge-group">
+    <title>Writeback to CRM fields — selected insights and churn-risk scores are pushed back to Salesforce/HubSpot/Pipedrive opportunity fields.</title>
+    <path class="hit" d="M 636 183 Q 820 340 824 497" stroke-width="16" pointer-events="stroke"/>
+    <path class="edge" d="M 636 183 Q 820 340 824 497" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 13. Outcomes → Performance Profiles (curved left) -->
+  <g class="edge-group">
+    <title>Soft-label calibration — outcome events feed the weekly weight refit of scorer models, closing the loop on prediction quality.</title>
+    <path class="hit" d="M 636 497 Q 660 340 824 183" stroke-width="16" pointer-events="stroke"/>
+    <path class="edge" d="M 636 497 Q 660 340 824 183" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 14. Outcomes → Analytics -->
+  <g class="edge-group">
+    <title>Outcome event surfacing — outcomes appear directly on correlation views (e.g. sentiment vs. churned).</title>
+    <line class="hit" x1="648" y1="508" x2="812" y2="372" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="648" y1="508" x2="812" y2="372" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 15. Email Send → Outcomes -->
+  <g class="edge-group">
+    <title>Reply-tracking webhook — sends are tracked downstream; replies and bounces are emitted as outcome events back into the loop.</title>
+    <line class="hit" x1="420" y1="540" x2="560" y2="540" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="420" y1="540" x2="560" y2="540" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 16. Performance Profiles → Analytics -->
+  <g class="edge-group">
+    <title>Aggregation queries — IRT scores and profile factors are aggregated tenant-wide to drive the team and customer-trend dashboards.</title>
+    <line class="hit" x1="850" y1="190" x2="850" y2="290" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="850" y1="190" x2="850" y2="290" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- 17. CRM Sync → Customer Directory -->
+  <g class="edge-group">
+    <title>Bi-directional upsert — Salesforce/HubSpot/Pipedrive contacts and companies are pulled in and merged into the Contact directory.</title>
+    <line class="hit" x1="812" y1="508" x2="648" y2="372" stroke-width="16" pointer-events="stroke"/>
+    <line class="edge" x1="812" y1="508" x2="648" y2="372" marker-end="url(#arrow)"/>
+  </g>
+
+
+  <!-- ========================================================== -->
+  <!-- Nodes                                                       -->
+  <!-- ========================================================== -->
+
+  <!-- Row 1 -->
+  <g class="node ing">
+    <title>Inbound Call Capture &amp; Routing — Validates Twilio, SignalWire, and Telnyx webhook signatures, opens a Media-Streams WebSocket for live audio, persists Interaction + CallRecording rows, and dispatches into the live-coaching channel.</title>
+    <circle cx="130" cy="140" r="50"/>
+    <text x="130" y="208" text-anchor="middle">Inbound Call</text>
+    <text x="130" y="223" text-anchor="middle" class="sub">Capture &amp; Routing</text>
+  </g>
+
+  <g class="node proc">
+    <title>Speech-to-Text Transcription Pipeline — Celery workers run Deepgram or Whisper ASR with diarization, producing speaker-labeled transcript segments with confidence scores ready for downstream analysis.</title>
+    <circle cx="370" cy="140" r="50"/>
+    <text x="370" y="208" text-anchor="middle">Speech-to-Text</text>
+    <text x="370" y="223" text-anchor="middle" class="sub">Transcription Pipeline</text>
+  </g>
+
+  <g class="node proc">
+    <title>AI-Driven Conversation Analysis — Claude (Sonnet/Haiku) extracts sentiment, topics, action items, coaching points, competitive mentions, and follow-up email drafts; writes the JSON to Interaction.insights for every other feature to consume.</title>
+    <circle cx="610" cy="140" r="50"/>
+    <text x="610" y="208" text-anchor="middle">AI-Driven Conversation</text>
+    <text x="610" y="223" text-anchor="middle" class="sub">Analysis</text>
+  </g>
+
+  <g class="node proc">
+    <title>Performance Profiles &amp; Predictive Scoring — Client/Agent/Manager/Business profile tree with IRT-based scoring, weekly Opus synthesis of delta reports, and a per-tenant churn classifier retrained from outcome feedback.</title>
+    <circle cx="850" cy="140" r="50"/>
+    <text x="850" y="208" text-anchor="middle">Performance Profiles</text>
+    <text x="850" y="223" text-anchor="middle" class="sub">&amp; Predictive Scoring</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g class="node out">
+    <title>Real-Time In-Call Coaching — Streams Haiku-generated suggestions to the call-taker over a WebSocket, using partial Deepgram transcripts and KB context to surface objection handling, compliance prompts, and ROI talking points before the call ends.</title>
+    <circle cx="130" cy="340" r="50"/>
+    <text x="130" y="408" text-anchor="middle">Real-Time</text>
+    <text x="130" y="423" text-anchor="middle" class="sub">In-Call Coaching</text>
+  </g>
+
+  <g class="node data">
+    <title>Tenant Knowledge Base &amp; Embeddings — Multi-tenant doc store with Voyage embeddings; ingests PDFs, URLs, and free-form text; assembles customer/tenant briefs that get injected into Claude prompts at analysis time without exposing raw transcripts.</title>
+    <circle cx="370" cy="340" r="50"/>
+    <text x="370" y="408" text-anchor="middle">Tenant Knowledge Base</text>
+    <text x="370" y="423" text-anchor="middle" class="sub">&amp; Embeddings</text>
+  </g>
+
+  <g class="node data">
+    <title>Unified Customer &amp; Contact Directory — Identity-resolves voice, email, and campaign events to a single person/company; tracks per-contact sentiment trend, last-seen timestamp, and interaction count; serves as the source of truth for who is who.</title>
+    <circle cx="610" cy="340" r="50"/>
+    <text x="610" y="408" text-anchor="middle">Unified Customer</text>
+    <text x="610" y="423" text-anchor="middle" class="sub">&amp; Contact Directory</text>
+  </g>
+
+  <g class="node out">
+    <title>Multi-Tenant Analytics Dashboards — Tenant-scoped dashboards covering business health, team performance, customer trends, competitive mentions, product feedback themes, vocabulary tracking, and AI-evaluation health.</title>
+    <circle cx="850" cy="340" r="50"/>
+    <text x="850" y="408" text-anchor="middle">Multi-Tenant Analytics</text>
+    <text x="850" y="423" text-anchor="middle" class="sub">Dashboards</text>
+  </g>
+
+  <!-- Row 3 -->
+  <g class="node out">
+    <title>AI-Drafted Follow-up Email Send — Renders the AI-suggested follow-up draft for the user to review, edit, and send via their Gmail or Outlook OAuth tokens; logs every send to EmailSend for audit and later outcome correlation.</title>
+    <circle cx="370" cy="540" r="50"/>
+    <text x="370" y="608" text-anchor="middle">AI-Drafted Follow-up</text>
+    <text x="370" y="623" text-anchor="middle" class="sub">Email Send</text>
+  </g>
+
+  <g class="node ing">
+    <title>Proxy Outcome Event Capture — HMAC-signed webhook surface for proxy-outcome events (replied, churned, renewed, no-reply-72h). Idempotent on event_id, dead-letters on validation failure, feeds the calibration loop.</title>
+    <circle cx="610" cy="540" r="50"/>
+    <text x="610" y="608" text-anchor="middle">Proxy Outcome</text>
+    <text x="610" y="623" text-anchor="middle" class="sub">Event Capture</text>
+  </g>
+
+  <g class="node ing">
+    <title>Bi-Directional CRM Synchronization — Salesforce, HubSpot, and Pipedrive integration. Pulls contacts and companies in, writes insights and churn-risk scores back to CRM fields. Logs every run to CrmSyncLog.</title>
+    <circle cx="850" cy="540" r="50"/>
+    <text x="850" y="608" text-anchor="middle">Bi-Directional CRM</text>
+    <text x="850" y="623" text-anchor="middle" class="sub">Synchronization</text>
+  </g>
+
+</svg>
+
+<section style="margin-top:36px;padding:20px 22px;border:1px dashed #2a2a2a;border-radius:10px;">
+  <h2 style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#d4d4d4;margin:0 0 14px;">addendum &middot; phase 4 / 5b additions</h2>
+  <p style="color:#6b6b6b;font-size:12.5px;line-height:1.6;margin:0 0 16px;">Shipped after the v1 topology was drawn. Each item is wired into the existing pipeline; awaiting a v2 redraw.</p>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;font-size:12.5px;line-height:1.5;color:#d4d4d4;">
+    <div style="padding:12px 14px;border-left:2px solid #7c3aed;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a78bfa;letter-spacing:0.08em;margin-bottom:6px;">PROC &middot; PHASE 5B-1/6</div>
+      <strong>Action Items v2</strong><br>
+      <span style="color:#9a9a9a;">State machine + category taxonomy (follow-up, commitment, deal-advance, escalation). Standalone API at <code>/api/v1/action-items</code>.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #7c3aed;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a78bfa;letter-spacing:0.08em;margin-bottom:6px;">PROC &middot; PHASE 4A/4B</div>
+      <strong>Deal Warnings &amp; Commitments</strong><br>
+      <span style="color:#9a9a9a;">Buying-group entity resolution (champion, economic buyer, blocker, coach), risk signals, commitment extraction. <code>warnings_commitments.py</code>.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #7c3aed;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a78bfa;letter-spacing:0.08em;margin-bottom:6px;">PROC</div>
+      <strong>Auto-QA Scorecards</strong><br>
+      <span style="color:#9a9a9a;">Haiku-driven scoring against weighted multi-criteria templates. Standalone API at <code>/api/v1/scorecards</code>.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #7c3aed;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a78bfa;letter-spacing:0.08em;margin-bottom:6px;">PROC</div>
+      <strong>Paralinguistic Pipeline</strong><br>
+      <span style="color:#9a9a9a;">Acoustic signals: prosody, pace, emotion. Live + replay extraction (<code>paralinguistics_live.py</code>, <code>paralinguistics_replay.py</code>, emotion, corpus).</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #0891b2;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#22d3ee;letter-spacing:0.08em;margin-bottom:6px;">ING &middot; PHASE 5B-2..5</div>
+      <strong>Meeting Scheduler</strong><br>
+      <span style="color:#9a9a9a;">Native providers: Google Calendar, Zoom, Microsoft Graph (Teams), Cal.com. Creates events with conferencing links.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #0891b2;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#22d3ee;letter-spacing:0.08em;margin-bottom:6px;">ING</div>
+      <strong>Email Ingest &amp; Classification</strong><br>
+      <span style="color:#9a9a9a;">Inbound side of the email channel. Gmail Pub/Sub push + Microsoft Graph incremental sync, Haiku classifier, Sonnet reply generator.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #059669;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#34d399;letter-spacing:0.08em;margin-bottom:6px;">DATA</div>
+      <strong>Full-Text Transcript Search</strong><br>
+      <span style="color:#9a9a9a;">Elasticsearch index over interaction transcripts. Standalone API at <code>/api/v1/search</code>.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #d97706;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#fbbf24;letter-spacing:0.08em;margin-bottom:6px;">OUT</div>
+      <strong>Chat / Ask AI</strong><br>
+      <span style="color:#9a9a9a;">Async chat over transcripts + KB context with conversation history. <code>/api/v1/chat</code>.</span>
+    </div>
+
+    <div style="padding:12px 14px;border-left:2px solid #d97706;background:#0e0e0e;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#fbbf24;letter-spacing:0.08em;margin-bottom:6px;">OUT</div>
+      <strong>Multi-Channel Notifications</strong><br>
+      <span style="color:#9a9a9a;">Slack incoming-webhook + Microsoft Teams Adaptive Cards + in-app + outbound webhook fan-out (HMAC-signed, retry-with-DLQ).</span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Hover any element for details. Background grid intentionally absent — focus stays on the topology. v1.1 adds an addendum panel for Phase 4 / 5B features pending v2 redraw.
+</footer>
+
+</div>
+</body>
+</html>
