@@ -6,6 +6,7 @@ shared by the API router (async) and the Celery scheduler/ingest hooks (sync).
 
 from __future__ import annotations
 
+import html as html_mod
 import re
 from datetime import datetime, time, timedelta, timezone
 from typing import List, Optional, Tuple
@@ -64,6 +65,21 @@ class OutreachStep(BaseModel):
     guidance: Optional[str] = None
 
 
+# Email-safe font stacks. Keys are what campaign config stores; values are
+# the CSS stacks rendered into the HTML body. Whitelisted so config can
+# never inject arbitrary CSS.
+EMAIL_FONTS = {
+    "arial": "Arial, Helvetica, sans-serif",
+    "helvetica": "Helvetica, Arial, sans-serif",
+    "georgia": "Georgia, 'Times New Roman', serif",
+    "times": "'Times New Roman', Times, serif",
+    "verdana": "Verdana, Geneva, sans-serif",
+    "tahoma": "Tahoma, Geneva, sans-serif",
+    "trebuchet": "'Trebuchet MS', Helvetica, sans-serif",
+    "courier": "'Courier New', Courier, monospace",
+}
+
+
 class OutreachTemplate(BaseModel):
     """Base template + the CAN-SPAM identity block.
 
@@ -72,6 +88,10 @@ class OutreachTemplate(BaseModel):
     and are substituted before the LLM sees the text. The identity fields
     are required before a campaign can activate — they render into the
     footer of every send.
+
+    Body text supports lightweight formatting markers — ``**bold**``,
+    ``*italic*``, ``_underline_`` — rendered into the HTML part at send
+    time and stripped from the plain-text part.
     """
 
     subject: str = Field(..., min_length=1, max_length=400)
@@ -80,6 +100,33 @@ class OutreachTemplate(BaseModel):
     sender_business: str = Field(..., min_length=1, max_length=200)
     # CAN-SPAM: a valid physical postal address of the sender.
     physical_address: str = Field(..., min_length=1, max_length=500)
+    # HTML styling. None → the recipient client's defaults.
+    font_family: Optional[str] = None
+    font_size_px: Optional[int] = Field(None, ge=10, le=24)
+    # Embed the tenant's uploaded email logo (if any) at the bottom.
+    include_logo: bool = True
+
+    @field_validator("font_family")
+    @classmethod
+    def _font_known(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        key = v.strip().lower()
+        if key not in EMAIL_FONTS:
+            raise ValueError(
+                "font_family must be one of: " + ", ".join(sorted(EMAIL_FONTS))
+            )
+        return key
+
+
+class OutreachAttachment(BaseModel):
+    """Reference to a file uploaded via ``POST /outreach/uploads`` that is
+    attached to every send of the campaign."""
+
+    s3_key: str = Field(..., min_length=1, max_length=512)
+    filename: str = Field(..., min_length=1, max_length=255)
+    content_type: Optional[str] = Field(None, max_length=255)
+    size_bytes: Optional[int] = Field(None, ge=0)
 
 
 class SendWindow(BaseModel):
@@ -126,6 +173,8 @@ class OutreachConfig(BaseModel):
     mode: str = "review"
     # Preferred provider; None → google-then-microsoft fallback.
     provider: Optional[str] = None
+    # Files attached to every send (uploaded via POST /outreach/uploads).
+    attachments: List[OutreachAttachment] = Field(default_factory=list, max_length=5)
 
     @field_validator("mode")
     @classmethod
@@ -272,6 +321,76 @@ def compose_footer(template: OutreachTemplate) -> str:
         business=template.sender_business,
         address=template.physical_address,
     )
+
+
+# ── Lightweight formatting → HTML ───────────────────────────────────────
+#
+# The body supports three inline markers: **bold**, *italic*, _underline_.
+# The HTML part renders them; the plain-text part strips them. Nothing
+# else in the body is treated as markup — everything is HTML-escaped
+# before the markers are applied, so config/LLM text can never inject
+# tags.
+
+# Content must start and end on non-space (so "2 * 3 * 4" and stray
+# underscores never read as formatting).
+_BOLD_RE = re.compile(r"\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)")
+_UNDERLINE_RE = re.compile(r"(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])")
+
+
+def strip_markers(text: str) -> str:
+    """Formatting markers removed — the plain-text alternative body."""
+    out = _BOLD_RE.sub(r"\1", text or "")
+    out = _ITALIC_RE.sub(r"\1", out)
+    return _UNDERLINE_RE.sub(r"\1", out)
+
+
+def _markers_to_html(escaped: str) -> str:
+    out = _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    out = _ITALIC_RE.sub(r"<i>\1</i>", out)
+    return _UNDERLINE_RE.sub(r"<u>\1</u>", out)
+
+
+def _paragraphs_html(text: str) -> str:
+    blocks = re.split(r"\n\s*\n", text.strip()) if text.strip() else []
+    rendered = []
+    for block in blocks:
+        inner = _markers_to_html(html_mod.escape(block)).replace("\n", "<br>")
+        rendered.append(f'<p style="margin:0 0 1em 0;">{inner}</p>')
+    return "".join(rendered)
+
+
+def render_email_html(
+    body_text: str,
+    template: OutreachTemplate,
+    logo_cid: Optional[str] = None,
+) -> str:
+    """The HTML alternative for one outreach send: the (marker-formatted)
+    body, the tenant logo when provided, and the CAN-SPAM footer —
+    mirroring exactly what ``compose_footer`` appends to the text part."""
+    style = "line-height:1.45;"
+    if template.font_family:
+        style += f"font-family:{EMAIL_FONTS[template.font_family]};"
+    if template.font_size_px:
+        style += f"font-size:{template.font_size_px}px;"
+
+    parts = [f'<div style="{style}">', _paragraphs_html(body_text)]
+    if logo_cid:
+        parts.append(
+            '<div style="margin-top:16px;">'
+            f'<img src="cid:{logo_cid}" alt="{html_mod.escape(template.sender_business)}" '
+            'style="max-height:64px;max-width:220px;border:0;"></div>'
+        )
+    parts.append(
+        '<div style="margin-top:24px;font-size:12px;color:#666666;">--<br>'
+        f"{html_mod.escape(template.sender_name)} &middot; "
+        f"{html_mod.escape(template.sender_business)}<br>"
+        f"{html_mod.escape(template.physical_address)}<br>"
+        "If you&#x27;d rather not hear from me, just reply &quot;unsubscribe&quot; "
+        "and I won&#x27;t email you again.</div>"
+    )
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def render_placeholders(text: str, values: dict) -> str:

@@ -26,11 +26,19 @@ class EmailSendError(EmailError):
 
 @dataclass
 class OutboundAttachment:
-    """File to attach to an outgoing email."""
+    """File to attach to an outgoing email.
+
+    When ``content_id`` is set the file is an *inline* attachment the
+    HTML body references as ``<img src="cid:{content_id}">`` (logos,
+    signature images); providers mark it inline instead of listing it as
+    a downloadable file. Requires ``body_html`` to be sent — with a
+    plain-text-only message it degrades to a regular attachment.
+    """
 
     filename: str
     content_type: Optional[str]
     data: bytes
+    content_id: Optional[str] = None
 
 
 @dataclass

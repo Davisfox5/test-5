@@ -96,15 +96,19 @@ class OutlookSender:
                 {"emailAddress": {"address": a}} for a in bcc
             ]
         if attachments:
-            message["attachments"] = [
-                {
+            message["attachments"] = []
+            for att in attachments:
+                entry: dict[str, Any] = {
                     "@odata.type": "#microsoft.graph.fileAttachment",
                     "name": att.filename,
                     "contentType": att.content_type or "application/octet-stream",
                     "contentBytes": base64.b64encode(att.data).decode("ascii"),
                 }
-                for att in attachments
-            ]
+                # Inline (cid:) image referenced from the HTML body.
+                if att.content_id and body_html:
+                    entry["contentId"] = att.content_id
+                    entry["isInline"] = True
+                message["attachments"].append(entry)
 
         payload = {"message": message, "saveToSentItems": True}
 

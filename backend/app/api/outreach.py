@@ -26,6 +26,11 @@ Campaigns
 - PATCH /outreach/members/{member_id}      — edit / approve / reject one draft
 - POST  /outreach/campaigns/{id}/activate  — validate + go live
 - POST  /outreach/campaigns/{id}/pause     — stop sending (resume via activate)
+
+Uploads
+- POST   /outreach/uploads     — store a campaign attachment, returns the config ref
+- POST   /outreach/email-logo  — upload/replace the tenant logo embedded in sends
+- DELETE /outreach/email-logo  — remove the logo
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, EmailStr, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -353,6 +358,18 @@ def _validated_config(raw: Dict[str, Any]) -> dict:
         return parse_config(raw).model_dump(mode="json")
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors())
+
+
+def _check_upload_keys(config: dict, tenant_id: uuid.UUID) -> None:
+    """Campaign attachments may only reference this tenant's own uploads
+    (the send engine enforces the same prefix as defense in depth)."""
+    prefix = f"tenants/{tenant_id}/outreach/"
+    for ref in config.get("attachments") or []:
+        if not str(ref.get("s3_key") or "").startswith(prefix):
+            raise HTTPException(
+                status_code=422,
+                detail="config.attachments entries must come from POST /outreach/uploads",
+            )
 
 
 async def _member_states(db: AsyncSession, campaign_id: uuid.UUID) -> Dict[str, int]:
@@ -1000,6 +1017,7 @@ async def create_outreach_campaign(
     which are required, not optional.
     """
     config = _validated_config(body.config)
+    _check_upload_keys(config, tenant.id)
     campaign = Campaign(
         tenant_id=tenant.id,
         name=body.name,
@@ -1321,3 +1339,129 @@ async def pause_campaign(
     campaign.status = "paused"
     await db.flush()
     return await _campaign_out(db, tenant, campaign)
+
+
+# ── Uploads: campaign attachments + the tenant email logo ──────────────
+
+_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+_LOGO_MAX_BYTES = 1 * 1024 * 1024
+# Image types every mainstream mail client renders inline.
+_LOGO_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif"}
+
+
+def _safe_upload_name(filename: Optional[str]) -> str:
+    cleaned = "".join(
+        ch for ch in (filename or "") if ch.isprintable() and ch not in "/\\"
+    ).strip()
+    return cleaned or "file"
+
+
+class OutreachUploadOut(BaseModel):
+    s3_key: str
+    filename: str
+    content_type: Optional[str]
+    size_bytes: int
+
+
+@router.post("/outreach/uploads", response_model=OutreachUploadOut, status_code=201)
+async def upload_outreach_attachment(
+    file: UploadFile = File(...),
+    tenant: Tenant = Depends(get_current_tenant),
+    _scope: None = Depends(require_scope("campaigns:write")),
+):
+    """Store a file to attach to outreach sends. Put the returned ref
+    into ``config.attachments`` when creating a campaign."""
+    from backend.app.services.attachment_store import get_store
+
+    store = get_store()
+    if not store.available:
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+    if len(data) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Attachment exceeds 10 MB")
+    name = _safe_upload_name(file.filename)
+    key = f"tenants/{tenant.id}/outreach/{uuid.uuid4().hex[:8]}-{name}"
+    if not store.put_object(key, file.content_type, data):
+        raise HTTPException(status_code=502, detail="Upload to file storage failed")
+    return OutreachUploadOut(
+        s3_key=key,
+        filename=name,
+        content_type=file.content_type,
+        size_bytes=len(data),
+    )
+
+
+class EmailLogoOut(BaseModel):
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+@router.post("/outreach/email-logo", response_model=EmailLogoOut, status_code=201)
+async def upload_email_logo(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    _scope: None = Depends(require_scope("campaigns:write")),
+):
+    """Upload the tenant's email logo (PNG/JPEG/GIF, ≤ 1 MB). Outreach
+    sends embed it inline at the bottom of the email unless the campaign
+    template sets ``include_logo: false``. Uploading again replaces it."""
+    from backend.app.services.attachment_store import get_store
+
+    store = get_store()
+    if not store.available:
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+    content_type = (file.content_type or "").lower()
+    if content_type not in _LOGO_TYPES:
+        raise HTTPException(status_code=422, detail="Logo must be PNG, JPEG, or GIF")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+    if len(data) > _LOGO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Logo exceeds 1 MB")
+    key = (
+        f"tenants/{tenant.id}/branding/"
+        f"{uuid.uuid4().hex[:8]}-logo{_LOGO_TYPES[content_type]}"
+    )
+    if not store.put_object(key, content_type, data):
+        raise HTTPException(status_code=502, detail="Upload to file storage failed")
+
+    cfg = dict(getattr(tenant, "branding_config", None) or {})
+    old_key = (cfg.get("email_logo") or {}).get("s3_key")
+    cfg["email_logo"] = {
+        "s3_key": key,
+        "filename": _safe_upload_name(file.filename),
+        "content_type": content_type,
+        "size_bytes": len(data),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tenant.branding_config = cfg
+    await db.flush()
+    if old_key:
+        store.delete(old_key)
+    return EmailLogoOut(
+        filename=cfg["email_logo"]["filename"],
+        content_type=content_type,
+        size_bytes=len(data),
+    )
+
+
+@router.delete("/outreach/email-logo", status_code=204)
+async def delete_email_logo(
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    _scope: None = Depends(require_scope("campaigns:write")),
+):
+    from backend.app.services.attachment_store import get_store
+
+    cfg = dict(getattr(tenant, "branding_config", None) or {})
+    meta = cfg.pop("email_logo", None)
+    if not meta:
+        raise HTTPException(status_code=404, detail="No email logo uploaded")
+    tenant.branding_config = cfg
+    await db.flush()
+    if meta.get("s3_key"):
+        get_store().delete(meta["s3_key"])

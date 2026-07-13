@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from backend.app.services.outreach.common import (
     OutreachConfig,
+    OutreachTemplate,
     SendWindow,
     advance_status,
     compose_footer,
@@ -19,7 +20,9 @@ from backend.app.services.outreach.common import (
     looks_like_bounce,
     normalize_domain,
     parse_config,
+    render_email_html,
     render_placeholders,
+    strip_markers,
 )
 
 
@@ -235,3 +238,95 @@ def test_extract_message_ids():
     # lookup); what matters is the real Message-ID is captured.
     assert "<abc.123@mail.gmail.com>" in extract_message_ids(body)
     assert extract_message_ids(None) == []
+
+
+# ── Formatting markers / HTML rendering ─────────────────────────────────
+
+
+def _template(**overrides) -> OutreachTemplate:
+    base = dict(
+        subject="Quick question",
+        body="Hi.",
+        sender_name="Davis Fox",
+        sender_business="Flex & Co",
+        physical_address="123 Main St, Nashville, TN 37201",
+    )
+    base.update(overrides)
+    return OutreachTemplate(**base)
+
+
+def test_strip_markers():
+    assert strip_markers("**bold**, *ital*, _under_") == "bold, ital, under"
+    # Intra-word underscores and spaced asterisks are not formatting.
+    assert strip_markers("snake_case_name") == "snake_case_name"
+    assert strip_markers("2 * 3 * 4 = 24") == "2 * 3 * 4 = 24"
+    assert strip_markers("") == ""
+    assert strip_markers(None) == ""
+
+
+def test_render_email_html_markers_paragraphs_and_escaping():
+    t = _template(font_family="georgia", font_size_px=16)
+    html = render_email_html(
+        "Hi **there**,\n\nTry *this* and _that_ — <script>alert(1)</script>.",
+        t,
+    )
+    assert "<b>there</b>" in html
+    assert "<i>this</i>" in html
+    assert "<u>that</u>" in html
+    # Raw HTML in the body never survives as markup.
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    # Two paragraphs.
+    assert html.count("<p ") == 2
+    # Font settings render as inline style from the whitelist.
+    assert "Georgia" in html and "font-size:16px" in html
+
+
+def test_render_email_html_footer_and_logo():
+    t = _template(sender_name="Davis <Fox>")
+    html = render_email_html("Hi.", t, logo_cid="tenant-logo")
+    assert 'src="cid:tenant-logo"' in html
+    # CAN-SPAM identity present and escaped.
+    assert "Davis &lt;Fox&gt;" in html
+    assert "Flex &amp; Co" in html
+    assert "123 Main St, Nashville, TN 37201" in html
+    assert "unsubscribe" in html.lower()
+
+
+def test_render_email_html_defaults_have_no_logo_or_font():
+    html = render_email_html("Hi.", _template())
+    assert "cid:" not in html
+    # No font overrides on the wrapper — recipient client defaults apply.
+    assert html.startswith('<div style="line-height:1.45;">')
+    assert "font-family" not in html
+
+
+def test_template_font_family_whitelist():
+    assert _template(font_family="Arial").font_family == "arial"
+    assert _template(font_family=None).font_family is None
+    with pytest.raises(ValidationError):
+        _template(font_family="comic sans")
+    with pytest.raises(ValidationError):
+        _template(font_size_px=99)
+
+
+def test_parse_config_attachments():
+    raw = {
+        "template": {
+            "subject": "s",
+            "body": "b",
+            "sender_name": "n",
+            "sender_business": "biz",
+            "physical_address": "addr",
+        },
+        "attachments": [
+            {"s3_key": "tenants/x/outreach/ab-deck.pdf", "filename": "deck.pdf"}
+        ],
+    }
+    cfg = parse_config(raw)
+    assert cfg.attachments[0].filename == "deck.pdf"
+    assert parse_config({"template": raw["template"]}).attachments == []
+    with pytest.raises(ValidationError):
+        parse_config({**raw, "attachments": raw["attachments"] * 6})
+    with pytest.raises(ValidationError):
+        parse_config({**raw, "attachments": [{"filename": "deck.pdf"}]})
