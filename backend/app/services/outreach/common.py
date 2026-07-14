@@ -105,6 +105,12 @@ class OutreachTemplate(BaseModel):
     font_size_px: Optional[int] = Field(None, ge=10, le=24)
     # Embed the tenant's uploaded email logo (if any) at the bottom.
     include_logo: bool = True
+    # Custom compliance-footer text. When set it replaces the default
+    # three-line footer verbatim in BOTH the text and HTML parts, so the
+    # tenant owns CAN-SPAM compliance of the override — it must still carry
+    # the physical address and an opt-out instruction. The identity fields
+    # above stay required either way.
+    footer_text: Optional[str] = Field(None, max_length=1000)
 
     @field_validator("font_family")
     @classmethod
@@ -309,7 +315,10 @@ def local_day_bounds_utc(
 
 def compose_footer(template: OutreachTemplate) -> str:
     """CAN-SPAM footer appended to every outreach send: identify the
-    sender + business, include the physical address, offer opt-out."""
+    sender + business, include the physical address, offer opt-out.
+    A ``footer_text`` override replaces the default lines verbatim."""
+    if template.footer_text:
+        return "\n\n--\n" + template.footer_text
     return (
         "\n\n--\n"
         "{name} · {business}\n"
@@ -340,17 +349,28 @@ _BOLD_RE = re.compile(r"\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)")
 _UNDERLINE_RE = re.compile(r"(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])")
 
+# Inline links — ``[text](https://url)``. The HTML part renders an anchor;
+# the plain-text part shows "text (url)" so the destination stays visible
+# in text-only clients. http(s) only — anything else stays literal text.
+# Applied BEFORE the style markers so a URL's underscores/asterisks can
+# never read as formatting.
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s()<>]+)\)")
+
 
 def strip_markers(text: str) -> str:
     """Formatting markers removed — the plain-text alternative body."""
-    out = _TRIPLE_RE.sub(r"\1", text or "")
+    out = _LINK_RE.sub(r"\1 (\2)", text or "")
+    out = _TRIPLE_RE.sub(r"\1", out)
     out = _BOLD_RE.sub(r"\1", out)
     out = _ITALIC_RE.sub(r"\1", out)
     return _UNDERLINE_RE.sub(r"\1", out)
 
 
 def _markers_to_html(escaped: str) -> str:
-    out = _TRIPLE_RE.sub(r"<b><i>\1</i></b>", escaped)
+    # `escaped` is already HTML-escaped, so the captured URL/text can't
+    # break out of the href attribute or inject markup ('"' is &quot; here).
+    out = _LINK_RE.sub(r'<a href="\2" style="color:#2563eb;">\1</a>', escaped)
+    out = _TRIPLE_RE.sub(r"<b><i>\1</i></b>", out)
     out = _BOLD_RE.sub(r"<b>\1</b>", out)
     out = _ITALIC_RE.sub(r"<i>\1</i>", out)
     return _UNDERLINE_RE.sub(r"<u>\1</u>", out)
@@ -386,13 +406,19 @@ def render_email_html(
             f'<img src="cid:{logo_cid}" alt="{html_mod.escape(template.sender_business)}" '
             'style="max-height:64px;max-width:220px;border:0;"></div>'
         )
+    if template.footer_text:
+        footer_inner = html_mod.escape(template.footer_text).replace("\n", "<br>")
+    else:
+        footer_inner = (
+            f"{html_mod.escape(template.sender_name)} &middot; "
+            f"{html_mod.escape(template.sender_business)}<br>"
+            f"{html_mod.escape(template.physical_address)}<br>"
+            "If you&#x27;d rather not hear from me, just reply &quot;unsubscribe&quot; "
+            "and I won&#x27;t email you again."
+        )
     parts.append(
         '<div style="margin-top:24px;font-size:12px;color:#666666;">--<br>'
-        f"{html_mod.escape(template.sender_name)} &middot; "
-        f"{html_mod.escape(template.sender_business)}<br>"
-        f"{html_mod.escape(template.physical_address)}<br>"
-        "If you&#x27;d rather not hear from me, just reply &quot;unsubscribe&quot; "
-        "and I won&#x27;t email you again.</div>"
+        f"{footer_inner}</div>"
     )
     parts.append("</div>")
     return "".join(parts)
