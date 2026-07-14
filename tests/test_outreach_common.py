@@ -333,3 +333,49 @@ def test_parse_config_attachments():
         parse_config({**raw, "attachments": raw["attachments"] * 6})
     with pytest.raises(ValidationError):
         parse_config({**raw, "attachments": [{"filename": "deck.pdf"}]})
+
+
+# ── Inline links + custom footer (2026-07 campaign additions) ───────────
+
+
+def test_link_marker_renders_anchor_and_plain_text():
+    t = _template(body="x")
+    html = render_email_html("book a meeting with me [here](https://flexonline.net/book).", t)
+    assert '<a href="https://flexonline.net/book" style="color:#2563eb;">here</a>' in html
+    assert strip_markers("book [here](https://flexonline.net/book).") == (
+        "book here (https://flexonline.net/book)."
+    )
+
+
+def test_link_marker_http_only_and_no_injection():
+    # Non-http(s) schemes stay literal.
+    assert strip_markers("[x](javascript:alert(1))") == "[x](javascript:alert(1))"
+    t = _template(body="x")
+    assert "<a" not in render_email_html("[x](javascript:alert(1))", t)
+    # Link text is escaped before the anchor is built.
+    html = render_email_html('[<img>](https://a.io/p)', t)
+    assert "&lt;img&gt;" in html and "<img>" not in html
+
+
+def test_link_inside_bold_and_url_underscores_not_formatting():
+    t = _template(body="x")
+    html = render_email_html("**see [docs](https://a.io/my_page_here) now**", t)
+    assert "<b>" in html and '<a href="https://a.io/my_page_here"' in html
+    assert "<u>" not in html
+
+
+def test_footer_text_overrides_default_everywhere():
+    custom = (
+        '2026 DF Consulting LLC · Flex Online · 155 Marine St., St. Augustine, FL 32084 · '
+        'Reply "Unsubscribe" to be removed from our mailing list'
+    )
+    t = _template(footer_text=custom)
+    footer = compose_footer(t)
+    assert footer == "\n\n--\n" + custom
+    assert "rather not hear from me" not in footer
+    html = render_email_html("Hi.", t)
+    assert "DF Consulting LLC" in html
+    assert "&quot;Unsubscribe&quot;" in html
+    assert "rather not hear from me" not in html
+    # Default (no override) still renders the stock three-liner.
+    assert "rather not hear from me" in render_email_html("Hi.", _template())
