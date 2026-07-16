@@ -325,6 +325,14 @@ celery_app.conf.update(
             "task": "event_retention_sweep",
             "schedule": crontab(minute=45, hour=4),
         },
+        # Safety net for webhook deliveries orphaned in ``pending`` (task
+        # raced the caller's commit, or a scheduled retry was lost to a
+        # worker restart). Re-enqueues young orphans, dead-letters stale
+        # ones. See webhook_pending_sweep.
+        "webhook-pending-sweep": {
+            "task": "webhook_pending_sweep",
+            "schedule": 600.0,
+        },
         "refresh-few-shot-pools": {
             "task": "refresh_few_shot_pools",
             "schedule": crontab(minute=0, hour=3),
@@ -1509,16 +1517,22 @@ def _run_pipeline_impl(
             if customer_events_for_webhooks:
                 from backend.app.db import async_session
                 from backend.app.services.webhook_dispatcher import emit_event
+                from backend.app.tenant_ctx import tenant_context_async
 
                 async def _emit_lifecycle() -> None:
+                    # Fresh session — bind the tenant GUC (RLS blocks the
+                    # delivery-row INSERT without it) and commit; nothing
+                    # else owns this session's transaction.
                     async with async_session() as db:
-                        for ev in customer_events_for_webhooks:
-                            await emit_event(
-                                db,
-                                tenant.id,
-                                ev["webhook_event"],
-                                {k: v for k, v in ev.items() if k != "webhook_event"},
-                            )
+                        async with tenant_context_async(tenant.id, db):
+                            for ev in customer_events_for_webhooks:
+                                await emit_event(
+                                    db,
+                                    tenant.id,
+                                    ev["webhook_event"],
+                                    {k: v for k, v in ev.items() if k != "webhook_event"},
+                                )
+                            await db.commit()
 
                 try:
                     _loop.run(_emit_lifecycle())
@@ -2541,19 +2555,26 @@ def _emit_webhooks_for_interaction(
     }
 
     async def _runner() -> None:
+        from backend.app.tenant_ctx import tenant_context_async
+
+        # Fresh session — bind the tenant GUC (RLS blocks the delivery-row
+        # INSERT without it) and commit; nothing else owns this session's
+        # transaction.
         async with async_session() as db:
-            await emit_event(db, tenant_id, "interaction.analyzed", summary)
-            if outcome_type:
-                await emit_event(
-                    db,
-                    tenant_id,
-                    "interaction.outcome_inferred",
-                    {
-                        **summary,
-                        "outcome_type": outcome_type,
-                        "outcome_confidence": outcome_confidence,
-                    },
-                )
+            async with tenant_context_async(tenant_id, db):
+                await emit_event(db, tenant_id, "interaction.analyzed", summary)
+                if outcome_type:
+                    await emit_event(
+                        db,
+                        tenant_id,
+                        "interaction.outcome_inferred",
+                        {
+                            **summary,
+                            "outcome_type": outcome_type,
+                            "outcome_confidence": outcome_confidence,
+                        },
+                    )
+                await db.commit()
 
     try:
         _run_async(_runner)
@@ -5208,22 +5229,140 @@ def sync_knowledge_base(tenant_id: str, source_type: str) -> Dict[str, Any]:
 
 
 @celery_app.task(name="webhook_deliver")
-def webhook_deliver(delivery_id: str) -> Dict[str, Any]:
+def webhook_deliver(delivery_id: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """Attempt one HTTP delivery for a WebhookDelivery row.
 
     The dispatcher re-enqueues retries via ``apply_async(countdown=...)``
     when it schedules the next attempt, so this task stays stateless.
     Tolerates the delivery row being gone (e.g., webhook deleted in the
     meantime) by returning status=missing.
+
+    Two hard-won constraints:
+
+    * The session MUST commit — ``deliver_one`` mutates the row (status,
+      attempts) but owns no transaction. Without the commit every
+      delivery outcome rolled back, so rows sat in ``pending`` with
+      attempt_count=0 no matter what happened on the wire.
+    * ``tenant_id`` should be passed explicitly. The prerun hook can
+      resolve it from ``delivery_id`` via the SECURITY DEFINER bootstrap,
+      but only once the row is committed — a task racing the caller's
+      commit resolves nothing and no-ops as "missing". The explicit arg
+      plus the dispatcher's enqueue countdown close that race; the arg
+      stays Optional so tasks enqueued by a pre-upgrade dispatcher can
+      still be consumed during a rolling deploy.
     """
     from backend.app.db import async_session
     from backend.app.services.webhook_dispatcher import deliver_one
+    from backend.app.tenant_ctx import tenant_context_async
 
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
-            return await deliver_one(db, uuid.UUID(delivery_id))
+            if tenant_id:
+                async with tenant_context_async(tenant_id, db):
+                    result = await deliver_one(db, uuid.UUID(delivery_id))
+                    await db.commit()
+                    return result
+            # Legacy enqueue without tenant — only works pre-RLS.
+            result = await deliver_one(db, uuid.UUID(delivery_id))
+            await db.commit()
+            return result
 
     return _run_async(_runner)
+
+
+# Sweep tuning. MIN_AGE must comfortably exceed the dispatcher's enqueue
+# countdown so the sweep never races a delivery that's simply on its way.
+_SWEEP_MIN_AGE_S = 300
+_SWEEP_DEAD_LETTER_AGE_S = 48 * 3600
+_SWEEP_BATCH_LIMIT = 500
+
+
+@celery_app.task(name="webhook_pending_sweep")
+def webhook_pending_sweep() -> Dict[str, Any]:
+    """Re-enqueue orphaned webhook deliveries; dead-letter stale ones.
+
+    The dispatcher enqueues ``webhook_deliver`` right after flushing the
+    delivery row, so a task can fire before the caller's transaction
+    commits (row invisible → "missing"), and a worker restart can drop a
+    scheduled retry. Both leave rows parked in ``pending`` forever — this
+    sweep is the safety net the dispatcher comments always promised.
+
+    Per pending row (walked per-tenant because webhook_deliveries is
+    RLS-scoped):
+
+    * older than ``_SWEEP_DEAD_LETTER_AGE`` → dead_letter. Delivering a
+      days-old event would push stale business data to consumers (the
+      exact rows stuck on prod include pre-fix payloads that must never
+      go out).
+    * never attempted and older than ``_SWEEP_MIN_AGE``, or a scheduled
+      retry overdue by ``_SWEEP_MIN_AGE`` → re-enqueue ``webhook_deliver``.
+
+    Runs every 10 minutes via beat; each pass is idempotent.
+    """
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    from backend.app.models import WebhookDelivery
+    from backend.app.tenant_ctx import tenant_context
+
+    now = datetime.now(_tz.utc)
+    min_age_cutoff = now - _td(seconds=_SWEEP_MIN_AGE_S)
+    dead_letter_cutoff = now - _td(seconds=_SWEEP_DEAD_LETTER_AGE_S)
+
+    def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+        # Postgres returns tz-aware datetimes; sqlite (tests) naive UTC.
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=_tz.utc)
+        return dt
+
+    requeued = 0
+    dead_lettered = 0
+    for tid in _all_tenant_ids():
+        session = _get_sync_session()
+        try:
+            with tenant_context(uuid.UUID(tid), session):
+                rows = (
+                    session.query(WebhookDelivery)
+                    .filter(
+                        WebhookDelivery.tenant_id == uuid.UUID(tid),
+                        WebhookDelivery.status == "pending",
+                    )
+                    .limit(_SWEEP_BATCH_LIMIT)
+                    .all()
+                )
+                for d in rows:
+                    created_at = _aware(d.created_at)
+                    next_retry_at = _aware(d.next_retry_at)
+                    if created_at is not None and created_at < dead_letter_cutoff:
+                        d.status = "dead_letter"
+                        d.last_error = (
+                            "webhook_pending_sweep: stale — expired before "
+                            "first successful delivery"
+                        )
+                        dead_lettered += 1
+                        continue
+                    never_attempted = (
+                        (d.attempt_count or 0) == 0
+                        and created_at is not None
+                        and created_at < min_age_cutoff
+                    )
+                    retry_overdue = (
+                        next_retry_at is not None
+                        and next_retry_at < min_age_cutoff
+                    )
+                    if never_attempted or retry_overdue:
+                        webhook_deliver.delay(str(d.id), tid)
+                        requeued += 1
+                session.commit()
+        except Exception:
+            logger.exception("webhook_pending_sweep failed for tenant %s", tid)
+        finally:
+            session.close()
+
+    result = {"requeued": requeued, "dead_lettered": dead_lettered}
+    if requeued or dead_lettered:
+        logger.info("webhook_pending_sweep: %s", result)
+    return result
 
 
 # Celery queues we sample for backpressure. Default queue is ``celery``;

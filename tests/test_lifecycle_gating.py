@@ -60,9 +60,15 @@ def _run_emit(account_lifecycle_stage: str, outcome_type: Optional[str] = None):
 
     captured = _CapturedEmit()
 
+    class _FakeDb:
+        bind = None  # bind_tenant_async no-ops on a bind-less session
+
+        async def commit(self):
+            pass
+
     class _FakeSessionCtx:
         async def __aenter__(self):
-            return object()
+            return _FakeDb()
 
         async def __aexit__(self, *exc):
             return False
