@@ -1456,9 +1456,21 @@ def _run_pipeline_impl(
             contact_row.customer_id if contact_row is not None else None
         )
         if cust_id_for_rebuild:
+            from backend.app.models import Customer as _CustForStage
+            from backend.app.services.lifecycle import is_client
             from backend.app.services.webhook_events import (
                 CUSTOMER_OUTCOME_EVENT_MAP,
             )
+
+            # Churn-flavored lifecycle events stay internal for prospects
+            # (a lead can't churn); the OutcomeEvent row is still written
+            # as evidence — only the outbound webhook is suppressed.
+            _cust_for_stage = (
+                session.query(_CustForStage)
+                .filter(_CustForStage.id == cust_id_for_rebuild)
+                .first()
+            )
+            _churn_events_gated = not is_client(_cust_for_stage)
 
             customer_events_for_webhooks: List[Dict[str, Any]] = []
             for ev in inferred.customer_events:
@@ -1475,6 +1487,11 @@ def _run_pipeline_impl(
                     )
                 )
                 wh_event = CUSTOMER_OUTCOME_EVENT_MAP.get(ev["event_type"])
+                if _churn_events_gated and ev["event_type"] in (
+                    "at_risk_flagged",
+                    "churned",
+                ):
+                    wh_event = None
                 if wh_event:
                     customer_events_for_webhooks.append(
                         {
@@ -2246,12 +2263,28 @@ def _run_pipeline_impl(
         session.add(features_row)
 
     # ── Step 17c: Fire outbound webhooks ───────────────────────────────
+    # Churn fields are gated on account lifecycle: a prospect can't
+    # churn, so webhook consumers (e.g. the Flex console) must never
+    # receive churn for one — same rule the REST serializers apply.
+    from backend.app.models import Customer as _CustomerForWebhooks
+    from backend.app.services.lifecycle import lifecycle_stage as _acct_lifecycle
+
+    _webhook_customer = None
+    if interaction.customer_id is not None:
+        _webhook_customer = (
+            session.query(_CustomerForWebhooks)
+            .filter(_CustomerForWebhooks.id == interaction.customer_id)
+            .first()
+        )
+    _webhook_stage = _acct_lifecycle(_webhook_customer)
+
     _emit_webhooks_for_interaction(
         tenant_id=tenant.id,
         interaction_id=uuid.UUID(interaction_id),
         insights=insights,
         outcome_type=interaction.outcome_type,
         outcome_confidence=interaction.outcome_confidence,
+        account_lifecycle_stage=_webhook_stage,
     )
 
     # ── Step 17d: CRM write-back (opt-in) ──────────────────────────────
@@ -2358,8 +2391,12 @@ def _run_pipeline_impl(
         ),
         "summary": insights.get("summary"),
         "sentiment_score": insights.get("sentiment_score"),
-        "churn_risk": insights.get("churn_risk"),
+        # Clients only — a prospect has no relationship to churn out of.
+        "churn_risk": (
+            insights.get("churn_risk") if _webhook_stage == "client" else None
+        ),
         "upsell_score": insights.get("upsell_score"),
+        "lifecycle_stage": _webhook_stage,
         "action_item_count": len(insights.get("action_items", [])),
     }
     try:
@@ -2477,6 +2514,7 @@ def _emit_webhooks_for_interaction(
     insights: Dict[str, Any],
     outcome_type: Optional[str],
     outcome_confidence: Optional[float],
+    account_lifecycle_stage: str = "prospect",
 ) -> None:
     """Fan out webhook events for a freshly analyzed interaction.
 
@@ -2492,8 +2530,14 @@ def _emit_webhooks_for_interaction(
         "summary": (insights or {}).get("summary", "")[:600],
         "sentiment_overall": (insights or {}).get("sentiment_overall"),
         "sentiment_score": (insights or {}).get("sentiment_score"),
-        "churn_risk_signal": (insights or {}).get("churn_risk_signal"),
+        # Clients only — churn is meaningless for a prospect/lead.
+        "churn_risk_signal": (
+            (insights or {}).get("churn_risk_signal")
+            if account_lifecycle_stage == "client"
+            else None
+        ),
         "upsell_signal": (insights or {}).get("upsell_signal"),
+        "lifecycle_stage": account_lifecycle_stage,
     }
 
     async def _runner() -> None:

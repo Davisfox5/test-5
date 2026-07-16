@@ -32,6 +32,7 @@ from backend.app.models import (
 from backend.app.services.audit_log import audit_log
 from backend.app.services.kb.context_dispatch import schedule_customer_brief_rebuild
 from backend.app.services.kb.customer_brief_builder import CustomerBriefBuilder
+from backend.app.services.lifecycle import lifecycle_stage
 
 router = APIRouter()
 
@@ -130,23 +131,13 @@ class CustomerOwnerOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _lifecycle_stage(customer: Customer) -> str:
-    """Classify an account as ``"client"`` or ``"prospect"``.
-
-    An account is a client once it shows any post-sale signal — a
-    ``renewal_date`` or an ``onboarding_status`` (both NULL until CRM
-    sync or manual entry populates them; the schema never fabricates
-    them). Everything else is a prospect.
-
-    Churn risk is only meaningful for clients: a prospect can't churn out
-    of a relationship that hasn't started yet, so the "5% churn on a
-    prospect" the customer flagged is nonsensical. Serializers gate the
-    churn number on this and surface an interest signal for prospects
-    instead.
-    """
-    if customer.renewal_date is not None or customer.onboarding_status is not None:
-        return "client"
-    return "prospect"
+# Churn risk is only meaningful for clients: a prospect can't churn out
+# of a relationship that hasn't started yet, so the "5% churn on a
+# prospect" the customer flagged is nonsensical. Serializers gate the
+# churn number on this and surface an interest signal for prospects
+# instead. The classifier lives in services/lifecycle.py because the
+# webhook emitters in tasks.py gate on the same rule.
+_lifecycle_stage = lifecycle_stage
 
 
 class CustomerListItem(BaseModel):
