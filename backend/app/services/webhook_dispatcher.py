@@ -106,6 +106,15 @@ def is_safe_webhook_url(url: str) -> bool:
 _BACKOFF_SECONDS: List[int] = [10, 60, 300, 1800, 7200]
 _MAX_ATTEMPTS = len(_BACKOFF_SECONDS)
 
+# Delay between flushing a delivery row and the first delivery attempt.
+# The row is only flushed (not committed) when the task is enqueued — the
+# caller's transaction commits later — so an immediate task can beat the
+# commit, find no row, and no-op as "missing" with nothing to retry it
+# (the exact failure that parked every prod delivery in ``pending``).
+# 10s comfortably clears any caller's commit; webhook_pending_sweep
+# covers the pathological cases.
+_DISPATCH_ENQUEUE_DELAY_S = 10
+
 # Auto-disable threshold. When a single webhook racks up this many
 # consecutive_failures (across all its deliveries) we flip
 # ``Webhook.active = False`` and short-circuit every pending delivery
@@ -234,10 +243,13 @@ def dispatch_sync(
             try:
                 from backend.app.tasks import webhook_deliver
 
-                webhook_deliver.delay(str(d.id))
+                webhook_deliver.apply_async(
+                    args=[str(d.id), str(tenant_id)],
+                    countdown=_DISPATCH_ENQUEUE_DELAY_S,
+                )
             except Exception:
                 # Celery not available (local dev, tests) — the row is
-                # still in the DB and a future retry sweep will pick it up.
+                # still in the DB and webhook_pending_sweep picks it up.
                 logger.debug(
                     "Failed to enqueue webhook_deliver for %s", d.id, exc_info=True
                 )
@@ -305,10 +317,13 @@ async def emit_event(
             try:
                 from backend.app.tasks import webhook_deliver
 
-                webhook_deliver.delay(str(d.id))
+                webhook_deliver.apply_async(
+                    args=[str(d.id), str(tenant_id)],
+                    countdown=_DISPATCH_ENQUEUE_DELAY_S,
+                )
             except Exception:
                 # Celery not available (local dev, tests) — the row is
-                # still in the DB and a future retry sweep will pick it up.
+                # still in the DB and webhook_pending_sweep picks it up.
                 logger.debug(
                     "Failed to enqueue webhook_deliver for %s", d.id, exc_info=True
                 )
@@ -481,7 +496,7 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
         from backend.app.tasks import webhook_deliver
 
         webhook_deliver.apply_async(
-            args=[str(delivery.id)],
+            args=[str(delivery.id), str(delivery.tenant_id)],
             countdown=next_delay,
         )
     except Exception:

@@ -746,24 +746,30 @@ async def _emit_brief_alerts(
         try:
             from backend.app.services.webhook_dispatcher import emit_event
             from backend.app.services.webhook_events import BRIEF_ALERT_EVENT_MAP
+            from backend.app.tenant_ctx import tenant_context_async
 
+            # Fresh session — bind the tenant GUC (RLS blocks the
+            # delivery-row INSERT without it) and commit; nothing else
+            # owns this session's transaction.
             async with async_session() as db:
-                for alert in alerts:
-                    wh_event = BRIEF_ALERT_EVENT_MAP.get(alert["kind"])
-                    if not wh_event:
-                        continue
-                    await emit_event(
-                        db,
-                        tenant_id,
-                        wh_event,
-                        {
-                            "session_id": session_id,
-                            "contact_id": str(contact_id) if contact_id else None,
-                            "kind": alert["kind"],
-                            "message": alert.get("message"),
-                            **{k: v for k, v in alert.items() if k in ("from", "to")},
-                        },
-                    )
+                async with tenant_context_async(tenant_id, db):
+                    for alert in alerts:
+                        wh_event = BRIEF_ALERT_EVENT_MAP.get(alert["kind"])
+                        if not wh_event:
+                            continue
+                        await emit_event(
+                            db,
+                            tenant_id,
+                            wh_event,
+                            {
+                                "session_id": session_id,
+                                "contact_id": str(contact_id) if contact_id else None,
+                                "kind": alert["kind"],
+                                "message": alert.get("message"),
+                                **{k: v for k, v in alert.items() if k in ("from", "to")},
+                            },
+                        )
+                    await db.commit()
         except Exception:
             logger.debug("brief_alert webhook emission failed", exc_info=True)
 
