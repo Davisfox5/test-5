@@ -338,6 +338,15 @@ async def _get_prospect_or_404(
     customer = await db.get(Customer, prospect_id)
     if customer is None or customer.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Prospect not found")
+    if customer.pipeline_status is None:
+        # Customers created outside the import (POST /customers, CRM sync,
+        # entity resolution) may predate the pipeline row. Heal on read so
+        # the prospect API never serves a null status and the list (which
+        # filters on pipeline_status) picks the row up.
+        customer.pipeline_status = (
+            "do_not_contact" if customer.do_not_contact else "new"
+        )
+        customer.pipeline_status_changed_at = datetime.now(timezone.utc)
     return customer
 
 
@@ -519,11 +528,14 @@ async def import_prospects(
 ):
     """Bulk prospect upsert, idempotent on (tenant, normalized website domain).
 
-    Matching: normalized domain first; rows without a usable domain fall
-    back to case-insensitive business-name match. Re-imports refresh the
-    outreach metadata + fill missing contact info; they never reset
-    ``pipeline_status`` on a prospect that has already advanced, and never
-    resurrect a do-not-contact prospect.
+    Matching: normalized domain first. Only rows with NO usable domain fall
+    back to case-insensitive business-name match — a row whose domain matches
+    no existing prospect always creates a new one, because two different
+    non-null domains are two different businesses even if they share a name
+    (e.g. two unrelated "Results Personal Training" gyms in different
+    states). Re-imports refresh the outreach metadata + fill missing contact
+    info; they never reset ``pipeline_status`` on a prospect that has
+    already advanced, and never resurrect a do-not-contact prospect.
     """
     created = 0
     updated = 0
@@ -545,7 +557,10 @@ async def import_prospects(
                         .limit(1)
                     )
                 ).scalar_one_or_none()
-            if customer is None:
+            if customer is None and domain is None:
+                # Name fallback only when the row carries no domain at all:
+                # a non-null domain that matched nothing means a distinct
+                # business, never a same-name merge.
                 customer = (
                     await db.execute(
                         select(Customer)
@@ -566,8 +581,6 @@ async def import_prospects(
                 )
                 db.add(customer)
                 await db.flush()
-            elif domain and not customer.domain:
-                customer.domain = domain
 
             meta = dict(customer.metadata_ or {})
             outreach_meta = dict(meta.get("outreach") or {})
