@@ -132,7 +132,13 @@ def aggregate_tenant_period(
               AND jsonb_typeof(insights->'product_feedback') = 'array'
               AND pf->>'theme' IS NOT NULL
             GROUP BY pf->>'theme'
-            ORDER BY (pos + neg + neu) DESC
+            -- Equivalent to pos + neg + neu. Postgres resolves a BARE
+            -- select-list alias in ORDER BY, but inside an expression
+            -- like (pos + neg + neu) each name must be a real column —
+            -- "pos" isn't one, so that spelling raises UndefinedColumn.
+            ORDER BY SUM(CASE WHEN pf->>'sentiment'
+                              IN ('positive', 'negative', 'neutral')
+                         THEN 1 ELSE 0 END) DESC
             LIMIT 25
         """),
         params,

@@ -176,12 +176,18 @@ def discover_candidates_all_tenants(session: Session) -> Dict[str, Any]:
     tenants = session.query(Tenant).all()
     total = 0
     for tenant in tenants:
+        # Commit-or-rollback per tenant: a failed flush (e.g. a
+        # StaleDataError when a reviewer deletes a candidate mid-run)
+        # otherwise leaves the session poisoned and every later tenant
+        # dies with PendingRollbackError. Per-tenant commits also cap
+        # the blast radius to the one tenant that raced.
         try:
             with tenant_context(tenant.id, session):
                 total += _discover_for_tenant(session, tenant)
+                session.commit()
         except Exception:
             logger.exception("Vocabulary discovery failed for tenant %s", tenant.id)
-    session.commit()
+            session.rollback()
     return {"tenants_processed": len(tenants), "candidates_inspected": total}
 
 

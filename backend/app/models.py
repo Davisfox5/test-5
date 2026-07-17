@@ -3266,6 +3266,41 @@ class ManagerAlert(Base):
     )
 
 
+# Every category any writer may stamp on a ManagerRecommendation —
+# the builder's per-domain whitelists plus the cohort/trend detectors
+# and the orchestrator's coaching fallbacks. The DB CHECK constraint
+# (``ck_manager_recommendations_category``, migration ``sen_001``) is
+# generated from this tuple, and tests/test_manager_recommendation_categories.py
+# fails if a writer's category set escapes it. Adding a category here
+# REQUIRES a migration recreating the constraint — the 2026-07 drift
+# (constraint stuck at the 4 original sales categories while the code
+# grew 13 more) made every newer-category INSERT die with
+# CheckViolation and poisoned the builder's session (Sentry 2T).
+MANAGER_RECOMMENDATION_CATEGORIES = (
+    # sales
+    "coach_rep",
+    "run_campaign",
+    "outreach_at_risk_customer",
+    "promote_winning_script",
+    "prevent_lead_stall",
+    "address_sales_trend",
+    # customer service
+    "schedule_qbr",
+    "flag_renewal_risk",
+    "assign_expansion_play",
+    "coach_csm",
+    "prevent_no_touch_churn",
+    "proactive_outreach_repeat_support",
+    "address_cs_trend",
+    # IT support
+    "update_kb_article",
+    "route_to_specialist",
+    "coach_support_agent",
+    "escalate_recurring_issue",
+    "address_recurring_issue",
+)
+
+
 class ManagerRecommendation(Base):
     """Proactive next-move queue for managers. One-click apply maps each
     category to a concrete artifact (coaching note, draft campaign,
@@ -3273,6 +3308,14 @@ class ManagerRecommendation(Base):
     """
 
     __tablename__ = "manager_recommendations"
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ("
+            + ", ".join("'%s'" % c for c in MANAGER_RECOMMENDATION_CATEGORIES)
+            + ")",
+            name="ck_manager_recommendations_category",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(

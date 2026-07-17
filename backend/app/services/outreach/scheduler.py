@@ -297,14 +297,33 @@ def generate_drafts_for_campaign(
 
 
 def run_all_tenants(session: Session) -> Dict[str, Any]:
-    """Beat entry point: walk tenants (global table) and tick each one."""
-    tenant_ids = session.execute(select(Tenant.id)).scalars().all()
+    """Beat entry point: tick each tenant that could possibly send.
+
+    Two bulk queries replace the old per-tenant N+1 (one ``session.get``
+    per tenant id, every 10 minutes, for every tenant in the install):
+
+    * all Tenant rows in one SELECT (global table, no GUC needed);
+    * the distinct set of tenants with a connected Gmail/Outlook
+      integration — ``integrations`` is an RLS auth-bootstrap table, so
+      this global read is allowed with no tenant bound (same pattern as
+      the email poller). A tenant with no email integration can't send
+      an outreach touch, so entering its tenant_context just to SELECT
+      zero-result campaigns every tick is pure query noise.
+    """
+    tenants = session.execute(select(Tenant)).scalars().all()
+    sendable_tenant_ids = {
+        row
+        for row in session.execute(
+            select(Integration.tenant_id)
+            .where(Integration.provider.in_(("google", "microsoft")))
+            .distinct()
+        ).scalars()
+    }
     totals = {"tenants": 0, "campaigns": 0, "sent": 0, "failed": 0, "bumps_drafted": 0}
-    for tenant_id in tenant_ids:
-        with tenant_context(tenant_id, session):
-            tenant = session.get(Tenant, tenant_id)
-            if tenant is None:
-                continue
+    for tenant in tenants:
+        if tenant.id not in sendable_tenant_ids:
+            continue
+        with tenant_context(tenant.id, session):
             result = _run_tenant_tick(session, tenant)
         if result["campaigns"]:
             totals["tenants"] += 1

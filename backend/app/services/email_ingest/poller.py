@@ -17,8 +17,9 @@ from sqlalchemy.orm import Session
 from backend.app.models import EmailSyncCursor, Integration, Tenant, User
 from backend.app.services.email_ingest import gmail as gmail_fetcher
 from backend.app.services.email_ingest import graph as graph_fetcher
-from backend.app.services.email_ingest.ingest import ingest_email
+from backend.app.services.email_ingest.ingest import IngestCaches, ingest_email
 from backend.app.services.email_classifier import EmailClassifier
+from backend.app.services.llm_circuit_breaker import LLMCallsSuspended
 from backend.app.services.token_crypto import decrypt_token, encrypt_token
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,12 @@ def poll_integration(session: Session, integration: Integration) -> int:
         session.flush()
 
     access_token = refresh_if_expired_sync(session, integration)
+    # Persist a rotated token IMMEDIATELY (see refresh_if_expired_sync's
+    # docstring): Microsoft can rotate the refresh token during that
+    # call, and any later rollback in this cycle (ingest failure, LLM
+    # breaker deferral) must not discard it — that leaves a dead refresh
+    # token in the DB and bricks the integration.
+    session.commit()
 
     if integration.provider == "google":
         stream = gmail_fetcher.fetch_recent(integration, cursor, access_token, agent_email)
@@ -206,16 +213,41 @@ def poll_integration(session: Session, integration: Integration) -> int:
         logger.info("Skipping non-email integration %s (%s)", integration.id, integration.provider)
         return 0
 
+    # Poll windows overlap by design, so most fetched messages already
+    # exist. Dedupe the whole batch with ONE query up front instead of
+    # letting ingest_email run its per-message existence SELECT for every
+    # already-seen message (the N+1 Sentry flags on this transaction).
+    # ingest_email keeps its own check for the messages that get through
+    # — it stays the idempotency backstop for the push/backfill paths.
+    from backend.app.models import Interaction
+
+    msgs = [m for m in stream]
+    provider_ids = [m.provider_message_id for m in msgs if m.provider_message_id]
+    already_ingested = (
+        {
+            pid
+            for (pid,) in session.query(Interaction.provider_message_id).filter(
+                Interaction.tenant_id == integration.tenant_id,
+                Interaction.provider_message_id.in_(provider_ids),
+            )
+        }
+        if provider_ids
+        else set()
+    )
+
     classifier = EmailClassifier()
+    caches = IngestCaches()
     ingested = 0
 
     async def _run(msgs):
         nonlocal ingested
         for msg in msgs:
-            if await ingest_email(session, tenant, msg, classifier) is not None:
+            if msg.provider_message_id in already_ingested:
+                continue
+            if await ingest_email(session, tenant, msg, classifier, caches=caches) is not None:
                 ingested += 1
 
-    asyncio.run(_run(stream))
+    asyncio.run(_run(msgs))
     session.commit()
     return ingested
 
@@ -234,6 +266,25 @@ def poll_all(session: Session) -> dict:
     """
     from backend.app.config import get_settings
     from backend.app.tenant_ctx import tenant_context
+
+    # Credit-balance breaker: when open, defer the WHOLE cycle up front.
+    # Classification is fail-closed, so polling without LLM access would
+    # ingest-then-rollback every 2 minutes (and re-enqueue analysis work
+    # for rows the rollback discards). The guard doubles as the resume
+    # path — one poller per probe interval issues the cheap probe, and
+    # when it succeeds the breaker closes and this same cycle proceeds.
+    from backend.app.services import llm_circuit_breaker as _breaker
+    from backend.app.services.llm_client import get_async_anthropic
+
+    if _breaker.is_open():
+        try:
+            asyncio.run(_breaker.guard(get_async_anthropic()))
+        except LLMCallsSuspended:
+            return {
+                "integrations": 0,
+                "emails_ingested": 0,
+                "skipped_reason": "llm_credit_breaker_open",
+            }
 
     settings = get_settings()
     force_all = bool(getattr(settings, "EMAIL_POLL_FORCE_ALL", False))
@@ -302,6 +353,20 @@ def poll_all(session: Session) -> dict:
         try:
             with tenant_context(integ.tenant_id, session):
                 count = poll_integration(session, integ)
+        except LLMCallsSuspended:
+            # Expected state: the credit-balance breaker is open. Roll
+            # back so this integration's cursor does NOT advance past
+            # messages we couldn't classify — the next poll after the
+            # breaker closes re-fetches the same window (ingest is
+            # idempotent on provider_message_id). Quiet by design: the
+            # breaker reports once per transition.
+            session.rollback()
+            summary["deferred_llm_paused"] = True
+            logger.info(
+                "email poll deferred (LLM credit breaker open); "
+                "will retry next cycle"
+            )
+            break
         except IntegrationAuthError as exc:
             # Expected, non-retryable: log at WARNING (not ERROR, so the
             # Sentry logging integration doesn't turn it into an event)

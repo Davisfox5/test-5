@@ -351,10 +351,13 @@ class ModelRouter:
         emitted stream isn't safe — so exceptions raised while the caller
         iterates propagate untouched.
         """
+        from backend.app.services import llm_circuit_breaker as _breaker
         from backend.app.services.llm_client import (
             _is_model_unavailable,
             _is_transient,
         )
+
+        await _breaker.guard(self._client)
 
         tier = self.select_tier(req)
         primary = MODEL_IDS[tier]
@@ -373,6 +376,10 @@ class ModelRouter:
                 stream = await cm.__aenter__()
                 break
             except Exception as exc:  # noqa: BLE001 — classified below
+                if _breaker.record_billing_failure(exc):
+                    raise _breaker.LLMCallsSuspended(
+                        "LLM stream open paused: Anthropic credit balance exhausted"
+                    ) from exc
                 is_last = idx == len(candidates) - 1
                 if not is_last and (_is_model_unavailable(exc) or _is_transient(exc)):
                     logger.warning(
@@ -415,7 +422,10 @@ class ModelRouter:
         """POST a batch with bounded transient retry. Raises ``AttributeError``
         when the SDK lacks ``beta.messages.batches`` so the caller can fall
         back to sequential live calls."""
+        from backend.app.services import llm_circuit_breaker as _breaker
         from backend.app.services.llm_client import _is_transient
+
+        await _breaker.guard(self._client)
 
         attempt = 0
         while True:
@@ -425,6 +435,10 @@ class ModelRouter:
             except AttributeError:
                 raise
             except Exception as exc:  # noqa: BLE001 — classified below
+                if _breaker.record_billing_failure(exc):
+                    raise _breaker.LLMCallsSuspended(
+                        "LLM batch submit paused: Anthropic credit balance exhausted"
+                    ) from exc
                 if _is_transient(exc) and attempt < 2:
                     delay = 0.5 * (2 ** attempt)
                     logger.warning(

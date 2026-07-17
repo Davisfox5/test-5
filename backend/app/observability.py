@@ -85,6 +85,11 @@ def _before_send(event: Dict[str, Any], hint: Dict[str, Any]) -> Optional[Dict[s
 
 _initialized = False
 
+# The explicit deploy environments allowed to report. The environment
+# tag Sentry receives is ALWAYS this validated value — never derived
+# from DEBUG or any other proxy flag.
+_DEPLOYED_ENVIRONMENTS = frozenset({"staging", "production"})
+
 
 def init_sentry() -> bool:
     """Start Sentry if configured. Safe to call twice.
@@ -102,6 +107,24 @@ def init_sentry() -> bool:
         logger.info("SENTRY_DSN not set; error monitoring disabled")
         return False
 
+    # Only report from real deployed environments. ENVIRONMENT is the
+    # explicit deploy marker set in fly.toml (staging) / the production
+    # config — a laptop or CI run that happens to have a DSN in its env
+    # must never ship events (they'd land in the shared project tagged
+    # with whatever default slipped through, muddying the real signal).
+    environment = str(
+        getattr(settings, "ENVIRONMENT", None)
+        or os.environ.get("ENVIRONMENT")
+        or "local"
+    ).strip().lower()
+    if environment not in _DEPLOYED_ENVIRONMENTS:
+        logger.info(
+            "Sentry disabled: ENVIRONMENT=%r is not a deployed environment "
+            "(expected one of %s)",
+            environment, sorted(_DEPLOYED_ENVIRONMENTS),
+        )
+        return False
+
     try:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -116,9 +139,6 @@ def init_sentry() -> bool:
         )
         return False
 
-    environment = getattr(settings, "ENVIRONMENT", None) or os.environ.get(
-        "ENVIRONMENT", "local"
-    )
     release = getattr(settings, "RELEASE_VERSION", None) or os.environ.get(
         "RELEASE_VERSION"
     )
