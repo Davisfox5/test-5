@@ -1201,6 +1201,11 @@ async def create_customer(
         crm_id=body.crm_id,
         industry=body.industry,
         metadata_=body.metadata or {},
+        # Every customer starts on the outreach pipeline; without this the
+        # prospect list (which filters on pipeline_status) omits the row and
+        # GET /prospects/{id} synthesizes a null-status view.
+        pipeline_status="new",
+        pipeline_status_changed_at=datetime.now(timezone.utc),
     )
     db.add(customer)
     await db.flush()

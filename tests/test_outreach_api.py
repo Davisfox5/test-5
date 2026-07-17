@@ -53,6 +53,7 @@ def _rows(n: int = 3):
 async def outreach_app(test_session_factory, test_tenant):
     from fastapi import FastAPI
 
+    from backend.app.api.contacts import router as contacts_router
     from backend.app.api.outreach import router as outreach_router
     from backend.app.auth import (
         AuthPrincipal,
@@ -84,11 +85,12 @@ async def outreach_app(test_session_factory, test_tenant):
             user=None,
             role="admin",
             source="api_key",
-            scopes=["campaigns:write"],
+            scopes=["campaigns:write", "contacts:write"],
         )
 
     app = FastAPI()
     app.include_router(outreach_router, prefix="/api/v1")
+    app.include_router(contacts_router, prefix="/api/v1")
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_current_tenant] = _get_tenant
     app.dependency_overrides[get_current_principal] = _override_get_principal
@@ -166,6 +168,91 @@ async def test_import_is_idempotent_on_domain(client):
     assert listing["total"] == 2
     hooks = {i["hook"] for i in listing["items"]}
     assert "Updated hook" in hooks
+
+
+async def test_import_same_name_different_domains_creates_two_prospects(client):
+    """Two distinct businesses sharing a name must never merge when both
+    rows carry (different) domains — regression for the 2026-07-14 launch
+    import that attached the Katy TX contact to the Sioux Falls gym."""
+    rows = [
+        {
+            "business_name": "Results Personal Training",
+            "website": "https://resultspersonaltraining.com",
+            "city": "Sioux Falls",
+            "state": "SD",
+            "contact": {"email": "info@resultspersonaltraining.com"},
+        },
+        {
+            "business_name": "Results Personal Training",
+            "website": "https://www.personaltrainersinkaty.com/",
+            "city": "Katy",
+            "state": "TX",
+            "contact": {"email": "info@personaltrainersinkaty.com"},
+        },
+    ]
+    resp = await client.post("/api/v1/prospects/import", json={"prospects": rows})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["created"] == 2
+    assert body["updated"] == 0
+    p0, p1 = body["prospects"]
+    assert p0["prospect_id"] != p1["prospect_id"]
+    assert {p0["domain"], p1["domain"]} == {
+        "resultspersonaltraining.com",
+        "personaltrainersinkaty.com",
+    }
+
+    # Each prospect keeps its own contact + geo, no cross-attachment.
+    listing = (await client.get("/api/v1/prospects")).json()
+    by_domain = {i["domain"]: i for i in listing["items"]}
+    assert (
+        by_domain["resultspersonaltraining.com"]["primary_contact"]["email"]
+        == "info@resultspersonaltraining.com"
+    )
+    assert by_domain["resultspersonaltraining.com"]["state"] == "SD"
+    assert (
+        by_domain["personaltrainersinkaty.com"]["primary_contact"]["email"]
+        == "info@personaltrainersinkaty.com"
+    )
+    assert by_domain["personaltrainersinkaty.com"]["state"] == "TX"
+
+
+async def test_import_same_name_without_domain_still_merges(client):
+    """Name fallback is preserved for rows with no parseable domain."""
+    first = (
+        await client.post(
+            "/api/v1/prospects/import",
+            json={
+                "prospects": [
+                    {
+                        "business_name": "Personally Fit",
+                        "website": "https://personallyfit.com",
+                        "contact": {"email": "owner@personallyfit.com"},
+                    }
+                ]
+            },
+        )
+    ).json()
+    assert first["created"] == 1
+    pid = first["prospects"][0]["prospect_id"]
+
+    second = (
+        await client.post(
+            "/api/v1/prospects/import",
+            json={
+                "prospects": [
+                    {
+                        "business_name": "Personally Fit",
+                        "website": None,
+                        "hook": "Fresh hook",
+                    }
+                ]
+            },
+        )
+    ).json()
+    assert second["created"] == 0
+    assert second["updated"] == 1
+    assert second["prospects"][0]["prospect_id"] == pid
 
 
 async def test_reimport_never_resets_status_or_resurrects_dnc(client):
@@ -435,3 +522,53 @@ async def test_prospect_timeline_merges_sources(client, test_session_factory, te
     subj = [e for e in tl["entries"] if e["kind"] == "interaction"][0]
     assert subj["subject"] == "Intro"
     assert subj["direction"] == "outbound"
+
+
+# ── Pipeline-status consistency (customers vs prospects) ───────────────
+
+
+async def test_post_customers_creates_pipeline_row(client):
+    """A customer created via POST /customers must appear on the pipeline
+    immediately — regression for launch prospects that were enrolled in a
+    campaign yet invisible on the board."""
+    resp = await client.post(
+        "/api/v1/customers",
+        json={"name": "SFT Fitness", "domain": "sftfitness.com"},
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+
+    detail = (await client.get(f"/api/v1/prospects/{pid}")).json()
+    assert detail["pipeline_status"] == "new"
+    assert detail["pipeline_status_changed_at"] is not None
+
+    listing = (await client.get("/api/v1/prospects")).json()
+    assert pid in {i["prospect_id"] for i in listing["items"]}
+
+
+async def test_null_status_customer_heals_on_prospect_read(
+    client, test_session_factory, test_tenant
+):
+    """Legacy customers with no pipeline_status (created before the eager
+    row existed) are backfilled to "new" the first time the prospect API
+    reads them — GET /prospects/{id} never returns pipeline_status: null."""
+    from backend.app.models import Customer
+
+    async with test_session_factory() as s:
+        legacy = Customer(
+            tenant_id=test_tenant.id, name="Raymer Strength", domain="raymer.com"
+        )
+        s.add(legacy)
+        await s.commit()
+        pid = str(legacy.id)
+
+    # Invisible on the list before the heal…
+    before = (await client.get("/api/v1/prospects")).json()
+    assert pid not in {i["prospect_id"] for i in before["items"]}
+
+    detail = (await client.get(f"/api/v1/prospects/{pid}")).json()
+    assert detail["pipeline_status"] == "new"
+
+    # …and the heal persists: the list now includes the row.
+    after = (await client.get("/api/v1/prospects")).json()
+    assert pid in {i["prospect_id"] for i in after["items"]}
