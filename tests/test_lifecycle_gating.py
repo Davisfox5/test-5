@@ -94,26 +94,28 @@ def _run_emit(account_lifecycle_stage: str, outcome_type: Optional[str] = None):
     return captured.calls
 
 
-def test_webhook_summary_gates_churn_for_prospect():
-    calls = _run_emit("prospect")
-    assert calls, "interaction.analyzed should still emit"
-    event, payload = calls[0]
-    assert event == "interaction.analyzed"
+def test_no_duplicate_analyzed_event():
+    # interaction.analyzed has exactly one source: the rich dispatch_sync
+    # payload at pipeline Step 19. This helper must not emit a thin
+    # duplicate — with no inferred outcome it emits nothing at all.
+    assert _run_emit("prospect") == []
+    assert _run_emit("client") == []
+
+
+def test_outcome_inferred_gates_churn_for_prospect():
+    calls = _run_emit("prospect", outcome_type="won")
+    assert [e for e, _ in calls] == ["interaction.outcome_inferred"]
+    payload = calls[0][1]
     assert payload["churn_risk_signal"] is None
     assert payload["lifecycle_stage"] == "prospect"
     # Sentiment is meaningful for any account — never gated.
     assert payload["sentiment_score"] == 8.5
+    assert payload["outcome_type"] == "won"
 
 
-def test_webhook_summary_keeps_churn_for_client():
-    calls = _run_emit("client")
-    event, payload = calls[0]
+def test_outcome_inferred_keeps_churn_for_client():
+    calls = _run_emit("client", outcome_type="won")
+    assert [e for e, _ in calls] == ["interaction.outcome_inferred"]
+    payload = calls[0][1]
     assert payload["churn_risk_signal"] == "none"
     assert payload["lifecycle_stage"] == "client"
-
-
-def test_outcome_inferred_payload_inherits_gate():
-    calls = _run_emit("prospect", outcome_type="won")
-    events = {e: p for e, p in calls}
-    assert "interaction.outcome_inferred" in events
-    assert events["interaction.outcome_inferred"]["churn_risk_signal"] is None
