@@ -26,7 +26,7 @@ None of those can produce runtime errors; touching them from an
 autogenerate dump risks dropping load-bearing indexes.
 
 Revision ID: sen_001_reconcile_recommendation_drift
-Revises: out_001_cold_outreach
+Revises: out_002_outreach_links
 Create Date: 2026-07-16
 """
 
@@ -35,7 +35,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "sen_001_reconcile_recommendation_drift"
-down_revision = "out_001_cold_outreach"
+down_revision = "out_002_outreach_links"
 branch_labels = None
 depends_on = None
 
