@@ -552,3 +552,84 @@ def test_send_fails_member_when_attachment_unavailable(db, fake_sender, monkeypa
     db.refresh(member)
     assert member.state == "failed"
     assert member.halt_reason == "attachment_unavailable"
+
+
+# ── Click tracking (out_002) ───────────────────────────────────────────
+
+
+def test_track_clicks_rewrites_html_part_only_and_persists_links(
+    db, fake_sender, monkeypatch
+):
+    from backend.app.models import OutreachLink
+    from backend.app.services.outreach import links as links_mod
+
+    monkeypatch.setattr(
+        links_mod, "tracking_base_url", lambda: "https://lindaai.net"
+    )
+    tenant, campaign, (member,) = _seed(
+        db, config={**CONFIG, "track_clicks": True}
+    )
+    member.draft_body = (
+        "See [**our** pricing](https://gym.example/p?a=1&b=2) and "
+        "[docs](https://gym.example/docs).\n\n"
+        "Same link again: [pricing](https://gym.example/p?a=1&b=2)."
+    )
+    db.commit()
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    kw = fake_sender.calls[0]
+
+    # Plain part keeps the ORIGINAL urls — never the redirect.
+    assert "https://gym.example/p?a=1&b=2" in kw["body"]
+    assert "/t/" not in kw["body"]
+    # HTML hrefs point at the redirect; display text/markers unchanged.
+    assert 'href="https://gym.example' not in kw["body_html"]
+    assert "<b>our</b> pricing</a>" in kw["body_html"]
+
+    rows = db.execute(select(OutreachLink)).scalars().all()
+    # One row per DISTINCT destination — the repeated pricing link
+    # reuses its token, so both its anchors share one row.
+    assert sorted(r.original_url for r in rows) == [
+        "https://gym.example/docs",
+        "https://gym.example/p?a=1&b=2",
+    ]
+    recipient = db.execute(select(CampaignRecipient)).scalars().one()
+    for r in rows:
+        assert r.tenant_id == tenant.id
+        assert r.campaign_id == campaign.id
+        assert r.member_id == member.id
+        assert r.recipient_id == recipient.id
+        assert f'href="https://lindaai.net/t/{r.token}"' in kw["body_html"]
+    # 3 anchors total: the two pricing anchors share one token + docs.
+    assert kw["body_html"].count("https://lindaai.net/t/") == 3
+
+
+def test_track_clicks_off_by_default_sends_original_links(db, fake_sender):
+    from backend.app.models import OutreachLink
+
+    tenant, campaign, (member,) = _seed(db)  # CONFIG has no track_clicks
+    member.draft_body = "See [pricing](https://gym.example/p)."
+    db.commit()
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    kw = fake_sender.calls[0]
+    assert 'href="https://gym.example/p"' in kw["body_html"]
+    assert "/t/" not in kw["body_html"]
+    assert db.execute(select(OutreachLink)).scalars().all() == []
+
+
+def test_track_clicks_without_base_url_declines_rewrite(db, fake_sender):
+    from backend.app.models import OutreachLink
+
+    # Neither OUTREACH_TRACKING_BASE_URL nor PUBLIC_WEBHOOK_BASE_URL is
+    # set in tests → the rewriter declines rather than emit dead links.
+    tenant, campaign, (member,) = _seed(
+        db, config={**CONFIG, "track_clicks": True}
+    )
+    member.draft_body = "See [pricing](https://gym.example/p)."
+    db.commit()
+
+    scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    kw = fake_sender.calls[0]
+    assert 'href="https://gym.example/p"' in kw["body_html"]
+    assert db.execute(select(OutreachLink)).scalars().all() == []

@@ -42,16 +42,20 @@ GLOBAL_TABLES = frozenset(
 )
 
 # Read *before* a tenant is resolved; SELECT is allowed with the GUC
-# unset, writes are not. Two families:
+# unset, writes are not. Three families:
 # - credential lookup: get_current_principal must find the api key / user
 #   before it knows the tenant;
 # - webhook correlation: provider callbacks (Gmail/Graph push) locate the
 #   integration / sync cursor from provider-side identifiers (account
 #   email, subscription id) that don't carry our tenant id. Handlers bind
 #   the tenant immediately after this first lookup.
+# - public token redirect: GET /t/{token} (outreach click tracking)
+#   resolves an opaque, unguessable token to its outreach_links row
+#   before any tenant is known, then binds the tenant for the click
+#   write. Same posture as webhook correlation.
 # Every other tenant-scoped table stays strict: no GUC → zero rows.
 AUTH_BOOTSTRAP_TABLES = frozenset(
-    {"api_keys", "users", "integrations", "email_sync_cursors"}
+    {"api_keys", "users", "integrations", "email_sync_cursors", "outreach_links"}
 )
 
 # The GUC as a nullable uuid: NULL when unset or empty.

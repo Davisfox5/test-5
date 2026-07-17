@@ -20,7 +20,7 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
@@ -106,7 +106,11 @@ class EventBulkIn(BaseModel):
 class CampaignRollup(BaseModel):
     sent: int
     opens: int
+    # Every recorded click event, scanner prefetches and repeats included.
     clicks: int
+    # Deduped to one per (recipient, url) and excluding hits flagged as
+    # likely scanner prefetches — the "first human click" number.
+    unique_clicks: int
     replies: int
     bounces: int
     unsubscribes: int
@@ -285,6 +289,26 @@ async def _compute_rollup(
     )).all()
     by_type = {row[0]: row[1] for row in counts_rows}
 
+    # Human clicks: collapse repeats to one per (recipient, url) and skip
+    # hits the click endpoint flagged as likely scanner prefetches. Events
+    # ingested without click-tracking metadata (external ESPs) count too —
+    # their suspected_bot is absent, i.e. not flagged.
+    click_url = CampaignEvent.metadata_["url"].as_string()
+    suspected_bot = CampaignEvent.metadata_["suspected_bot"].as_boolean()
+    human_clicks_sq = (
+        select(CampaignEvent.recipient_id, click_url.label("url"))
+        .where(
+            CampaignEvent.campaign_id == campaign_id,
+            CampaignEvent.event_type == "click",
+            or_(suspected_bot.is_(None), suspected_bot.is_(False)),
+        )
+        .group_by(CampaignEvent.recipient_id, click_url)
+        .subquery()
+    )
+    unique_clicks = (
+        await db.execute(select(func.count()).select_from(human_clicks_sq))
+    ).scalar_one() or 0
+
     sent = (await db.execute(
         select(func.count(CampaignRecipient.id))
         .where(CampaignRecipient.campaign_id == campaign_id)
@@ -314,6 +338,7 @@ async def _compute_rollup(
         sent=sent,
         opens=by_type.get("open", 0),
         clicks=by_type.get("click", 0),
+        unique_clicks=unique_clicks,
         replies=by_type.get("reply", 0),
         bounces=by_type.get("bounce", 0),
         unsubscribes=by_type.get("unsubscribe", 0),

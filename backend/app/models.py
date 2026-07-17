@@ -2581,6 +2581,42 @@ class OutreachMember(Base):
     )
 
 
+class OutreachLink(Base):
+    """One rewritten destination inside one outreach send (``out_002``).
+
+    When a campaign opts into click tracking (``config.track_clicks``),
+    every http(s) link in the HTML part is swapped at send time for an
+    opaque ``/t/{token}`` redirect. This row is the server side of that
+    token: the public GET /t/{token} endpoint resolves it, records a
+    ``click`` CampaignEvent, and 302s to ``original_url`` — the
+    destination is never taken from the request, so the endpoint can't
+    be used as an open redirect. The text/plain part keeps the original
+    URLs. One row per distinct URL per send; ``recipient_id`` ties the
+    click back to the exact touch that delivered it.
+    """
+
+    __tablename__ = "outreach_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    # Opaque, unguessable (secrets.token_urlsafe) — the only lookup key
+    # the public endpoint accepts.
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    member_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("outreach_members.id", ondelete="SET NULL")
+    )
+    recipient_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaign_recipients.id", ondelete="SET NULL")
+    )
+    original_url: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # ──────────────────────────────────────────────────────────
 # CONTINUOUS AI IMPROVEMENT
 # ──────────────────────────────────────────────────────────
