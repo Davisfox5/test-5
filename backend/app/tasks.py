@@ -5378,47 +5378,70 @@ def webhook_pending_sweep() -> Dict[str, Any]:
 
     requeued = 0
     dead_lettered = 0
-    for tid in _all_tenant_ids():
-        session = _get_sync_session()
-        try:
-            with tenant_context(uuid.UUID(tid), session):
-                rows = (
-                    session.query(WebhookDelivery)
-                    .filter(
-                        WebhookDelivery.tenant_id == uuid.UUID(tid),
-                        WebhookDelivery.status == "pending",
-                    )
-                    .limit(_SWEEP_BATCH_LIMIT)
-                    .all()
-                )
-                for d in rows:
-                    created_at = _aware(d.created_at)
-                    next_retry_at = _aware(d.next_retry_at)
-                    if created_at is not None and created_at < dead_letter_cutoff:
-                        d.status = "dead_letter"
-                        d.last_error = (
-                            "webhook_pending_sweep: stale — expired before "
-                            "first successful delivery"
+    # One session for the whole sweep (not one per tenant — 45 session
+    # opens per beat tick was pure churn), and a cheap index-only EXISTS
+    # probe per tenant BEFORE loading rows: almost every tenant has no
+    # pending deliveries, and loading full rows (payload JSONB included)
+    # for all of them every 10 minutes is what Sentry flagged as an N+1
+    # on this transaction. RLS keeps the per-tenant loop itself — the
+    # GUC scopes each query, so a single cross-tenant SELECT would see
+    # zero rows under the app role.
+    session = _get_sync_session()
+    try:
+        for tid in _all_tenant_ids():
+            try:
+                with tenant_context(uuid.UUID(tid), session):
+                    has_pending = session.query(
+                        session.query(WebhookDelivery.id)
+                        .filter(
+                            WebhookDelivery.tenant_id == uuid.UUID(tid),
+                            WebhookDelivery.status == "pending",
                         )
-                        dead_lettered += 1
+                        .exists()
+                    ).scalar()
+                    if not has_pending:
+                        # End the read-only transaction so the next
+                        # tenant's context re-arms the GUC cleanly.
+                        session.rollback()
                         continue
-                    never_attempted = (
-                        (d.attempt_count or 0) == 0
-                        and created_at is not None
-                        and created_at < min_age_cutoff
+                    rows = (
+                        session.query(WebhookDelivery)
+                        .filter(
+                            WebhookDelivery.tenant_id == uuid.UUID(tid),
+                            WebhookDelivery.status == "pending",
+                        )
+                        .limit(_SWEEP_BATCH_LIMIT)
+                        .all()
                     )
-                    retry_overdue = (
-                        next_retry_at is not None
-                        and next_retry_at < min_age_cutoff
-                    )
-                    if never_attempted or retry_overdue:
-                        webhook_deliver.delay(str(d.id), tid)
-                        requeued += 1
-                session.commit()
-        except Exception:
-            logger.exception("webhook_pending_sweep failed for tenant %s", tid)
-        finally:
-            session.close()
+                    for d in rows:
+                        created_at = _aware(d.created_at)
+                        next_retry_at = _aware(d.next_retry_at)
+                        if created_at is not None and created_at < dead_letter_cutoff:
+                            d.status = "dead_letter"
+                            d.last_error = (
+                                "webhook_pending_sweep: stale — expired before "
+                                "first successful delivery"
+                            )
+                            dead_lettered += 1
+                            continue
+                        never_attempted = (
+                            (d.attempt_count or 0) == 0
+                            and created_at is not None
+                            and created_at < min_age_cutoff
+                        )
+                        retry_overdue = (
+                            next_retry_at is not None
+                            and next_retry_at < min_age_cutoff
+                        )
+                        if never_attempted or retry_overdue:
+                            webhook_deliver.delay(str(d.id), tid)
+                            requeued += 1
+                    session.commit()
+            except Exception:
+                logger.exception("webhook_pending_sweep failed for tenant %s", tid)
+                session.rollback()
+    finally:
+        session.close()
 
     result = {"requeued": requeued, "dead_lettered": dead_lettered}
     if requeued or dead_lettered:
