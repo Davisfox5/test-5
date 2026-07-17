@@ -69,6 +69,22 @@ _redis_lock = threading.Lock()
 # Redis is unreachable.
 _local_open = False
 _local_probe_deadline = 0.0
+# After a Redis failure, skip Redis for a short window so the breaker
+# never adds connect-timeout latency to every LLM call while Redis is
+# down — it degrades to per-process state instead.
+_redis_down_until = 0.0
+_REDIS_RETRY_SECONDS = 30.0
+
+
+def _redis() -> Optional[Any]:
+    if time.time() < _redis_down_until:
+        return None
+    return _get_redis()
+
+
+def _mark_redis_down() -> None:
+    global _redis_down_until
+    _redis_down_until = time.time() + _REDIS_RETRY_SECONDS
 
 
 def _probe_interval() -> int:
@@ -128,12 +144,13 @@ def _report_transition(state: str, detail: str) -> None:
 
 
 def is_open() -> bool:
-    r = _get_redis()
+    r = _redis()
     if r is not None:
         try:
             return bool(r.exists(OPEN_KEY))
         except Exception:  # noqa: BLE001
             logger.debug("llm breaker: redis read failed", exc_info=True)
+            _mark_redis_down()
     return _local_open
 
 
@@ -150,7 +167,7 @@ def record_billing_failure(exc: BaseException) -> bool:
 
     interval = _probe_interval()
     transitioned = False
-    r = _get_redis()
+    r = _redis()
     if r is not None:
         try:
             payload = json.dumps(
@@ -162,6 +179,7 @@ def record_billing_failure(exc: BaseException) -> bool:
                 r.set(PROBE_KEY, "1", ex=interval)
         except Exception:  # noqa: BLE001
             logger.debug("llm breaker: redis open failed", exc_info=True)
+            _mark_redis_down()
             transitioned = not _local_open
     else:
         transitioned = not _local_open
@@ -181,13 +199,14 @@ def close() -> None:
     """Close the breaker; reports once if this call made the transition."""
     global _local_open
     transitioned = False
-    r = _get_redis()
+    r = _redis()
     if r is not None:
         try:
             transitioned = bool(r.delete(OPEN_KEY))
             r.delete(PROBE_KEY)
         except Exception:  # noqa: BLE001
             logger.debug("llm breaker: redis close failed", exc_info=True)
+            _mark_redis_down()
             transitioned = _local_open
     else:
         transitioned = _local_open
@@ -200,12 +219,13 @@ def _claim_probe_slot() -> bool:
     """One probe per interval across the whole fleet (Redis NX lock)."""
     global _local_probe_deadline
     interval = _probe_interval()
-    r = _get_redis()
+    r = _redis()
     if r is not None:
         try:
             return bool(r.set(PROBE_KEY, "1", nx=True, ex=interval))
         except Exception:  # noqa: BLE001
             logger.debug("llm breaker: probe slot claim failed", exc_info=True)
+            _mark_redis_down()
     now = time.time()
     if now >= _local_probe_deadline:
         _local_probe_deadline = now + interval
@@ -251,11 +271,12 @@ async def guard(client: Optional[Any] = None) -> None:
 
 def _reset_for_tests() -> None:
     """Test hook: forget cached Redis client + local state."""
-    global _redis_client, _local_open, _local_probe_deadline
+    global _redis_client, _local_open, _local_probe_deadline, _redis_down_until
     with _redis_lock:
         _redis_client = None
     _local_open = False
     _local_probe_deadline = 0.0
+    _redis_down_until = 0.0
 
 
 __all__ = [
