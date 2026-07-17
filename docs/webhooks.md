@@ -113,6 +113,27 @@ Same shape as `.replied` (fields may be null for manual opt-outs), plus
 The prospect is `do_not_contact` from this moment and every active
 sequence for them is halted.
 
+### `outreach.link_clicked`
+
+Fires when a prospect follows a tracked link from a campaign with
+`config.track_clicks` enabled (links in the HTML part are rewritten to
+`/t/{token}` redirects at send time). Every hit is emitted — repeats
+included; `suspected_bot` marks hits that look like mail-gateway link
+scanners (bot user-agent, or a click within seconds of delivery), so
+consumers wanting "first human click" should filter on it and dedupe
+per (recipient_id, url).
+
+```json
+{
+  "prospect_id": "<uuid>", "prospect_name": "...",
+  "campaign_id": "<uuid>", "campaign_name": "...",
+  "member_id": "<uuid>", "recipient_id": "<uuid>",
+  "url": "https://the-original-destination.example/pricing",
+  "suspected_bot": false,
+  "occurred_at": "<iso8601>"
+}
+```
+
 ### `outreach.email.bounced`
 
 ```json

@@ -27,7 +27,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -52,6 +52,7 @@ from backend.app.services.email.outbound import (
     resolve_email_integration_sync,
 )
 from backend.app.services.outreach import drafts as drafts_mod
+from backend.app.services.outreach.links import build_link_rewriter, persist_links
 from backend.app.services.outreach.common import (
     OutreachConfig,
     advance_status,
@@ -508,8 +509,18 @@ def _send_member_touch(
 
     draft_text = member.draft_body or ""
     body = strip_markers(draft_text) + compose_footer(config.template)
+    # Click tracking rewrites hrefs in the HTML part only — the plain
+    # text part above keeps the original URLs. Tokens are collected here
+    # and persisted only after the provider accepts the send.
+    click_links: List[Tuple[str, str]] = []
+    link_rewriter = (
+        build_link_rewriter(click_links) if config.track_clicks else None
+    )
     body_html = render_email_html(
-        draft_text, config.template, logo_cid=(logo.content_id if logo else None)
+        draft_text,
+        config.template,
+        logo_cid=(logo.content_id if logo else None),
+        link_rewriter=link_rewriter,
     )
     subject = member.draft_subject or config.template.subject
     prior_ids = list(member.thread_message_ids or [])
@@ -577,6 +588,17 @@ def _send_member_touch(
         step=member.current_step,
     )
     session.add(recipient)
+
+    if click_links:
+        session.flush()  # assign recipient.id — the links key on it
+        persist_links(
+            session,
+            click_links,
+            tenant_id=tenant.id,
+            campaign_id=campaign.id,
+            member_id=member.id,
+            recipient_id=recipient.id,
+        )
 
     # The outbound touch in the prospect's interaction tree. With a
     # provider_message_id (Gmail) the SENT-folder poller dedupes against

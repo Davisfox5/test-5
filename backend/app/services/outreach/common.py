@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as html_mod
 import re
 from datetime import datetime, time, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
@@ -181,6 +181,15 @@ class OutreachConfig(BaseModel):
     provider: Optional[str] = None
     # Files attached to every send (uploaded via POST /outreach/uploads).
     attachments: List[OutreachAttachment] = Field(default_factory=list, max_length=5)
+    # Per-recipient click tracking. When True, every ``[text](url)`` link
+    # in the HTML part is rewritten at send time to an opaque LINDA
+    # redirect (/t/{token}) that records the click before 302ing to the
+    # real destination. The text/plain part ALWAYS keeps the original
+    # URLs — rewritten links in plain text read as spam, and the click
+    # signal comes from HTML clicks. Default off: redirect-wrapped links
+    # can hurt cold-email deliverability, so first-touch campaigns may
+    # deliberately leave this off and enable it for later-stage sequences.
+    track_clicks: bool = False
 
     @field_validator("mode")
     @classmethod
@@ -366,21 +375,40 @@ def strip_markers(text: str) -> str:
     return _UNDERLINE_RE.sub(r"\1", out)
 
 
-def _markers_to_html(escaped: str) -> str:
+def _markers_to_html(
+    escaped: str,
+    link_rewriter: Optional[Callable[[str], Optional[str]]] = None,
+) -> str:
     # `escaped` is already HTML-escaped, so the captured URL/text can't
     # break out of the href attribute or inject markup ('"' is &quot; here).
-    out = _LINK_RE.sub(r'<a href="\2" style="color:#2563eb;">\1</a>', escaped)
+    def _link(m: "re.Match") -> str:
+        text, href = m.group(1), m.group(2)
+        if link_rewriter is not None:
+            # The capture is escaped text; the rewriter works on (and
+            # stores) the real destination, so unescape before handing
+            # it over and re-escape whatever comes back.
+            replacement = link_rewriter(html_mod.unescape(href))
+            if replacement:
+                href = html_mod.escape(replacement)
+        return f'<a href="{href}" style="color:#2563eb;">{text}</a>'
+
+    out = _LINK_RE.sub(_link, escaped)
     out = _TRIPLE_RE.sub(r"<b><i>\1</i></b>", out)
     out = _BOLD_RE.sub(r"<b>\1</b>", out)
     out = _ITALIC_RE.sub(r"<i>\1</i>", out)
     return _UNDERLINE_RE.sub(r"<u>\1</u>", out)
 
 
-def _paragraphs_html(text: str) -> str:
+def _paragraphs_html(
+    text: str,
+    link_rewriter: Optional[Callable[[str], Optional[str]]] = None,
+) -> str:
     blocks = re.split(r"\n\s*\n", text.strip()) if text.strip() else []
     rendered = []
     for block in blocks:
-        inner = _markers_to_html(html_mod.escape(block)).replace("\n", "<br>")
+        inner = _markers_to_html(
+            html_mod.escape(block), link_rewriter
+        ).replace("\n", "<br>")
         rendered.append(f'<p style="margin:0 0 1em 0;">{inner}</p>')
     return "".join(rendered)
 
@@ -389,17 +417,26 @@ def render_email_html(
     body_text: str,
     template: OutreachTemplate,
     logo_cid: Optional[str] = None,
+    link_rewriter: Optional[Callable[[str], Optional[str]]] = None,
 ) -> str:
     """The HTML alternative for one outreach send: the (marker-formatted)
     body, the tenant logo when provided, and the CAN-SPAM footer —
-    mirroring exactly what ``compose_footer`` appends to the text part."""
+    mirroring exactly what ``compose_footer`` appends to the text part.
+
+    ``link_rewriter`` (click tracking) receives each body link's real
+    destination URL and returns the replacement href, or None to keep the
+    original. It sees BODY links only — the footer never renders anchors,
+    so compliance/unsubscribe text is structurally out of reach — and only
+    http(s) destinations (_LINK_RE never matches mailto:). Display text
+    is untouched either way.
+    """
     style = "line-height:1.45;"
     if template.font_family:
         style += f"font-family:{EMAIL_FONTS[template.font_family]};"
     if template.font_size_px:
         style += f"font-size:{template.font_size_px}px;"
 
-    parts = [f'<div style="{style}">', _paragraphs_html(body_text)]
+    parts = [f'<div style="{style}">', _paragraphs_html(body_text, link_rewriter)]
     if logo_cid:
         parts.append(
             '<div style="margin-top:16px;">'

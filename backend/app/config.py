@@ -238,6 +238,15 @@ class Settings(BaseSettings):
     # Base URL the OAuth providers can reach to POST inbound
     # notifications.  Needs to be an https URL in production.
     PUBLIC_WEBHOOK_BASE_URL: str = ""
+
+    # ── Outreach click tracking ───────────────────────────
+    # Public base the rewritten /t/{token} links point at
+    # (https://lindaai.net in prod). Empty → falls back to
+    # PUBLIC_WEBHOOK_BASE_URL; if that's empty too, campaigns with
+    # track_clicks on send their original links rather than dead ones.
+    OUTREACH_TRACKING_BASE_URL: str = ""
+    # Where GET /t/{token} bounces when the token is unknown or stale.
+    OUTREACH_CLICK_FALLBACK_URL: str = "https://lindaai.net"
     # Gmail Pub/Sub topic the backend subscribes each mailbox to.
     # Format: "projects/{project}/topics/{topic}".  Must have the
     # Gmail service account granted Publisher on it.

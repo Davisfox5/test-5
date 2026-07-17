@@ -60,6 +60,7 @@ WEBHOOK_EVENTS: Dict[str, str] = {
     "outreach.email.replied":    "A prospect replied to an outreach send.",
     "outreach.email.bounced":    "An outreach send bounced (DSN detected).",
     "outreach.email.opted_out":  "A prospect opted out (stop reply or manual DNC).",
+    "outreach.link_clicked":     "A prospect clicked a tracked link in an outreach email.",
     "prospect.status_changed":   "A prospect moved in the outreach pipeline.",
     "campaign.completed":        "An outreach campaign has no actionable members left.",
 
