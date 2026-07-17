@@ -2530,12 +2530,22 @@ def _emit_webhooks_for_interaction(
     outcome_confidence: Optional[float],
     account_lifecycle_stage: str = "prospect",
 ) -> None:
-    """Fan out webhook events for a freshly analyzed interaction.
+    """Emit ``interaction.outcome_inferred`` for a freshly analyzed
+    interaction (no-op when no outcome was inferred).
+
+    ``interaction.analyzed`` is NOT emitted here: this function used to
+    send a thin duplicate of it, so subscribers received two
+    differently-shaped analyzed events per analysis. The single source
+    for ``interaction.analyzed`` is the rich ``dispatch_sync`` payload
+    at pipeline Step 19.
 
     Called from inside the sync Celery task, so we hop into an async
     session via ``asyncio.run``. Never blocks on HTTP — ``emit_event``
     writes delivery rows and enqueues the delivery task.
     """
+    if not outcome_type:
+        return
+
     from backend.app.db import async_session
     from backend.app.services.webhook_dispatcher import emit_event
 
@@ -2562,18 +2572,16 @@ def _emit_webhooks_for_interaction(
         # transaction.
         async with async_session() as db:
             async with tenant_context_async(tenant_id, db):
-                await emit_event(db, tenant_id, "interaction.analyzed", summary)
-                if outcome_type:
-                    await emit_event(
-                        db,
-                        tenant_id,
-                        "interaction.outcome_inferred",
-                        {
-                            **summary,
-                            "outcome_type": outcome_type,
-                            "outcome_confidence": outcome_confidence,
-                        },
-                    )
+                await emit_event(
+                    db,
+                    tenant_id,
+                    "interaction.outcome_inferred",
+                    {
+                        **summary,
+                        "outcome_type": outcome_type,
+                        "outcome_confidence": outcome_confidence,
+                    },
+                )
                 await db.commit()
 
     try:
