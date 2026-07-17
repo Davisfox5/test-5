@@ -513,6 +513,13 @@ async def ingest_email(
         status="processing",
         insights=merge_variant_insight(None, "email_classifier", variant.variant_id),
     )
+    # created_at is "when the interaction happened" everywhere it's
+    # consumed (timelines, per-contact latest, analytics windows), so an
+    # email must carry its Date header, not the ingest time — otherwise a
+    # backfilled 50-message thread renders as 50 emails at one identical
+    # timestamp. Unparseable Date falls through to the server default.
+    if email.received_at is not None:
+        interaction.created_at = email.received_at
     session.add(interaction)
     session.flush()
 
