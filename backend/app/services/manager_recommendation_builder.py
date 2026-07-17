@@ -245,6 +245,7 @@ def _build_for_tenant_domain(
 
 
 def build_for_all_tenants(session: Session) -> Dict[str, Any]:
+    from backend.app.services.llm_circuit_breaker import LLMCallsSuspended
     from backend.app.tenant_ctx import tenant_context
 
     tenants = session.execute(select(Tenant)).scalars().all()
@@ -254,39 +255,64 @@ def build_for_all_tenants(session: Session) -> Dict[str, Any]:
             with tenant_context(tenant.id, session):
                 rows = build_for_tenant(session, tenant)
             counts[str(tenant.id)] = len(rows)
+        except LLMCallsSuspended:
+            # Expected state (credit breaker open) — stop the run quietly;
+            # per-domain commits already persisted whatever finished.
+            # Tomorrow's beat run rebuilds everything.
+            session.rollback()
+            logger.info(
+                "manager recommendations deferred: LLM credit breaker open "
+                "(%d/%d tenants processed)", len(counts), len(tenants),
+            )
+            return {
+                "tenants_processed": len(counts),
+                "by_tenant": counts,
+                "deferred": "llm_credit_breaker_open",
+            }
         except Exception:
             logger.exception(
                 "build_for_tenant failed for tenant %s (non-fatal)", tenant.id
             )
+            # A failed flush/commit leaves the session unusable until it's
+            # rolled back — without this, every later tenant dies with
+            # PendingRollbackError inheriting THIS tenant's failure.
+            session.rollback()
             counts[str(tenant.id)] = -1
     return {"tenants_processed": len(tenants), "by_tenant": counts}
 
 
 def expire_old(session: Session) -> int:
     """Sweep recommendations whose expires_at has passed. Status flips to
-    ``expired`` (audit trail preserved). Called daily at 03:00 UTC."""
+    ``expired`` (audit trail preserved). Called daily at 03:00 UTC.
+
+    One set-based UPDATE per tenant (RLS keeps the loop tenant-scoped),
+    committed as it goes. The previous shape — load ORM rows, mutate
+    ``status``, flush — raced with concurrent writers: a row deleted or
+    already-expired between the SELECT and the flush made the versioned
+    UPDATE match fewer rows than expected and blew up the whole sweep
+    with ``StaleDataError``. A plain WHERE-filtered UPDATE simply
+    matches whatever still qualifies at execution time.
+    """
+    from sqlalchemy import update
+
     from backend.app.tenant_ctx import tenant_context
 
     now = datetime.now(timezone.utc)
     total = 0
-    for tenant in session.execute(select(Tenant)).scalars().all():
-        with tenant_context(tenant.id, session):
-            rows = (
-                session.execute(
-                    select(ManagerRecommendation).where(
-                        ManagerRecommendation.tenant_id == tenant.id,
-                        ManagerRecommendation.status == "open",
-                        ManagerRecommendation.expires_at <= now,
-                    )
+    for tenant_id in session.execute(select(Tenant.id)).scalars().all():
+        with tenant_context(tenant_id, session):
+            result = session.execute(
+                update(ManagerRecommendation)
+                .where(
+                    ManagerRecommendation.tenant_id == tenant_id,
+                    ManagerRecommendation.status == "open",
+                    ManagerRecommendation.expires_at <= now,
                 )
-                .scalars()
-                .all()
+                .values(status="expired")
+                .execution_options(synchronize_session=False)
             )
-            for r in rows:
-                r.status = "expired"
-            total += len(rows)
-    if total:
-        session.commit()
+            session.commit()
+            total += int(result.rowcount or 0)
     return total
 
 
@@ -356,7 +382,14 @@ def _invoke_haiku(
 ) -> List[Dict[str, Any]]:
     """Single Haiku call returning the parsed JSON array. Empty list on
     any failure. ``domain`` selects the per-motion system prompt so the
-    voice rules and category whitelist match the run."""
+    voice rules and category whitelist match the run.
+
+    :class:`LLMCallsSuspended` propagates — an open credit breaker must
+    stop the whole run (handled in ``build_for_all_tenants``), not decay
+    into one empty-and-ERROR-logged tenant per occurrence.
+    """
+    from backend.app.services.llm_circuit_breaker import LLMCallsSuspended
+
     try:
         resp = get_router().invoke(
             LLMRequest(
@@ -384,6 +417,8 @@ def _invoke_haiku(
         if isinstance(parsed, dict) and isinstance(parsed.get("recommendations"), list):
             return parsed["recommendations"]
         return []
+    except LLMCallsSuspended:
+        raise
     except Exception:
         logger.exception("Haiku recommendation call failed (returning empty list)")
         return []

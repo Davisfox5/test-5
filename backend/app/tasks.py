@@ -14,7 +14,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from celery import Celery
+from celery import Celery, Task
 from celery.schedules import crontab
 from celery.signals import (
     beat_init,
@@ -46,10 +46,38 @@ settings = get_settings()
 
 # ── Celery app ───────────────────────────────────────────────────────────
 
+
+class _LindaBaseTask(Task):
+    """Base task: an open LLM credit breaker defers work, never errors.
+
+    ``llm_circuit_breaker.LLMCallsSuspended`` marks an EXPECTED state
+    (credit balance deliberately low). The pollers that do heavy LLM
+    work handle it locally with a rollback; this backstop covers every
+    other task (orchestrator, digests, KB refiners, …) so none of them
+    turns the paused state into a Sentry-visible failure. Breaker
+    open/close each report exactly once — a per-task ERROR here would
+    reintroduce the noise the breaker exists to stop.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().__call__(*args, **kwargs)
+        except Exception as exc:
+            from backend.app.services.llm_circuit_breaker import LLMCallsSuspended
+
+            if isinstance(exc, LLMCallsSuspended):
+                logger.info(
+                    "task %s deferred: LLM credit breaker open", self.name
+                )
+                return {"status": "deferred", "reason": "llm_credit_breaker_open"}
+            raise
+
+
 celery_app = Celery(
     "linda",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
+    task_cls=_LindaBaseTask,
 )
 
 # TLS Redis (rediss://) requires Celery to be told how to validate
@@ -802,20 +830,22 @@ class _TaskEventLoop:
     def __enter__(self) -> "_TaskEventLoop":
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        # Structural 3b fix: dispose the shared async engine's pool ONCE
+        # Structural 3b fix: reset the shared async engine's pool ONCE
         # at loop entry, so every ``_loop.run(...)`` site in the pipeline
         # (lifecycle webhook emit, plan synthesis, search indexing, …)
         # gets asyncpg connections bound to THIS loop by construction.
-        # Previously this was a per-call-site convention — plan synthesis
-        # remembered it, ``_emit_lifecycle`` didn't, and its stale-loop
-        # crashes were silently swallowed as "webhook emission failed".
-        # Disposing is a no-op on an empty pool, ~5ms otherwise, and safe
-        # under prefork (one task at a time per child). Import inside the
+        # ``close=False`` because any connections still pooled here are
+        # bound to an already-closed loop (a previous task that crashed
+        # before its exit dispose) — awaiting their graceful close from
+        # THIS loop is a cross-loop operation that raises "Event loop is
+        # closed"; abandoning them to GC terminates the sockets instead.
+        # No-op on an empty pool, which is the steady state now that
+        # ``__exit__`` disposes on the way out. Import inside the
         # method: backend.app.db must not be a hard import-time dep here.
         try:
             from backend.app.db import engine as _async_engine
 
-            self._loop.run_until_complete(_async_engine.dispose())
+            self._loop.run_until_complete(_async_engine.dispose(close=False))
         except Exception:
             logger.warning(
                 "async engine dispose at task-loop entry failed (non-fatal)",
@@ -827,6 +857,19 @@ class _TaskEventLoop:
         if self._loop is None:
             return
         try:
+            # Close the engine's connections ON the loop that owns them,
+            # BEFORE the loop goes away — the counterpart of the entry
+            # reset above, and what keeps stale-loop connections from
+            # ever accumulating in the shared pool.
+            try:
+                from backend.app.db import engine as _async_engine
+
+                self._loop.run_until_complete(_async_engine.dispose())
+            except Exception:
+                logger.warning(
+                    "async engine dispose at task-loop exit failed (non-fatal)",
+                    exc_info=True,
+                )
             # Cancel anything still pending so the loop closes cleanly.
             pending = asyncio.all_tasks(self._loop)
             for t in pending:
@@ -852,19 +895,26 @@ class _TaskEventLoop:
 def _run_async(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
     """Run a coroutine from a sync Celery task body on a fresh event loop.
 
-    Disposes the shared async engine's pool *first* so the asyncpg
-    connections opened inside bind to THIS invocation's loop. The
-    module-level engine in ``backend.app.db`` is created once per worker
-    process and its pool retains connections bound to whatever loop first
-    used them; a later ``asyncio.run`` opens a new loop, and reusing a
-    stale-loop connection raises "RuntimeError: Event loop is closed" or
-    "got Future attached to a different loop" — the failure mode behind
-    several daily beat tasks (tenant_export_to_s3, trial_expiry_daily,
-    crm_sync_daily, vector_health_daily, …) in Sentry. Disposing is a
-    no-op on an empty pool and ~5ms otherwise. This is the same
-    dispose-first pattern documented inline in ``_run_pipeline``'s
-    plan-synthesis block; ``_run_async`` makes it the default for every
-    ``asyncio.run`` task body so the bug can't recur.
+    The module-level async engine in ``backend.app.db`` is created once
+    per worker process, but each ``asyncio.run`` here is a fresh loop —
+    and asyncpg connections are bound to the loop that created them. Two
+    rules keep the pool loop-safe:
+
+    * **Dispose at the END of every tick, on the tick's own loop**
+      (the ``finally`` below). Connections are closed gracefully while
+      the loop that owns them is still running, so the pool is empty by
+      the time the loop shuts down. This is the actual fix for the
+      "RuntimeError: Event loop is closed" spam from
+      ``event_retention_sweep`` et al.: the old dispose-*first* pattern
+      closed the PREVIOUS tick's connections from the NEXT tick's loop,
+      which is exactly the cross-loop close it was trying to prevent —
+      sqlalchemy's pool logged an ERROR per stale connection.
+    * **Entry dispose uses ``close=False``** — a belt-and-braces reset
+      for the crash case where a previous tick died before its
+      ``finally`` ran. It abandons any stale-loop connections to GC
+      (which terminates the socket) instead of awaiting a graceful
+      close they can no longer perform. No-op when the pool is empty,
+      i.e. always, in steady state.
 
     ``coro_factory`` is the ``async def _runner`` itself (passed
     uncalled), so the coroutine is created inside the new loop.
@@ -873,8 +923,11 @@ def _run_async(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
     async def _wrapped() -> Any:
         from backend.app.db import engine as _async_engine
 
-        await _async_engine.dispose()
-        return await coro_factory()
+        await _async_engine.dispose(close=False)
+        try:
+            return await coro_factory()
+        finally:
+            await _async_engine.dispose()
 
     return asyncio.run(_wrapped())
 

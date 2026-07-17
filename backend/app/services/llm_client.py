@@ -182,7 +182,16 @@ async def acreate_with_failover(
             attempts on each model). Non-transient errors never retry.
         base_delay: exponential-backoff base (``base_delay * 2**attempt``).
         _sleep: injectable sleep (tests pass a no-op).
+
+    Raises :class:`llm_circuit_breaker.LLMCallsSuspended` (without
+    touching the API) while the shared credit-balance breaker is open,
+    and opens that breaker on a credit-balance 400 — an expected
+    operational state that must not error once per call.
     """
+    from backend.app.services import llm_circuit_breaker as _breaker
+
+    await _breaker.guard(client)
+
     active = model
     used_fallback = False
     attempt = 0
@@ -190,6 +199,10 @@ async def acreate_with_failover(
         try:
             return await client.messages.create(model=active, **create_kwargs)
         except Exception as exc:  # noqa: BLE001 — classified below, re-raised if unknown
+            if _breaker.record_billing_failure(exc):
+                raise _breaker.LLMCallsSuspended(
+                    "LLM calls paused: Anthropic credit balance exhausted"
+                ) from exc
             if _is_model_unavailable(exc):
                 if fallback_model and not used_fallback:
                     logger.warning(

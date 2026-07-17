@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # ── AI / LLM (Anthropic) ─────────────────────────────
     ANTHROPIC_API_KEY: str
 
+    # How often (seconds) the credit-balance circuit breaker lets ONE
+    # probe call through while open. An exhausted balance is an expected
+    # operational state — the breaker pauses all LLM work, probes on
+    # this interval, and resumes automatically once a probe succeeds.
+    # See services/llm_circuit_breaker.py.
+    LLM_BREAKER_PROBE_INTERVAL_SECONDS: int = 300
+
     # Model ids by tier — the SINGLE source of truth for which Claude
     # version each tier resolves to (see services/model_catalog.py). Every
     # runtime touchpoint resolves its model through the catalog, so bumping
