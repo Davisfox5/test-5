@@ -25,7 +25,7 @@ TEXT-vs-VARCHAR column pairs are equivalent at runtime, and the
 None of those can produce runtime errors; touching them from an
 autogenerate dump risks dropping load-bearing indexes.
 
-Revision ID: sen_001_reconcile_recommendation_drift
+Revision ID: sen_001_reco_drift
 Revises: out_002_outreach_links
 Create Date: 2026-07-16
 """
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sen_001_reconcile_recommendation_drift"
+revision = "sen_001_reco_drift"
 down_revision = "out_002_outreach_links"
 branch_labels = None
 depends_on = None

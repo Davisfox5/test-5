@@ -23,7 +23,7 @@ def _load_sen_001():
         "backend",
         "alembic",
         "versions",
-        "sen_001_reconcile_recommendation_drift.py",
+        "sen_001_reco_drift.py",
     )
     spec = importlib.util.spec_from_file_location("sen_001", path)
     mod = importlib.util.module_from_spec(spec)
