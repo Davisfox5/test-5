@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Read-only codebase mapping, search, inventory, and question-answering. Use for "where is X", "list all Y", "how does Z work" — anything that reads but does not edit. Keeps exploration out of the main context (context-rot control) and runs on the cheapest tier.
+description: Read-only codebase mapping, search, and inventory. Use for "where is X", "list all Y" — anything that locates but does not edit or interpret. Deep "how/why does Z work" questions go to codebase-analyst (fable) instead; pure single-pattern lookups can also use code-scout. Keeps exploration out of the main context (context-rot control) and runs on the cheapest tier.
 tools: Read, Grep, Glob
 model: haiku
 ---

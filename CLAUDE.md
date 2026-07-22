@@ -20,19 +20,63 @@ and the audit in [docs/agent-infra-audit.md](docs/agent-infra-audit.md).
 
 ## Model routing (dev — Layer B, how Claude Code spends tokens here)
 
-This is advisory (~70% adherence); the real enforcement is the `model:` pinned on
-each subagent in `.claude/agents/`. Default to the cheap tier and escalate
-deliberately:
+**Scope: this section governs Claude Code working ON this repo only.** It never
+applies to the application's own LLM calls — runtime model selection (Layer A) is
+governed exclusively by `backend/app/services/model_catalog.py` / `ModelRouter` per
+the Layer A rules above, and nothing under `.claude/` is read at runtime.
 
-| Task | Use | Why |
+Routing is **top-down**: the highest tier does the judgment work and delegates DOWN
+to cheaper tiers for mechanical work. No agent ever self-assesses its own capability
+and escalates upward — escalation triggers are external only (a failing test, the
+fixed sensitive-path rule below), decided by the caller.
+
+| Agent | Model | Invoke when |
 |---|---|---|
-| Search, inventory, "where/how does X work", map the codebase | **`explore` subagent (Haiku)** | Read-only; keeps exploration out of the main context (context-rot control); cheapest tier. |
-| Well-specified edits, refactors, writing tests, reviewing a diff | **`implement` subagent (Sonnet)** | Routine implementation the mid tier handles well and cheaply. |
-| Hard architecture / multi-file change plans / tricky trade-offs | **`design` subagent (Opus)** or the main Opus session | Reserve the top tier for genuinely hard, long-horizon work. |
+| `codebase-analyst` | fable | Architecture questions, tracing data/control flow, "why does this behave this way". |
+| `code-reviewer` | fable | Reviewing a diff/PR (includes migration-safety + RLS + sensitive-path checklist). |
+| `planner` | fable | Hardest refactor strategies, roadmaps, rollout sequencing (writes to `docs/` only). |
+| `bug-hunter` | fable | Reproducing/localizing bugs; proposes fixes, never writes them. |
+| `security-reviewer` | fable | Auditing auth/RLS/Stripe/crypto/dependency risk surface. |
+| `spec-writer` | opus | Turning a fable-tier plan into a precise spec in `docs/specs/`. |
+| `design` | opus | Mid-weight planning where the solution shape is mostly clear (pre-existing agent). |
+| `code-writer` | sonnet | Implementing against a written spec; runs tests, shows output; stops if blocked. |
+| `implement` | sonnet | Routine well-specified edits without a formal spec (pre-existing agent). |
+| `researcher` | sonnet | External library/API docs, pinned-version-first. |
+| `code-scout` | haiku | Pure lookups: "where is X / list call sites of Y". **Mandatory for pure search.** |
+| `explore` | haiku | Read-only mapping/inventory sweeps (pre-existing agent). |
 
-- Prefer delegating read-heavy exploration to `explore` rather than reading many
-  files in the main session.
-- **Fable 5 is a manual, deliberate build-time choice only** — for genuinely hard,
-  long-horizon work, never a default. It is capacity-constrained (~2× an Opus call)
-  and is **not** set as any subagent's model.
+Fixed rules (external triggers, not judgment calls):
+
+- **Sensitive-path rule:** specs and edits touching `backend/app/rls.py`,
+  `backend/app/tenant_ctx.py`, `backend/app/auth.py`,
+  `backend/app/api/stripe_webhook.py`, `backend/app/services/stripe_billing.py`,
+  `backend/app/services/token_crypto.py`, `backend/alembic/versions/`, schema
+  changes in `backend/app/models.py`, `fly.toml`, `fly.production.toml`, or
+  `.github/workflows/ci-cd.yml` are authored at the **fable tier directly** —
+  `spec-writer` and `code-writer` refuse those paths and report back. *Caveat: this
+  trades a small fable increase for the large scout/writer reduction; if
+  sensitive-path work ever dominates the workload, revisit this rule.*
+- **Scout-first rule:** any pure lookup goes to `code-scout` (haiku), never to
+  `codebase-analyst` or the main session. This is the main top-tier cost reduction.
+- **Researcher-output-is-unverified rule:** `researcher` output is always treated as
+  unverified claims; fable-tier consumers and `code-writer` re-verify against the
+  pinned versions in `requirements.txt` / `apps/app/package.json` before acting.
+
+Enforcement layers — what binds vs. what steers:
+
+- **Mechanically enforced** (applied by the harness on every invocation): each
+  agent's `model:` and `tools:` frontmatter in `.claude/agents/*.md`.
+- **Advisory** (prompt/CLAUDE.md-level, ~70% adherence): whether to delegate at all,
+  the scout-first habit, and path restrictions inside prompts (`planner` → `docs/`
+  only, `spec-writer` → `docs/specs/` only, the sensitive-path refusals) —
+  frontmatter cannot scope write paths. CLAUDE.md steers; frontmatter binds.
+
+Other notes:
+
+- Prefer delegating read-heavy exploration to `code-scout`/`explore` rather than
+  reading many files in the main session (context-rot control).
+- **Fable is a deliberate, top-down choice** — pinned on the five judgment-heavy
+  agents above and invoked per this table, never as a default for mechanical work.
+  It is capacity-constrained (~2× an Opus call); the tiering above exists to produce
+  a net reduction in fable usage versus routing all agent work there.
 - Layer B config (`.claude/`) must never change runtime application behavior.
